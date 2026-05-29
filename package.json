@@ -1,0 +1,22 @@
+{
+  "name": "hitch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local file sync engine that keeps git-ignored .hitch/ folders in sync with Convex.",
+  "workspaces": [
+    "daemon"
+  ],
+  "scripts": {
+    "dev": "concurrently -n convex,daemon -c blue,green \"npm:dev:convex\" \"npm:dev:daemon\"",
+    "dev:convex": "convex dev",
+    "dev:daemon": "node daemon/index.js",
+    "setup": "convex dev --once"
+  },
+  "dependencies": {
+    "convex": "^1.16.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

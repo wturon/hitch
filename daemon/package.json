@@ -1,0 +1,14 @@
+{
+  "name": "@hitch/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Watches .hitch/ folders and syncs them to Convex.",
+  "main": "index.js",
+  "dependencies": {
+    "chokidar": "^4.0.1",
+    "convex": "^1.16.0",
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  }
+}

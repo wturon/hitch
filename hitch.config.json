@@ -1,0 +1,9 @@
+{
+  "workspace": "will-default",
+  "watch": [
+    {
+      "label": "hitch",
+      "path": "./.hitch"
+    }
+  ]
+}
