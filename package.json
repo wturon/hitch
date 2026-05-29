@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "concurrently -n convex,daemon -c blue,green \"npm:dev:convex\" \"npm:dev:daemon\"",
     "dev:convex": "convex dev",
-    "dev:daemon": "node daemon/index.js",
+    "dev:daemon": "tsx daemon/src/index.ts",
+    "typecheck": "npm -w @hitch/daemon run typecheck",
     "setup": "convex dev --once"
   },
   "dependencies": {

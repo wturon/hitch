@@ -9,8 +9,9 @@ to git.
 
 - `convex/` — backend: a `files` table + `upsertFile`/`listFiles`. Deploys to
   Convex cloud; there is no server we host ourselves.
-- `daemon/` — Node watcher: pushes local file changes up to Convex and writes
-  remote changes back to disk, with echo suppression so a synced write never loops.
+- `daemon/` — TypeScript (`src/index.ts`, run via `tsx`) Node watcher: pushes
+  local file changes up to Convex and writes remote changes back to disk, with
+  echo suppression so a synced write never loops.
 - `web/` — (later) a live board UI. Not built yet.
 - `hitch.config.json` — the workspace id + which `.hitch/` folders to watch.
 

@@ -14,7 +14,33 @@ import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
 
 // Convex's reactive client uses WebSocket; polyfill for Node < 22.
-if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
+if (!globalThis.WebSocket) {
+  (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
+}
+
+// --- types ---
+interface WatchEntry {
+  label: string;
+  path: string;
+}
+interface HitchConfig {
+  workspace: string;
+  watch: WatchEntry[];
+}
+// Shape of a row returned by the listFiles query (anyApi is untyped).
+interface FileDoc {
+  workspace: string;
+  source: string;
+  path: string;
+  content: string;
+  hash: string;
+  deleted: boolean;
+  updatedAt: number;
+}
+interface Root {
+  label: string;
+  path: string;
+}
 
 // --- env ---
 dotenv.config({ path: ".env.local" });
@@ -35,9 +61,9 @@ if (!existsSync(configPath)) {
   console.error(`[hitch] No config found at ${configPath}`);
   process.exit(1);
 }
-const config = JSON.parse(readFileSync(configPath, "utf8"));
+const config = JSON.parse(readFileSync(configPath, "utf8")) as HitchConfig;
 const workspace = config.workspace;
-const roots = (config.watch ?? []).map((w) => ({
+const roots: Root[] = (config.watch ?? []).map((w) => ({
   label: w.label,
   path: resolve(w.path),
 }));
@@ -46,14 +72,15 @@ if (roots.length === 0) {
   process.exit(1);
 }
 
-const hashOf = (content) => createHash("sha256").update(content).digest("hex");
+const hashOf = (content: string): string =>
+  createHash("sha256").update(content).digest("hex");
 
 // The hash we last synced for each absolute path. If a filesystem event or a
 // remote update carries a hash we already have, it's an echo and we skip it.
-const lastHash = new Map();
+const lastHash = new Map<string, string>();
 
-// absolute path -> { label, rel } using the watched roots (rel uses "/" )
-function locate(absPath) {
+// absolute path -> { label, rel } using the watched roots (rel uses "/")
+function locate(absPath: string): { label: string; rel: string } | null {
   for (const root of roots) {
     const rel = relative(root.path, absPath);
     if (rel && !rel.startsWith("..") && !rel.startsWith(sep)) {
@@ -65,7 +92,7 @@ function locate(absPath) {
 
 // { label, rel } from Convex -> absolute path (null if this machine doesn't
 // watch that source)
-function toAbs(label, rel) {
+function toAbs(label: string, rel: string): string | null {
   const root = roots.find((r) => r.label === label);
   return root ? join(root.path, rel.split("/").join(sep)) : null;
 }
@@ -73,10 +100,10 @@ function toAbs(label, rel) {
 const client = new ConvexClient(CONVEX_URL);
 
 // --- local -> Convex ---
-async function pushLocal(absPath) {
+async function pushLocal(absPath: string): Promise<void> {
   const loc = locate(absPath);
   if (!loc) return;
-  let content;
+  let content: string;
   try {
     content = await readFile(absPath, "utf8");
   } catch {
@@ -96,7 +123,7 @@ async function pushLocal(absPath) {
   console.log(`[hitch] ↑ ${loc.label}/${loc.rel}`);
 }
 
-async function pushDelete(absPath) {
+async function pushDelete(absPath: string): Promise<void> {
   const loc = locate(absPath);
   if (!loc) return;
   lastHash.delete(absPath);
@@ -112,29 +139,33 @@ async function pushDelete(absPath) {
 }
 
 // --- Convex -> local ---
-client.onUpdate(anyApi.files.listFiles, { workspace }, async (files) => {
-  for (const f of files) {
-    const absPath = toAbs(f.source, f.path);
-    if (!absPath) continue; // a source this machine doesn't watch
+client.onUpdate(
+  anyApi.files.listFiles,
+  { workspace },
+  async (files: FileDoc[]) => {
+    for (const f of files) {
+      const absPath = toAbs(f.source, f.path);
+      if (!absPath) continue; // a source this machine doesn't watch
 
-    if (f.deleted) {
-      if (existsSync(absPath)) {
-        lastHash.delete(absPath);
-        await rm(absPath, { force: true });
-        console.log(`[hitch] ↓✗ ${f.source}/${f.path}`);
+      if (f.deleted) {
+        if (existsSync(absPath)) {
+          lastHash.delete(absPath);
+          await rm(absPath, { force: true });
+          console.log(`[hitch] ↓✗ ${f.source}/${f.path}`);
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (lastHash.get(absPath) === f.hash) continue; // already have it
-    // Record the hash BEFORE writing so the watcher event this write triggers
-    // is recognised as an echo and dropped.
-    lastHash.set(absPath, f.hash);
-    await mkdir(dirname(absPath), { recursive: true });
-    await writeFile(absPath, f.content, "utf8");
-    console.log(`[hitch] ↓ ${f.source}/${f.path}`);
-  }
-});
+      if (lastHash.get(absPath) === f.hash) continue; // already have it
+      // Record the hash BEFORE writing so the watcher event this write
+      // triggers is recognised as an echo and dropped.
+      lastHash.set(absPath, f.hash);
+      await mkdir(dirname(absPath), { recursive: true });
+      await writeFile(absPath, f.content, "utf8");
+      console.log(`[hitch] ↓ ${f.source}/${f.path}`);
+    }
+  },
+);
 
 // --- watcher ---
 const watcher = chokidar.watch(
@@ -154,7 +185,7 @@ watcher
     ),
   );
 
-async function shutdown() {
+async function shutdown(): Promise<void> {
   await watcher.close();
   await client.close();
   process.exit(0);

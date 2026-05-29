@@ -4,11 +4,23 @@
   "private": true,
   "type": "module",
   "description": "Watches .hitch/ folders and syncs them to Convex.",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
   "dependencies": {
     "chokidar": "^4.0.1",
     "convex": "^1.16.0",
     "dotenv": "^16.4.5",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
   }
 }
