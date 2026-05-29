@@ -46,12 +46,27 @@ interface Root {
 // --- env ---
 dotenv.config({ path: ".env.local" });
 dotenv.config({ path: ".env" });
-const CONVEX_URL = process.env.CONVEX_URL;
+
+// `npx convex dev` writes CONVEX_DEPLOYMENT (e.g. "dev:happy-otter-123") to
+// .env.local. The cloud URL for that deployment is https://<name>.convex.cloud,
+// so derive it when CONVEX_URL isn't set explicitly.
+function deriveConvexUrl(): string | undefined {
+  if (process.env.CONVEX_URL) return process.env.CONVEX_URL;
+  const deployment = process.env.CONVEX_DEPLOYMENT;
+  if (!deployment) return undefined;
+  const name = deployment.includes(":")
+    ? deployment.split(":")[1]
+    : deployment;
+  return name ? `https://${name}.convex.cloud` : undefined;
+}
+
+const CONVEX_URL = deriveConvexUrl();
 if (!CONVEX_URL) {
   console.error(
-    "[hitch] CONVEX_URL is not set.\n" +
-      "        Run `npx convex dev` once, then put the printed deployment URL\n" +
-      "        in .env as CONVEX_URL=https://your-deployment.convex.cloud",
+    "[hitch] No Convex deployment found.\n" +
+      "        Run `npx convex dev` once (it writes CONVEX_DEPLOYMENT to\n" +
+      "        .env.local), or set CONVEX_URL=https://your-deployment.convex.cloud\n" +
+      "        in .env explicitly.",
   );
   process.exit(1);
 }
