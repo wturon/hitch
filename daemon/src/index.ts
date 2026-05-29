@@ -172,10 +172,14 @@ client.onUpdate(
         continue;
       }
 
-      if (lastHash.get(absPath) === f.hash) continue; // already have it
-      // Record the hash BEFORE writing so the watcher event this write
-      // triggers is recognised as an echo and dropped.
-      lastHash.set(absPath, f.hash);
+      // Decide based on the hash of the actual content, not the row's stored
+      // `hash` field — so an edit made directly in the Convex dashboard (which
+      // doesn't recompute `hash`) still propagates to disk.
+      const contentHash = hashOf(f.content);
+      if (lastHash.get(absPath) === contentHash) continue; // already have it
+      // Record BEFORE writing so the watcher event this write triggers is
+      // recognised as an echo and dropped.
+      lastHash.set(absPath, contentHash);
       await mkdir(dirname(absPath), { recursive: true });
       await writeFile(absPath, f.content, "utf8");
       console.log(`[hitch] ↓ ${f.source}/${f.path}`);
