@@ -7,8 +7,10 @@ to git.
 
 ## Layout
 
-- `convex/` — backend: a `files` table + `upsertFile`/`listFiles`. Deploys to
-  Convex cloud; there is no server we host ourselves.
+- `convex/` — backend, deploys to Convex cloud (no server we host):
+  - `files.ts` — `upsertFile` (create/update/tombstone), `listFiles`, `getFile`
+  - `status.ts` — `heartbeat` (daemon presence), `listDaemons`
+  - `schema.ts` — `files` and `daemons` tables
 - `daemon/` — TypeScript (`src/index.ts`, run via `tsx`) Node watcher: pushes
   local file changes up to Convex and writes remote changes back to disk, with
   echo suppression so a synced write never loops.

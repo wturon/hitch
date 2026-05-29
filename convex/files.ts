@@ -44,3 +44,24 @@ export const listFiles = query({
       .collect();
   },
 });
+
+// A single file by its (workspace, source, path) key. Returns null if missing.
+// For the board's detail view and targeted reads.
+export const getFile = query({
+  args: {
+    workspace: v.string(),
+    source: v.string(),
+    path: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("files")
+      .withIndex("by_key", (q) =>
+        q
+          .eq("workspace", args.workspace)
+          .eq("source", args.source)
+          .eq("path", args.path),
+      )
+      .unique();
+  },
+});

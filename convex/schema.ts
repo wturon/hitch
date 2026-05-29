@@ -19,4 +19,16 @@ export default defineSchema({
   })
     .index("by_workspace", ["workspace"])
     .index("by_key", ["workspace", "source", "path"]),
+
+  // One row per running daemon (keyed by machine). Lets the board show which
+  // machines are connected, what they're watching, and when they were last
+  // seen — sync health without needing a desktop app.
+  daemons: defineTable({
+    workspace: v.string(),
+    hostname: v.string(),
+    sources: v.array(v.string()),
+    lastSeen: v.number(),
+  })
+    .index("by_workspace", ["workspace"])
+    .index("by_key", ["workspace", "hostname"]),
 });

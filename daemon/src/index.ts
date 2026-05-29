@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { hostname } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import dotenv from "dotenv";
 import chokidar from "chokidar";
@@ -167,6 +168,28 @@ client.onUpdate(
   },
 );
 
+// --- heartbeat ---
+// Tell Convex this machine is alive and what it's watching, so the board can
+// show sync health. Sent on startup and every 15s.
+const HEARTBEAT_MS = 15_000;
+const host = hostname();
+const sources = roots.map((r) => r.label);
+
+async function sendHeartbeat(): Promise<void> {
+  try {
+    await client.mutation(anyApi.status.heartbeat, {
+      workspace,
+      hostname: host,
+      sources,
+    });
+  } catch {
+    // transient — the next tick will retry
+  }
+}
+
+void sendHeartbeat();
+const heartbeatTimer = setInterval(() => void sendHeartbeat(), HEARTBEAT_MS);
+
 // --- watcher ---
 const watcher = chokidar.watch(
   roots.map((r) => r.path),
@@ -186,6 +209,7 @@ watcher
   );
 
 async function shutdown(): Promise<void> {
+  clearInterval(heartbeatTimer);
   await watcher.close();
   await client.close();
   process.exit(0);
