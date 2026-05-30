@@ -5,12 +5,14 @@
   "type": "module",
   "description": "A local file sync engine that keeps git-ignored .hitch/ folders in sync with Convex.",
   "workspaces": [
-    "daemon"
+    "daemon",
+    "web"
   ],
   "scripts": {
-    "dev": "concurrently -n convex,daemon -c blue,green \"npm:dev:convex\" \"npm:dev:daemon\"",
+    "dev": "concurrently -n convex,daemon,web -c blue,green,magenta \"npm:dev:convex\" \"npm:dev:daemon\" \"npm:dev:web\"",
     "dev:convex": "convex dev",
     "dev:daemon": "tsx daemon/src/index.ts",
+    "dev:web": "npm -w web run dev",
     "typecheck": "npm -w @hitch/daemon run typecheck",
     "setup": "convex dev --once"
   },
