@@ -4,8 +4,10 @@ import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import { parseFrontmatter } from "@/lib/frontmatter";
+import { parseChatRef, type ChatRef } from "@/lib/chat";
 import { taskSlug } from "@/lib/tasks";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
+import { ChatLaunch } from "@/components/ChatLaunch";
 
 // The workspace this board renders. Matches `workspace` in ../hitch.config.json
 // (the daemon pushes files under this id). Hard-coded for now; later this comes
@@ -30,6 +32,7 @@ interface Card {
   source: string;
   path: string; // tasks/<slug>/task.md — what the dialog writes back
   content: string; // raw file text
+  chat: ChatRef | null; // the coding-agent chat driving this task, if linked
   column: Column;
   updatedAt: number;
 }
@@ -63,6 +66,7 @@ export default function Board() {
           source: f.source,
           path: f.path,
           content: f.content,
+          chat: parseChatRef(frontmatter),
           column: columnFor(frontmatter.status),
           updatedAt: f.updatedAt,
         },
@@ -101,11 +105,18 @@ export default function Board() {
               {col} · {byColumn[col].length}
             </h2>
             {byColumn[col].map((card) => (
-              <button
+              <div
                 key={card.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 onClick={() => setSelected(card)}
-                className="rounded-lg bg-card p-3 text-left shadow-sm ring-1 ring-border transition-shadow hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setSelected(card);
+                  }
+                }}
+                className="cursor-pointer rounded-lg bg-card p-3 text-left shadow-sm ring-1 ring-border transition-shadow hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
               >
                 <p className="text-sm font-medium text-card-foreground">
                   {card.title}
@@ -114,7 +125,12 @@ export default function Board() {
                   {card.owner ? `${card.owner} · ` : ""}
                   {card.source}
                 </p>
-              </button>
+                {card.chat && (
+                  <div className="mt-2">
+                    <ChatLaunch chat={card.chat} size="xs" stopPropagation />
+                  </div>
+                )}
+              </div>
             ))}
             {byColumn[col].length === 0 && (
               <p className="px-1 text-xs text-muted-foreground/70">—</p>

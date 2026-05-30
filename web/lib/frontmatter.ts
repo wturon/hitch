@@ -33,3 +33,32 @@ export function parseFrontmatter(content: string): ParsedFile {
   }
   return { frontmatter, body };
 }
+
+// Set (or, with an empty/undefined value, remove) scalar keys in a file's
+// frontmatter, leaving the body and every other key untouched. If the file has
+// no frontmatter block, one is created. Used to edit a single field
+// programmatically without round-tripping the whole document through a YAML
+// serializer — matches the deliberately-minimal reader above.
+export function setFrontmatterKeys(
+  content: string,
+  updates: Record<string, string | undefined>,
+): string {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const match = content.match(FRONTMATTER_RE);
+  let lines = match ? match[1].split(/\r?\n/) : [];
+  const body = match ? match[2] : content;
+
+  // Drop existing lines for any key we're about to set or clear.
+  const touched = new Set(Object.keys(updates));
+  lines = lines.filter((line) => {
+    const idx = line.indexOf(":");
+    return idx === -1 || !touched.has(line.slice(0, idx).trim());
+  });
+
+  // Re-append the ones with a value; an empty/undefined value means "remove".
+  for (const [key, value] of Object.entries(updates)) {
+    if (value != null && value !== "") lines.push(`${key}: ${value}`);
+  }
+
+  return `---${eol}${lines.join(eol)}${eol}---${eol}${body}`;
+}

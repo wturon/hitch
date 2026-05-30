@@ -4,6 +4,16 @@ import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
 import { sha256 } from "@/lib/hash";
+import { parseFrontmatter } from "@/lib/frontmatter";
+import {
+  HARNESSES,
+  harnessLabel,
+  parseChatRef,
+  readChatFields,
+  writeChatFields,
+  type ChatFields,
+} from "@/lib/chat";
+import { ChatLaunch } from "@/components/ChatLaunch";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -63,6 +73,19 @@ function TaskEditor({
   const [saving, setSaving] = useState(false);
   const dirty = draft !== task.content;
 
+  // The linked chat is stored in the draft's frontmatter, so editing it here
+  // and hitting Save flows through the same path as any other edit. Read the
+  // (possibly half-filled) fields for the form, and a validated ref for launch.
+  const fm = parseFrontmatter(draft).frontmatter;
+  const fields = readChatFields(fm);
+  const chat = parseChatRef(fm);
+
+  function updateChat(patch: Partial<ChatFields>) {
+    setDraft((d) =>
+      writeChatFields(d, { ...readChatFields(parseFrontmatter(d).frontmatter), ...patch }),
+    );
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -88,6 +111,58 @@ function TaskEditor({
           {task.source}/{task.path}
         </DialogDescription>
       </DialogHeader>
+
+      <section className="flex flex-col gap-2 rounded-md border bg-muted/40 p-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Linked chat
+          </span>
+          {chat ? (
+            <ChatLaunch chat={chat} size="xs" />
+          ) : (
+            fields.harness && (
+              <span className="text-xs text-muted-foreground/70">
+                add a session id to enable
+              </span>
+            )
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <select
+            value={fields.harness}
+            onChange={(e) => updateChat({ harness: e.target.value })}
+            className="h-8 rounded-md border bg-transparent px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="">No chat</option>
+            {HARNESSES.map((h) => (
+              <option key={h} value={h}>
+                {harnessLabel(h)}
+              </option>
+            ))}
+          </select>
+
+          {fields.harness && (
+            <input
+              value={fields.id}
+              onChange={(e) => updateChat({ id: e.target.value })}
+              placeholder="session / thread id"
+              spellCheck={false}
+              className="h-8 min-w-0 flex-1 rounded-md border bg-transparent px-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          )}
+        </div>
+
+        {fields.harness === "claude-code" && (
+          <input
+            value={fields.cwd}
+            onChange={(e) => updateChat({ cwd: e.target.value })}
+            placeholder="working directory (optional, for resume)"
+            spellCheck={false}
+            className="h-8 w-full rounded-md border bg-transparent px-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        )}
+      </section>
 
       <textarea
         value={draft}
