@@ -32,3 +32,8 @@ to git.
   last-write-wins is safe and we avoid conflict resolution for now.
 - `.hitch/` is **git-ignored**; never commit it.
 - Text / Markdown files only for now.
+
+---
+
+## Source control
+- No branching. Push everything straight to `main`
