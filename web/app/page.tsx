@@ -24,7 +24,12 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
-import { parseChatRef, type ChatRef } from "@/lib/chat";
+import {
+  parseChatRef,
+  parseChatStatus,
+  type ChatRef,
+  type ChatStatus,
+} from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
@@ -44,6 +49,13 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 
 // The workspace this board renders. Matches `workspace` in ../hitch.config.json
 // (the daemon pushes files under this id). Hard-coded for now; later this comes
@@ -75,6 +87,7 @@ interface Card {
   path: string; // tasks/<slug>/task.md — what the dialog writes back
   content: string; // raw file text
   chat: ChatRef | null; // the coding-agent chat driving this task, if linked
+  chatStatus: ChatStatus | null; // live working/ready state, if the chat reports it
   column: Column;
   archived: boolean;
   updatedAt: number;
@@ -97,6 +110,7 @@ function CardContents({ card }: { card: Card }) {
         <div className="mt-2">
           <ChatLaunch
             chat={card.chat}
+            status={card.chatStatus}
             workspace={WORKSPACE}
             size="xs"
             stopPropagation
@@ -104,6 +118,70 @@ function CardContents({ card }: { card: Card }) {
         </div>
       )}
     </>
+  );
+}
+
+// The hover-revealed archive shortcut in a card's top-right corner. Clicking it
+// once arms a confirmation (the icon becomes an "Archive" pill); clicking the
+// pill archives. `onPointerDown`/`onClick` stop propagation so the button drives
+// neither the card's drag (PointerSensor listeners live on the card) nor its
+// open-on-click. Only rendered for unarchived cards — restoring stays in the
+// context menu.
+function stopCardPropagation(e: React.PointerEvent | React.MouseEvent) {
+  e.stopPropagation();
+}
+
+function ArchiveShortcut({
+  confirming,
+  pending,
+  onArm,
+  onConfirm,
+}: {
+  confirming: boolean;
+  pending: boolean;
+  onArm: () => void;
+  onConfirm: () => void;
+}) {
+  if (confirming) {
+    return (
+      <button
+        type="button"
+        disabled={pending}
+        aria-label="Confirm archive"
+        onPointerDown={stopCardPropagation}
+        onClick={(e) => {
+          stopCardPropagation(e);
+          onConfirm();
+        }}
+        className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs font-medium text-accent-foreground shadow-sm ring-1 ring-border hover:bg-foreground hover:text-background"
+      >
+        <ArchiveIcon className="size-3" />
+        Confirm
+      </button>
+    );
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            disabled={pending}
+            aria-label="Archive"
+            onPointerDown={stopCardPropagation}
+            onClick={(e) => {
+              stopCardPropagation(e);
+              onArm();
+            }}
+            className="absolute right-2 top-2 hidden rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground group-hover:block focus-visible:block focus-visible:outline-none"
+          />
+        }
+      >
+        <ArchiveIcon className="size-3.5" />
+      </TooltipTrigger>
+      <TooltipContent>Archive</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -130,6 +208,10 @@ function DraggableCard({
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: card.id,
   });
+  // Whether the hover archive shortcut has been clicked once and is now showing
+  // its "Archive" confirmation pill. Reset when the pointer leaves the card so a
+  // half-armed card doesn't stay armed.
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
 
   return (
     <ContextMenu>
@@ -138,20 +220,31 @@ function DraggableCard({
           ref={setNodeRef}
           {...attributes}
           {...listeners}
-          onClick={() => onOpen(card)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              onOpen(card);
-            }
-          }}
+          onMouseLeave={() => setConfirmingArchive(false)}
           className={cn(
             CARD_CLASS,
-            "cursor-pointer transition-shadow hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+            "group relative cursor-pointer transition-shadow hover:ring-foreground/20",
             isDragging && "opacity-40",
           )}
         >
-          <CardContents card={card} />
+          <button
+            type="button"
+            onClick={() => onOpen(card)}
+            className="block w-full rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <CardContents card={card} />
+          </button>
+          {!card.archived && (
+            <ArchiveShortcut
+              confirming={confirmingArchive}
+              pending={pending}
+              onArm={() => setConfirmingArchive(true)}
+              onConfirm={() => {
+                setConfirmingArchive(false);
+                onArchiveToggle(card, true);
+              }}
+            />
+          )}
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
@@ -173,6 +266,151 @@ function DraggableCard({
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+  );
+}
+
+// A single row in the archived sheet: the task's title/source plus inline
+// unarchive and delete actions. Kept compact (one row per task) since the sheet
+// is a management surface, not the board — there's no drag or open-on-click.
+function ArchivedRow({
+  card,
+  pending,
+  onUnarchive,
+  onDelete,
+}: {
+  card: Card;
+  pending: boolean;
+  onUnarchive: (card: Card) => void;
+  onDelete: (card: Card) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg bg-card p-3 ring-1 ring-border">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-card-foreground">
+          {card.title}
+        </p>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {card.owner ? `${card.owner} · ` : ""}
+          {card.source}
+        </p>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={pending}
+        onClick={() => onUnarchive(card)}
+      >
+        <ArchiveRestoreIcon />
+        Unarchive
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={pending}
+        className="text-muted-foreground hover:text-destructive"
+        onClick={() => onDelete(card)}
+      >
+        <Trash2Icon />
+        Delete
+      </Button>
+    </div>
+  );
+}
+
+// The side sheet listing every archived task with per-row unarchive/delete and
+// a "Delete all" action in the header. Replaces the old bottom-of-board archived
+// grouping. "Delete all" arms a confirmation on first click (it's irreversible)
+// and confirms on the second; the armed state resets whenever the sheet closes.
+function ArchivedSheet({
+  open,
+  onOpenChange,
+  cards,
+  pendingCardId,
+  onUnarchive,
+  onDelete,
+  onDeleteAll,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  cards: Card[];
+  pendingCardId: string | null;
+  onUnarchive: (card: Card) => void;
+  onDelete: (card: Card) => void;
+  onDeleteAll: () => void;
+}) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <ArchivedSheetContent
+        key={open ? "open" : "closed"}
+        cards={cards}
+        pendingCardId={pendingCardId}
+        onUnarchive={onUnarchive}
+        onDelete={onDelete}
+        onDeleteAll={onDeleteAll}
+      />
+    </Sheet>
+  );
+}
+
+function ArchivedSheetContent({
+  cards,
+  pendingCardId,
+  onUnarchive,
+  onDelete,
+  onDeleteAll,
+}: {
+  cards: Card[];
+  pendingCardId: string | null;
+  onUnarchive: (card: Card) => void;
+  onDelete: (card: Card) => void;
+  onDeleteAll: () => void;
+}) {
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
+
+  return (
+    <SheetContent className="gap-0">
+      <SheetHeader>
+        <SheetTitle>Archived</SheetTitle>
+        <SheetDescription>
+          {cards.length} archived task{cards.length === 1 ? "" : "s"}
+        </SheetDescription>
+        {cards.length > 0 && (
+          <Button
+            variant={confirmingDeleteAll ? "destructive" : "outline"}
+            size="sm"
+            className="mt-2 w-fit"
+            onClick={() => {
+              if (confirmingDeleteAll) {
+                onDeleteAll();
+                setConfirmingDeleteAll(false);
+              } else {
+                setConfirmingDeleteAll(true);
+              }
+            }}
+          >
+            <Trash2Icon />
+            {confirmingDeleteAll
+              ? `Delete all ${cards.length}? Click to confirm`
+              : "Delete all"}
+          </Button>
+        )}
+      </SheetHeader>
+      <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
+        {cards.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nothing archived.</p>
+        ) : (
+          cards.map((card) => (
+            <ArchivedRow
+              key={card.id}
+              card={card}
+              pending={pendingCardId === card.id}
+              onUnarchive={onUnarchive}
+              onDelete={onDelete}
+            />
+          ))
+        )}
+      </div>
+    </SheetContent>
   );
 }
 
@@ -213,6 +451,7 @@ function TaskComposer({
   return (
     <div className={cn(CARD_CLASS, "flex flex-col gap-2 bg-card")}>
       <input
+        aria-label="Task title"
         ref={inputRef}
         autoFocus
         value={value}
@@ -318,9 +557,7 @@ function DroppableColumn({
         </Tooltip>
       </div>
       {children}
-      {count === 0 && (
-        <p className="px-1 text-xs text-muted-foreground/70">—</p>
-      )}
+      {count === 0 && <p className="px-1 text-xs text-muted-foreground/70">No tasks</p>}
 
       {/* While a card is hovering this column, fade its cards and explain that
           drop position isn't user-controlled — the board sorts by last update,
@@ -446,28 +683,28 @@ export default function Board() {
   // A card is a task body (tasks/<slug>/task.md). Drop tombstones and any file
   // that isn't a canonical task body; parse frontmatter; bucket by status.
   const cards = files
-    .filter((f) => !f.deleted)
-    .flatMap((f): Card[] => {
+    .reduce<Card[]>((acc, f) => {
+      if (f.deleted) return acc;
       const slug = taskSlug(f.path);
-      if (slug === null) return [];
+      if (slug === null) return acc;
       const { frontmatter } = parseFrontmatter(f.content);
       const status = frontmatter.status?.toLowerCase();
-      return [
-        {
-          id: `${f.source}/tasks/${slug}`,
-          slug,
-          title: frontmatter.title || slug,
-          owner: frontmatter.owner,
-          source: f.source,
-          path: f.path,
-          content: f.content,
-          chat: parseChatRef(frontmatter),
-          column: columnFor(status),
-          archived: status === "archived",
-          updatedAt: f.updatedAt,
-        },
-      ];
-    })
+      acc.push({
+        id: `${f.source}/tasks/${slug}`,
+        slug,
+        title: frontmatter.title || slug,
+        owner: frontmatter.owner,
+        source: f.source,
+        path: f.path,
+        content: f.content,
+        chat: parseChatRef(frontmatter),
+        chatStatus: parseChatStatus(frontmatter),
+        column: columnFor(status),
+        archived: status === "archived",
+        updatedAt: f.updatedAt,
+      });
+      return acc;
+    }, [])
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   const activeCards = cards.filter((card) => !card.archived);
@@ -516,9 +753,10 @@ export default function Board() {
   // upsert path everything else uses; the daemon writes the file and the live
   // query renders the card (instantly, via the optimistic insert above).
   async function createTask(column: Column, title: string, source: string) {
-    const taken = new Set(
-      cards.filter((c) => c.source === source).map((c) => c.slug),
-    );
+    const taken = new Set<string>();
+    for (const card of cards) {
+      if (card.source === source) taken.add(card.slug);
+    }
     const slug = uniqueSlug(title, taken);
     const content = setFrontmatterKeys("", { title, status: column });
     await upsertFile({
@@ -555,11 +793,6 @@ export default function Board() {
   }
 
   async function deleteCard(card: Card) {
-    const confirmed = window.confirm(
-      `Delete "${card.title}" from disk? This cannot be undone.`,
-    );
-    if (!confirmed) return;
-
     setPendingCardId(card.id);
     try {
       await upsertFile({
@@ -573,6 +806,24 @@ export default function Board() {
     } finally {
       setPendingCardId(null);
     }
+  }
+
+  // Delete every archived task in one shot. Fires the deletes concurrently
+  // through the same tombstone path `deleteCard` uses; the optimistic update
+  // drops each card immediately.
+  async function deleteAllArchived() {
+    await Promise.all(
+      archivedCards.map((card) =>
+        upsertFile({
+          workspace: WORKSPACE,
+          source: card.source,
+          path: card.path,
+          content: "",
+          hash: "",
+          deleted: true,
+        }),
+      ),
+    );
   }
 
   // Move a card to another column by rewriting just its `status` frontmatter,
@@ -625,10 +876,10 @@ export default function Board() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setShowArchived((value) => !value)}
+            onClick={() => setShowArchived(true)}
           >
             <ArchiveIcon />
-            {showArchived ? "Hide archived" : "Show archived"}
+            Show archived
           </Button>
         )}
       </header>
@@ -674,26 +925,6 @@ export default function Board() {
           ))}
         </div>
 
-        {showArchived && archivedCards.length > 0 && (
-          <section className="flex flex-col gap-3 rounded-xl border border-dashed bg-muted/40 p-3">
-            <h2 className="px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              archived · {archivedCards.length}
-            </h2>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {archivedCards.map((card) => (
-                <DraggableCard
-                  key={card.id}
-                  card={card}
-                  pending={pendingCardId === card.id}
-                  onOpen={setSelected}
-                  onArchiveToggle={(c, archived) => void setArchived(c, archived)}
-                  onDelete={(c) => void deleteCard(c)}
-                />
-              ))}
-            </div>
-          </section>
-        )}
-
         {/* dropAnimation={null}: the dragged card's DOM node never leaves its
             origin column (we only dim it), so dnd-kit's default drop animation
             would fly the overlay back to column 1 before the re-rendered card
@@ -712,6 +943,16 @@ export default function Board() {
           ) : null}
         </DragOverlay>
       </DndContext>
+
+      <ArchivedSheet
+        open={showArchived}
+        onOpenChange={setShowArchived}
+        cards={archivedCards}
+        pendingCardId={pendingCardId}
+        onUnarchive={(c) => void setArchived(c, false)}
+        onDelete={(c) => void deleteCard(c)}
+        onDeleteAll={() => void deleteAllArchived()}
+      />
 
       <TaskDialog
         task={target}

@@ -43,12 +43,19 @@ export interface CodexStartSpec {
   taskKey: string;
   prompt: string;
   cwd: string;
+  threadName?: string;
   onThreadStarted?: (threadId: string) => Promise<void>;
 }
 
 export interface CodexStartResult {
   status: "focused" | "started";
   threadId: string;
+}
+
+export interface CodexDraftSpec {
+  prompt: string;
+  cwd: string;
+  originUrl?: string;
 }
 
 const recentStarts = new Map<string, { threadId: string; at: number }>();
@@ -228,6 +235,13 @@ async function doStartCodexChat(
   const threadId = started.thread.id;
   recentStarts.set(spec.taskKey, { threadId, at: Date.now() });
 
+  if (spec.threadName) {
+    await server.request("thread/name/set", {
+      threadId,
+      name: spec.threadName,
+    });
+  }
+
   if (spec.onThreadStarted) await spec.onThreadStarted(threadId);
 
   await server.request(
@@ -249,6 +263,18 @@ export async function openCodexThread(threadId: string): Promise<void> {
   await run("/usr/bin/open", [`codex://threads/${encodeURIComponent(threadId)}`], {
     timeout: 5_000,
   });
+}
+
+export async function openCodexDraft(spec: CodexDraftSpec): Promise<string> {
+  if (platform() !== "darwin") return "unsupported-platform";
+
+  const url = new URL("codex://threads/new");
+  url.searchParams.set("prompt", spec.prompt);
+  url.searchParams.set("path", spec.cwd);
+  if (spec.originUrl) url.searchParams.set("originUrl", spec.originUrl);
+
+  await run("/usr/bin/open", [url.toString()], { timeout: 5_000 });
+  return "drafted";
 }
 
 export async function closeCodexAppServer(): Promise<void> {

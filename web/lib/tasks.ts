@@ -20,7 +20,7 @@ export function taskBodyPath(slug: string): string {
 // collapse to single hyphens, no leading/trailing hyphen. Deliberately ASCII-
 // only and minimal (see the web-create task): unicode/long-title handling is
 // out of scope for now.
-export function slugify(title: string): string {
+function slugify(title: string): string {
   return title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")

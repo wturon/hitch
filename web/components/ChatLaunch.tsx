@@ -3,26 +3,48 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
-import { Check, Copy, ExternalLink, Terminal } from "lucide-react";
+import { ExternalLink, LoaderCircle, Terminal } from "lucide-react";
 
-import { harnessLabel, launchFor, type ChatRef } from "@/lib/chat";
-import { cn } from "@/lib/utils";
+import {
+  harnessLabel,
+  launchFor,
+  type ChatRef,
+  type ChatStatus,
+} from "@/lib/chat";
 import { Button } from "@/components/ui/button";
+
+// Leading glyph for the launch button: the chat's live state when we have one
+// (spinner while working, a steady dot once it's your turn — the "blue dot"),
+// otherwise the harness's own icon. Keeps status visually grouped with the chat.
+function LaunchIcon({
+  status,
+  fallback,
+}: {
+  status: ChatStatus | null | undefined;
+  fallback: React.ReactNode;
+}) {
+  if (status === "working")
+    return <LoaderCircle className="animate-spin" aria-label="Working" />;
+  if (status === "waiting")
+    return <span className="size-2 rounded-full bg-current" aria-hidden />;
+  return fallback;
+}
 
 // The "jump back to the chat" control.
 // - Codex: a deep link the OS routes to the desktop app.
 // - Claude Code: enqueue a command for the local daemon to open it in cmux
-//   (focus the existing pane, or spawn a resume). Copy-the-command stays as a
-//   fallback for when no daemon is connected.
+//   (focus the existing pane, or spawn a resume).
 // `stopPropagation` lets it sit on a clickable card without triggering the card.
 export function ChatLaunch({
   chat,
+  status,
   workspace,
   size = "sm",
   stopPropagation = false,
   className,
 }: {
   chat: ChatRef;
+  status?: ChatStatus | null;
   workspace: string;
   size?: "xs" | "sm" | "default";
   stopPropagation?: boolean;
@@ -30,7 +52,6 @@ export function ChatLaunch({
 }) {
   const launch = launchFor(chat);
   const enqueue = useMutation(api.commands.enqueueCommand);
-  const [copied, setCopied] = useState(false);
   const [opening, setOpening] = useState(false);
 
   const stop = (e: React.MouseEvent) => {
@@ -43,17 +64,14 @@ export function ChatLaunch({
         variant="secondary"
         size={size}
         className={className}
-        render={<a href={launch.url} onClick={stop} />}
+        nativeButton={false}
+        render={<a href={launch.url} onClick={stop} aria-label={launch.label} />}
       >
-        <ExternalLink />
+        <LaunchIcon status={status} fallback={<ExternalLink />} />
         {launch.label}
       </Button>
     );
   }
-
-  // Past the early return, `launch` is the copy variant; capture the command
-  // here so the closures below don't lose the narrowing.
-  const command = launch.command;
 
   async function open(e: React.MouseEvent) {
     stop(e);
@@ -71,35 +89,23 @@ export function ChatLaunch({
     }
   }
 
-  function copy(e: React.MouseEvent) {
-    stop(e);
-    void navigator.clipboard?.writeText(command).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  }
-
   return (
-    <span className={cn("inline-flex items-center gap-1", className)}>
-      <Button variant="secondary" size={size} onClick={open} disabled={opening}>
-        <Terminal />
-        {opening ? (
-          "Opening…"
-        ) : (
-          <>
-            Open in {harnessLabel(chat.harness)}
-            <span className="text-muted-foreground">(cmux)</span>
-          </>
-        )}
-      </Button>
-      <Button
-        variant="ghost"
-        size={size === "xs" ? "icon-xs" : "icon-sm"}
-        onClick={copy}
-        aria-label="Copy resume command"
-      >
-        {copied ? <Check /> : <Copy />}
-      </Button>
-    </span>
+    <Button
+      variant="secondary"
+      size={size}
+      onClick={open}
+      disabled={opening}
+      className={className}
+    >
+      <LaunchIcon status={status} fallback={<Terminal />} />
+      {opening ? (
+        "Opening…"
+      ) : (
+        <>
+          Open in {harnessLabel(chat.harness)}
+          <span className="text-muted-foreground">(cmux)</span>
+        </>
+      )}
+    </Button>
   );
 }

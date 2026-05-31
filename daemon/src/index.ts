@@ -14,7 +14,11 @@ import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { openChat, startChat } from "./cmux.js";
-import { closeCodexAppServer, startCodexChat } from "./codex.js";
+import {
+  closeCodexAppServer,
+  openCodexDraft,
+  startCodexChat,
+} from "./codex.js";
 
 // Convex's reactive client uses WebSocket; polyfill for Node < 22.
 if (!globalThis.WebSocket) {
@@ -131,6 +135,22 @@ function setFrontmatterKeys(
   return `---${eol}${lines.join(eol)}${eol}---${eol}${body}`;
 }
 
+function frontmatterValue(content: string, key: string): string | undefined {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return undefined;
+
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    if (line.slice(0, idx).trim() !== key) continue;
+    return line
+      .slice(idx + 1)
+      .trim()
+      .replace(/^["']|["']$/g, "");
+  }
+  return undefined;
+}
+
 // The hash we last synced for each absolute path. If a filesystem event or a
 // remote update carries a hash we already have, it's an echo and we skip it.
 const lastHash = new Map<string, string>();
@@ -165,6 +185,16 @@ async function linkCodexThread(source: string, path: string, threadId: string) {
   });
   await writeFile(absPath, next, "utf8");
   console.log(`[hitch] linked codex thread ${threadId} → ${source}/${path}`);
+}
+
+async function taskTitle(source: string, path: string): Promise<string | undefined> {
+  const absPath = toAbs(source, path);
+  if (!absPath) return undefined;
+  try {
+    return frontmatterValue(await readFile(absPath, "utf8"), "title");
+  } catch {
+    return undefined;
+  }
 }
 
 const client = new ConvexClient(CONVEX_URL);
@@ -306,20 +336,31 @@ async function runCommand(cmd: CommandDoc): Promise<void> {
       if (!cmd.source) throw new Error("start-chat requires source");
       if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
 
-      const result = await startCodexChat({
-        taskKey: `${cmd.source}/${cmd.path}`,
-        prompt: cmd.initialPrompt,
-        cwd: dirname(root.path),
-        onThreadStarted: (threadId) =>
-          linkCodexThread(cmd.source as string, cmd.path as string, threadId),
-      });
+      const cwd = dirname(root.path);
+      let result: string;
+      if (process.env.HITCH_CODEX_START_MODE === "app-server") {
+        const started = await startCodexChat({
+          taskKey: `${cmd.source}/${cmd.path}`,
+          prompt: cmd.initialPrompt,
+          cwd,
+          threadName: await taskTitle(cmd.source, cmd.path),
+          onThreadStarted: (threadId) =>
+            linkCodexThread(cmd.source as string, cmd.path as string, threadId),
+        });
+        result = `${started.status}:${started.threadId}`;
+      } else {
+        result = await openCodexDraft({
+          prompt: cmd.initialPrompt,
+          cwd,
+        });
+      }
       await client.mutation(anyApi.commands.completeCommand, {
         id: cmd._id,
         status: "done",
-        result: `${result.status}:${result.threadId}`,
+        result,
       });
       console.log(
-        `[hitch] ⮑ start-chat codex ${cmd.source}/${cmd.path} → ${result.status} ${result.threadId}`,
+        `[hitch] ⮑ start-chat codex ${cmd.source}/${cmd.path} → ${result}`,
       );
     } else {
       await client.mutation(anyApi.commands.completeCommand, {

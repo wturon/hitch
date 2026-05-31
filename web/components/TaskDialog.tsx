@@ -7,8 +7,10 @@ import { sha256 } from "@/lib/hash";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import {
   HARNESSES,
+  clearChatFields,
   harnessLabel,
   parseChatRef,
+  parseChatStatus,
   readChatFields,
   writeChatFields,
   type ChatFields,
@@ -70,7 +72,7 @@ function TaskEditor({
   const upsertFile = useMutation(api.files.upsertFile);
   // Snapshot on open: we don't live-patch the textarea from remote changes
   // while editing. Save is last-write-wins, which is fine for a single user.
-  const [draft, setDraft] = useState(task.content);
+  const [draft, setDraft] = useState(() => task.content);
   const [saving, setSaving] = useState(false);
   const dirty = draft !== task.content;
 
@@ -80,10 +82,14 @@ function TaskEditor({
   const fm = parseFrontmatter(draft).frontmatter;
   const fields = readChatFields(fm);
   const chat = parseChatRef(fm);
+  const chatStatus = parseChatStatus(fm);
 
   function updateChat(patch: Partial<ChatFields>) {
     setDraft((d) =>
-      writeChatFields(d, { ...readChatFields(parseFrontmatter(d).frontmatter), ...patch }),
+      writeChatFields(d, {
+        ...readChatFields(parseFrontmatter(d).frontmatter),
+        ...patch,
+      }),
     );
   }
 
@@ -119,7 +125,21 @@ function TaskEditor({
             Linked chat
           </span>
           {chat ? (
-            <ChatLaunch chat={chat} workspace={task.workspace} size="xs" />
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => setDraft(clearChatFields)}
+              >
+                Clear
+              </Button>
+              <ChatLaunch
+                chat={chat}
+                status={chatStatus}
+                workspace={task.workspace}
+                size="xs"
+              />
+            </div>
           ) : (
             fields.harness && (
               <span className="text-xs text-muted-foreground/70">
@@ -131,6 +151,7 @@ function TaskEditor({
 
         <div className="flex flex-wrap gap-2">
           <select
+            aria-label="Chat harness"
             value={fields.harness}
             onChange={(e) => updateChat({ harness: e.target.value })}
             className="h-8 rounded-md border bg-transparent px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -145,6 +166,7 @@ function TaskEditor({
 
           {fields.harness && (
             <input
+              aria-label="Chat session id"
               value={fields.id}
               onChange={(e) => updateChat({ id: e.target.value })}
               placeholder="session / thread id"
@@ -156,6 +178,7 @@ function TaskEditor({
 
         {fields.harness === "claude-code" && (
           <input
+            aria-label="Working directory"
             value={fields.cwd}
             onChange={(e) => updateChat({ cwd: e.target.value })}
             placeholder="working directory (optional, for resume)"
@@ -178,6 +201,7 @@ function TaskEditor({
       )}
 
       <textarea
+        aria-label="Task content"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         spellCheck={false}

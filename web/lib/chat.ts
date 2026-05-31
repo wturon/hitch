@@ -27,6 +27,22 @@ export function harnessLabel(harness: Harness): string {
   return harness === "codex" ? "Codex" : "Claude Code";
 }
 
+// Live runtime state of the chat driving a task, written into frontmatter as
+// `chat-status` by the harness's lifecycle hooks (see .claude/hooks/chat-status.mjs):
+//   working — mid-turn, actively processing (no human action needed)
+//   waiting — finished a turn, your turn to act
+// Absent means we have no live signal (chat closed, never linked, or pre-hooks).
+export type ChatStatus = "working" | "waiting";
+
+const CHAT_STATUSES: ChatStatus[] = ["working", "waiting"];
+
+export function parseChatStatus(fm: Frontmatter): ChatStatus | null {
+  const value = (fm["chat-status"] ?? "").trim();
+  return (CHAT_STATUSES as string[]).includes(value)
+    ? (value as ChatStatus)
+    : null;
+}
+
 function isHarness(value: string): value is Harness {
   return (HARNESSES as string[]).includes(value);
 }
@@ -70,6 +86,15 @@ export function writeChatFields(content: string, fields: ChatFields): string {
   });
 }
 
+export function clearChatFields(content: string): string {
+  return setFrontmatterKeys(content, {
+    "chat-harness": undefined,
+    "chat-id": undefined,
+    "chat-cwd": undefined,
+    "chat-status": undefined,
+  });
+}
+
 // How to reopen a given chat. Codex registers a `codex://` scheme, so we hand
 // the OS a deep link straight to the thread. Claude Code has no resume URL, so
 // the honest MVP move is to copy a `claude --resume` command for the terminal.
@@ -94,8 +119,7 @@ export function launchFor(ref: ChatRef): Launch {
 }
 
 // The seed prompt for a brand-new coding-agent session launched from a task.
-// Claude Code needs to self-link once it boots; Codex is linked by the daemon
-// immediately after `thread/start` returns the new thread id.
+// New sessions self-link once they boot, so the board can reopen them later.
 export function defaultStartPrompt(
   task: { title: string; path: string },
   harness: Harness,
@@ -105,8 +129,12 @@ export function defaultStartPrompt(
       `You're picking up the Hitch task "${task.title}".`,
       `Its file is at .hitch/${task.path}, relative to your current directory (the repo root).`,
       ``,
-      `The Hitch daemon has linked this Codex thread to the task so the board can reopen it later.`,
-      `Read the task, keep the task status/progress current as you work, and start implementing it.`,
+      `First, link this Codex thread to the task so the Hitch board can reopen it later.`,
+      `Add these frontmatter keys to .hitch/${task.path}, keeping the existing title/status:`,
+      `  chat-harness: codex`,
+      `  chat-id: <this Codex thread's id — use CODEX_THREAD_ID if available, otherwise the id from the active thread URL>`,
+      ``,
+      `Then read the task, keep the task status/progress current as you work, and start implementing it.`,
     ].join("\n");
   }
 
