@@ -39,9 +39,12 @@ export default defineSchema({
   commands: defineTable({
     workspace: v.string(),
     host: v.optional(v.string()), // target machine; unset = any daemon for the workspace
-    kind: v.string(), // e.g. "open-chat"
+    kind: v.string(), // "open-chat" (resume existing) | "start-chat" (spawn fresh)
     harness: v.string(), // "claude-code" | "codex"
-    sessionId: v.string(),
+    sessionId: v.optional(v.string()), // the chat to resume; unset for start-chat
+    source: v.optional(v.string()), // start-chat: the task's root label (→ cwd, dedup)
+    path: v.optional(v.string()), // start-chat: the task's rel path (dedup)
+    initialPrompt: v.optional(v.string()), // start-chat: seed prompt for the new session
     cwd: v.optional(v.string()),
     status: v.string(), // "pending" | "done" | "error"
     result: v.optional(v.string()), // "focused"/"spawned" or an error message

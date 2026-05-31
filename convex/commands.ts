@@ -9,7 +9,10 @@ export const enqueueCommand = mutation({
     host: v.optional(v.string()),
     kind: v.string(),
     harness: v.string(),
-    sessionId: v.string(),
+    sessionId: v.optional(v.string()),
+    source: v.optional(v.string()),
+    path: v.optional(v.string()),
+    initialPrompt: v.optional(v.string()),
     cwd: v.optional(v.string()),
   },
   handler: async (ctx, args) => {

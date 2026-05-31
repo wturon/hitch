@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import {
@@ -14,15 +14,29 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { ArchiveIcon, ArchiveRestoreIcon, Trash2Icon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  FolderIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
 import { parseChatRef, type ChatRef } from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
-import { taskSlug } from "@/lib/tasks";
+import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { ChatLaunch } from "@/components/ChatLaunch";
 import { Button } from "@/components/ui/button";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -36,13 +50,19 @@ import {
 // from routing / a workspace picker.
 const WORKSPACE = "will-default";
 
+// localStorage key remembering the source the composer last wrote into, so the
+// picker defaults to it across reloads.
+const LAST_SOURCE_KEY = "hitch:last-source";
+
 // Columns the board shows, in order. Any task whose `status` frontmatter
-// doesn't match one of these falls into "todo".
-const COLUMNS = ["todo", "in-progress", "blocked", "done"] as const;
+// doesn't match one of these falls into "todo". Legacy `blocked` cards land in
+// review so old files don't disappear from the expected workflow.
+const COLUMNS = ["todo", "in-progress", "review", "done"] as const;
 type Column = (typeof COLUMNS)[number];
 
 function columnFor(status: string | undefined): Column {
   const s = (status ?? "").toLowerCase();
+  if (s === "blocked") return "review";
   return (COLUMNS as readonly string[]).includes(s) ? (s as Column) : "todo";
 }
 
@@ -156,15 +176,115 @@ function DraggableCard({
   );
 }
 
+// The inline "new task" input that appears at the top of a column. Commit is a
+// single path — blur — so Enter and clicking away both save; Escape sets a guard
+// so its blur discards instead. An empty/whitespace title creates nothing.
+//
+// Below the title sits a Todoist-style source picker: the task's `source` is the
+// watched root it's written into (→ storage key + the agent's cwd when a chat is
+// launched), so picking it here is how a multi-project board chooses a project.
+// The picker only renders when there's more than one source to choose between.
+function TaskComposer({
+  onCreate,
+  onClose,
+  sources,
+  source,
+  onSourceChange,
+}: {
+  onCreate: (title: string) => void;
+  onClose: () => void;
+  sources: string[];
+  source: string;
+  onSourceChange: (source: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  const cancelled = useRef(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // The picker steals focus from the input; this guard keeps the input's blur
+  // from committing/closing while the user is choosing a source.
+  const interacting = useRef(false);
+
+  function commit() {
+    const title = value.trim();
+    if (title) onCreate(title);
+    onClose();
+  }
+
+  return (
+    <div className={cn(CARD_CLASS, "flex flex-col gap-2 bg-card")}>
+      <input
+        ref={inputRef}
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => {
+          if (interacting.current) return;
+          if (!cancelled.current) commit();
+          else onClose();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancelled.current = true;
+            onClose();
+          }
+        }}
+        placeholder="Task title…"
+        spellCheck={false}
+        className="w-full bg-transparent text-sm font-medium text-card-foreground outline-none placeholder:font-normal placeholder:text-muted-foreground"
+      />
+      {sources.length > 1 && (
+        <Menu
+          onOpenChange={(open) => {
+            interacting.current = open;
+          }}
+        >
+          <MenuTrigger
+            onMouseDown={() => {
+              interacting.current = true;
+            }}
+            className="inline-flex w-fit items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground data-popup-open:bg-accent"
+          >
+            <FolderIcon className="size-3" />
+            {source}
+            <ChevronDownIcon className="size-3" />
+          </MenuTrigger>
+          <MenuContent align="start">
+            {sources.map((s) => (
+              <MenuItem
+                key={s}
+                onClick={() => {
+                  onSourceChange(s);
+                  // Return focus so Enter still commits after picking.
+                  inputRef.current?.focus();
+                }}
+              >
+                <FolderIcon className="size-3 opacity-60" />
+                {s}
+                {s === source && <CheckIcon className="ml-auto size-3" />}
+              </MenuItem>
+            ))}
+          </MenuContent>
+        </Menu>
+      )}
+    </div>
+  );
+}
+
 // A column that accepts dropped cards. Its droppable id IS the status value, so
 // the drop handler can read the destination status straight off `over.id`.
 function DroppableColumn({
   col,
   count,
+  onAdd,
   children,
 }: {
   col: Column;
   count: number;
+  onAdd: () => void;
   children: ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: col });
@@ -177,9 +297,26 @@ function DroppableColumn({
         isOver && "ring-2 ring-ring",
       )}
     >
-      <h2 className="relative z-20 px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        {col} · {count}
-      </h2>
+      <div className="relative z-20 flex items-center justify-between px-1">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {col} · {count}
+        </h2>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={onAdd}
+                aria-label="Add task"
+              />
+            }
+          >
+            <PlusIcon />
+          </TooltipTrigger>
+          <TooltipContent>add task… (C)</TooltipContent>
+        </Tooltip>
+      </div>
       {children}
       {count === 0 && (
         <p className="px-1 text-xs text-muted-foreground/70">—</p>
@@ -206,29 +343,46 @@ function DroppableColumn({
 
 export default function Board() {
   const files = useQuery(api.files.listFiles, { workspace: WORKSPACE });
-  // Optimistically patch the cached file so a drag (or archive/delete) reflects
-  // instantly instead of waiting on the frontmatter → daemon → Convex round
-  // trip. Bumping updatedAt lands the moved card at the top of its new column,
-  // matching how the server-stamped value will sort once it settles.
+  const daemons = useQuery(api.status.listDaemons, { workspace: WORKSPACE });
+  // Optimistically patch the cached file so a drag/archive/delete — and a brand
+  // new task — reflects instantly instead of waiting on the frontmatter →
+  // daemon → Convex round trip. Bumping updatedAt lands the card at the top of
+  // its (destination) column, matching how the server-stamped value will sort
+  // once it settles. A create hits the same path: no row matches the key, so we
+  // append a fabricated one (real _id arrives when the daemon round-trips).
   const upsertFile = useMutation(api.files.upsertFile).withOptimisticUpdate(
     (localStore, args) => {
       const existing = localStore.getQuery(api.files.listFiles, {
         workspace: args.workspace,
       });
       if (existing === undefined) return;
-      const next = existing.map((f) =>
-        f.source === args.source && f.path === args.path
-          ? {
-              ...f,
-              content: args.content,
-              hash: args.hash,
-              deleted: args.deleted,
-              // Pin to the top of the destination column until the
-              // server-stamped updatedAt arrives (which will also be recent).
-              updatedAt: Number.MAX_SAFE_INTEGER,
-            }
-          : f,
+      type FileDoc = (typeof existing)[number];
+      const idx = existing.findIndex(
+        (f) => f.source === args.source && f.path === args.path,
       );
+      const base: FileDoc =
+        idx >= 0
+          ? existing[idx]
+          : ({
+              _id: `optimistic:${args.source}/${args.path}` as FileDoc["_id"],
+              _creationTime: Number.MAX_SAFE_INTEGER,
+              workspace: args.workspace,
+              source: args.source,
+              path: args.path,
+            } as FileDoc);
+      const patched: FileDoc = {
+        ...base,
+        content: args.content,
+        hash: args.hash,
+        deleted: args.deleted,
+        // Pin to the top of the destination column until the server-stamped
+        // updatedAt arrives (which will also be recent).
+        updatedAt: Number.MAX_SAFE_INTEGER,
+      };
+      const next =
+        idx >= 0
+          ? existing.map((f, i) => (i === idx ? patched : f))
+          : [...existing, patched];
       localStore.setQuery(
         api.files.listFiles,
         { workspace: args.workspace },
@@ -240,9 +394,46 @@ export default function Board() {
   const [showArchived, setShowArchived] = useState(false);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Which column, if any, has its inline "new task" composer open.
+  const [composingCol, setComposingCol] = useState<Column | null>(null);
+  // The source the composer writes into, Todoist-style "remember my last
+  // project". Lazily restored from localStorage; null falls back to the default
+  // source. Safe to read here despite SSR — the composer (the only consumer)
+  // isn't mounted until the user opens it, so there's no hydration mismatch.
+  const [pickedSource, setPickedSource] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return localStorage.getItem(LAST_SOURCE_KEY);
+    } catch {
+      return null;
+    }
+  });
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
+
+  // `C` arms the composer on the first column for keyboard-driven creation.
+  // Ignored while typing in a field or with the editor open, and when chorded
+  // with a modifier (so browser shortcuts like ⌘C still work).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "c" && e.key !== "C") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (selected) return;
+      const el = e.target as HTMLElement | null;
+      if (
+        el &&
+        (el.isContentEditable ||
+          /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setComposingCol(COLUMNS[0]);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
 
   if (files === undefined) {
     return (
@@ -292,6 +483,53 @@ export default function Board() {
     title: selected.title,
     content: selected.content,
   };
+
+  // The sources a web-created task can be written into: every watched root the
+  // connected daemons report, unioned with any source already on the board (so
+  // a source survives in the picker even if its daemon is momentarily offline).
+  const availableSources = Array.from(
+    new Set([
+      ...(daemons?.flatMap((d) => d.sources) ?? []),
+      ...cards.map((c) => c.source),
+    ]),
+  ).sort();
+
+  // The source the composer will write into. Prefer the user's last pick (kept
+  // in `pickedSource`, restored from localStorage) when it's still available;
+  // otherwise default to the first source. Null (no daemon, no files) disables
+  // creation — we'd have nowhere to put the file.
+  const createSource =
+    (pickedSource && availableSources.includes(pickedSource)
+      ? pickedSource
+      : availableSources[0]) ?? null;
+
+  function chooseSource(source: string) {
+    setPickedSource(source);
+    try {
+      localStorage.setItem(LAST_SOURCE_KEY, source);
+    } catch {
+      // Private mode / disabled storage — picking still works for this session.
+    }
+  }
+
+  // Create a task by writing a fresh `tasks/<slug>/task.md` through the same
+  // upsert path everything else uses; the daemon writes the file and the live
+  // query renders the card (instantly, via the optimistic insert above).
+  async function createTask(column: Column, title: string, source: string) {
+    const taken = new Set(
+      cards.filter((c) => c.source === source).map((c) => c.slug),
+    );
+    const slug = uniqueSlug(title, taken);
+    const content = setFrontmatterKeys("", { title, status: column });
+    await upsertFile({
+      workspace: WORKSPACE,
+      source,
+      path: taskBodyPath(slug),
+      content,
+      hash: await sha256(content),
+      deleted: false,
+    });
+  }
 
   async function setArchived(card: Card, archived: boolean) {
     const { frontmatter } = parseFrontmatter(card.content);
@@ -405,7 +643,23 @@ export default function Board() {
       >
         <div className="grid flex-1 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {COLUMNS.map((col) => (
-            <DroppableColumn key={col} col={col} count={byColumn[col].length}>
+            <DroppableColumn
+              key={col}
+              col={col}
+              count={byColumn[col].length}
+              onAdd={() => setComposingCol(col)}
+            >
+              {composingCol === col && createSource && (
+                <TaskComposer
+                  onCreate={(title) =>
+                    void createTask(col, title, createSource)
+                  }
+                  onClose={() => setComposingCol(null)}
+                  sources={availableSources}
+                  source={createSource}
+                  onSourceChange={chooseSource}
+                />
+              )}
               {byColumn[col].map((card) => (
                 <DraggableCard
                   key={card.id}

@@ -166,3 +166,61 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
     spawning.delete(spec.sessionId);
   }
 }
+
+export interface StartSpec {
+  taskKey: string; // dedup key for fresh spawns, e.g. "source/tasks/slug"
+  prompt: string;
+  cwd?: string;
+}
+
+// Launch a BRAND-NEW Claude Code session seeded with `prompt`, in a fresh cmux
+// workspace. The prompt rides as claude's positional argument — NOT `-p` — so it
+// stays an interactive session on subscription auth (the user drives it); claude
+// just submits it as the first turn. There's no session id yet, so dedup keys on
+// the task: a second click within the grace window focuses the workspace we just
+// made instead of spawning a duplicate. The spawned agent writes its own session
+// id back into the task frontmatter, after which the task is "linked" and
+// openChat() takes over for resuming.
+export async function startChat(spec: StartSpec): Promise<OpenResult> {
+  // We spawned for this task moments ago (agent may still be booting) → focus
+  // that workspace rather than spawn a duplicate.
+  const memo = recentSpawns.get(spec.taskKey);
+  if (memo && Date.now() - memo.at < SPAWN_GRACE_MS) {
+    try {
+      await cmux(["select-workspace", "--workspace", memo.workspace]);
+      await activateApp();
+      return "focused";
+    } catch {
+      recentSpawns.delete(spec.taskKey); // workspace gone; fall through
+    }
+  }
+
+  // A spawn for this task is mid-flight (concurrent click) → don't race.
+  if (spawning.has(spec.taskKey)) {
+    await activateApp();
+    return "focused";
+  }
+
+  spawning.add(spec.taskKey);
+  try {
+    const before = await workspaceUuids();
+    const command = `claude ${shellQuote(spec.prompt)}`;
+    const args = ["new-workspace", "--command", command, "--focus", "true"];
+    if (spec.cwd) args.push("--cwd", spec.cwd);
+    await cmux(args);
+    const created = [...(await workspaceUuids())].find((w) => !before.has(w));
+    if (created) {
+      recentSpawns.set(spec.taskKey, { workspace: created, at: Date.now() });
+    }
+    await activateApp();
+    return "spawned";
+  } finally {
+    spawning.delete(spec.taskKey);
+  }
+}
+
+// Single-quote an arbitrary (possibly multi-line) string for sh, so the seed
+// prompt survives intact as one argument when cmux runs `--command` via a shell.
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}

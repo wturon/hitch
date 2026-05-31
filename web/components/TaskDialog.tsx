@@ -14,6 +14,7 @@ import {
   type ChatFields,
 } from "@/lib/chat";
 import { ChatLaunch } from "@/components/ChatLaunch";
+import { ChatStart } from "@/components/ChatStart";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -163,6 +164,18 @@ function TaskEditor({
           />
         )}
       </section>
+
+      {/* No chat yet → offer to spawn a fresh coding-agent session for this
+          task. Once the daemon/agent links it, `chat` becomes non-null and the
+          resume button above replaces this. */}
+      {!chat && (
+        <ChatStart
+          workspace={task.workspace}
+          source={task.source}
+          path={task.path}
+          title={task.title}
+        />
+      )}
 
       <textarea
         value={draft}

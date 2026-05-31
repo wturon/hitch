@@ -13,7 +13,8 @@ import chokidar from "chokidar";
 import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { openChat } from "./cmux.js";
+import { openChat, startChat } from "./cmux.js";
+import { closeCodexAppServer, startCodexChat } from "./codex.js";
 
 // Convex's reactive client uses WebSocket; polyfill for Node < 22.
 if (!globalThis.WebSocket) {
@@ -50,7 +51,10 @@ interface CommandDoc {
   host?: string;
   kind: string;
   harness: string;
-  sessionId: string;
+  sessionId?: string;
+  source?: string;
+  path?: string;
+  initialPrompt?: string;
   cwd?: string;
   status: string;
 }
@@ -103,6 +107,30 @@ if (roots.length === 0) {
 const hashOf = (content: string): string =>
   createHash("sha256").update(content).digest("hex");
 
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+
+function setFrontmatterKeys(
+  content: string,
+  updates: Record<string, string | undefined>,
+): string {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const match = content.match(FRONTMATTER_RE);
+  let lines = match ? match[1].split(/\r?\n/) : [];
+  const body = match ? match[2] : content;
+  const touched = new Set(Object.keys(updates));
+
+  lines = lines.filter((line) => {
+    const idx = line.indexOf(":");
+    return idx === -1 || !touched.has(line.slice(0, idx).trim());
+  });
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (value != null && value !== "") lines.push(`${key}: ${value}`);
+  }
+
+  return `---${eol}${lines.join(eol)}${eol}---${eol}${body}`;
+}
+
 // The hash we last synced for each absolute path. If a filesystem event or a
 // remote update carries a hash we already have, it's an echo and we skip it.
 const lastHash = new Map<string, string>();
@@ -123,6 +151,20 @@ function locate(absPath: string): { label: string; rel: string } | null {
 function toAbs(label: string, rel: string): string | null {
   const root = roots.find((r) => r.label === label);
   return root ? join(root.path, rel.split("/").join(sep)) : null;
+}
+
+async function linkCodexThread(source: string, path: string, threadId: string) {
+  const absPath = toAbs(source, path);
+  if (!absPath) throw new Error(`unknown source: ${source}`);
+
+  const current = await readFile(absPath, "utf8");
+  const next = setFrontmatterKeys(current, {
+    "chat-harness": "codex",
+    "chat-id": threadId,
+    "chat-cwd": undefined,
+  });
+  await writeFile(absPath, next, "utf8");
+  console.log(`[hitch] linked codex thread ${threadId} → ${source}/${path}`);
 }
 
 const client = new ConvexClient(CONVEX_URL);
@@ -231,13 +273,54 @@ const handledCommands = new Set<string>();
 async function runCommand(cmd: CommandDoc): Promise<void> {
   try {
     if (cmd.kind === "open-chat" && cmd.harness === "claude-code") {
-      const result = await openChat({ sessionId: cmd.sessionId, cwd: cmd.cwd });
+      const sessionId = cmd.sessionId ?? "";
+      const result = await openChat({ sessionId, cwd: cmd.cwd });
       await client.mutation(anyApi.commands.completeCommand, {
         id: cmd._id,
         status: "done",
         result,
       });
-      console.log(`[hitch] ⮑ open-chat ${cmd.sessionId} → ${result}`);
+      console.log(`[hitch] ⮑ open-chat ${sessionId} → ${result}`);
+    } else if (cmd.kind === "start-chat" && cmd.harness === "claude-code") {
+      // Spawn a fresh session for a task. Resolve the agent's cwd from the
+      // task's source: the watched root is the `.hitch/` folder, so the repo
+      // working dir the agent should run in is its parent.
+      const root = roots.find((r) => r.label === cmd.source);
+      if (!root) throw new Error(`unknown source: ${cmd.source}`);
+      if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
+      const result = await startChat({
+        taskKey: `${cmd.source}/${cmd.path}`,
+        prompt: cmd.initialPrompt,
+        cwd: dirname(root.path),
+      });
+      await client.mutation(anyApi.commands.completeCommand, {
+        id: cmd._id,
+        status: "done",
+        result,
+      });
+      console.log(`[hitch] ⮑ start-chat ${cmd.source}/${cmd.path} → ${result}`);
+    } else if (cmd.kind === "start-chat" && cmd.harness === "codex") {
+      const root = roots.find((r) => r.label === cmd.source);
+      if (!root) throw new Error(`unknown source: ${cmd.source}`);
+      if (!cmd.path) throw new Error("start-chat requires path");
+      if (!cmd.source) throw new Error("start-chat requires source");
+      if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
+
+      const result = await startCodexChat({
+        taskKey: `${cmd.source}/${cmd.path}`,
+        prompt: cmd.initialPrompt,
+        cwd: dirname(root.path),
+        onThreadStarted: (threadId) =>
+          linkCodexThread(cmd.source as string, cmd.path as string, threadId),
+      });
+      await client.mutation(anyApi.commands.completeCommand, {
+        id: cmd._id,
+        status: "done",
+        result: `${result.status}:${result.threadId}`,
+      });
+      console.log(
+        `[hitch] ⮑ start-chat codex ${cmd.source}/${cmd.path} → ${result.status} ${result.threadId}`,
+      );
     } else {
       await client.mutation(anyApi.commands.completeCommand, {
         id: cmd._id,
@@ -289,6 +372,7 @@ watcher
 async function shutdown(): Promise<void> {
   clearInterval(heartbeatTimer);
   await watcher.close();
+  await closeCodexAppServer();
   await client.close();
   process.exit(0);
 }

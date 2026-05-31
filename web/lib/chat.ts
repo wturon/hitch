@@ -93,6 +93,38 @@ export function launchFor(ref: ChatRef): Launch {
   };
 }
 
+// The seed prompt for a brand-new coding-agent session launched from a task.
+// Claude Code needs to self-link once it boots; Codex is linked by the daemon
+// immediately after `thread/start` returns the new thread id.
+export function defaultStartPrompt(
+  task: { title: string; path: string },
+  harness: Harness,
+): string {
+  if (harness === "codex") {
+    return [
+      `You're picking up the Hitch task "${task.title}".`,
+      `Its file is at .hitch/${task.path}, relative to your current directory (the repo root).`,
+      ``,
+      `The Hitch daemon has linked this Codex thread to the task so the board can reopen it later.`,
+      `Read the task, keep the task status/progress current as you work, and start implementing it.`,
+    ].join("\n");
+  }
+
+  return [
+    `You're picking up the Hitch task "${task.title}".`,
+    `Its file is at .hitch/${task.path}, relative to your current directory (the repo root).`,
+    ``,
+    `First, link this Claude Code session to the task so the Hitch board can reopen it later.`,
+    `Add these frontmatter keys to .hitch/${task.path}, keeping the existing title/status:`,
+    `  chat-harness: claude-code`,
+    `  chat-id: <this session's id — the newest *.jsonl filename (without extension) under`,
+    `           ~/.claude/projects/ for this working directory>`,
+    `  chat-cwd: <the absolute path of your current working directory>`,
+    ``,
+    `Then read the task and start working on it.`,
+  ].join("\n");
+}
+
 // Single-quote a path for sh if it contains anything outside a safe set.
 function shellQuote(path: string): string {
   if (!/[^A-Za-z0-9_./-]/.test(path)) return path;
