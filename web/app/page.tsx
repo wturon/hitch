@@ -98,7 +98,7 @@ interface Card {
 const CARD_CLASS =
   "rounded-lg bg-card p-3 text-left shadow-sm ring-1 ring-border";
 
-function CardContents({ card }: { card: Card }) {
+function CardSummary({ card }: { card: Card }) {
   return (
     <>
       <p className="text-sm font-medium text-card-foreground">{card.title}</p>
@@ -106,16 +106,32 @@ function CardContents({ card }: { card: Card }) {
         {card.owner ? `${card.owner} · ` : ""}
         {card.source}
       </p>
+    </>
+  );
+}
+
+function CardChat({ card }: { card: Card }) {
+  if (!card.chat) return null;
+
+  return (
+    <div className="mt-2">
+      <ChatLaunch
+        chat={card.chat}
+        status={card.chatStatus}
+        workspace={WORKSPACE}
+        size="xs"
+        stopPropagation
+      />
+    </div>
+  );
+}
+
+function CardContents({ card }: { card: Card }) {
+  return (
+    <>
+      <CardSummary card={card} />
       {card.chat && (
-        <div className="mt-2">
-          <ChatLaunch
-            chat={card.chat}
-            status={card.chatStatus}
-            workspace={WORKSPACE}
-            size="xs"
-            stopPropagation
-          />
-        </div>
+        <CardChat card={card} />
       )}
     </>
   );
@@ -124,7 +140,7 @@ function CardContents({ card }: { card: Card }) {
 // The hover-revealed archive shortcut in a card's top-right corner. Clicking it
 // once arms a confirmation (the icon becomes an "Archive" pill); clicking the
 // pill archives. `onPointerDown`/`onClick` stop propagation so the button drives
-// neither the card's drag (PointerSensor listeners live on the card) nor its
+// neither the card's drag (PointerSensor listeners live on the summary) nor its
 // open-on-click. Only rendered for unarchived cards — restoring stays in the
 // context menu.
 function stopCardPropagation(e: React.PointerEvent | React.MouseEvent) {
@@ -218,8 +234,6 @@ function DraggableCard({
       <ContextMenuTrigger className="block">
         <div
           ref={setNodeRef}
-          {...attributes}
-          {...listeners}
           onMouseLeave={() => setConfirmingArchive(false)}
           className={cn(
             CARD_CLASS,
@@ -227,13 +241,20 @@ function DraggableCard({
             isDragging && "opacity-40",
           )}
         >
-          <button
-            type="button"
+          <div
+            {...attributes}
+            {...listeners}
             onClick={() => onOpen(card)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              onOpen(card);
+            }}
             className="block w-full rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <CardContents card={card} />
-          </button>
+            <CardSummary card={card} />
+          </div>
+          <CardChat card={card} />
           {!card.archived && (
             <ArchiveShortcut
               confirming={confirmingArchive}
