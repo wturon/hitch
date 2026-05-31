@@ -35,6 +35,7 @@ import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { ChatLaunch } from "@/components/ChatLaunch";
+import { HITCH_WORKSPACE } from "@/lib/config";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import {
@@ -57,10 +58,9 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 
-// The workspace this board renders. Matches `workspace` in ../hitch.config.json
-// (the daemon pushes files under this id). Hard-coded for now; later this comes
-// from routing / a workspace picker.
-const WORKSPACE = "will-default";
+// The workspace this board renders. Defaults to hitch.config.json locally and
+// can be overridden for deployed boards with NEXT_PUBLIC_HITCH_WORKSPACE.
+const WORKSPACE = HITCH_WORKSPACE;
 
 // localStorage key remembering the source the composer last wrote into, so the
 // picker defaults to it across reloads.

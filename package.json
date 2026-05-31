@@ -13,7 +13,8 @@
     "dev:convex": "convex dev",
     "dev:daemon": "tsx daemon/src/index.ts",
     "dev:web": "npm -w web run dev",
-    "typecheck": "npm -w @hitch/daemon run typecheck",
+    "typecheck": "npm -w @hitch/daemon run typecheck && npm -w web run typecheck",
+    "check": "npm run typecheck && npm -w web run lint && npm -w web run build",
     "setup": "convex dev --once"
   },
   "dependencies": {

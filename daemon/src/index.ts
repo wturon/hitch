@@ -3,7 +3,7 @@
 // disk. Echo suppression (a per-path hash of what we last applied) stops a
 // synced write from looping back out.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
@@ -92,20 +92,72 @@ if (!CONVEX_URL) {
 }
 
 // --- config ---
-const configPath = resolve("hitch.config.json");
-if (!existsSync(configPath)) {
-  console.error(`[hitch] No config found at ${configPath}`);
+function failConfig(message: string): never {
+  console.error(`[hitch] Invalid hitch.config.json: ${message}`);
   process.exit(1);
 }
-const config = JSON.parse(readFileSync(configPath, "utf8")) as HitchConfig;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function loadConfig(path: string): HitchConfig {
+  if (!existsSync(path)) {
+    console.error(`[hitch] No config found at ${path}`);
+    process.exit(1);
+  }
+
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    failConfig(`could not read ${path}: ${String(err)}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    failConfig(`could not parse JSON: ${String(err)}`);
+  }
+
+  if (!isRecord(parsed)) failConfig("expected a JSON object at the top level");
+
+  const workspace =
+    typeof parsed.workspace === "string" ? parsed.workspace.trim() : "";
+  if (!workspace) failConfig("workspace must be a non-empty string");
+
+  if (!Array.isArray(parsed.watch)) failConfig("watch must be an array");
+  if (parsed.watch.length === 0) {
+    failConfig("watch must list at least one folder");
+  }
+
+  const labels = new Set<string>();
+  const watch = parsed.watch.map((entry, index): WatchEntry => {
+    if (!isRecord(entry)) failConfig(`watch[${index}] must be an object`);
+
+    const label = typeof entry.label === "string" ? entry.label.trim() : "";
+    const watchPath = typeof entry.path === "string" ? entry.path.trim() : "";
+    if (!label) failConfig(`watch[${index}].label must be a non-empty string`);
+    if (!watchPath) failConfig(`watch[${index}].path must be a non-empty string`);
+    if (labels.has(label)) failConfig(`duplicate watch label "${label}"`);
+    labels.add(label);
+
+    return { label, path: watchPath };
+  });
+
+  return { workspace, watch };
+}
+
+const configPath = resolve("hitch.config.json");
+const config = loadConfig(configPath);
 const workspace = config.workspace;
-const roots: Root[] = (config.watch ?? []).map((w) => ({
+const roots: Root[] = config.watch.map((w) => ({
   label: w.label,
   path: resolve(w.path),
 }));
-if (roots.length === 0) {
-  console.error("[hitch] hitch.config.json lists no folders to watch.");
-  process.exit(1);
+for (const root of roots) {
+  mkdirSync(root.path, { recursive: true });
 }
 
 const hashOf = (content: string): string =>

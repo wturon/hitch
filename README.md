@@ -25,3 +25,9 @@ Coding agents are great at reading and writing files in a repo. But task/status 
 ## Status
 
 Early. Sketching the Convex schema + functions and the daemon.
+
+## Production Readiness
+
+See [docs/production-readiness.md](docs/production-readiness.md) for the current
+deployment checklist, required environment variables, and the remaining auth /
+workspace gaps before broad sharing.
