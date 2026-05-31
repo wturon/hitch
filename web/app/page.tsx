@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
+import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { api } from "@convex/_generated/api";
 import {
   DndContext,
@@ -19,7 +20,11 @@ import {
   ArchiveRestoreIcon,
   CheckIcon,
   ChevronDownIcon,
+  ExternalLinkIcon,
   FolderIcon,
+  KeyRoundIcon,
+  LayoutDashboardIcon,
+  LogOutIcon,
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -35,6 +40,7 @@ import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { ChatLaunch } from "@/components/ChatLaunch";
+import { DaemonTokens } from "@/components/DaemonTokens";
 import { HITCH_WORKSPACE } from "@/lib/config";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
@@ -135,6 +141,163 @@ function CardContents({ card }: { card: Card }) {
       )}
     </>
   );
+}
+
+function SignInScreen() {
+  const { signIn } = useAuthActions();
+  const [signingIn, setSigningIn] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function startGitHubSignIn() {
+    setSigningIn(true);
+    setError(null);
+    try {
+      await signIn("github");
+    } catch (err) {
+      setError(String(err));
+      setSigningIn(false);
+    }
+  }
+
+  return (
+    <main className="flex min-h-screen items-center justify-center p-8">
+      <section className="flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-card p-5 shadow-sm">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Sign in to Hitch</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Use GitHub to open your live workspace board.
+          </p>
+        </div>
+        <Button onClick={startGitHubSignIn} disabled={signingIn}>
+          <ExternalLinkIcon />
+          {signingIn ? "Opening GitHub..." : "Continue with GitHub"}
+        </Button>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+      </section>
+    </main>
+  );
+}
+
+function AppSidebar({
+  activeCount,
+  archivedCount,
+  onShowArchived,
+  onShowDaemonTokens,
+  onSignOut,
+}: {
+  activeCount: number;
+  archivedCount: number;
+  onShowArchived: () => void;
+  onShowDaemonTokens: () => void;
+  onSignOut: () => void;
+}) {
+  return (
+    <aside className="flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 py-2 text-sidebar-foreground md:sticky md:top-0 md:h-screen md:w-64 md:flex-col md:items-stretch md:border-b-0 md:border-r md:border-sidebar-border md:px-3 md:py-4">
+      <div className="flex min-w-0 items-center gap-2 px-1 md:px-2">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-semibold text-sidebar-primary-foreground">
+          H
+        </div>
+        <div className="hidden min-w-0 md:block">
+          <p className="truncate text-sm font-semibold">Hitch</p>
+          <p className="truncate text-xs text-sidebar-foreground/60">
+            {WORKSPACE}
+          </p>
+        </div>
+      </div>
+
+      <nav className="hidden flex-1 flex-col gap-1 border-t border-sidebar-border pt-3 md:flex">
+        <div className="flex h-9 items-center gap-2 rounded-lg bg-sidebar-accent px-2 text-sm font-medium text-sidebar-accent-foreground">
+          <LayoutDashboardIcon className="size-4" />
+          Board
+          <span className="ml-auto rounded-md bg-sidebar px-1.5 py-0.5 text-xs text-sidebar-foreground/70 ring-1 ring-sidebar-border">
+            {activeCount}
+          </span>
+        </div>
+      </nav>
+
+      <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-3">
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={archivedCount === 0}
+          onClick={onShowArchived}
+          aria-label="Show archived"
+          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
+        >
+          <ArchiveIcon />
+          <span className="hidden md:inline">Archived</span>
+          <span className="hidden md:ml-auto md:inline-flex md:rounded-md md:bg-sidebar-accent md:px-1.5 md:py-0.5 md:text-xs">
+            {archivedCount}
+          </span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onShowDaemonTokens}
+          aria-label="Daemon tokens"
+          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
+        >
+          <KeyRoundIcon />
+          <span className="hidden md:inline">Daemon tokens</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onSignOut}
+          aria-label="Sign out"
+          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
+        >
+          <LogOutIcon />
+          <span className="hidden md:inline">Sign out</span>
+        </Button>
+      </div>
+    </aside>
+  );
+}
+
+function AppShell({
+  activeCount,
+  archivedCount,
+  onShowArchived,
+  onShowDaemonTokens,
+  onSignOut,
+  children,
+}: {
+  activeCount: number;
+  archivedCount: number;
+  onShowArchived: () => void;
+  onShowDaemonTokens: () => void;
+  onSignOut: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-screen flex-col bg-background md:flex-row">
+      <AppSidebar
+        activeCount={activeCount}
+        archivedCount={archivedCount}
+        onShowArchived={onShowArchived}
+        onShowDaemonTokens={onShowDaemonTokens}
+        onSignOut={onSignOut}
+      />
+      <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
+    </div>
+  );
+}
+
+function AuthenticatedBoard() {
+  const { isLoading, isAuthenticated } = useConvexAuth();
+
+  if (isLoading) {
+    return (
+      <main className="flex flex-1 items-center justify-center text-muted-foreground">
+        Checking session...
+      </main>
+    );
+  }
+
+  if (!isAuthenticated) return <SignInScreen />;
+
+  return <BoardContent />;
 }
 
 // The hover-revealed archive shortcut in a card's top-right corner. Clicking it
@@ -599,7 +762,8 @@ function DroppableColumn({
   );
 }
 
-export default function Board() {
+function BoardContent() {
+  const { signOut } = useAuthActions();
   const files = useQuery(api.files.listFiles, { workspace: WORKSPACE });
   const daemons = useQuery(api.status.listDaemons, { workspace: WORKSPACE });
   // Optimistically patch the cached file so a drag/archive/delete — and a brand
@@ -650,6 +814,7 @@ export default function Board() {
   );
   const [selected, setSelected] = useState<Card | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [showDaemonTokens, setShowDaemonTokens] = useState(false);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
@@ -695,9 +860,17 @@ export default function Board() {
 
   if (files === undefined) {
     return (
-      <main className="flex flex-1 items-center justify-center text-muted-foreground">
-        Connecting to Convex…
-      </main>
+      <AppShell
+        activeCount={0}
+        archivedCount={0}
+        onShowArchived={() => setShowArchived(true)}
+        onShowDaemonTokens={() => setShowDaemonTokens(true)}
+        onSignOut={() => void signOut()}
+      >
+        <div className="flex min-h-[50vh] items-center justify-center text-muted-foreground">
+          Connecting to Convex…
+        </div>
+      </AppShell>
     );
   }
 
@@ -796,6 +969,7 @@ export default function Board() {
     const nextContent = setFrontmatterKeys(card.content, {
       status: archived ? "archived" : restoreStatus,
       archivedFrom: archived ? card.column : undefined,
+      "chat-status": archived ? undefined : card.chatStatus ?? undefined,
     });
 
     setPendingCardId(card.id);
@@ -850,7 +1024,10 @@ export default function Board() {
   // Move a card to another column by rewriting just its `status` frontmatter,
   // through the same save path the dialog and archive use.
   async function setStatus(card: Card, status: Column) {
-    const nextContent = setFrontmatterKeys(card.content, { status });
+    const nextContent = setFrontmatterKeys(card.content, {
+      status,
+      "chat-status": status === "done" ? undefined : card.chatStatus ?? undefined,
+    });
 
     setPendingCardId(card.id);
     try {
@@ -884,103 +1061,113 @@ export default function Board() {
     : null;
 
   return (
-    <main className="flex flex-1 flex-col gap-6 p-8">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight">Hitch</h1>
-          <span className="text-sm text-muted-foreground">
-            {activeCards.length} task
-            {activeCards.length === 1 ? "" : "s"} · live
-          </span>
-        </div>
-        {archivedCards.length > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowArchived(true)}
-          >
-            <ArchiveIcon />
-            Show archived
-          </Button>
-        )}
-      </header>
+    <AppShell
+      activeCount={activeCards.length}
+      archivedCount={archivedCards.length}
+      onShowArchived={() => setShowArchived(true)}
+      onShowDaemonTokens={() => setShowDaemonTokens(true)}
+      onSignOut={() => void signOut()}
+    >
+      <div className="flex flex-col gap-6">
+        <header className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">Board</h1>
+            <span className="text-sm text-muted-foreground">
+              {activeCards.length} task
+              {activeCards.length === 1 ? "" : "s"} · live
+            </span>
+          </div>
+        </header>
 
-      <DndContext
-        sensors={sensors}
-        onDragStart={(event: DragStartEvent) =>
-          setActiveId(String(event.active.id))
-        }
-        onDragEnd={onDragEnd}
-        onDragCancel={() => setActiveId(null)}
-      >
-        <div className="grid flex-1 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {COLUMNS.map((col) => (
-            <DroppableColumn
-              key={col}
-              col={col}
-              count={byColumn[col].length}
-              onAdd={() => setComposingCol(col)}
-            >
-              {composingCol === col && createSource && (
-                <TaskComposer
-                  onCreate={(title) =>
-                    void createTask(col, title, createSource)
-                  }
-                  onClose={() => setComposingCol(null)}
-                  sources={availableSources}
-                  source={createSource}
-                  onSourceChange={chooseSource}
-                />
-              )}
-              {byColumn[col].map((card) => (
-                <DraggableCard
-                  key={card.id}
-                  card={card}
-                  pending={pendingCardId === card.id}
-                  onOpen={setSelected}
-                  onArchiveToggle={(c, archived) => void setArchived(c, archived)}
-                  onDelete={(c) => void deleteCard(c)}
-                />
-              ))}
-            </DroppableColumn>
-          ))}
-        </div>
+        <DndContext
+          sensors={sensors}
+          onDragStart={(event: DragStartEvent) =>
+            setActiveId(String(event.active.id))
+          }
+          onDragEnd={onDragEnd}
+          onDragCancel={() => setActiveId(null)}
+        >
+          <div className="grid flex-1 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {COLUMNS.map((col) => (
+              <DroppableColumn
+                key={col}
+                col={col}
+                count={byColumn[col].length}
+                onAdd={() => setComposingCol(col)}
+              >
+                {composingCol === col && createSource && (
+                  <TaskComposer
+                    onCreate={(title) =>
+                      void createTask(col, title, createSource)
+                    }
+                    onClose={() => setComposingCol(null)}
+                    sources={availableSources}
+                    source={createSource}
+                    onSourceChange={chooseSource}
+                  />
+                )}
+                {byColumn[col].map((card) => (
+                  <DraggableCard
+                    key={card.id}
+                    card={card}
+                    pending={pendingCardId === card.id}
+                    onOpen={setSelected}
+                    onArchiveToggle={(c, archived) =>
+                      void setArchived(c, archived)
+                    }
+                    onDelete={(c) => void deleteCard(c)}
+                  />
+                ))}
+              </DroppableColumn>
+            ))}
+          </div>
 
-        {/* dropAnimation={null}: the dragged card's DOM node never leaves its
+          {/* dropAnimation={null}: the dragged card's DOM node never leaves its
             origin column (we only dim it), so dnd-kit's default drop animation
             would fly the overlay back to column 1 before the re-rendered card
             appears in its new column. Killing it makes the move read as instant,
             Linear-style. */}
-        <DragOverlay dropAnimation={null}>
-          {activeCard ? (
-            <div
-              className={cn(
-                CARD_CLASS,
-                "cursor-grabbing shadow-lg ring-foreground/20",
-              )}
-            >
-              <CardContents card={activeCard} />
-            </div>
-          ) : null}
-        </DragOverlay>
-      </DndContext>
+          <DragOverlay dropAnimation={null}>
+            {activeCard ? (
+              <div
+                className={cn(
+                  CARD_CLASS,
+                  "cursor-grabbing shadow-lg ring-foreground/20",
+                )}
+              >
+                <CardContents card={activeCard} />
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
 
-      <ArchivedSheet
-        open={showArchived}
-        onOpenChange={setShowArchived}
-        cards={archivedCards}
-        pendingCardId={pendingCardId}
-        onUnarchive={(c) => void setArchived(c, false)}
-        onDelete={(c) => void deleteCard(c)}
-        onDeleteAll={() => void deleteAllArchived()}
-      />
+        <ArchivedSheet
+          open={showArchived}
+          onOpenChange={setShowArchived}
+          cards={archivedCards}
+          pendingCardId={pendingCardId}
+          onUnarchive={(c) => void setArchived(c, false)}
+          onDelete={(c) => void deleteCard(c)}
+          onDeleteAll={() => void deleteAllArchived()}
+        />
 
-      <TaskDialog
-        task={target}
-        onOpenChange={(open) => {
-          if (!open) setSelected(null);
-        }}
-      />
-    </main>
+        <DaemonTokens
+          workspace={WORKSPACE}
+          open={showDaemonTokens}
+          onOpenChange={setShowDaemonTokens}
+        />
+
+        <TaskDialog
+          task={target}
+          onOpenChange={(open) => {
+            if (!open) setSelected(null);
+          }}
+        />
+      </div>
+    </AppShell>
   );
+}
+
+export default function Board() {
+  return <AuthenticatedBoard />;
 }

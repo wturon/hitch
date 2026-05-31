@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { requireDaemonToken, requireWorkspaceMemberBySlug } from "./authz";
 
 // Upsert a daemon's heartbeat. The daemon calls this on startup and on an
 // interval; lastSeen is stamped server-side to avoid clock skew between
@@ -9,8 +10,10 @@ export const heartbeat = mutation({
     workspace: v.string(),
     hostname: v.string(),
     sources: v.array(v.string()),
+    daemonToken: v.string(),
   },
   handler: async (ctx, args) => {
+    await requireDaemonToken(ctx, args.workspace, args.daemonToken);
     const existing = await ctx.db
       .query("daemons")
       .withIndex("by_key", (q) =>
@@ -18,7 +21,8 @@ export const heartbeat = mutation({
       )
       .unique();
 
-    const doc = { ...args, lastSeen: Date.now() };
+    const { daemonToken: _daemonToken, ...heartbeat } = args;
+    const doc = { ...heartbeat, lastSeen: Date.now() };
     if (existing) {
       await ctx.db.patch(existing._id, doc);
     } else {
@@ -33,6 +37,7 @@ export const heartbeat = mutation({
 export const listDaemons = query({
   args: { workspace: v.string() },
   handler: async (ctx, args) => {
+    await requireWorkspaceMemberBySlug(ctx, args.workspace);
     return await ctx.db
       .query("daemons")
       .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))

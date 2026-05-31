@@ -15,6 +15,8 @@ const STATUS_FOR_EVENT = {
   stop: "waiting",
 };
 
+const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
+
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 function parseFrontmatter(content) {
@@ -83,6 +85,10 @@ function candidateChatIds(payload) {
   return new Set(candidates);
 }
 
+function taskStatus(fm) {
+  return (fm.status ?? "").trim().toLowerCase().replace(/\s+/g, "-");
+}
+
 function main() {
   let payload;
   try {
@@ -128,11 +134,15 @@ function main() {
     const fm = parseFrontmatter(content);
     if (!fm || !chatIds.has(fm["chat-id"])) continue;
 
+    const nextStatus =
+      status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm))
+        ? undefined
+        : status;
     const current = (fm["chat-status"] ?? "").trim() || null;
-    if (current === status) return;
+    if (current === (nextStatus ?? null)) return;
 
     try {
-      writeFileSync(file, setKey(content, "chat-status", status));
+      writeFileSync(file, setKey(content, "chat-status", nextStatus));
     } catch {
       // Best effort; never fail the hook.
     }

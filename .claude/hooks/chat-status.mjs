@@ -26,6 +26,8 @@ const STATUS_FOR_EVENT = {
   SessionEnd: null,
 };
 
+const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
+
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 // Minimal scalar frontmatter reader, matching web/lib/frontmatter.ts.
@@ -67,6 +69,10 @@ function readStdin() {
   } catch {
     return "";
   }
+}
+
+function taskStatus(fm) {
+  return (fm.status ?? "").trim().toLowerCase().replace(/\s+/g, "-");
 }
 
 function main() {
@@ -113,13 +119,20 @@ function main() {
     const fm = parseFrontmatter(content);
     if (!fm || fm["chat-id"] !== sessionId) continue;
 
-    // Found the task driven by this session. Skip the write if nothing
-    // changes — avoids needless file churn (and a re-render) every turn.
+    // Found the task driven by this session. Once the task is complete or
+    // archived, a finished turn should clear any stale live indicator.
+    const nextStatus =
+      status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm))
+        ? undefined
+        : status;
+
+    // Skip the write if nothing changes — avoids needless file churn (and a
+    // re-render) every turn.
     const current = (fm["chat-status"] ?? "").trim() || null;
-    if (current === (status ?? null)) return;
+    if (current === (nextStatus ?? null)) return;
 
     try {
-      writeFileSync(file, setKey(content, "chat-status", status ?? undefined));
+      writeFileSync(file, setKey(content, "chat-status", nextStatus));
     } catch {
       // best-effort; never fail the hook
     }

@@ -34,13 +34,30 @@ export function harnessLabel(harness: Harness): string {
 // Absent means we have no live signal (chat closed, never linked, or pre-hooks).
 export type ChatStatus = "working" | "waiting";
 
-const CHAT_STATUSES: ChatStatus[] = ["working", "waiting"];
+const CHAT_STATUSES = new Set<string>(["working", "waiting"]);
+
+const CHAT_STATUS_ALIASES: Record<string, ChatStatus> = {
+  active: "working",
+  busy: "working",
+  running: "working",
+  ready: "waiting",
+  idle: "waiting",
+  "needs-input": "waiting",
+  needs_input: "waiting",
+};
+
+function normalizeStatusValue(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+export function normalizeChatStatus(value: string): ChatStatus | null {
+  const normalized = normalizeStatusValue(value);
+  if (CHAT_STATUSES.has(normalized)) return normalized as ChatStatus;
+  return CHAT_STATUS_ALIASES[normalized] ?? null;
+}
 
 export function parseChatStatus(fm: Frontmatter): ChatStatus | null {
-  const value = (fm["chat-status"] ?? "").trim();
-  return (CHAT_STATUSES as string[]).includes(value)
-    ? (value as ChatStatus)
-    : null;
+  return normalizeChatStatus(fm["chat-status"] ?? "");
 }
 
 function isHarness(value: string): value is Harness {

@@ -1,5 +1,9 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import {
+  requireDaemonToken,
+  requireWorkspaceMemberBySlug,
+} from "./authz";
 
 // Enqueue an action for a daemon to run locally (the browser can't open a
 // terminal itself). Returns the new command's id so the caller can watch it.
@@ -16,6 +20,7 @@ export const enqueueCommand = mutation({
     cwd: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireWorkspaceMemberBySlug(ctx, args.workspace);
     const now = Date.now();
     return await ctx.db.insert("commands", {
       ...args,
@@ -29,8 +34,9 @@ export const enqueueCommand = mutation({
 // The pending commands for a workspace. The daemon subscribes to this; as soon
 // as it marks one done, it drops out of the result set.
 export const pendingCommands = query({
-  args: { workspace: v.string() },
+  args: { workspace: v.string(), daemonToken: v.string() },
   handler: async (ctx, args) => {
+    await requireDaemonToken(ctx, args.workspace, args.daemonToken);
     return await ctx.db
       .query("commands")
       .withIndex("by_workspace_status", (q) =>
@@ -46,8 +52,12 @@ export const completeCommand = mutation({
     id: v.id("commands"),
     status: v.string(),
     result: v.optional(v.string()),
+    daemonToken: v.string(),
   },
   handler: async (ctx, args) => {
+    const command = await ctx.db.get(args.id);
+    if (!command) throw new Error("Command not found");
+    await requireDaemonToken(ctx, command.workspace, args.daemonToken);
     await ctx.db.patch(args.id, {
       status: args.status,
       result: args.result,

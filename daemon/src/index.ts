@@ -152,6 +152,15 @@ function loadConfig(path: string): HitchConfig {
 const configPath = resolve("hitch.config.json");
 const config = loadConfig(configPath);
 const workspace = config.workspace;
+const daemonToken = process.env.HITCH_DAEMON_TOKEN?.trim();
+if (!daemonToken) {
+  console.error(
+    "[hitch] Missing HITCH_DAEMON_TOKEN.\n" +
+      "        Create a daemon token for this workspace, then set\n" +
+      "        HITCH_DAEMON_TOKEN=<token> in .env or .env.local.",
+  );
+  process.exit(1);
+}
 const roots: Root[] = config.watch.map((w) => ({
   label: w.label,
   path: resolve(w.path),
@@ -266,6 +275,7 @@ async function pushLocal(absPath: string): Promise<void> {
   lastHash.set(absPath, hash);
   await client.mutation(anyApi.files.upsertFile, {
     workspace,
+    daemonToken,
     source: loc.label,
     path: loc.rel,
     content,
@@ -281,6 +291,7 @@ async function pushDelete(absPath: string): Promise<void> {
   lastHash.delete(absPath);
   await client.mutation(anyApi.files.upsertFile, {
     workspace,
+    daemonToken,
     source: loc.label,
     path: loc.rel,
     content: "",
@@ -293,7 +304,7 @@ async function pushDelete(absPath: string): Promise<void> {
 // --- Convex -> local ---
 client.onUpdate(
   anyApi.files.listFiles,
-  { workspace },
+  { workspace, daemonToken },
   async (files: FileDoc[]) => {
     for (const f of files) {
       const absPath = toAbs(f.source, f.path);
@@ -334,6 +345,7 @@ async function sendHeartbeat(): Promise<void> {
   try {
     await client.mutation(anyApi.status.heartbeat, {
       workspace,
+      daemonToken,
       hostname: host,
       sources,
     });
@@ -361,6 +373,7 @@ async function runCommand(cmd: CommandDoc): Promise<void> {
         id: cmd._id,
         status: "done",
         result,
+        daemonToken,
       });
       console.log(`[hitch] ⮑ open-chat ${sessionId} → ${result}`);
     } else if (cmd.kind === "start-chat" && cmd.harness === "claude-code") {
@@ -379,6 +392,7 @@ async function runCommand(cmd: CommandDoc): Promise<void> {
         id: cmd._id,
         status: "done",
         result,
+        daemonToken,
       });
       console.log(`[hitch] ⮑ start-chat ${cmd.source}/${cmd.path} → ${result}`);
     } else if (cmd.kind === "start-chat" && cmd.harness === "codex") {
@@ -410,6 +424,7 @@ async function runCommand(cmd: CommandDoc): Promise<void> {
         id: cmd._id,
         status: "done",
         result,
+        daemonToken,
       });
       console.log(
         `[hitch] ⮑ start-chat codex ${cmd.source}/${cmd.path} → ${result}`,
@@ -419,6 +434,7 @@ async function runCommand(cmd: CommandDoc): Promise<void> {
         id: cmd._id,
         status: "error",
         result: `unsupported command: ${cmd.kind}/${cmd.harness}`,
+        daemonToken,
       });
     }
   } catch (err) {
@@ -426,6 +442,7 @@ async function runCommand(cmd: CommandDoc): Promise<void> {
       id: cmd._id,
       status: "error",
       result: String(err),
+      daemonToken,
     });
     console.log(`[hitch] ⚠ command ${cmd._id} failed: ${String(err)}`);
   }
@@ -433,7 +450,7 @@ async function runCommand(cmd: CommandDoc): Promise<void> {
 
 client.onUpdate(
   anyApi.commands.pendingCommands,
-  { workspace },
+  { workspace, daemonToken },
   (commands: CommandDoc[]) => {
     for (const cmd of commands) {
       if (handledCommands.has(cmd._id)) continue;

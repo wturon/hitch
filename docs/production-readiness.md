@@ -9,6 +9,7 @@ engineers.
 - The daemon runs locally on each machine that owns a watched `.hitch/` folder.
 - The web board can be deployed as a static/Next app when configured with the
   same Convex URL and workspace id as the daemon.
+- Auth and workspace access notes live in [auth.md](auth.md).
 
 ## Required Configuration
 
@@ -19,6 +20,7 @@ Local daemon:
   - `watch`: one or more `{ "label": "...", "path": "./.hitch" }` entries
 - `.env` or `.env.local`
   - `CONVEX_URL`: optional when `npx convex dev` writes `CONVEX_DEPLOYMENT`
+  - `HITCH_DAEMON_TOKEN`: workspace-scoped token used by the local daemon
 
 Web board:
 
@@ -40,9 +42,9 @@ linter, and builds the web app.
 
 ## Production Gaps Before Broad Sharing
 
-- Authentication is not implemented yet. Convex functions currently trust the
-  caller-provided `workspace`, so a production deployment must add auth and
-  workspace membership checks before untrusted users can access it.
+- Authentication is partially implemented with Convex Auth. Production still
+  needs final workspace membership/backfill and daemon-token onboarding before
+  untrusted users can access it.
 - Workspace discovery is manual. The web board uses one configured workspace id;
   there is no workspace picker or invite flow yet.
 - Command execution is trusted-local. Browser commands are executed by matching

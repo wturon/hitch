@@ -8,9 +8,14 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
+import type * as authz from "../authz.js";
 import type * as commands from "../commands.js";
+import type * as daemonTokens from "../daemonTokens.js";
 import type * as files from "../files.js";
+import type * as http from "../http.js";
 import type * as status from "../status.js";
+import type * as workspaces from "../workspaces.js";
 
 import type {
   ApiFromModules,
@@ -19,9 +24,14 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
+  authz: typeof authz;
   commands: typeof commands;
+  daemonTokens: typeof daemonTokens;
   files: typeof files;
+  http: typeof http;
   status: typeof status;
+  workspaces: typeof workspaces;
 }>;
 
 /**

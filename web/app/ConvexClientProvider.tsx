@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { ConvexProvider, ConvexReactClient } from "convex/react";
+import { ConvexReactClient } from "convex/react";
+import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import {
   HITCH_CONVEX_URL,
   missingConvexUrlMessage,
@@ -25,5 +26,14 @@ export function ConvexClientProvider({ children }: { children: ReactNode }) {
     );
   }
 
-  return <ConvexProvider client={convex}>{children}</ConvexProvider>;
+  return (
+    <ConvexAuthProvider
+      client={convex}
+      replaceURL={(relativeUrl) => {
+        window.history.replaceState({}, "", relativeUrl);
+      }}
+    >
+      {children}
+    </ConvexAuthProvider>
+  );
 }
