@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as commands from "../commands.js";
 import type * as files from "../files.js";
 import type * as status from "../status.js";
 
@@ -18,6 +19,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  commands: typeof commands;
   files: typeof files;
   status: typeof status;
 }>;

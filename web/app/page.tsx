@@ -60,12 +60,189 @@ interface Card {
   updatedAt: number;
 }
 
+// Shared card chrome, also reused by the drag overlay so the floating element
+// matches the one in the column.
+const CARD_CLASS =
+  "rounded-lg bg-card p-3 text-left shadow-sm ring-1 ring-border";
+
+function CardContents({ card }: { card: Card }) {
+  return (
+    <>
+      <p className="text-sm font-medium text-card-foreground">{card.title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {card.owner ? `${card.owner} · ` : ""}
+        {card.source}
+      </p>
+      {card.chat && (
+        <div className="mt-2">
+          <ChatLaunch
+            chat={card.chat}
+            workspace={WORKSPACE}
+            size="xs"
+            stopPropagation
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+interface DraggableCardProps {
+  card: Card;
+  pending: boolean;
+  onOpen: (card: Card) => void;
+  onArchiveToggle: (card: Card, archived: boolean) => void;
+  onDelete: (card: Card) => void;
+}
+
+// A board card that can be picked up (left-drag, 5px threshold so a plain click
+// still opens it) and dropped on another column. Right-click keeps the existing
+// archive/delete menu — PointerSensor ignores non-primary buttons, so the menu
+// and dragging don't fight. Defined at module scope (not inside Board) so it
+// isn't a fresh component type each render, which would remount mid-drag.
+function DraggableCard({
+  card,
+  pending,
+  onOpen,
+  onArchiveToggle,
+  onDelete,
+}: DraggableCardProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: card.id,
+  });
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger className="block">
+        <div
+          ref={setNodeRef}
+          {...attributes}
+          {...listeners}
+          onClick={() => onOpen(card)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onOpen(card);
+            }
+          }}
+          className={cn(
+            CARD_CLASS,
+            "cursor-pointer transition-shadow hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+            isDragging && "opacity-40",
+          )}
+        >
+          <CardContents card={card} />
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          disabled={pending}
+          onClick={() => onArchiveToggle(card, !card.archived)}
+        >
+          {card.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
+          {card.archived ? "Unarchive" : "Archive"}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          disabled={pending}
+          variant="destructive"
+          onClick={() => onDelete(card)}
+        >
+          <Trash2Icon />
+          Delete
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+// A column that accepts dropped cards. Its droppable id IS the status value, so
+// the drop handler can read the destination status straight off `over.id`.
+function DroppableColumn({
+  col,
+  count,
+  children,
+}: {
+  col: Column;
+  count: number;
+  children: ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: col });
+
+  return (
+    <section
+      ref={setNodeRef}
+      className={cn(
+        "relative flex flex-col gap-3 rounded-xl bg-muted p-3 transition-colors",
+        isOver && "ring-2 ring-ring",
+      )}
+    >
+      <h2 className="relative z-20 px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {col} · {count}
+      </h2>
+      {children}
+      {count === 0 && (
+        <p className="px-1 text-xs text-muted-foreground/70">—</p>
+      )}
+
+      {/* While a card is hovering this column, fade its cards and explain that
+          drop position isn't user-controlled — the board sorts by last update,
+          so there's no "drop here" slot the way a manually-ordered board has. */}
+      {isOver && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-muted/70 backdrop-blur-[1px]">
+          <div className="text-center">
+            <p className="text-sm font-medium text-foreground">
+              Ordered by last updated
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Drop anywhere to move here
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function Board() {
   const files = useQuery(api.files.listFiles, { workspace: WORKSPACE });
-  const upsertFile = useMutation(api.files.upsertFile);
+  // Optimistically patch the cached file so a drag (or archive/delete) reflects
+  // instantly instead of waiting on the frontmatter → daemon → Convex round
+  // trip. Bumping updatedAt lands the moved card at the top of its new column,
+  // matching how the server-stamped value will sort once it settles.
+  const upsertFile = useMutation(api.files.upsertFile).withOptimisticUpdate(
+    (localStore, args) => {
+      const existing = localStore.getQuery(api.files.listFiles, {
+        workspace: args.workspace,
+      });
+      if (existing === undefined) return;
+      const next = existing.map((f) =>
+        f.source === args.source && f.path === args.path
+          ? {
+              ...f,
+              content: args.content,
+              hash: args.hash,
+              deleted: args.deleted,
+              // Pin to the top of the destination column until the
+              // server-stamped updatedAt arrives (which will also be recent).
+              updatedAt: Number.MAX_SAFE_INTEGER,
+            }
+          : f,
+      );
+      localStore.setQuery(
+        api.files.listFiles,
+        { workspace: args.workspace },
+        next,
+      );
+    },
+  );
   const [selected, setSelected] = useState<Card | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
 
   if (files === undefined) {
     return (
@@ -160,64 +337,41 @@ export default function Board() {
     }
   }
 
-  function renderCard(card: Card) {
-    const pending = pendingCardId === card.id;
+  // Move a card to another column by rewriting just its `status` frontmatter,
+  // through the same save path the dialog and archive use.
+  async function setStatus(card: Card, status: Column) {
+    const nextContent = setFrontmatterKeys(card.content, { status });
 
-    return (
-      <ContextMenu key={card.id}>
-        <ContextMenuTrigger className="block">
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setSelected(card)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                setSelected(card);
-              }
-            }}
-            className="cursor-pointer rounded-lg bg-card p-3 text-left shadow-sm ring-1 ring-border transition-shadow hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
-            <p className="text-sm font-medium text-card-foreground">
-              {card.title}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {card.owner ? `${card.owner} · ` : ""}
-              {card.source}
-            </p>
-            {card.chat && (
-              <div className="mt-2">
-                <ChatLaunch
-                  chat={card.chat}
-                  workspace={WORKSPACE}
-                  size="xs"
-                  stopPropagation
-                />
-              </div>
-            )}
-          </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem
-            disabled={pending}
-            onClick={() => void setArchived(card, !card.archived)}
-          >
-            {card.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
-            {card.archived ? "Unarchive" : "Archive"}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            disabled={pending}
-            variant="destructive"
-            onClick={() => void deleteCard(card)}
-          >
-            <Trash2Icon />
-            Delete
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
-    );
+    setPendingCardId(card.id);
+    try {
+      await upsertFile({
+        workspace: WORKSPACE,
+        source: card.source,
+        path: card.path,
+        content: nextContent,
+        hash: await sha256(nextContent),
+        deleted: false,
+      });
+    } finally {
+      setPendingCardId(null);
+    }
   }
+
+  function onDragEnd(event: DragEndEvent) {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over) return;
+    // Dropping anywhere onto an archived card's origin or the same column is a
+    // no-op. `over.id` is always a column id (only columns are droppable).
+    const card = cards.find((c) => c.id === active.id);
+    const dest = over.id as Column;
+    if (!card || (card.column === dest && !card.archived)) return;
+    void setStatus(card, dest);
+  }
+
+  const activeCard = activeId
+    ? (cards.find((c) => c.id === activeId) ?? null)
+    : null;
 
   return (
     <main className="flex flex-1 flex-col gap-6 p-8">
@@ -241,33 +395,69 @@ export default function Board() {
         )}
       </header>
 
-      <div className="grid flex-1 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {COLUMNS.map((col) => (
-          <section
-            key={col}
-            className="flex flex-col gap-3 rounded-xl bg-muted p-3"
-          >
-            <h2 className="px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              {col} · {byColumn[col].length}
-            </h2>
-            {byColumn[col].map((card) => renderCard(card))}
-            {byColumn[col].length === 0 && (
-              <p className="px-1 text-xs text-muted-foreground/70">—</p>
-            )}
-          </section>
-        ))}
-      </div>
+      <DndContext
+        sensors={sensors}
+        onDragStart={(event: DragStartEvent) =>
+          setActiveId(String(event.active.id))
+        }
+        onDragEnd={onDragEnd}
+        onDragCancel={() => setActiveId(null)}
+      >
+        <div className="grid flex-1 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {COLUMNS.map((col) => (
+            <DroppableColumn key={col} col={col} count={byColumn[col].length}>
+              {byColumn[col].map((card) => (
+                <DraggableCard
+                  key={card.id}
+                  card={card}
+                  pending={pendingCardId === card.id}
+                  onOpen={setSelected}
+                  onArchiveToggle={(c, archived) => void setArchived(c, archived)}
+                  onDelete={(c) => void deleteCard(c)}
+                />
+              ))}
+            </DroppableColumn>
+          ))}
+        </div>
 
-      {showArchived && archivedCards.length > 0 && (
-        <section className="flex flex-col gap-3 rounded-xl border border-dashed bg-muted/40 p-3">
-          <h2 className="px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            archived · {archivedCards.length}
-          </h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {archivedCards.map((card) => renderCard(card))}
-          </div>
-        </section>
-      )}
+        {showArchived && archivedCards.length > 0 && (
+          <section className="flex flex-col gap-3 rounded-xl border border-dashed bg-muted/40 p-3">
+            <h2 className="px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              archived · {archivedCards.length}
+            </h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {archivedCards.map((card) => (
+                <DraggableCard
+                  key={card.id}
+                  card={card}
+                  pending={pendingCardId === card.id}
+                  onOpen={setSelected}
+                  onArchiveToggle={(c, archived) => void setArchived(c, archived)}
+                  onDelete={(c) => void deleteCard(c)}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* dropAnimation={null}: the dragged card's DOM node never leaves its
+            origin column (we only dim it), so dnd-kit's default drop animation
+            would fly the overlay back to column 1 before the re-rendered card
+            appears in its new column. Killing it makes the move read as instant,
+            Linear-style. */}
+        <DragOverlay dropAnimation={null}>
+          {activeCard ? (
+            <div
+              className={cn(
+                CARD_CLASS,
+                "cursor-grabbing shadow-lg ring-foreground/20",
+              )}
+            >
+              <CardContents card={activeCard} />
+            </div>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
 
       <TaskDialog
         task={target}

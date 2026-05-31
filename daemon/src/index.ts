@@ -13,6 +13,7 @@ import chokidar from "chokidar";
 import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
+import { openChat } from "./cmux.js";
 
 // Convex's reactive client uses WebSocket; polyfill for Node < 22.
 if (!globalThis.WebSocket) {
@@ -41,6 +42,17 @@ interface FileDoc {
 interface Root {
   label: string;
   path: string;
+}
+// A queued action from the web UI (anyApi is untyped).
+interface CommandDoc {
+  _id: string;
+  workspace: string;
+  host?: string;
+  kind: string;
+  harness: string;
+  sessionId: string;
+  cwd?: string;
+  status: string;
 }
 
 // --- env ---
@@ -208,6 +220,53 @@ async function sendHeartbeat(): Promise<void> {
 
 void sendHeartbeat();
 const heartbeatTimer = setInterval(() => void sendHeartbeat(), HEARTBEAT_MS);
+
+// --- command queue ---
+// The browser can't open a terminal, so it enqueues commands and this daemon
+// runs them locally. We subscribe to the pending set; each command is handled
+// once (handledCommands guards against the query re-firing before the status
+// flips to done) and only if it targets this machine.
+const handledCommands = new Set<string>();
+
+async function runCommand(cmd: CommandDoc): Promise<void> {
+  try {
+    if (cmd.kind === "open-chat" && cmd.harness === "claude-code") {
+      const result = await openChat({ sessionId: cmd.sessionId, cwd: cmd.cwd });
+      await client.mutation(anyApi.commands.completeCommand, {
+        id: cmd._id,
+        status: "done",
+        result,
+      });
+      console.log(`[hitch] ⮑ open-chat ${cmd.sessionId} → ${result}`);
+    } else {
+      await client.mutation(anyApi.commands.completeCommand, {
+        id: cmd._id,
+        status: "error",
+        result: `unsupported command: ${cmd.kind}/${cmd.harness}`,
+      });
+    }
+  } catch (err) {
+    await client.mutation(anyApi.commands.completeCommand, {
+      id: cmd._id,
+      status: "error",
+      result: String(err),
+    });
+    console.log(`[hitch] ⚠ command ${cmd._id} failed: ${String(err)}`);
+  }
+}
+
+client.onUpdate(
+  anyApi.commands.pendingCommands,
+  { workspace },
+  (commands: CommandDoc[]) => {
+    for (const cmd of commands) {
+      if (handledCommands.has(cmd._id)) continue;
+      if (cmd.host && cmd.host !== host) continue; // pinned to another machine
+      handledCommands.add(cmd._id);
+      void runCommand(cmd);
+    }
+  },
+);
 
 // --- watcher ---
 const watcher = chokidar.watch(

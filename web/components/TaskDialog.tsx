@@ -118,7 +118,7 @@ function TaskEditor({
             Linked chat
           </span>
           {chat ? (
-            <ChatLaunch chat={chat} size="xs" />
+            <ChatLaunch chat={chat} workspace={task.workspace} size="xs" />
           ) : (
             fields.harness && (
               <span className="text-xs text-muted-foreground/70">

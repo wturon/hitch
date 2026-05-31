@@ -31,4 +31,23 @@ export default defineSchema({
   })
     .index("by_workspace", ["workspace"])
     .index("by_key", ["workspace", "hostname"]),
+
+  // A queue of actions for daemons to run on the local machine — things the
+  // browser can't do itself, like opening a terminal. The web UI enqueues a
+  // command; the matching daemon (by workspace, optionally pinned to a host)
+  // picks it up via a reactive query, runs it, and marks it done.
+  commands: defineTable({
+    workspace: v.string(),
+    host: v.optional(v.string()), // target machine; unset = any daemon for the workspace
+    kind: v.string(), // e.g. "open-chat"
+    harness: v.string(), // "claude-code" | "codex"
+    sessionId: v.string(),
+    cwd: v.optional(v.string()),
+    status: v.string(), // "pending" | "done" | "error"
+    result: v.optional(v.string()), // "focused"/"spawned" or an error message
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspace", ["workspace"])
+    .index("by_workspace_status", ["workspace", "status"]),
 });
