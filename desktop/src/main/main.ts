@@ -1,4 +1,5 @@
 import {
+  execFile,
   spawn,
   type ChildProcess,
 } from "node:child_process";
@@ -13,7 +14,8 @@ import {
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { promisify } from "node:util";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
 
@@ -57,6 +59,37 @@ interface AddHitchResult {
   restarted: boolean;
 }
 
+interface ProjectSetupStatus {
+  project: string;
+  hitch: HitchBinding | null;
+  localPathExists: boolean;
+  hitchPath: string | null;
+  hitchPathExists: boolean;
+  gitignorePath: string | null;
+  gitignoreExists: boolean;
+  gitignoreHasHitch: boolean;
+}
+
+type Harness = "codex" | "claude-code";
+
+interface HarnessHookStatus {
+  harness: Harness;
+  installed: boolean;
+  configPath: string | null;
+  scriptPath: string | null;
+  configExists: boolean;
+  scriptExists: boolean;
+  configWired: boolean;
+}
+
+interface HarnessSetupStatus {
+  project: string;
+  hitch: HitchBinding | null;
+  localPathExists: boolean;
+  codex: HarnessHookStatus;
+  claudeCode: HarnessHookStatus;
+}
+
 interface DeviceAuthState {
   deviceId: string;
   deviceName: string;
@@ -90,6 +123,298 @@ const localSecretsPath =
   process.env.HITCH_SECRETS_PATH ?? join(homedir(), "Library/Application Support/Hitch/secrets.json");
 const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
+const run = promisify(execFile);
+
+const CODEX_HOOK_COMMAND = "node .codex/hooks/chat-status.mjs";
+const CLAUDE_HOOK_COMMAND =
+  'node "$CLAUDE_PROJECT_DIR/.claude/hooks/chat-status.mjs"';
+
+const CODEX_CHAT_STATUS_HOOK = `#!/usr/bin/env node
+// Codex lifecycle hook: stamp a task's live chat status into frontmatter so the
+// Hitch board can show whether the linked Codex chat is actively working.
+//
+// Contract: hooks must never break the session. We read the event payload from
+// stdin, do a best-effort frontmatter edit, and always exit 0.
+
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const STATUS_FOR_EVENT = {
+  UserPromptSubmit: "working",
+  userPromptSubmit: "working",
+  Stop: "waiting",
+  stop: "waiting",
+};
+
+const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
+
+const FRONTMATTER_RE = /^---\\r?\\n([\\s\\S]*?)\\r?\\n---\\r?\\n?([\\s\\S]*)$/;
+
+function parseFrontmatter(content) {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return null;
+
+  const fm = {};
+  for (const line of match[1].split(/\\r?\\n/)) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    if (!key) continue;
+    fm[key] = line
+      .slice(idx + 1)
+      .trim()
+      .replace(/^[\"']|[\"']$/g, "");
+  }
+  return fm;
+}
+
+function setKey(content, key, value) {
+  const eol = content.includes("\\r\\n") ? "\\r\\n" : "\\n";
+  const match = content.match(FRONTMATTER_RE);
+  let lines = match ? match[1].split(/\\r?\\n/) : [];
+  const body = match ? match[2] : content;
+  lines = lines.filter((line) => {
+    const idx = line.indexOf(":");
+    return idx === -1 || line.slice(0, idx).trim() !== key;
+  });
+  if (value != null && value !== "") lines.push(\`\${key}: \${value}\`);
+  return \`---\${eol}\${lines.join(eol)}\${eol}---\${eol}\${body}\`;
+}
+
+function readStdin() {
+  try {
+    return readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function candidateChatIds(payload) {
+  const candidates = [
+    payload.session_id,
+    payload.sessionId,
+    payload.thread_id,
+    payload.threadId,
+    payload.thread?.id,
+    process.env.CODEX_THREAD_ID,
+  ]
+    .filter((value) => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  let transcriptPath = "";
+  if (typeof payload.transcript_path === "string") {
+    transcriptPath = payload.transcript_path;
+  } else if (typeof payload.transcriptPath === "string") {
+    transcriptPath = payload.transcriptPath;
+  }
+  const transcriptId = transcriptPath.match(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+  );
+  if (transcriptId) candidates.push(transcriptId[0]);
+
+  return new Set(candidates);
+}
+
+function taskStatus(fm) {
+  return (fm.status ?? "").trim().toLowerCase().replace(/\\s+/g, "-");
+}
+
+function main() {
+  let payload;
+  try {
+    payload = JSON.parse(readStdin() || "{}");
+  } catch {
+    return;
+  }
+
+  const event = payload.hook_event_name || payload.hookEventName;
+  if (!(event in STATUS_FOR_EVENT)) return;
+  const status = STATUS_FOR_EVENT[event];
+
+  const chatIds = candidateChatIds(payload);
+  if (chatIds.size === 0) return;
+
+  const root =
+    payload.cwd ||
+    process.env.CODEX_PROJECT_DIR ||
+    process.env.PWD ||
+    process.cwd();
+  const tasksDir = join(root, ".hitch", "tasks");
+  if (!existsSync(tasksDir)) return;
+
+  let slugs;
+  try {
+    slugs = readdirSync(tasksDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of slugs) {
+    if (!entry.isDirectory()) continue;
+    const file = join(tasksDir, entry.name, "task.md");
+    if (!existsSync(file)) continue;
+
+    let content;
+    try {
+      content = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+
+    const fm = parseFrontmatter(content);
+    if (!fm || !chatIds.has(fm["chat-id"])) continue;
+
+    const nextStatus =
+      status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm))
+        ? undefined
+        : status;
+    const current = (fm["chat-status"] ?? "").trim() || null;
+    if (current === (nextStatus ?? null)) return;
+
+    try {
+      writeFileSync(file, setKey(content, "chat-status", nextStatus));
+    } catch {
+      // Best effort; never fail the hook.
+    }
+    return;
+  }
+}
+
+try {
+  main();
+} catch {
+  // Never let a hook error interrupt the session.
+}
+`;
+
+const CLAUDE_CHAT_STATUS_HOOK = `#!/usr/bin/env node
+// Claude Code lifecycle hook: stamp a task's live chat status into its
+// frontmatter so the Hitch board can show a "working / ready / needs input"
+// indicator on the card. Wired up in ../settings.json for the events below.
+//
+// Contract: hooks must never break the session. We read the event payload from
+// stdin, do a best-effort frontmatter edit, and always exit 0.
+
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+const STATUS_FOR_EVENT = {
+  UserPromptSubmit: "working",
+  Stop: "waiting",
+  SessionEnd: null,
+};
+
+const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
+
+const FRONTMATTER_RE = /^---\\r?\\n([\\s\\S]*?)\\r?\\n---\\r?\\n?([\\s\\S]*)$/;
+
+function parseFrontmatter(content) {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return null;
+  const fm = {};
+  for (const line of match[1].split(/\\r?\\n/)) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    if (!key) continue;
+    fm[key] = line
+      .slice(idx + 1)
+      .trim()
+      .replace(/^[\"']|[\"']$/g, "");
+  }
+  return fm;
+}
+
+function setKey(content, key, value) {
+  const eol = content.includes("\\r\\n") ? "\\r\\n" : "\\n";
+  const match = content.match(FRONTMATTER_RE);
+  let lines = match ? match[1].split(/\\r?\\n/) : [];
+  const body = match ? match[2] : content;
+  lines = lines.filter((line) => {
+    const idx = line.indexOf(":");
+    return idx === -1 || line.slice(0, idx).trim() !== key;
+  });
+  if (value != null && value !== "") lines.push(\`\${key}: \${value}\`);
+  return \`---\${eol}\${lines.join(eol)}\${eol}---\${eol}\${body}\`;
+}
+
+function readStdin() {
+  try {
+    return readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function taskStatus(fm) {
+  return (fm.status ?? "").trim().toLowerCase().replace(/\\s+/g, "-");
+}
+
+function main() {
+  let payload;
+  try {
+    payload = JSON.parse(readStdin() || "{}");
+  } catch {
+    return;
+  }
+
+  const event = payload.hook_event_name;
+  if (!(event in STATUS_FOR_EVENT)) return;
+  const status = STATUS_FOR_EVENT[event];
+
+  const sessionId = payload.session_id;
+  if (!sessionId) return;
+
+  const root =
+    payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const tasksDir = join(root, ".hitch", "tasks");
+  if (!existsSync(tasksDir)) return;
+
+  let slugs;
+  try {
+    slugs = readdirSync(tasksDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of slugs) {
+    if (!entry.isDirectory()) continue;
+    const file = join(tasksDir, entry.name, "task.md");
+    if (!existsSync(file)) continue;
+
+    let content;
+    try {
+      content = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+
+    const fm = parseFrontmatter(content);
+    if (!fm || fm["chat-id"] !== sessionId) continue;
+
+    const nextStatus =
+      status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm))
+        ? undefined
+        : status;
+    const current = (fm["chat-status"] ?? "").trim() || null;
+    if (current === (nextStatus ?? null)) return;
+
+    try {
+      writeFileSync(file, setKey(content, "chat-status", nextStatus));
+    } catch {
+      // best-effort; never fail the hook
+    }
+    return;
+  }
+}
+
+try {
+  main();
+} catch {
+  // Never let a hook error interrupt the session.
+}
+`;
 
 let mainWindow: BrowserWindow | null = null;
 let daemon: ChildProcess | null = null;
@@ -382,6 +707,291 @@ function updateGitignore(localPath: string): boolean {
   return true;
 }
 
+function gitignoreHasHitch(localPath: string): boolean {
+  const gitignorePath = join(localPath, ".gitignore");
+  if (!existsSync(gitignorePath)) return false;
+  return readFileSync(gitignorePath, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .some((line) => line === ".hitch/" || line === ".hitch");
+}
+
+function projectSetupStatus(project: string): ProjectSetupStatus {
+  const trimmed = project.trim();
+  if (!trimmed) throw new Error("Project is required");
+  const config = readLocalConfig();
+  const hitch = config.hitches.find((entry) => entry.project === trimmed) ?? null;
+  if (!hitch) {
+    return {
+      project: trimmed,
+      hitch: null,
+      localPathExists: false,
+      hitchPath: null,
+      hitchPathExists: false,
+      gitignorePath: null,
+      gitignoreExists: false,
+      gitignoreHasHitch: false,
+    };
+  }
+
+  const localPathExists = existsSync(hitch.localPath);
+  const hitchPath = join(hitch.localPath, ".hitch");
+  const gitignorePath = join(hitch.localPath, ".gitignore");
+  return {
+    project: trimmed,
+    hitch,
+    localPathExists,
+    hitchPath,
+    hitchPathExists: localPathExists && existsSync(hitchPath),
+    gitignorePath,
+    gitignoreExists: localPathExists && existsSync(gitignorePath),
+    gitignoreHasHitch: localPathExists && gitignoreHasHitch(hitch.localPath),
+  };
+}
+
+function ensureProjectHitchDirectory(project: string): ProjectSetupStatus {
+  const setup = projectSetupStatus(project);
+  if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
+  if (!setup.localPathExists) {
+    throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
+  }
+  mkdirSync(join(setup.hitch.localPath, ".hitch"), { recursive: true });
+  addLog("system", `Ensured .hitch folder for ${project}`);
+  return projectSetupStatus(project);
+}
+
+function ensureProjectGitignore(project: string): ProjectSetupStatus {
+  const setup = projectSetupStatus(project);
+  if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
+  if (!setup.localPathExists) {
+    throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
+  }
+  updateGitignore(setup.hitch.localPath);
+  addLog("system", `Ensured .hitch/ is ignored for ${project}`);
+  return projectSetupStatus(project);
+}
+
+function emptyHarnessHookStatus(harness: Harness): HarnessHookStatus {
+  return {
+    harness,
+    installed: false,
+    configPath: null,
+    scriptPath: null,
+    configExists: false,
+    scriptExists: false,
+    configWired: false,
+  };
+}
+
+function hookConfigPath(localPath: string, harness: Harness): string {
+  return harness === "codex"
+    ? join(localPath, ".codex", "hooks.json")
+    : join(localPath, ".claude", "settings.json");
+}
+
+function hookScriptPath(localPath: string, harness: Harness): string {
+  return harness === "codex"
+    ? join(localPath, ".codex", "hooks", "chat-status.mjs")
+    : join(localPath, ".claude", "hooks", "chat-status.mjs");
+}
+
+function hookCommand(harness: Harness): string {
+  return harness === "codex" ? CODEX_HOOK_COMMAND : CLAUDE_HOOK_COMMAND;
+}
+
+function hookEvents(harness: Harness): string[] {
+  return harness === "codex"
+    ? ["UserPromptSubmit", "Stop"]
+    : ["UserPromptSubmit", "Stop", "SessionEnd"];
+}
+
+function readJsonObject(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  if (!isRecord(parsed)) throw new Error(`${path} must contain a JSON object`);
+  return parsed;
+}
+
+function hookCommandExists(
+  config: Record<string, unknown>,
+  event: string,
+  command: string,
+): boolean {
+  const hooks = isRecord(config.hooks) ? config.hooks : {};
+  const blocks = Array.isArray(hooks[event]) ? hooks[event] : [];
+  return blocks.some((block) => {
+    if (!isRecord(block) || !Array.isArray(block.hooks)) return false;
+    return block.hooks.some(
+      (hook) =>
+        isRecord(hook) &&
+        hook.type === "command" &&
+        hook.command === command,
+    );
+  });
+}
+
+function ensureHookCommand(
+  config: Record<string, unknown>,
+  event: string,
+  command: string,
+): void {
+  if (!isRecord(config.hooks)) config.hooks = {};
+  const hooks = config.hooks;
+  if (!isRecord(hooks)) throw new Error("hooks must be a JSON object");
+  if (!Array.isArray(hooks[event])) hooks[event] = [];
+  const blocks = hooks[event];
+  if (!Array.isArray(blocks)) throw new Error(`hooks.${event} must be an array`);
+  if (hookCommandExists(config, event, command)) return;
+  blocks.push({
+    hooks: [{ type: "command", command }],
+  });
+}
+
+function harnessHookStatus(localPath: string, harness: Harness): HarnessHookStatus {
+  const configPath = hookConfigPath(localPath, harness);
+  const scriptPath = hookScriptPath(localPath, harness);
+  const configExists = existsSync(configPath);
+  const scriptExists = existsSync(scriptPath);
+  let configWired = false;
+
+  if (configExists) {
+    try {
+      const config = readJsonObject(configPath);
+      const command = hookCommand(harness);
+      configWired = hookEvents(harness).every((event) =>
+        hookCommandExists(config, event, command),
+      );
+    } catch {
+      configWired = false;
+    }
+  }
+
+  return {
+    harness,
+    installed: scriptExists && configWired,
+    configPath,
+    scriptPath,
+    configExists,
+    scriptExists,
+    configWired,
+  };
+}
+
+function harnessSetupStatus(project: string): HarnessSetupStatus {
+  const setup = projectSetupStatus(project);
+  if (!setup.hitch || !setup.localPathExists) {
+    return {
+      project: setup.project,
+      hitch: setup.hitch,
+      localPathExists: setup.localPathExists,
+      codex: emptyHarnessHookStatus("codex"),
+      claudeCode: emptyHarnessHookStatus("claude-code"),
+    };
+  }
+
+  return {
+    project: setup.project,
+    hitch: setup.hitch,
+    localPathExists: setup.localPathExists,
+    codex: harnessHookStatus(setup.hitch.localPath, "codex"),
+    claudeCode: harnessHookStatus(setup.hitch.localPath, "claude-code"),
+  };
+}
+
+function installHarnessHooks(
+  project: string,
+  harness: Harness,
+): HarnessSetupStatus {
+  const setup = projectSetupStatus(project);
+  if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
+  if (!setup.localPathExists) {
+    throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
+  }
+
+  const configPath = hookConfigPath(setup.hitch.localPath, harness);
+  const scriptPath = hookScriptPath(setup.hitch.localPath, harness);
+  mkdirSync(dirname(scriptPath), { recursive: true });
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(
+    scriptPath,
+    harness === "codex" ? CODEX_CHAT_STATUS_HOOK : CLAUDE_CHAT_STATUS_HOOK,
+    "utf8",
+  );
+
+  const config = readJsonObject(configPath);
+  const command = hookCommand(harness);
+  for (const event of hookEvents(harness)) {
+    ensureHookCommand(config, event, command);
+  }
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  addLog(
+    "system",
+    `Installed ${harness === "codex" ? "Codex" : "Claude Code"} lifecycle hooks for ${project}`,
+  );
+  return harnessSetupStatus(project);
+}
+
+const CODEX_CANDIDATES = [
+  process.env.CODEX_BIN,
+  "/Applications/Codex.app/Contents/Resources/codex",
+  "/opt/homebrew/bin/codex",
+  "codex",
+].filter((value): value is string => Boolean(value));
+
+function codexBin(): string {
+  for (const candidate of CODEX_CANDIDATES) {
+    if (candidate === "codex" || existsSync(candidate)) return candidate;
+  }
+  return "codex";
+}
+
+function shellQuote(value: string): string {
+  if (!/[^A-Za-z0-9_./:-]/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+async function openCodexHookTrust(project: string): Promise<string> {
+  const setup = harnessSetupStatus(project);
+  if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
+  if (!setup.localPathExists) {
+    throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
+  }
+  if (!setup.codex.installed) {
+    throw new Error("Install Codex lifecycle hooks before trusting them");
+  }
+  if (process.platform !== "darwin") {
+    throw new Error("Opening Codex for hook trust is only supported on macOS");
+  }
+
+  const command = [
+    `cd ${shellQuote(setup.hitch.localPath)}`,
+    `${shellQuote(codexBin())} -C ${shellQuote(setup.hitch.localPath)} ${shellQuote("Review this project's hooks for Hitch lifecycle updates. If Codex asks about hooks, approve the project hooks. If needed, run /hooks.")}`,
+  ].join(" && ");
+  const script = [
+    'tell application "Terminal"',
+    "activate",
+    `do script ${JSON.stringify(command)}`,
+    "end tell",
+  ].join("\n");
+
+  await run("/usr/bin/osascript", ["-e", script], { timeout: 5_000 });
+  addLog("system", `Opened Codex hook trust flow for ${project}`);
+  return "opened";
+}
+
+async function chooseLocalPath(defaultPath?: string): Promise<string | null> {
+  const options: Electron.OpenDialogOptions = {
+    title: "Choose project folder",
+    defaultPath: defaultPath?.trim() || undefined,
+    properties: ["openDirectory", "createDirectory"],
+  };
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled) return null;
+  return result.filePaths[0] ?? null;
+}
+
 async function restartDaemon(): Promise<boolean> {
   if (!daemon) {
     startDaemon();
@@ -621,6 +1231,29 @@ ipcMain.handle("config:set-active-project", (_event, project: string) =>
 );
 ipcMain.handle("config:add-hitch", (_event, input: AddHitchInput) =>
   addHitch(input),
+);
+ipcMain.handle("config:get-project-setup", (_event, project: string) =>
+  projectSetupStatus(project),
+);
+ipcMain.handle("config:ensure-hitch-directory", (_event, project: string) =>
+  ensureProjectHitchDirectory(project),
+);
+ipcMain.handle("config:ensure-gitignore", (_event, project: string) =>
+  ensureProjectGitignore(project),
+);
+ipcMain.handle("config:get-harness-setup", (_event, project: string) =>
+  harnessSetupStatus(project),
+);
+ipcMain.handle(
+  "config:install-harness-hooks",
+  (_event, project: string, harness: Harness) =>
+    installHarnessHooks(project, harness),
+);
+ipcMain.handle("config:open-codex-hook-trust", (_event, project: string) =>
+  openCodexHookTrust(project),
+);
+ipcMain.handle("dialog:choose-local-path", (_event, defaultPath?: string) =>
+  chooseLocalPath(defaultPath),
 );
 ipcMain.handle("device-auth:get", () => deviceAuthState());
 ipcMain.handle("device-auth:set-token", (_event, token: string) =>

@@ -46,6 +46,37 @@ export interface AddHitchResult {
   restarted: boolean;
 }
 
+export interface ProjectSetupStatus {
+  project: string;
+  hitch: HitchBinding | null;
+  localPathExists: boolean;
+  hitchPath: string | null;
+  hitchPathExists: boolean;
+  gitignorePath: string | null;
+  gitignoreExists: boolean;
+  gitignoreHasHitch: boolean;
+}
+
+export type Harness = "codex" | "claude-code";
+
+export interface HarnessHookStatus {
+  harness: Harness;
+  installed: boolean;
+  configPath: string | null;
+  scriptPath: string | null;
+  configExists: boolean;
+  scriptExists: boolean;
+  configWired: boolean;
+}
+
+export interface HarnessSetupStatus {
+  project: string;
+  hitch: HitchBinding | null;
+  localPathExists: boolean;
+  codex: HarnessHookStatus;
+  claudeCode: HarnessHookStatus;
+}
+
 export interface DeviceAuthState {
   deviceId: string;
   deviceName: string;
@@ -61,6 +92,16 @@ export interface HitchDaemonApi {
   getConfig: () => Promise<LocalHitchConfig>;
   setActiveProject: (project: string) => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
+  getProjectSetup: (project: string) => Promise<ProjectSetupStatus>;
+  ensureHitchDirectory: (project: string) => Promise<ProjectSetupStatus>;
+  ensureGitignore: (project: string) => Promise<ProjectSetupStatus>;
+  getHarnessSetup: (project: string) => Promise<HarnessSetupStatus>;
+  installHarnessHooks: (
+    project: string,
+    harness: Harness,
+  ) => Promise<HarnessSetupStatus>;
+  openCodexHookTrust: (project: string) => Promise<string>;
+  chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
   getDeviceAuth: () => Promise<DeviceAuthState>;
   setDeviceToken: (token: string) => Promise<DeviceAuthState>;
   clearDeviceToken: () => Promise<DeviceAuthState>;
@@ -75,6 +116,15 @@ const api: HitchDaemonApi = {
   getConfig: () => ipcRenderer.invoke("config:get"),
   setActiveProject: (project) => ipcRenderer.invoke("config:set-active-project", project),
   addHitch: (input) => ipcRenderer.invoke("config:add-hitch", input),
+  getProjectSetup: (project) => ipcRenderer.invoke("config:get-project-setup", project),
+  ensureHitchDirectory: (project) => ipcRenderer.invoke("config:ensure-hitch-directory", project),
+  ensureGitignore: (project) => ipcRenderer.invoke("config:ensure-gitignore", project),
+  getHarnessSetup: (project) => ipcRenderer.invoke("config:get-harness-setup", project),
+  installHarnessHooks: (project, harness) =>
+    ipcRenderer.invoke("config:install-harness-hooks", project, harness),
+  openCodexHookTrust: (project) =>
+    ipcRenderer.invoke("config:open-codex-hook-trust", project),
+  chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),
   getDeviceAuth: () => ipcRenderer.invoke("device-auth:get"),
   setDeviceToken: (token) => ipcRenderer.invoke("device-auth:set-token", token),
   clearDeviceToken: () => ipcRenderer.invoke("device-auth:clear-token"),

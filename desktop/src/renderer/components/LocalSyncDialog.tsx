@@ -61,6 +61,37 @@ interface AddHitchResult {
   restarted: boolean;
 }
 
+interface ProjectSetupStatus {
+  project: string;
+  hitch: HitchBinding | null;
+  localPathExists: boolean;
+  hitchPath: string | null;
+  hitchPathExists: boolean;
+  gitignorePath: string | null;
+  gitignoreExists: boolean;
+  gitignoreHasHitch: boolean;
+}
+
+type Harness = "codex" | "claude-code";
+
+interface HarnessHookStatus {
+  harness: Harness;
+  installed: boolean;
+  configPath: string | null;
+  scriptPath: string | null;
+  configExists: boolean;
+  scriptExists: boolean;
+  configWired: boolean;
+}
+
+interface HarnessSetupStatus {
+  project: string;
+  hitch: HitchBinding | null;
+  localPathExists: boolean;
+  codex: HarnessHookStatus;
+  claudeCode: HarnessHookStatus;
+}
+
 interface HitchDaemonApi {
   getState: () => Promise<DaemonState>;
   start: () => Promise<DaemonState>;
@@ -69,6 +100,16 @@ interface HitchDaemonApi {
   getConfig: () => Promise<LocalHitchConfig>;
   setActiveProject: (project: string) => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
+  getProjectSetup: (project: string) => Promise<ProjectSetupStatus>;
+  ensureHitchDirectory: (project: string) => Promise<ProjectSetupStatus>;
+  ensureGitignore: (project: string) => Promise<ProjectSetupStatus>;
+  getHarnessSetup: (project: string) => Promise<HarnessSetupStatus>;
+  installHarnessHooks: (
+    project: string,
+    harness: Harness,
+  ) => Promise<HarnessSetupStatus>;
+  openCodexHookTrust: (project: string) => Promise<string>;
+  chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
   getDeviceAuth: () => Promise<{
     deviceId: string;
     deviceName: string;

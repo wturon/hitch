@@ -1127,6 +1127,7 @@ function BoardContent({
           project={project}
           open={showProjectDetails}
           onOpenChange={setShowProjectDetails}
+          onLocalConfigChange={onLocalConfigChange}
         />
       </AppShell>
     );
@@ -1404,6 +1405,7 @@ function BoardContent({
           project={project}
           open={showProjectDetails}
           onOpenChange={setShowProjectDetails}
+          onLocalConfigChange={onLocalConfigChange}
         />
 
         <TaskDialog
