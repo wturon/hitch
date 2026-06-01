@@ -775,7 +775,7 @@ function ArchivedSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <ArchivedSheetContent
-        key={open ? "open" : "closed"}
+        open={open}
         cards={cards}
         pendingCardId={pendingCardId}
         onUnarchive={onUnarchive}
@@ -787,12 +787,14 @@ function ArchivedSheet({
 }
 
 function ArchivedSheetContent({
+  open,
   cards,
   pendingCardId,
   onUnarchive,
   onDelete,
   onDeleteAll,
 }: {
+  open: boolean;
   cards: Card[];
   pendingCardId: string | null;
   onUnarchive: (card: Card) => void;
@@ -800,6 +802,10 @@ function ArchivedSheetContent({
   onDeleteAll: () => void;
 }) {
   const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
+
+  useEffect(() => {
+    if (!open) setConfirmingDeleteAll(false);
+  }, [open]);
 
   return (
     <SheetContent className="gap-0">
