@@ -26,13 +26,16 @@ export default defineSchema({
 
   deviceTokens: defineTable({
     userId: v.id("users"),
+    deviceId: v.optional(v.string()),
     name: v.string(),
+    hostname: v.optional(v.string()),
     tokenHash: v.string(),
     createdAt: v.number(),
     lastUsedAt: v.optional(v.number()),
     revokedAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
+    .index("by_user_device", ["userId", "deviceId"])
     .index("by_token_hash", ["tokenHash"]),
 
   // One row per file in a project's .hitch/ folder.

@@ -1,12 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import type { MutationCtx } from "./_generated/server";
-import {
-  requireUser,
-  requireProjectMemberBySlug,
-  sha256,
-  projectBySlug,
-} from "./authz";
+import { requireUser, requireProjectMemberBySlug, sha256 } from "./authz";
 
 function randomToken(): string {
   const bytes = new Uint8Array(32);
@@ -15,33 +9,6 @@ function randomToken(): string {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
   return `hitchdev_${body}`;
-}
-
-async function ensureProjectForMember(ctx: MutationCtx, slug: string) {
-  const existing = await projectBySlug(ctx, slug);
-  if (existing) {
-    const access = await requireProjectMemberBySlug(ctx, slug);
-    if (!access.project) throw new Error("Project does not exist");
-    return access.project;
-  }
-
-  const user = await requireUser(ctx);
-  const now = Date.now();
-  const projectId = await ctx.db.insert("projects", {
-    name: slug,
-    slug,
-    createdBy: user._id,
-    createdAt: now,
-  });
-  await ctx.db.insert("projectMembers", {
-    projectId,
-    userId: user._id,
-    role: "owner",
-    createdAt: now,
-  });
-  const project = await ctx.db.get(projectId);
-  if (!project) throw new Error("Project creation failed");
-  return project;
 }
 
 export const list = query({
@@ -55,15 +22,25 @@ export const list = query({
   },
 });
 
+export const listMine = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requireUser(ctx);
+    return await ctx.db
+      .query("deviceTokens")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+  },
+});
+
 export const create = mutation({
   args: {
     project: v.string(),
     name: v.string(),
   },
   handler: async (ctx, args) => {
-    const project = await ensureProjectForMember(ctx, args.project);
     const user = await requireUser(ctx);
-    await requireProjectMemberBySlug(ctx, project.slug);
+    await requireProjectMemberBySlug(ctx, args.project);
 
     const token = randomToken();
     const now = Date.now();
@@ -72,6 +49,47 @@ export const create = mutation({
       name: args.name,
       tokenHash: await sha256(token),
       createdAt: now,
+    });
+    return { id, token };
+  },
+});
+
+export const authorizeDevice = mutation({
+  args: {
+    deviceId: v.string(),
+    name: v.string(),
+    hostname: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireUser(ctx);
+    const existing = await ctx.db
+      .query("deviceTokens")
+      .withIndex("by_user_device", (q) =>
+        q.eq("userId", user._id).eq("deviceId", args.deviceId),
+      )
+      .unique();
+
+    const token = randomToken();
+    const now = Date.now();
+
+    if (existing && existing.revokedAt === undefined) {
+      await ctx.db.patch(existing._id, {
+        name: args.name,
+        hostname: args.hostname,
+        tokenHash: await sha256(token),
+        lastUsedAt: now,
+      });
+      return { id: existing._id, token };
+    }
+
+    const id = await ctx.db.insert("deviceTokens", {
+      userId: user._id,
+      deviceId: args.deviceId,
+      name: args.name,
+      hostname: args.hostname,
+      tokenHash: await sha256(token),
+      createdAt: now,
+      lastUsedAt: now,
     });
     return { id, token };
   },

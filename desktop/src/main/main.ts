@@ -2,6 +2,7 @@ import {
   spawn,
   type ChildProcess,
 } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -9,7 +10,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain } from "electron";
@@ -56,6 +57,18 @@ interface AddHitchResult {
   restarted: boolean;
 }
 
+interface DeviceAuthState {
+  deviceId: string;
+  deviceName: string;
+  hostname: string;
+  hasToken: boolean;
+}
+
+interface LocalSecrets {
+  deviceId?: string;
+  deviceToken?: string;
+}
+
 interface RunnerMessage {
   type?: unknown;
   stream?: unknown;
@@ -72,6 +85,8 @@ const repoRoot = process.env.HITCH_ROOT
   : resolve(app.getAppPath(), "..");
 const localConfigPath =
   process.env.HITCH_CONFIG_PATH ?? join(homedir(), "Library/Application Support/Hitch/config.json");
+const localSecretsPath =
+  process.env.HITCH_SECRETS_PATH ?? join(homedir(), "Library/Application Support/Hitch/secrets.json");
 const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
 
@@ -284,6 +299,74 @@ function writeLocalConfig(config: LocalHitchConfig): LocalHitchConfig {
   return readLocalConfig();
 }
 
+function readLocalSecrets(): LocalSecrets {
+  if (!existsSync(localSecretsPath)) return {};
+  const raw = JSON.parse(readFileSync(localSecretsPath, "utf8")) as unknown;
+  if (!isRecord(raw)) return {};
+  return {
+    deviceId: typeof raw.deviceId === "string" ? raw.deviceId : undefined,
+    deviceToken: typeof raw.deviceToken === "string" ? raw.deviceToken : undefined,
+  };
+}
+
+function writeLocalSecrets(secrets: LocalSecrets): LocalSecrets {
+  mkdirSync(dirname(localSecretsPath), { recursive: true });
+  writeFileSync(localSecretsPath, `${JSON.stringify(secrets, null, 2)}\n`, "utf8");
+  return readLocalSecrets();
+}
+
+function ensureDeviceId(): string {
+  const secrets = readLocalSecrets();
+  if (secrets.deviceId) return secrets.deviceId;
+  const deviceId = randomUUID();
+  writeLocalSecrets({ ...secrets, deviceId });
+  return deviceId;
+}
+
+function readDeviceToken(): string | undefined {
+  return readLocalSecrets().deviceToken?.trim() || process.env.HITCH_DEVICE_TOKEN?.trim();
+}
+
+function deviceAuthState(): DeviceAuthState {
+  return {
+    deviceId: ensureDeviceId(),
+    deviceName: hostname(),
+    hostname: hostname(),
+    hasToken: Boolean(readDeviceToken()),
+  };
+}
+
+async function saveDeviceToken(token: string): Promise<DeviceAuthState> {
+  const next = { ...readLocalSecrets(), deviceId: ensureDeviceId(), deviceToken: token };
+  writeLocalSecrets(next);
+  addLog("system", "Saved local device authorization");
+  await restartDaemon();
+  return deviceAuthState();
+}
+
+async function clearDeviceToken(): Promise<DeviceAuthState> {
+  const secrets = readLocalSecrets();
+  writeLocalSecrets({ deviceId: secrets.deviceId ?? ensureDeviceId() });
+  addLog("system", "Cleared local device authorization");
+  await restartDaemon();
+  return deviceAuthState();
+}
+
+async function setActiveProject(project: string): Promise<LocalHitchConfig> {
+  const trimmed = project.trim();
+  if (!trimmed) throw new Error("Project is required");
+  const config = readLocalConfig();
+  config.activeProject = trimmed;
+  const saved = writeLocalConfig(config);
+  addLog("system", `Selected project ${trimmed}`);
+  if (saved.hitches.some((hitch) => hitch.project === trimmed && hitch.enabled)) {
+    await restartDaemon();
+  } else {
+    stopDaemon();
+  }
+  return saved;
+}
+
 function updateGitignore(localPath: string): boolean {
   const gitignorePath = join(localPath, ".gitignore");
   const existing = existsSync(gitignorePath)
@@ -414,6 +497,7 @@ function startDaemon(): DaemonState {
       ...process.env,
       HITCH_ROOT: repoRoot,
       HITCH_CONFIG_PATH: localConfigPath,
+      ...(readDeviceToken() ? { HITCH_DEVICE_TOKEN: readDeviceToken() } : {}),
     },
     stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
@@ -533,9 +617,17 @@ ipcMain.handle("daemon:start", () => startDaemon());
 ipcMain.handle("daemon:stop", () => stopDaemon());
 ipcMain.handle("daemon:clear-logs", () => clearLogs());
 ipcMain.handle("config:get", () => readLocalConfig());
+ipcMain.handle("config:set-active-project", (_event, project: string) =>
+  setActiveProject(project),
+);
 ipcMain.handle("config:add-hitch", (_event, input: AddHitchInput) =>
   addHitch(input),
 );
+ipcMain.handle("device-auth:get", () => deviceAuthState());
+ipcMain.handle("device-auth:set-token", (_event, token: string) =>
+  saveDeviceToken(token),
+);
+ipcMain.handle("device-auth:clear-token", () => clearDeviceToken());
 
 app.whenReady().then(async () => {
   await createWindow();

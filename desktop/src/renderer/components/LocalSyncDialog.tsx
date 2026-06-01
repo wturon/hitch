@@ -67,7 +67,20 @@ interface HitchDaemonApi {
   stop: () => Promise<DaemonState>;
   clearLogs: () => Promise<DaemonState>;
   getConfig: () => Promise<LocalHitchConfig>;
+  setActiveProject: (project: string) => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
+  getDeviceAuth: () => Promise<{
+    deviceId: string;
+    deviceName: string;
+    hostname: string;
+    hasToken: boolean;
+  }>;
+  setDeviceToken: (token: string) => Promise<{
+    deviceId: string;
+    deviceName: string;
+    hostname: string;
+    hasToken: boolean;
+  }>;
   onState: (callback: (state: DaemonState) => void) => () => void;
 }
 
@@ -115,10 +128,12 @@ export function LocalSyncDialog({
   project,
   open,
   onOpenChange,
+  onConfigChange,
 }: {
   project: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onConfigChange?: (config: LocalHitchConfig) => void;
 }) {
   const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
   const [daemon, setDaemon] = useState<DaemonState>(emptyState);
@@ -135,10 +150,11 @@ export function LocalSyncDialog({
     void bridge.getState().then(setDaemon);
     void bridge.getConfig().then((next) => {
       setConfig(next);
+      onConfigChange?.(next);
       setProjectName(next.hitches.find((hitch) => hitch.project === project)?.projectName ?? "");
     });
     return bridge.onState(setDaemon);
-  }, [bridge, open, project]);
+  }, [bridge, onConfigChange, open, project]);
 
   useEffect(() => {
     if (open) logEndRef.current?.scrollIntoView({ block: "end" });
@@ -164,6 +180,7 @@ export function LocalSyncDialog({
         updateGitignore,
       });
       setConfig(result.config);
+      onConfigChange?.(result.config);
       setLocalPath("");
       setUpdateGitignore(true);
     } catch (err) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { api } from "@convex/_generated/api";
@@ -24,6 +24,7 @@ import {
   LayoutDashboardIcon,
   LogOutIcon,
   PlusIcon,
+  SettingsIcon,
   Trash2Icon,
 } from "lucide-react";
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
@@ -40,8 +41,17 @@ import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { ChatLaunch } from "@/components/ChatLaunch";
 import { DeviceTokens } from "@/components/DeviceTokens";
 import { LocalSyncDialog } from "@/components/LocalSyncDialog";
+import { ProjectDetailsDialog } from "@/components/ProjectDetailsDialog";
 import { HITCH_PROJECT } from "@/lib/config";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Tooltip,
   TooltipContent,
@@ -61,10 +71,6 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-
-// The project this board renders. Defaults to hitch.config.json locally and
-// can be overridden for deployed boards with NEXT_PUBLIC_HITCH_PROJECT.
-const PROJECT = HITCH_PROJECT;
 
 // Columns the board shows, in order. Any task whose `status` frontmatter
 // doesn't match one of these falls into "todo". Legacy `blocked` cards land in
@@ -92,6 +98,36 @@ interface Card {
   updatedAt: number;
 }
 
+interface ProjectNavEntry {
+  project: {
+    _id: string;
+    name: string;
+    slug: string;
+  };
+  membership: {
+    role: "owner" | "member";
+  } | null;
+}
+
+interface HitchBinding {
+  project: string;
+  projectName?: string;
+  localPath: string;
+  enabled: boolean;
+}
+
+interface LocalHitchConfig {
+  activeProject: string;
+  hitches: HitchBinding[];
+}
+
+interface DeviceAuthState {
+  deviceId: string;
+  deviceName: string;
+  hostname: string;
+  hasToken: boolean;
+}
+
 // Shared card chrome, also reused by the drag overlay so the floating element
 // matches the one in the column.
 const CARD_CLASS =
@@ -99,17 +135,11 @@ const CARD_CLASS =
 
 function CardSummary({ card }: { card: Card }) {
   return (
-    <>
-      <p className="text-sm font-medium text-card-foreground">{card.title}</p>
-      <p className="mt-1 text-xs text-muted-foreground">
-        {card.owner ? `${card.owner} · ` : ""}
-        {card.path}
-      </p>
-    </>
+    <p className="text-sm font-medium text-card-foreground">{card.title}</p>
   );
 }
 
-function CardChat({ card }: { card: Card }) {
+function CardChat({ card, project }: { card: Card; project: string }) {
   if (!card.chat) return null;
 
   return (
@@ -117,7 +147,7 @@ function CardChat({ card }: { card: Card }) {
       <ChatLaunch
         chat={card.chat}
         status={card.chatStatus}
-        project={PROJECT}
+        project={project}
         size="xs"
         stopPropagation
       />
@@ -125,12 +155,12 @@ function CardChat({ card }: { card: Card }) {
   );
 }
 
-function CardContents({ card }: { card: Card }) {
+function CardContents({ card, project }: { card: Card; project: string }) {
   return (
     <>
       <CardSummary card={card} />
       {card.chat && (
-        <CardChat card={card} />
+        <CardChat card={card} project={project} />
       )}
     </>
   );
@@ -171,60 +201,180 @@ function SignInScreen() {
   );
 }
 
+// A small modal for creating a project. Opened by the "+" in the PROJECTS
+// header; replaces the old inline new-project form. Commits on submit, then
+// closes and clears so the next open starts fresh.
+function CreateProjectDialog({
+  open,
+  onOpenChange,
+  creating,
+  onCreate,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  creating: boolean;
+  onCreate: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    await onCreate(trimmed);
+    setName("");
+    onOpenChange(false);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>New project</DialogTitle>
+          <DialogDescription>
+            Create a project and switch to its board.
+          </DialogDescription>
+        </DialogHeader>
+        <form className="flex flex-col gap-4" onSubmit={submit}>
+          <input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Project name"
+            className="h-9 rounded-md border bg-background px-3 text-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <DialogFooter>
+            <Button type="submit" disabled={creating || !name.trim()}>
+              {creating ? "Creating..." : "Create project"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AppSidebar({
-  activeCount,
-  archivedCount,
-  onShowArchived,
+  projects,
+  selectedProject,
+  localHitches,
+  deviceAuth,
+  creatingProject,
+  onSelectProject,
+  onCreateProject,
+  onShowProjectDetails,
   onShowDeviceTokens,
   onShowLocalSync,
   onSignOut,
 }: {
-  activeCount: number;
-  archivedCount: number;
-  onShowArchived: () => void;
+  projects: ProjectNavEntry[];
+  selectedProject: string;
+  localHitches: HitchBinding[];
+  deviceAuth: DeviceAuthState | null;
+  creatingProject: boolean;
+  onSelectProject: (project: string) => void;
+  onCreateProject: (name: string) => Promise<void>;
+  onShowProjectDetails: () => void;
   onShowDeviceTokens: () => void;
   onShowLocalSync: () => void;
   onSignOut: () => void;
 }) {
+  const [showCreateProject, setShowCreateProject] = useState(false);
+
   return (
     <aside className="flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 py-2 text-sidebar-foreground md:sticky md:top-0 md:h-screen md:w-64 md:flex-col md:items-stretch md:border-b-0 md:border-r md:border-sidebar-border md:px-3 md:py-4">
-      <div className="flex min-w-0 items-center gap-2 px-1 md:px-2">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-semibold text-sidebar-primary-foreground">
-          H
-        </div>
-        <div className="hidden min-w-0 md:block">
-          <p className="truncate text-sm font-semibold">Hitch</p>
-          <p className="truncate text-xs text-sidebar-foreground/60">
-            {PROJECT}
-          </p>
-        </div>
-      </div>
-
-      <nav className="hidden flex-1 flex-col gap-1 border-t border-sidebar-border pt-3 md:flex">
-        <div className="flex h-9 items-center gap-2 rounded-lg bg-sidebar-accent px-2 text-sm font-medium text-sidebar-accent-foreground">
-          <LayoutDashboardIcon className="size-4" />
-          Board
-          <span className="ml-auto rounded-md bg-sidebar px-1.5 py-0.5 text-xs text-sidebar-foreground/70 ring-1 ring-sidebar-border">
-            {activeCount}
+      <nav className="hidden flex-1 flex-col gap-1 overflow-auto md:flex">
+        <div className="flex items-center justify-between px-2 pb-1">
+          <span className="text-xs font-medium uppercase tracking-wide text-sidebar-foreground/50">
+            Projects
           </span>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => setShowCreateProject(true)}
+                  aria-label="New project"
+                  className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                />
+              }
+            >
+              <PlusIcon />
+            </TooltipTrigger>
+            <TooltipContent>New project</TooltipContent>
+          </Tooltip>
         </div>
+        {projects.length === 0 ? (
+          <p className="px-2 py-1 text-xs text-sidebar-foreground/55">
+            No projects yet.
+          </p>
+        ) : (
+          projects.map(({ project }) => {
+            const hitch = localHitches.find((entry) => entry.project === project.slug);
+            const selected = project.slug === selectedProject;
+            return (
+              <div
+                key={project._id}
+                className={cn(
+                  "group flex min-h-9 items-center rounded-lg pr-1 transition-colors",
+                  selected
+                    ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => onSelectProject(project.slug)}
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pl-2 text-left text-sm"
+                >
+                  <LayoutDashboardIcon className="size-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                </button>
+                {/* Fixed trailing slot: the hitch status dot, swapped for the
+                    project-details gear on hover so neither crowds the name. */}
+                <div className="flex w-6 shrink-0 items-center justify-center">
+                  <span
+                    className={cn(
+                      "size-2 rounded-full group-hover:hidden",
+                      hitch?.enabled ? "bg-emerald-500" : "bg-sidebar-border",
+                    )}
+                    title={hitch?.enabled ? "Hitched locally" : "Not hitched locally"}
+                  />
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={() => {
+                            onSelectProject(project.slug);
+                            onShowProjectDetails();
+                          }}
+                          aria-label="Project details"
+                          className="hidden text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover:inline-flex"
+                        />
+                      }
+                    >
+                      <SettingsIcon />
+                    </TooltipTrigger>
+                    <TooltipContent>Project details</TooltipContent>
+                  </Tooltip>
+                </div>
+              </div>
+            );
+          })
+        )}
       </nav>
 
+      <CreateProjectDialog
+        open={showCreateProject}
+        onOpenChange={setShowCreateProject}
+        creating={creatingProject}
+        onCreate={onCreateProject}
+      />
+
       <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={archivedCount === 0}
-          onClick={onShowArchived}
-          aria-label="Show archived"
-          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
-        >
-          <ArchiveIcon />
-          <span className="hidden md:inline">Archived</span>
-          <span className="hidden md:ml-auto md:inline-flex md:rounded-md md:bg-sidebar-accent md:px-1.5 md:py-0.5 md:text-xs">
-            {archivedCount}
-          </span>
-        </Button>
         <Button
           variant="ghost"
           size="sm"
@@ -235,6 +385,9 @@ function AppSidebar({
           <KeyRoundIcon />
           <span className="hidden md:inline">Device tokens</span>
         </Button>
+        <div className="hidden px-2 text-xs text-sidebar-foreground/55 md:block">
+          This Mac: {deviceAuth?.hasToken ? "authorized" : "not authorized"}
+        </div>
         <Button
           variant="ghost"
           size="sm"
@@ -261,17 +414,27 @@ function AppSidebar({
 }
 
 function AppShell({
-  activeCount,
-  archivedCount,
-  onShowArchived,
+  projects,
+  selectedProject,
+  localHitches,
+  deviceAuth,
+  creatingProject,
+  onSelectProject,
+  onCreateProject,
+  onShowProjectDetails,
   onShowDeviceTokens,
   onShowLocalSync,
   onSignOut,
   children,
 }: {
-  activeCount: number;
-  archivedCount: number;
-  onShowArchived: () => void;
+  projects: ProjectNavEntry[];
+  selectedProject: string;
+  localHitches: HitchBinding[];
+  deviceAuth: DeviceAuthState | null;
+  creatingProject: boolean;
+  onSelectProject: (project: string) => void;
+  onCreateProject: (name: string) => Promise<void>;
+  onShowProjectDetails: () => void;
   onShowDeviceTokens: () => void;
   onShowLocalSync: () => void;
   onSignOut: () => void;
@@ -280,9 +443,14 @@ function AppShell({
   return (
     <div className="flex min-h-screen flex-col bg-background md:flex-row">
       <AppSidebar
-        activeCount={activeCount}
-        archivedCount={archivedCount}
-        onShowArchived={onShowArchived}
+        projects={projects}
+        selectedProject={selectedProject}
+        localHitches={localHitches}
+        deviceAuth={deviceAuth}
+        creatingProject={creatingProject}
+        onSelectProject={onSelectProject}
+        onCreateProject={onCreateProject}
+        onShowProjectDetails={onShowProjectDetails}
         onShowDeviceTokens={onShowDeviceTokens}
         onShowLocalSync={onShowLocalSync}
         onSignOut={onSignOut}
@@ -305,7 +473,79 @@ function AuthenticatedBoard() {
 
   if (!isAuthenticated) return <SignInScreen />;
 
-  return <BoardContent />;
+  return <ProjectWorkspace />;
+}
+
+function ProjectWorkspace() {
+  const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
+  const projects = useQuery(api.projects.listMine) ?? [];
+  const createProjectMutation = useMutation(api.projects.create);
+  const authorizeDevice = useMutation(api.deviceTokens.authorizeDevice);
+  const [selectedProject, setSelectedProject] = useState(HITCH_PROJECT);
+  const [localConfig, setLocalConfig] = useState<LocalHitchConfig>({
+    activeProject: HITCH_PROJECT,
+    hitches: [],
+  });
+  const [deviceAuth, setDeviceAuth] = useState<DeviceAuthState | null>(null);
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  useEffect(() => {
+    if (!bridge) return;
+    void bridge.getConfig().then((config) => {
+      setLocalConfig(config);
+      if (config.activeProject) setSelectedProject(config.activeProject);
+    });
+    void bridge.getDeviceAuth().then(setDeviceAuth);
+  }, [bridge]);
+
+  useEffect(() => {
+    if (!bridge || deviceAuth === null || deviceAuth.hasToken) return;
+    void authorizeDevice({
+      deviceId: deviceAuth.deviceId,
+      name: deviceAuth.deviceName || "This Mac",
+      hostname: deviceAuth.hostname,
+    }).then(async (result) => {
+      if (result.token) {
+        setDeviceAuth(await bridge.setDeviceToken(result.token));
+      } else {
+        setDeviceAuth(await bridge.getDeviceAuth());
+      }
+    });
+  }, [authorizeDevice, bridge, deviceAuth]);
+
+  useEffect(() => {
+    if (selectedProject || projects.length === 0) return;
+    setSelectedProject(projects[0].project.slug);
+  }, [projects, selectedProject]);
+
+  async function selectProject(project: string) {
+    setSelectedProject(project);
+    if (!bridge) return;
+    setLocalConfig(await bridge.setActiveProject(project));
+  }
+
+  async function createProject(name: string) {
+    setCreatingProject(true);
+    try {
+      const project = await createProjectMutation({ name });
+      if (project) await selectProject(project.slug);
+    } finally {
+      setCreatingProject(false);
+    }
+  }
+
+  return (
+    <BoardContent
+      project={selectedProject || HITCH_PROJECT}
+      projects={projects}
+      localHitches={localConfig.hitches}
+      deviceAuth={deviceAuth}
+      creatingProject={creatingProject}
+      onSelectProject={(project) => void selectProject(project)}
+      onCreateProject={createProject}
+      onLocalConfigChange={setLocalConfig}
+    />
+  );
 }
 
 // The hover-revealed archive shortcut in a card's top-right corner. Clicking it
@@ -374,6 +614,7 @@ function ArchiveShortcut({
 
 interface DraggableCardProps {
   card: Card;
+  project: string;
   pending: boolean;
   onOpen: (card: Card) => void;
   onArchiveToggle: (card: Card, archived: boolean) => void;
@@ -387,6 +628,7 @@ interface DraggableCardProps {
 // isn't a fresh component type each render, which would remount mid-drag.
 function DraggableCard({
   card,
+  project,
   pending,
   onOpen,
   onArchiveToggle,
@@ -425,7 +667,7 @@ function DraggableCard({
           >
             <CardSummary card={card} />
           </div>
-          <CardChat card={card} />
+          <CardChat card={card} project={project} />
           {!card.archived && (
             <ArchiveShortcut
               confirming={confirmingArchive}
@@ -721,14 +963,32 @@ function DroppableColumn({
   );
 }
 
-function BoardContent() {
+function BoardContent({
+  project,
+  projects,
+  localHitches,
+  deviceAuth,
+  creatingProject,
+  onSelectProject,
+  onCreateProject,
+  onLocalConfigChange,
+}: {
+  project: string;
+  projects: ProjectNavEntry[];
+  localHitches: HitchBinding[];
+  deviceAuth: DeviceAuthState | null;
+  creatingProject: boolean;
+  onSelectProject: (project: string) => void;
+  onCreateProject: (name: string) => Promise<void>;
+  onLocalConfigChange: (config: LocalHitchConfig) => void;
+}) {
   const { signOut } = useAuthActions();
-  const projectAccess = useQuery(api.projects.current, { project: PROJECT });
+  const projectAccess = useQuery(api.projects.current, { project });
   const claimProject = useMutation(api.projects.claimLegacyProject);
   const projectReady = projectAccess?.project !== null && projectAccess !== undefined;
   const files = useQuery(
     api.files.listFiles,
-    projectReady ? { project: PROJECT } : "skip",
+    projectReady ? { project } : "skip",
   );
   // Optimistically patch the cached file so a drag/archive/delete — and a brand
   // new task — reflects instantly instead of waiting on the frontmatter →
@@ -781,6 +1041,7 @@ function BoardContent() {
   const [showArchived, setShowArchived] = useState(false);
   const [showDeviceTokens, setShowDeviceTokens] = useState(false);
   const [showLocalSync, setShowLocalSync] = useState(false);
+  const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
@@ -791,8 +1052,8 @@ function BoardContent() {
 
   useEffect(() => {
     if (projectAccess?.legacy !== true) return;
-    void claimProject({ project: PROJECT, name: PROJECT });
-  }, [claimProject, projectAccess?.legacy]);
+    void claimProject({ project, name: project });
+  }, [claimProject, project, projectAccess?.legacy]);
 
   // `C` arms the composer on the first column for keyboard-driven creation.
   // Ignored while typing in a field or with the editor open, and when chorded
@@ -820,9 +1081,14 @@ function BoardContent() {
   if (!projectReady || files === undefined) {
     return (
       <AppShell
-        activeCount={0}
-        archivedCount={0}
-        onShowArchived={() => setShowArchived(true)}
+        projects={projects}
+        selectedProject={project}
+        localHitches={localHitches}
+        deviceAuth={deviceAuth}
+        creatingProject={creatingProject}
+        onSelectProject={onSelectProject}
+        onCreateProject={onCreateProject}
+        onShowProjectDetails={() => setShowProjectDetails(true)}
         onShowDeviceTokens={() => setShowDeviceTokens(true)}
         onShowLocalSync={() => setShowLocalSync(true)}
         onSignOut={() => void signOut()}
@@ -833,14 +1099,20 @@ function BoardContent() {
             : "Connecting to Convex..."}
         </div>
         <DeviceTokens
-          project={PROJECT}
+          project={project}
           open={showDeviceTokens}
           onOpenChange={setShowDeviceTokens}
         />
         <LocalSyncDialog
-          project={PROJECT}
+          project={project}
           open={showLocalSync}
           onOpenChange={setShowLocalSync}
+          onConfigChange={onLocalConfigChange}
+        />
+        <ProjectDetailsDialog
+          project={project}
+          open={showProjectDetails}
+          onOpenChange={setShowProjectDetails}
         />
       </AppShell>
     );
@@ -879,7 +1151,7 @@ function BoardContent() {
   ) as Record<Column, Card[]>;
 
   const target: TaskTarget | null = selected && {
-    project: PROJECT,
+    project,
     path: selected.path,
     title: selected.title,
     content: selected.content,
@@ -893,7 +1165,7 @@ function BoardContent() {
     const slug = uniqueSlug(title, taken);
     const content = setFrontmatterKeys("", { title, status: column });
     await upsertFile({
-      project: PROJECT,
+      project: project,
       path: taskBodyPath(slug),
       content,
       hash: await sha256(content),
@@ -913,7 +1185,7 @@ function BoardContent() {
     setPendingCardId(card.id);
     try {
       await upsertFile({
-        project: PROJECT,
+        project: project,
         path: card.path,
         content: nextContent,
         hash: await sha256(nextContent),
@@ -928,7 +1200,7 @@ function BoardContent() {
     setPendingCardId(card.id);
     try {
       await upsertFile({
-        project: PROJECT,
+        project: project,
         path: card.path,
         content: "",
         hash: "",
@@ -946,7 +1218,7 @@ function BoardContent() {
     await Promise.all(
       archivedCards.map((card) =>
         upsertFile({
-          project: PROJECT,
+          project: project,
           path: card.path,
           content: "",
           hash: "",
@@ -967,7 +1239,7 @@ function BoardContent() {
     setPendingCardId(card.id);
     try {
       await upsertFile({
-        project: PROJECT,
+        project: project,
         path: card.path,
         content: nextContent,
         hash: await sha256(nextContent),
@@ -996,9 +1268,14 @@ function BoardContent() {
 
   return (
     <AppShell
-      activeCount={activeCards.length}
-      archivedCount={archivedCards.length}
-      onShowArchived={() => setShowArchived(true)}
+      projects={projects}
+      selectedProject={project}
+      localHitches={localHitches}
+      deviceAuth={deviceAuth}
+      creatingProject={creatingProject}
+      onSelectProject={onSelectProject}
+      onCreateProject={onCreateProject}
+      onShowProjectDetails={() => setShowProjectDetails(true)}
       onShowDeviceTokens={() => setShowDeviceTokens(true)}
       onShowLocalSync={() => setShowLocalSync(true)}
       onSignOut={() => void signOut()}
@@ -1012,6 +1289,20 @@ function BoardContent() {
               {activeCards.length === 1 ? "" : "s"} · live
             </span>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={archivedCards.length === 0}
+            onClick={() => setShowArchived(true)}
+          >
+            <ArchiveIcon />
+            Archived
+            {archivedCards.length > 0 && (
+              <span className="ml-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                {archivedCards.length}
+              </span>
+            )}
+          </Button>
         </header>
 
         <DndContext
@@ -1040,6 +1331,7 @@ function BoardContent() {
                   <DraggableCard
                     key={card.id}
                     card={card}
+                    project={project}
                     pending={pendingCardId === card.id}
                     onOpen={setSelected}
                     onArchiveToggle={(c, archived) =>
@@ -1065,7 +1357,7 @@ function BoardContent() {
                   "cursor-grabbing shadow-lg ring-foreground/20",
                 )}
               >
-                <CardContents card={activeCard} />
+                <CardContents card={activeCard} project={project} />
               </div>
             ) : null}
           </DragOverlay>
@@ -1082,15 +1374,22 @@ function BoardContent() {
         />
 
         <DeviceTokens
-          project={PROJECT}
+          project={project}
           open={showDeviceTokens}
           onOpenChange={setShowDeviceTokens}
         />
 
         <LocalSyncDialog
-          project={PROJECT}
+          project={project}
           open={showLocalSync}
           onOpenChange={setShowLocalSync}
+          onConfigChange={onLocalConfigChange}
+        />
+
+        <ProjectDetailsDialog
+          project={project}
+          open={showProjectDetails}
+          onOpenChange={setShowProjectDetails}
         />
 
         <TaskDialog

@@ -46,13 +46,24 @@ export interface AddHitchResult {
   restarted: boolean;
 }
 
+export interface DeviceAuthState {
+  deviceId: string;
+  deviceName: string;
+  hostname: string;
+  hasToken: boolean;
+}
+
 export interface HitchDaemonApi {
   getState: () => Promise<DaemonState>;
   start: () => Promise<DaemonState>;
   stop: () => Promise<DaemonState>;
   clearLogs: () => Promise<DaemonState>;
   getConfig: () => Promise<LocalHitchConfig>;
+  setActiveProject: (project: string) => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
+  getDeviceAuth: () => Promise<DeviceAuthState>;
+  setDeviceToken: (token: string) => Promise<DeviceAuthState>;
+  clearDeviceToken: () => Promise<DeviceAuthState>;
   onState: (callback: (state: DaemonState) => void) => () => void;
 }
 
@@ -62,7 +73,11 @@ const api: HitchDaemonApi = {
   stop: () => ipcRenderer.invoke("daemon:stop"),
   clearLogs: () => ipcRenderer.invoke("daemon:clear-logs"),
   getConfig: () => ipcRenderer.invoke("config:get"),
+  setActiveProject: (project) => ipcRenderer.invoke("config:set-active-project", project),
   addHitch: (input) => ipcRenderer.invoke("config:add-hitch", input),
+  getDeviceAuth: () => ipcRenderer.invoke("device-auth:get"),
+  setDeviceToken: (token) => ipcRenderer.invoke("device-auth:set-token", token),
+  clearDeviceToken: () => ipcRenderer.invoke("device-auth:clear-token"),
   onState: (callback) => {
     const listener = (_event: IpcRendererEvent, state: DaemonState) => {
       callback(state);
