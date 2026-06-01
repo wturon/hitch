@@ -34,6 +34,8 @@ export function DeviceTokens({
 }
 
 function DeviceTokensContent({ project }: { project: string }) {
+  const deviceNameId = "device-token-name";
+  const newTokenId = "device-token-value";
   const tokens = useQuery(api.deviceTokens.list, { project });
   const createToken = useMutation(api.deviceTokens.create);
   const revokeToken = useMutation(api.deviceTokens.revoke);
@@ -72,11 +74,15 @@ function DeviceTokensContent({ project }: { project: string }) {
       </DialogHeader>
 
       <section className="flex flex-col gap-2">
-        <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <label
+          htmlFor={deviceNameId}
+          className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+        >
           Device name
         </label>
         <div className="flex gap-2">
           <input
+            id={deviceNameId}
             value={name}
             onChange={(event) => setName(event.target.value)}
             className="h-9 min-w-0 flex-1 rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -90,10 +96,14 @@ function DeviceTokensContent({ project }: { project: string }) {
 
       {createdToken && (
         <section className="flex flex-col gap-2 rounded-md border bg-muted/40 p-3">
-          <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <label
+            htmlFor={newTokenId}
+            className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+          >
             New token
           </label>
           <textarea
+            id={newTokenId}
             readOnly
             value={createdToken}
             className="h-20 resize-none rounded-md border bg-transparent p-2 font-mono text-xs outline-none"
@@ -115,7 +125,7 @@ function DeviceTokensContent({ project }: { project: string }) {
           Active
         </h3>
         {tokens === undefined ? (
-          <p className="text-sm text-muted-foreground">Loading...</p>
+          <p className="text-sm text-muted-foreground">Loading…</p>
         ) : activeTokens.length === 0 ? (
           <p className="text-sm text-muted-foreground">No active device tokens.</p>
         ) : (

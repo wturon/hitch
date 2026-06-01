@@ -236,7 +236,11 @@ function CreateProjectDialog({
           </DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-4" onSubmit={submit}>
+          <label className="sr-only" htmlFor="new-project-name">
+            Project name
+          </label>
           <input
+            id="new-project-name"
             autoFocus
             value={name}
             onChange={(event) => setName(event.target.value)}
@@ -245,7 +249,7 @@ function CreateProjectDialog({
           />
           <DialogFooter>
             <Button type="submit" disabled={creating || !name.trim()}>
-              {creating ? "Creating..." : "Create project"}
+              {creating ? "Creating…" : "Create project"}
             </Button>
           </DialogFooter>
         </form>
@@ -466,7 +470,7 @@ function AuthenticatedBoard() {
   if (isLoading) {
     return (
       <main className="flex flex-1 items-center justify-center text-muted-foreground">
-        Checking session...
+        Checking session…
       </main>
     );
   }
@@ -513,10 +517,8 @@ function ProjectWorkspace() {
     });
   }, [authorizeDevice, bridge, deviceAuth]);
 
-  useEffect(() => {
-    if (selectedProject || projects.length === 0) return;
-    setSelectedProject(projects[0].project.slug);
-  }, [projects, selectedProject]);
+  const currentProject =
+    selectedProject || projects[0]?.project.slug || HITCH_PROJECT;
 
   async function selectProject(project: string) {
     setSelectedProject(project);
@@ -536,7 +538,7 @@ function ProjectWorkspace() {
 
   return (
     <BoardContent
-      project={selectedProject || HITCH_PROJECT}
+      project={currentProject}
       projects={projects}
       localHitches={localConfig.hitches}
       deviceAuth={deviceAuth}
@@ -654,7 +656,8 @@ function DraggableCard({
             isDragging && "opacity-40",
           )}
         >
-          <div
+          <button
+            type="button"
             {...attributes}
             {...listeners}
             onClick={() => onOpen(card)}
@@ -666,7 +669,7 @@ function DraggableCard({
             className="block w-full rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <CardSummary card={card} />
-          </div>
+          </button>
           <CardChat card={card} project={project} />
           {!card.archived && (
             <ArchiveShortcut
@@ -772,41 +775,46 @@ function ArchivedSheet({
   onDelete: (card: Card) => void;
   onDeleteAll: () => void;
 }) {
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) setConfirmingDeleteAll(false);
+        onOpenChange(nextOpen);
+      }}
+    >
       <ArchivedSheetContent
-        open={open}
         cards={cards}
+        confirmingDeleteAll={confirmingDeleteAll}
         pendingCardId={pendingCardId}
         onUnarchive={onUnarchive}
         onDelete={onDelete}
         onDeleteAll={onDeleteAll}
+        onConfirmingDeleteAllChange={setConfirmingDeleteAll}
       />
     </Sheet>
   );
 }
 
 function ArchivedSheetContent({
-  open,
   cards,
+  confirmingDeleteAll,
   pendingCardId,
   onUnarchive,
   onDelete,
   onDeleteAll,
+  onConfirmingDeleteAllChange,
 }: {
-  open: boolean;
   cards: Card[];
+  confirmingDeleteAll: boolean;
   pendingCardId: string | null;
   onUnarchive: (card: Card) => void;
   onDelete: (card: Card) => void;
   onDeleteAll: () => void;
+  onConfirmingDeleteAllChange: (confirming: boolean) => void;
 }) {
-  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
-
-  useEffect(() => {
-    if (!open) setConfirmingDeleteAll(false);
-  }, [open]);
-
   return (
     <SheetContent className="gap-0">
       <SheetHeader>
@@ -822,9 +830,9 @@ function ArchivedSheetContent({
             onClick={() => {
               if (confirmingDeleteAll) {
                 onDeleteAll();
-                setConfirmingDeleteAll(false);
+                onConfirmingDeleteAllChange(false);
               } else {
-                setConfirmingDeleteAll(true);
+                onConfirmingDeleteAllChange(true);
               }
             }}
           >
