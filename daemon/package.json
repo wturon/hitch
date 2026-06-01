@@ -5,8 +5,15 @@
   "type": "module",
   "description": "Watches .hitch/ folders and syncs them to Convex.",
   "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/daemon.d.ts",
+      "default": "./dist/daemon.js"
+    }
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
+    "dev:runner": "tsx src/runner.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js"

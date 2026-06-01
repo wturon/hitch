@@ -19,6 +19,7 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   ExternalLinkIcon,
+  FolderSyncIcon,
   KeyRoundIcon,
   LayoutDashboardIcon,
   LogOutIcon,
@@ -38,6 +39,7 @@ import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { ChatLaunch } from "@/components/ChatLaunch";
 import { DeviceTokens } from "@/components/DeviceTokens";
+import { LocalSyncDialog } from "@/components/LocalSyncDialog";
 import { HITCH_PROJECT } from "@/lib/config";
 import { Button } from "@/components/ui/button";
 import {
@@ -174,12 +176,14 @@ function AppSidebar({
   archivedCount,
   onShowArchived,
   onShowDeviceTokens,
+  onShowLocalSync,
   onSignOut,
 }: {
   activeCount: number;
   archivedCount: number;
   onShowArchived: () => void;
   onShowDeviceTokens: () => void;
+  onShowLocalSync: () => void;
   onSignOut: () => void;
 }) {
   return (
@@ -234,6 +238,16 @@ function AppSidebar({
         <Button
           variant="ghost"
           size="sm"
+          onClick={onShowLocalSync}
+          aria-label="Local sync"
+          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
+        >
+          <FolderSyncIcon />
+          <span className="hidden md:inline">Local sync</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onSignOut}
           aria-label="Sign out"
           className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
@@ -251,6 +265,7 @@ function AppShell({
   archivedCount,
   onShowArchived,
   onShowDeviceTokens,
+  onShowLocalSync,
   onSignOut,
   children,
 }: {
@@ -258,6 +273,7 @@ function AppShell({
   archivedCount: number;
   onShowArchived: () => void;
   onShowDeviceTokens: () => void;
+  onShowLocalSync: () => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
@@ -268,6 +284,7 @@ function AppShell({
         archivedCount={archivedCount}
         onShowArchived={onShowArchived}
         onShowDeviceTokens={onShowDeviceTokens}
+        onShowLocalSync={onShowLocalSync}
         onSignOut={onSignOut}
       />
       <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
@@ -706,7 +723,13 @@ function DroppableColumn({
 
 function BoardContent() {
   const { signOut } = useAuthActions();
-  const files = useQuery(api.files.listFiles, { project: PROJECT });
+  const projectAccess = useQuery(api.projects.current, { project: PROJECT });
+  const claimProject = useMutation(api.projects.claimLegacyProject);
+  const projectReady = projectAccess?.project !== null && projectAccess !== undefined;
+  const files = useQuery(
+    api.files.listFiles,
+    projectReady ? { project: PROJECT } : "skip",
+  );
   // Optimistically patch the cached file so a drag/archive/delete — and a brand
   // new task — reflects instantly instead of waiting on the frontmatter →
   // daemon → Convex round trip. Bumping updatedAt lands the card at the top of
@@ -757,6 +780,7 @@ function BoardContent() {
   const [selected, setSelected] = useState<Card | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showDeviceTokens, setShowDeviceTokens] = useState(false);
+  const [showLocalSync, setShowLocalSync] = useState(false);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
@@ -764,6 +788,11 @@ function BoardContent() {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
+
+  useEffect(() => {
+    if (projectAccess?.legacy !== true) return;
+    void claimProject({ project: PROJECT, name: PROJECT });
+  }, [claimProject, projectAccess?.legacy]);
 
   // `C` arms the composer on the first column for keyboard-driven creation.
   // Ignored while typing in a field or with the editor open, and when chorded
@@ -788,18 +817,31 @@ function BoardContent() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selected]);
 
-  if (files === undefined) {
+  if (!projectReady || files === undefined) {
     return (
       <AppShell
         activeCount={0}
         archivedCount={0}
         onShowArchived={() => setShowArchived(true)}
         onShowDeviceTokens={() => setShowDeviceTokens(true)}
+        onShowLocalSync={() => setShowLocalSync(true)}
         onSignOut={() => void signOut()}
       >
         <div className="flex min-h-[50vh] items-center justify-center text-muted-foreground">
-          Connecting to Convex…
+          {projectAccess?.legacy === true
+            ? "Creating project..."
+            : "Connecting to Convex..."}
         </div>
+        <DeviceTokens
+          project={PROJECT}
+          open={showDeviceTokens}
+          onOpenChange={setShowDeviceTokens}
+        />
+        <LocalSyncDialog
+          project={PROJECT}
+          open={showLocalSync}
+          onOpenChange={setShowLocalSync}
+        />
       </AppShell>
     );
   }
@@ -958,6 +1000,7 @@ function BoardContent() {
       archivedCount={archivedCards.length}
       onShowArchived={() => setShowArchived(true)}
       onShowDeviceTokens={() => setShowDeviceTokens(true)}
+      onShowLocalSync={() => setShowLocalSync(true)}
       onSignOut={() => void signOut()}
     >
       <div className="flex flex-col gap-6">
@@ -1042,6 +1085,12 @@ function BoardContent() {
           project={PROJECT}
           open={showDeviceTokens}
           onOpenChange={setShowDeviceTokens}
+        />
+
+        <LocalSyncDialog
+          project={PROJECT}
+          open={showLocalSync}
+          onOpenChange={setShowLocalSync}
         />
 
         <TaskDialog

@@ -2,11 +2,11 @@
   "$schema": "https://raw.githubusercontent.com/manaflow-ai/cmux/main/web/data/cmux.schema.json",
   "commands": [
     {
-      "name": "Hitch Dev",
-      "description": "Run Convex, the web app, and the Hitch daemon in separate tabs.",
-      "keywords": ["hitch", "dev", "convex", "daemon", "web"],
+      "name": "Hitch Desktop Dev",
+      "description": "Run Convex and Hitch Desktop in separate tabs.",
+      "keywords": ["hitch", "dev", "convex", "desktop", "electron"],
       "workspace": {
-        "name": "Hitch Dev",
+        "name": "Hitch Desktop Dev",
         "cwd": ".",
         "restart": "confirm",
         "layout": {
@@ -20,13 +20,13 @@
               },
               {
                 "type": "terminal",
-                "name": "Web",
-                "command": "npm run dev:web"
+                "name": "Renderer",
+                "command": "npm run dev:renderer"
               },
               {
                 "type": "terminal",
-                "name": "Daemon",
-                "command": "npm run dev:daemon"
+                "name": "Electron",
+                "command": "npm run dev:electron"
               }
             ]
           }

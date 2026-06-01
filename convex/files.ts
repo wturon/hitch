@@ -1,73 +1,73 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { requireWorkspaceAccess } from "./authz";
+import { requireProjectAccess } from "./authz";
 
-// Insert or update a file by its (workspace, source, path) key.
-// A delete is just an upsert with deleted: true (a tombstone) so other
-// machines learn to remove the file locally.
+// Insert or update a file by its (projectId, path) key. A delete is just an
+// upsert with deleted: true (a tombstone) so other machines learn to remove the
+// file locally.
 export const upsertFile = mutation({
   args: {
-    workspace: v.string(),
-    source: v.string(),
+    project: v.string(),
     path: v.string(),
     content: v.string(),
     hash: v.string(),
     deleted: v.boolean(),
-    daemonToken: v.optional(v.string()),
+    deviceToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireWorkspaceAccess(ctx, args.workspace, args.daemonToken);
+    const access = await requireProjectAccess(ctx, args.project, args.deviceToken);
+    if (!access.project) throw new Error("Project does not exist");
     const existing = await ctx.db
       .query("files")
       .withIndex("by_key", (q) =>
-        q
-          .eq("workspace", args.workspace)
-          .eq("source", args.source)
-          .eq("path", args.path),
+        q.eq("projectId", access.project._id).eq("path", args.path),
       )
       .unique();
 
-    const doc = { ...args, updatedAt: Date.now() };
-    const { daemonToken: _daemonToken, ...fileDoc } = doc;
+    const doc = {
+      projectId: access.project._id,
+      path: args.path,
+      content: args.content,
+      hash: args.hash,
+      deleted: args.deleted,
+      updatedAt: Date.now(),
+    };
     if (existing) {
-      await ctx.db.patch(existing._id, fileDoc);
+      await ctx.db.patch(existing._id, doc);
     } else {
-      await ctx.db.insert("files", fileDoc);
+      await ctx.db.insert("files", doc);
     }
   },
 });
 
-// All files for a workspace (including tombstones, so the daemon can apply
-// deletes). The web UI will later filter out deleted rows.
+// All files for a project (including tombstones, so the daemon can apply
+// deletes). The web UI filters out deleted rows.
 export const listFiles = query({
-  args: { workspace: v.string(), daemonToken: v.optional(v.string()) },
+  args: { project: v.string(), deviceToken: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    await requireWorkspaceAccess(ctx, args.workspace, args.daemonToken);
+    const access = await requireProjectAccess(ctx, args.project, args.deviceToken);
+    if (!access.project) throw new Error("Project does not exist");
     return await ctx.db
       .query("files")
-      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
+      .withIndex("by_project", (q) => q.eq("projectId", access.project._id))
       .collect();
   },
 });
 
-// A single file by its (workspace, source, path) key. Returns null if missing.
-// For the board's detail view and targeted reads.
+// A single file by its (projectId, path) key. Returns null if missing.
 export const getFile = query({
   args: {
-    workspace: v.string(),
-    source: v.string(),
+    project: v.string(),
     path: v.string(),
-    daemonToken: v.optional(v.string()),
+    deviceToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireWorkspaceAccess(ctx, args.workspace, args.daemonToken);
+    const access = await requireProjectAccess(ctx, args.project, args.deviceToken);
+    if (!access.project) throw new Error("Project does not exist");
     return await ctx.db
       .query("files")
       .withIndex("by_key", (q) =>
-        q
-          .eq("workspace", args.workspace)
-          .eq("source", args.source)
-          .eq("path", args.path),
+        q.eq("projectId", access.project._id).eq("path", args.path),
       )
       .unique();
   },

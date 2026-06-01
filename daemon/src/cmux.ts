@@ -168,7 +168,7 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
 }
 
 export interface StartSpec {
-  taskKey: string; // dedup key for fresh spawns, e.g. "source/tasks/slug"
+  taskKey: string; // dedup key for fresh task spawns, e.g. "tasks/slug"
   prompt: string;
   cwd?: string;
 }

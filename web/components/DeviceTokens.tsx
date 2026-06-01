@@ -15,40 +15,40 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-export function DaemonTokens({
-  workspace,
+export function DeviceTokens({
+  project,
   open,
   onOpenChange,
 }: {
-  workspace: string;
+  project: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
-        {open && <DaemonTokensContent workspace={workspace} />}
+        {open && <DeviceTokensContent project={project} />}
       </DialogContent>
     </Dialog>
   );
 }
 
-function DaemonTokensContent({ workspace }: { workspace: string }) {
-  const tokens = useQuery(api.daemonTokens.list, { workspace });
-  const createToken = useMutation(api.daemonTokens.create);
-  const revokeToken = useMutation(api.daemonTokens.revoke);
-  const [name, setName] = useState("Local daemon");
+function DeviceTokensContent({ project }: { project: string }) {
+  const tokens = useQuery(api.deviceTokens.list, { project });
+  const createToken = useMutation(api.deviceTokens.create);
+  const revokeToken = useMutation(api.deviceTokens.revoke);
+  const [name, setName] = useState("This Mac");
   const [createdToken, setCreatedToken] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<Id<"daemonTokens"> | null>(null);
+  const [busyId, setBusyId] = useState<Id<"deviceTokens"> | null>(null);
   const [creating, setCreating] = useState(false);
   const activeTokens =
     tokens?.filter((token) => token.revokedAt === undefined) ?? [];
 
   async function create() {
-    const tokenName = name.trim() || "Local daemon";
+    const tokenName = name.trim() || "This Mac";
     setCreating(true);
     try {
-      const result = await createToken({ workspace, name: tokenName });
+      const result = await createToken({ project, name: tokenName });
       setCreatedToken(result.token);
       setName(tokenName);
     } finally {
@@ -56,10 +56,10 @@ function DaemonTokensContent({ workspace }: { workspace: string }) {
     }
   }
 
-  async function revoke(id: Id<"daemonTokens">) {
+  async function revoke(id: Id<"deviceTokens">) {
     setBusyId(id);
     try {
-      await revokeToken({ workspace, id });
+      await revokeToken({ project, id });
     } finally {
       setBusyId(null);
     }
@@ -68,12 +68,12 @@ function DaemonTokensContent({ workspace }: { workspace: string }) {
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Daemon tokens</DialogTitle>
+        <DialogTitle>Device tokens</DialogTitle>
       </DialogHeader>
 
       <section className="flex flex-col gap-2">
         <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Token name
+          Device name
         </label>
         <div className="flex gap-2">
           <input
@@ -117,7 +117,7 @@ function DaemonTokensContent({ workspace }: { workspace: string }) {
         {tokens === undefined ? (
           <p className="text-sm text-muted-foreground">Loading...</p>
         ) : activeTokens.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No active tokens.</p>
+          <p className="text-sm text-muted-foreground">No active device tokens.</p>
         ) : (
           activeTokens.map((token) => (
             <div

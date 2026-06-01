@@ -1,29 +1,31 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import {
-  requireDaemonToken,
-  requireWorkspaceMemberBySlug,
+  requireProjectAccess,
+  requireProjectMemberBySlug,
 } from "./authz";
 
 // Enqueue an action for a daemon to run locally (the browser can't open a
 // terminal itself). Returns the new command's id so the caller can watch it.
 export const enqueueCommand = mutation({
   args: {
-    workspace: v.string(),
+    project: v.string(),
     host: v.optional(v.string()),
     kind: v.string(),
     harness: v.string(),
     sessionId: v.optional(v.string()),
-    source: v.optional(v.string()),
     path: v.optional(v.string()),
     initialPrompt: v.optional(v.string()),
     cwd: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireWorkspaceMemberBySlug(ctx, args.workspace);
+    const access = await requireProjectMemberBySlug(ctx, args.project);
+    if (!access.project) throw new Error("Project does not exist");
     const now = Date.now();
+    const { project: _project, ...command } = args;
     return await ctx.db.insert("commands", {
-      ...args,
+      ...command,
+      projectId: access.project._id,
       status: "pending",
       createdAt: now,
       updatedAt: now,
@@ -31,16 +33,21 @@ export const enqueueCommand = mutation({
   },
 });
 
-// The pending commands for a workspace. The daemon subscribes to this; as soon
-// as it marks one done, it drops out of the result set.
+// The pending commands for a project. The daemon subscribes to this; as soon as
+// it marks one done, it drops out of the result set.
 export const pendingCommands = query({
-  args: { workspace: v.string(), daemonToken: v.string() },
+  args: { project: v.string(), deviceToken: v.string() },
   handler: async (ctx, args) => {
-    await requireDaemonToken(ctx, args.workspace, args.daemonToken);
+    const { project } = await requireProjectAccess(
+      ctx,
+      args.project,
+      args.deviceToken,
+    );
+    if (!project) throw new Error("Project does not exist");
     return await ctx.db
       .query("commands")
-      .withIndex("by_workspace_status", (q) =>
-        q.eq("workspace", args.workspace).eq("status", "pending"),
+      .withIndex("by_project_status", (q) =>
+        q.eq("projectId", project._id).eq("status", "pending"),
       )
       .collect();
   },
@@ -52,12 +59,19 @@ export const completeCommand = mutation({
     id: v.id("commands"),
     status: v.string(),
     result: v.optional(v.string()),
-    daemonToken: v.string(),
+    project: v.string(),
+    deviceToken: v.string(),
   },
   handler: async (ctx, args) => {
     const command = await ctx.db.get(args.id);
     if (!command) throw new Error("Command not found");
-    await requireDaemonToken(ctx, command.workspace, args.daemonToken);
+    const { project } = await requireProjectAccess(
+      ctx,
+      args.project,
+      args.deviceToken,
+    );
+    if (!project) throw new Error("Project does not exist");
+    if (command.projectId !== project._id) throw new Error("Command project mismatch");
     await ctx.db.patch(args.id, {
       status: args.status,
       result: args.result,

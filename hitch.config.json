@@ -1,9 +1,11 @@
 {
-  "workspace": "will-default",
-  "watch": [
+  "activeProject": "will-default",
+  "hitches": [
     {
-      "label": "hitch",
-      "path": "./.hitch"
+      "project": "will-default",
+      "projectName": "Hitch",
+      "localPath": ".",
+      "enabled": true
     }
   ]
 }

@@ -1,28 +1,31 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { requireDaemonToken, requireWorkspaceMemberBySlug } from "./authz";
+import { requireProjectAccess, requireProjectMemberBySlug } from "./authz";
 
 // Upsert a daemon's heartbeat. The daemon calls this on startup and on an
 // interval; lastSeen is stamped server-side to avoid clock skew between
-// machines. Keyed by (workspace, hostname) so one row per machine.
+// machines. Keyed by (projectId, hostname) so one row per machine.
 export const heartbeat = mutation({
   args: {
-    workspace: v.string(),
+    project: v.string(),
     hostname: v.string(),
-    sources: v.array(v.string()),
-    daemonToken: v.string(),
+    deviceToken: v.string(),
   },
   handler: async (ctx, args) => {
-    await requireDaemonToken(ctx, args.workspace, args.daemonToken);
+    const { project } = await requireProjectAccess(
+      ctx,
+      args.project,
+      args.deviceToken,
+    );
+    if (!project) throw new Error("Project does not exist");
     const existing = await ctx.db
       .query("daemons")
       .withIndex("by_key", (q) =>
-        q.eq("workspace", args.workspace).eq("hostname", args.hostname),
+        q.eq("projectId", project._id).eq("hostname", args.hostname),
       )
       .unique();
 
-    const { daemonToken: _daemonToken, ...heartbeat } = args;
-    const doc = { ...heartbeat, lastSeen: Date.now() };
+    const doc = { projectId: project._id, hostname: args.hostname, lastSeen: Date.now() };
     if (existing) {
       await ctx.db.patch(existing._id, doc);
     } else {
@@ -31,16 +34,16 @@ export const heartbeat = mutation({
   },
 });
 
-// All daemons for a workspace. The board uses lastSeen to show which machines
-// are currently connected (e.g. "seen within the last 30s") and what each is
-// watching.
+// All daemons for a project. The board uses lastSeen to show which machines are
+// currently connected.
 export const listDaemons = query({
-  args: { workspace: v.string() },
+  args: { project: v.string() },
   handler: async (ctx, args) => {
-    await requireWorkspaceMemberBySlug(ctx, args.workspace);
+    const access = await requireProjectMemberBySlug(ctx, args.project);
+    if (!access.project) throw new Error("Project does not exist");
     return await ctx.db
       .query("daemons")
-      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
+      .withIndex("by_project", (q) => q.eq("projectId", access.project._id))
       .collect();
   },
 });

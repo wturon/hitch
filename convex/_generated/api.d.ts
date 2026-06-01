@@ -11,11 +11,11 @@
 import type * as auth from "../auth.js";
 import type * as authz from "../authz.js";
 import type * as commands from "../commands.js";
-import type * as daemonTokens from "../daemonTokens.js";
+import type * as deviceTokens from "../deviceTokens.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
+import type * as projects from "../projects.js";
 import type * as status from "../status.js";
-import type * as workspaces from "../workspaces.js";
 
 import type {
   ApiFromModules,
@@ -27,11 +27,11 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   authz: typeof authz;
   commands: typeof commands;
-  daemonTokens: typeof daemonTokens;
+  deviceTokens: typeof deviceTokens;
   files: typeof files;
   http: typeof http;
+  projects: typeof projects;
   status: typeof status;
-  workspaces: typeof workspaces;
 }>;
 
 /**

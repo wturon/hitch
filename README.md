@@ -9,13 +9,13 @@ Coding agents are great at reading and writing files in a repo. But task/status 
 - A **git-ignored folder** (e.g. `.hitch/`) lives in your repo's working directory. Because it's untracked, it sits at the same path regardless of which branch is checked out.
 - **Agents write greppable files** into that folder — their progress and context — using the file access they're already good at. No MCP required.
 - A **local daemon** watches the folder and syncs it, in real time, to a shared backend.
-- A **web UI** renders those files live (kanban, list, whatever) so humans can read and collaborate at the task level without checking out a branch.
+- A **desktop app** runs the daemon and renders those files live as a Kanban board, so humans can read and collaborate at the task level without checking out a branch.
 
 ## Architecture (v0)
 
 - **Backend:** [Convex](https://convex.dev) — reactive store + functions; handles realtime push, consistency, and reconnection. No separate server.
-- **Daemon:** a Node CLI that watches `.hitch/`, hashes files, pushes changes to Convex, and writes incoming changes back to disk (with echo suppression so a synced write doesn't loop).
-- **Web UI:** a small React app subscribing to a live Convex query.
+- **Daemon:** a Node runtime that watches `.hitch/`, hashes files, pushes changes to Convex, and writes incoming changes back to disk (with echo suppression so a synced write doesn't loop).
+- **Desktop UI:** an Electron app with a Vite/React renderer subscribing to live Convex queries and supervising the daemon.
 
 ### v0 conventions
 
@@ -24,10 +24,30 @@ Coding agents are great at reading and writing files in a repo. But task/status 
 
 ## Status
 
-Early. Sketching the Convex schema + functions and the daemon.
+Early. The local development target is the Electron desktop app, with the older
+Next web app considered deprecated scaffolding.
+
+## Local Development
+
+Run Convex and Hitch Desktop in separate terminals:
+
+```sh
+npm run dev:convex
+npm run dev
+```
+
+For GitHub sign-in in the desktop renderer, the Convex Auth site URL should be:
+
+```sh
+npx convex env set SITE_URL http://127.0.0.1:5173
+```
+
+The `.cmux` Hitch Desktop Dev command runs Convex, the Vite renderer, and
+Electron in separate tabs for easier log scanning. `npm run dev:all` is still
+available when you want a single combined terminal.
 
 ## Production Readiness
 
 See [docs/production-readiness.md](docs/production-readiness.md) for the current
 deployment checklist, required environment variables, and the remaining auth /
-workspace gaps before broad sharing.
+project gaps before broad sharing.

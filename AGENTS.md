@@ -14,16 +14,20 @@ to git.
 - `daemon/` — TypeScript (`src/index.ts`, run via `tsx`) Node watcher: pushes
   local file changes up to Convex and writes remote changes back to disk, with
   echo suppression so a synced write never loops.
-- `web/` — (later) a live board UI. Not built yet.
-- `hitch.config.json` — the workspace id + which `.hitch/` folders to watch.
+- `desktop/` — Electron app with the canonical Vite/React Kanban board and
+  local daemon controls.
+- `web/` — deprecated Next.js scaffold; keep changes focused on `desktop/`.
+- `hitch.config.json` — the active project + which local paths are hitched.
 
 ## Run
 
 1. `npm install`
-2. `npx convex dev` once (logs you in + creates a dev deployment). Copy the
-   printed deployment URL into `.env` as `CONVEX_URL=https://...convex.cloud`.
-3. `npm run dev` — runs Convex and the daemon together.
-4. Drop a file into a watched `.hitch/` folder; it appears in Convex within ~1s,
+2. `npx convex dev` once (logs you in + creates a dev deployment).
+3. Add `HITCH_DEVICE_TOKEN` to `.env.local` until Desktop mints/stores it
+   automatically.
+4. `npm run dev` — runs Hitch Desktop; keep `npm run dev:convex` running in a
+   separate terminal or use the `.cmux` Hitch Dev command for split logs.
+5. Drop a file into a watched `.hitch/` folder; it appears in Convex within ~1s,
    and changes made elsewhere are written back to disk.
 
 ## Conventions

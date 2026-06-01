@@ -23,96 +23,105 @@ export async function requireUser(ctx: Ctx) {
   return user;
 }
 
-export async function requireWorkspaceMember(
+export async function requireProjectMember(
   ctx: Ctx,
-  workspaceId: Id<"workspaces">,
+  projectId: Id<"projects">,
 ) {
   const user = await requireUser(ctx);
-  const membership = await ctx.db
-    .query("workspaceMembers")
-    .withIndex("by_workspace_user", (q) =>
-      q.eq("workspaceId", workspaceId).eq("userId", user._id),
-    )
-    .unique();
-  if (!membership) throw new Error("Workspace access denied");
+  const membership = await projectMembershipForUser(ctx, projectId, user._id);
+  if (!membership) throw new Error("Project access denied");
   return { user, membership };
 }
 
-export async function workspaceBySlug(ctx: Ctx, slug: string) {
+export async function projectMembershipForUser(
+  ctx: Ctx,
+  projectId: Id<"projects">,
+  userId: Id<"users">,
+) {
+  const membership = await ctx.db
+    .query("projectMembers")
+    .withIndex("by_project_user", (q) =>
+      q.eq("projectId", projectId).eq("userId", userId),
+    )
+    .unique();
+  return membership;
+}
+
+export async function projectBySlug(ctx: Ctx, slug: string) {
   return await ctx.db
-    .query("workspaces")
+    .query("projects")
     .withIndex("by_slug", (q) => q.eq("slug", slug))
     .unique();
 }
 
-export async function requireWorkspaceMemberBySlug(ctx: Ctx, slug: string) {
-  const workspace = await workspaceBySlug(ctx, slug);
-  if (!workspace) {
+export async function requireProjectMemberBySlug(ctx: Ctx, slug: string) {
+  const project = await projectBySlug(ctx, slug);
+  if (!project) {
     const user = await requireUser(ctx);
-    return { user, workspace: null, membership: null };
+    return { user, project: null, membership: null };
   }
 
   return {
-    workspace,
-    ...(await requireWorkspaceMember(ctx, workspace._id)),
+    project,
+    ...(await requireProjectMember(ctx, project._id)),
   };
 }
 
-export async function requireWorkspaceOwner(
+export async function requireProjectOwner(
   ctx: Ctx,
-  workspaceId: Id<"workspaces">,
+  projectId: Id<"projects">,
 ) {
-  const { user, membership } = await requireWorkspaceMember(ctx, workspaceId);
-  if (membership.role !== "owner") throw new Error("Workspace owner required");
+  const { user, membership } = await requireProjectMember(ctx, projectId);
+  if (membership.role !== "owner") throw new Error("Project owner required");
   return { user, membership };
 }
 
-export async function requireWorkspaceOwnerBySlug(ctx: Ctx, slug: string) {
-  const workspace = await workspaceBySlug(ctx, slug);
-  if (!workspace) throw new Error("Workspace does not exist");
+export async function requireProjectOwnerBySlug(ctx: Ctx, slug: string) {
+  const project = await projectBySlug(ctx, slug);
+  if (!project) throw new Error("Project does not exist");
   return {
-    workspace,
-    ...(await requireWorkspaceOwner(ctx, workspace._id)),
+    project,
+    ...(await requireProjectOwner(ctx, project._id)),
   };
 }
 
-export async function requireDaemonToken(
+export async function requireDeviceToken(
   ctx: Ctx,
-  workspaceSlug: string,
   token: string | undefined,
 ) {
-  if (!token) throw new Error("Daemon token required");
-
-  const workspace = await workspaceBySlug(ctx, workspaceSlug);
-  if (!workspace) throw new Error("Workspace does not exist");
+  if (!token) throw new Error("Device token required");
 
   const tokenHash = await sha256(token);
   const tokenDoc = await ctx.db
-    .query("daemonTokens")
+    .query("deviceTokens")
     .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash))
     .unique();
-  if (
-    !tokenDoc ||
-    tokenDoc.workspaceId !== workspace._id ||
-    tokenDoc.revokedAt !== undefined
-  ) {
-    throw new Error("Invalid daemon token");
+  if (!tokenDoc || tokenDoc.revokedAt !== undefined) {
+    throw new Error("Invalid device token");
   }
+
+  const user = await ctx.db.get(tokenDoc.userId);
+  if (!user) throw new Error("Device token user not found");
 
   if ("patch" in ctx.db) {
     await ctx.db.patch(tokenDoc._id, { lastUsedAt: Date.now() });
   }
 
-  return { workspace, token: tokenDoc };
+  return { user, token: tokenDoc };
 }
 
-export async function requireWorkspaceAccess(
+export async function requireProjectAccess(
   ctx: Ctx,
-  workspaceSlug: string,
-  daemonToken?: string,
+  projectSlug: string,
+  deviceToken?: string,
 ) {
-  if (daemonToken) {
-    return await requireDaemonToken(ctx, workspaceSlug, daemonToken);
+  if (deviceToken) {
+    const { user, token } = await requireDeviceToken(ctx, deviceToken);
+    const project = await projectBySlug(ctx, projectSlug);
+    if (!project) throw new Error("Project does not exist");
+    const membership = await projectMembershipForUser(ctx, project._id, user._id);
+    if (!membership) throw new Error("Project access denied");
+    return { user, project, membership, token };
   }
-  return await requireWorkspaceMemberBySlug(ctx, workspaceSlug);
+  return await requireProjectMemberBySlug(ctx, projectSlug);
 }
