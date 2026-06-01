@@ -1,0 +1,17 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Hitch app icon. Master source: regenerate derived assets with `npm run icons`. -->
+  <defs>
+    <linearGradient id="bg" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1a1f24"/>
+      <stop offset="1" stop-color="#0c0e10"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS rounded-rect grid: 824x824 inset by 100px, radius 185.4 -->
+  <rect x="100" y="100" width="824" height="824" rx="185.4" fill="url(#bg)"/>
+  <!-- Regular H, white, geometric -->
+  <g fill="#ffffff">
+    <rect x="322" y="282" width="96" height="460"/>
+    <rect x="606" y="282" width="96" height="460"/>
+    <rect x="322" y="464" width="380" height="96"/>
+  </g>
+</svg>

@@ -15,7 +15,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeImage } from "electron";
 
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
 
@@ -1321,6 +1321,15 @@ ipcMain.handle("device-auth:set-token", (_event, token: string) =>
 ipcMain.handle("device-auth:clear-token", () => clearDeviceToken());
 
 app.whenReady().then(async () => {
+  // Packaged macOS builds get the dock icon from the bundled .icns; set it
+  // explicitly in dev so the H shows up instead of the generic Electron icon.
+  if (isDev && process.platform === "darwin") {
+    const icon = nativeImage.createFromPath(
+      join(__dirname, "../../../assets/icon.png"),
+    );
+    if (!icon.isEmpty()) app.dock?.setIcon(icon);
+  }
+
   await createWindow();
   startDaemon();
 
