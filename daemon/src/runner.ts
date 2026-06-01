@@ -47,6 +47,11 @@ async function main(): Promise<void> {
       project: daemon.project,
       localPath: daemon.localPath,
       hitchPath: daemon.hitchPath,
+      hitches: daemon.hitches.map((hitch) => ({
+        project: hitch.project,
+        localPath: hitch.localPath,
+        hitchPath: hitch.hitchPath,
+      })),
     });
   } catch (err) {
     send({ type: "error", message: String(err) });

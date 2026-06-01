@@ -1,4 +1,4 @@
-// Hitch daemon runtime: watch a project's local .hitch/ folder and keep it in
+// Hitch daemon runtime: watch projects' local .hitch/ folders and keep them in
 // sync with Convex. This module is importable by the CLI, Electron runner, and
 // tests; it does not install signal handlers or call process.exit().
 
@@ -43,8 +43,8 @@ interface ResolvedHitch {
 }
 
 interface RuntimeConfig {
-  project: string;
-  hitch: ResolvedHitch;
+  activeProject?: string;
+  hitches: ResolvedHitch[];
 }
 
 export interface HitchDaemonLogger {
@@ -64,6 +64,7 @@ export interface HitchDaemonHandle {
   project: string;
   localPath: string;
   hitchPath: string;
+  hitches: ResolvedHitch[];
   stop: () => Promise<void>;
 }
 
@@ -186,19 +187,20 @@ export function loadHitchConfig(path: string, cwd = process.cwd()): RuntimeConfi
     configError(path, "hitches must contain at least one enabled hitch");
   }
 
+  const seenProjects = new Set<string>();
+  for (const hitch of hitches) {
+    if (seenProjects.has(hitch.project)) {
+      configError(path, `multiple enabled hitches for project "${hitch.project}"`);
+    }
+    seenProjects.add(hitch.project);
+  }
+
   const activeProject =
     typeof parsed.activeProject === "string" && parsed.activeProject.trim()
       ? parsed.activeProject.trim()
       : hitches[0].project;
-  const activeHitches = hitches.filter((hitch) => hitch.project === activeProject);
-  if (activeHitches.length === 0) {
-    configError(path, `no enabled hitches for activeProject "${activeProject}"`);
-  }
-  if (activeHitches.length > 1) {
-    configError(path, `multiple enabled hitches for activeProject "${activeProject}"`);
-  }
 
-  return { project: activeProject, hitch: activeHitches[0] };
+  return { activeProject, hitches };
 }
 
 const hashOf = (content: string): string =>
@@ -256,44 +258,32 @@ function logError(logger: HitchDaemonLogger, message: string): void {
   (logger.error ?? logger.info)(message);
 }
 
-export async function startHitchDaemon(
-  options: HitchDaemonOptions = {},
-): Promise<HitchDaemonHandle> {
-  const cwd = resolve(options.cwd ?? process.cwd());
-  const env = options.env ?? process.env;
-  const logger = options.logger ?? defaultLogger;
-  const envFiles = options.envFiles ?? [".env.local", ".env"];
-  loadEnvFiles(cwd, envFiles, env);
+interface HitchBindingRuntimeOptions {
+  client: ConvexClient;
+  env: NodeJS.ProcessEnv;
+  deviceToken: string;
+  hitch: ResolvedHitch;
+  logger: HitchDaemonLogger;
+  host: string;
+}
 
-  const convexUrl = deriveConvexUrl(env);
-  if (!convexUrl) {
-    throw new Error(
-      "[hitch] No Convex deployment found.\n" +
-        "        Run `npx convex dev` once (it writes CONVEX_DEPLOYMENT to\n" +
-        "        .env.local), or set CONVEX_URL=https://your-deployment.convex.cloud\n" +
-        "        in .env explicitly.",
-    );
-  }
+interface HitchBindingHandle {
+  stop: () => Promise<void>;
+}
 
-  const configPath = options.configPath
-    ? resolve(cwd, options.configPath)
-    : defaultConfigPath(cwd);
-  const config = loadHitchConfig(configPath, cwd);
-  const project = config.project;
-  const deviceToken =
-    env.HITCH_DEVICE_TOKEN?.trim() || env.HITCH_DAEMON_TOKEN?.trim();
-  if (!deviceToken) {
-    throw new Error(
-      "[hitch] Missing HITCH_DEVICE_TOKEN.\n" +
-        "        Create a device token for this user/device, then set\n" +
-        "        HITCH_DEVICE_TOKEN=<token> in .env or .env.local.",
-    );
-  }
-
-  const root = config.hitch;
+async function startHitchBinding({
+  client,
+  env,
+  deviceToken,
+  hitch: root,
+  logger,
+  host,
+}: HitchBindingRuntimeOptions): Promise<HitchBindingHandle> {
+  const project = root.project;
   mkdirSync(root.hitchPath, { recursive: true });
 
   const lastHash = new Map<string, string>();
+  const subscriptions: Unsubscribe[] = [];
 
   function locate(absPath: string): { rel: string } | null {
     const rel = relative(root.hitchPath, absPath);
@@ -316,7 +306,7 @@ export async function startHitchDaemon(
       "chat-cwd": undefined,
     });
     await writeFile(absPath, next, "utf8");
-    logger.info(`[hitch] linked codex thread ${threadId} → ${path}`);
+    logger.info(`[hitch:${project}] linked codex thread ${threadId} → ${path}`);
   }
 
   async function taskTitle(path: string): Promise<string | undefined> {
@@ -326,9 +316,6 @@ export async function startHitchDaemon(
       return undefined;
     }
   }
-
-  const client = new ConvexClient(convexUrl);
-  const subscriptions: Unsubscribe[] = [];
 
   async function pushLocal(absPath: string): Promise<void> {
     const loc = locate(absPath);
@@ -350,7 +337,7 @@ export async function startHitchDaemon(
       hash,
       deleted: false,
     });
-    logger.info(`[hitch] ↑ ${loc.rel}`);
+    logger.info(`[hitch:${project}] ↑ ${loc.rel}`);
   }
 
   async function pushDelete(absPath: string): Promise<void> {
@@ -365,7 +352,7 @@ export async function startHitchDaemon(
       hash: "",
       deleted: true,
     });
-    logger.info(`[hitch] ✗ ${loc.rel}`);
+    logger.info(`[hitch:${project}] ✗ ${loc.rel}`);
   }
 
   subscriptions.push(
@@ -380,7 +367,7 @@ export async function startHitchDaemon(
             if (existsSync(absPath)) {
               lastHash.delete(absPath);
               await rm(absPath, { force: true });
-              logger.info(`[hitch] ↓✗ ${f.path}`);
+              logger.info(`[hitch:${project}] ↓✗ ${f.path}`);
             }
             continue;
           }
@@ -390,15 +377,13 @@ export async function startHitchDaemon(
           lastHash.set(absPath, contentHash);
           await mkdir(dirname(absPath), { recursive: true });
           await writeFile(absPath, f.content, "utf8");
-          logger.info(`[hitch] ↓ ${f.path}`);
+          logger.info(`[hitch:${project}] ↓ ${f.path}`);
         }
       },
-      (err) => logError(logger, `[hitch] files subscription failed: ${String(err)}`),
+      (err) =>
+        logError(logger, `[hitch:${project}] files subscription failed: ${String(err)}`),
     ),
   );
-
-  const HEARTBEAT_MS = 15_000;
-  const host = hostname();
 
   async function sendHeartbeat(): Promise<void> {
     try {
@@ -413,7 +398,7 @@ export async function startHitchDaemon(
   }
 
   void sendHeartbeat();
-  const heartbeatTimer = setInterval(() => void sendHeartbeat(), HEARTBEAT_MS);
+  const heartbeatTimer = setInterval(() => void sendHeartbeat(), 15_000);
 
   const handledCommands = new Set<string>();
 
@@ -429,7 +414,7 @@ export async function startHitchDaemon(
           project,
           deviceToken,
         });
-        logger.info(`[hitch] ⮑ open-chat ${sessionId} → ${result}`);
+        logger.info(`[hitch:${project}] ⮑ open-chat ${sessionId} → ${result}`);
       } else if (cmd.kind === "start-chat" && cmd.harness === "claude-code") {
         if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
@@ -445,7 +430,7 @@ export async function startHitchDaemon(
           project,
           deviceToken,
         });
-        logger.info(`[hitch] ⮑ start-chat ${cmd.path} → ${result}`);
+        logger.info(`[hitch:${project}] ⮑ start-chat ${cmd.path} → ${result}`);
       } else if (cmd.kind === "start-chat" && cmd.harness === "codex") {
         if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
@@ -473,7 +458,7 @@ export async function startHitchDaemon(
           project,
           deviceToken,
         });
-        logger.info(`[hitch] ⮑ start-chat codex ${cmd.path} → ${result}`);
+        logger.info(`[hitch:${project}] ⮑ start-chat codex ${cmd.path} → ${result}`);
       } else {
         await client.mutation(anyApi.commands.completeCommand, {
           id: cmd._id,
@@ -491,7 +476,7 @@ export async function startHitchDaemon(
         project,
         deviceToken,
       });
-      logger.info(`[hitch] ⚠ command ${cmd._id} failed: ${String(err)}`);
+      logger.info(`[hitch:${project}] ⚠ command ${cmd._id} failed: ${String(err)}`);
     }
   }
 
@@ -508,7 +493,7 @@ export async function startHitchDaemon(
         }
       },
       (err) =>
-        logError(logger, `[hitch] command subscription failed: ${String(err)}`),
+        logError(logger, `[hitch:${project}] command subscription failed: ${String(err)}`),
     ),
   );
 
@@ -519,34 +504,103 @@ export async function startHitchDaemon(
   watcher
     .on("add", (path) =>
       void pushLocal(path).catch((err) =>
-        logError(logger, `[hitch] add failed for ${path}: ${String(err)}`),
+        logError(logger, `[hitch:${project}] add failed for ${path}: ${String(err)}`),
       ),
     )
     .on("change", (path) =>
       void pushLocal(path).catch((err) =>
-        logError(logger, `[hitch] change failed for ${path}: ${String(err)}`),
+        logError(logger, `[hitch:${project}] change failed for ${path}: ${String(err)}`),
       ),
     )
     .on("unlink", (path) =>
       void pushDelete(path).catch((err) =>
-        logError(logger, `[hitch] unlink failed for ${path}: ${String(err)}`),
+        logError(logger, `[hitch:${project}] unlink failed for ${path}: ${String(err)}`),
       ),
     )
-    .on("error", (err) => logError(logger, `[hitch] watcher failed: ${err}`))
+    .on("error", (err) =>
+      logError(logger, `[hitch:${project}] watcher failed: ${err}`),
+    )
     .on("ready", () =>
-      logger.info(`[hitch] watching ${root.hitchPath} for project "${project}"`),
+      logger.info(`[hitch:${project}] watching ${root.hitchPath}`),
     );
+
+  let stopped = false;
+  return {
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(heartbeatTimer);
+      for (const subscription of subscriptions) unsubscribe(subscription);
+      await watcher.close();
+    },
+  };
+}
+
+export async function startHitchDaemon(
+  options: HitchDaemonOptions = {},
+): Promise<HitchDaemonHandle> {
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const env = options.env ?? process.env;
+  const logger = options.logger ?? defaultLogger;
+  const envFiles = options.envFiles ?? [".env.local", ".env"];
+  loadEnvFiles(cwd, envFiles, env);
+
+  const convexUrl = deriveConvexUrl(env);
+  if (!convexUrl) {
+    throw new Error(
+      "[hitch] No Convex deployment found.\n" +
+        "        Run `npx convex dev` once (it writes CONVEX_DEPLOYMENT to\n" +
+        "        .env.local), or set CONVEX_URL=https://your-deployment.convex.cloud\n" +
+        "        in .env explicitly.",
+    );
+  }
+
+  const configPath = options.configPath
+    ? resolve(cwd, options.configPath)
+    : defaultConfigPath(cwd);
+  const config = loadHitchConfig(configPath, cwd);
+  const deviceToken =
+    env.HITCH_DEVICE_TOKEN?.trim() || env.HITCH_DAEMON_TOKEN?.trim();
+  if (!deviceToken) {
+    throw new Error(
+      "[hitch] Missing HITCH_DEVICE_TOKEN.\n" +
+        "        Create a device token for this user/device, then set\n" +
+        "        HITCH_DEVICE_TOKEN=<token> in .env or .env.local.",
+    );
+  }
+
+  const client = new ConvexClient(convexUrl);
+  const host = hostname();
+  const bindingHandles = await Promise.all(
+    config.hitches.map((hitch) =>
+      startHitchBinding({
+        client,
+        env,
+        deviceToken,
+        hitch,
+        logger,
+        host,
+      }),
+    ),
+  );
+  const primaryHitch =
+    config.hitches.find((hitch) => hitch.project === config.activeProject) ??
+    config.hitches[0];
 
   let stopped = false;
   async function stop(): Promise<void> {
     if (stopped) return;
     stopped = true;
-    clearInterval(heartbeatTimer);
-    for (const subscription of subscriptions) unsubscribe(subscription);
-    await watcher.close();
+    await Promise.all(bindingHandles.map((binding) => binding.stop()));
     await closeCodexAppServer();
     await client.close();
   }
 
-  return { project, localPath: root.localPath, hitchPath: root.hitchPath, stop };
+  return {
+    project: primaryHitch.project,
+    localPath: primaryHitch.localPath,
+    hitchPath: primaryHitch.hitchPath,
+    hitches: config.hitches,
+    stop,
+  };
 }

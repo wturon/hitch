@@ -76,6 +76,7 @@ interface RunnerMessage {
   project?: unknown;
   localPath?: unknown;
   hitchPath?: unknown;
+  hitches?: unknown;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -359,11 +360,6 @@ async function setActiveProject(project: string): Promise<LocalHitchConfig> {
   config.activeProject = trimmed;
   const saved = writeLocalConfig(config);
   addLog("system", `Selected project ${trimmed}`);
-  if (saved.hitches.some((hitch) => hitch.project === trimmed && hitch.enabled)) {
-    await restartDaemon();
-  } else {
-    stopDaemon();
-  }
   return saved;
 }
 
@@ -454,9 +450,12 @@ function handleRunnerMessage(message: RunnerMessage): void {
       typeof message.localPath === "string" ? message.localPath : "unknown local path";
     const hitchPath =
       typeof message.hitchPath === "string" ? message.hitchPath : join(localPath, ".hitch");
+    const hitchCount = Array.isArray(message.hitches) ? message.hitches.length : 1;
     addLog(
       "system",
-      `Daemon runtime ready for project ${project} at ${hitchPath}`,
+      hitchCount > 1
+        ? `Daemon runtime ready for ${hitchCount} projects; active project ${project} at ${hitchPath}`
+        : `Daemon runtime ready for project ${project} at ${hitchPath}`,
     );
     setStatus("running");
     return;

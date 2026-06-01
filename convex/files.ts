@@ -33,6 +33,9 @@ export const upsertFile = mutation({
       updatedAt: Date.now(),
     };
     if (existing) {
+      if (existing.hash === args.hash && existing.deleted === args.deleted) {
+        return;
+      }
       await ctx.db.patch(existing._id, doc);
     } else {
       await ctx.db.insert("files", doc);
