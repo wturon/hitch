@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Hitch Desktop — live Kanban board over git-ignored .hitch/ folders, supervising the local sync daemon.",
+  "author": "Jakib",
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "concurrently -k --success first -n renderer,electron -c cyan,green \"npm:dev:renderer\" \"npm:dev:electron\"",
@@ -10,6 +12,9 @@
     "dev:electron": "npm run build:main && wait-on tcp:5173 && electron .",
     "build": "npm run build:main && vite build",
     "build:main": "tsc -p tsconfig.main.json",
+    "bundle:daemon": "node scripts/bundle-daemon.mjs",
+    "gen:app-config": "node scripts/gen-app-config.mjs",
+    "package": "npm run build && npm run bundle:daemon && npm run gen:app-config && electron-builder --mac --arm64",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "doctor": "react-doctor"
   },
@@ -35,6 +40,8 @@
     "@vitejs/plugin-react": "^6.0.2",
     "concurrently": "^10.0.1",
     "electron": "^42.3.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.27.0",
     "react-doctor": "^0.2.16",
     "tailwindcss": "^4",
     "typescript": "^6.0.3",

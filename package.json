@@ -25,6 +25,7 @@
     "dev:web": "npm -w web run dev",
     "typecheck": "npm -w @hitch/daemon run typecheck && npm -w desktop run typecheck",
     "check": "npm run typecheck && npm -w desktop run build",
+    "package:desktop": "npm -w desktop run package",
     "setup": "convex dev --once"
   },
   "dependencies": {

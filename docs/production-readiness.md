@@ -30,6 +30,76 @@ Renderer:
 Run `npm run check` before deploying. It typechecks the daemon and desktop app,
 then builds the desktop renderer.
 
+## Packaging the macOS desktop app
+
+Hitch Desktop is packaged with [electron-builder](https://www.electron.build)
+into a signed, notarized `.dmg` for **Apple Silicon (arm64)**. Auto-update is not
+wired up yet — distribute new `.dmg`s manually for now.
+
+What the package step does (`desktop/electron-builder.yml`):
+
+- Builds the main process + Vite renderer (`npm run build`).
+- Bundles the daemon into one self-contained `dist-daemon/runner.js` via esbuild
+  (`scripts/bundle-daemon.mjs`). chokidar 5 has no native deps, so the bundle is
+  portable; it ships outside the asar at `Resources/daemon/runner.js` and runs
+  under Electron's own Node (`ELECTRON_RUN_AS_NODE`).
+- Writes `dist-daemon/app-config.json` with the prod Convex URL
+  (`scripts/gen-app-config.mjs`); it ships at `Resources/app-config.json` and the
+  main process passes it to the daemon as `CONVEX_URL`.
+- Produces `desktop/release/Hitch-<version>-arm64.dmg`.
+
+### One-time prerequisites
+
+- A **Developer ID Application** signing certificate in your login keychain
+  (from the Apple Developer Program). Verify with `security find-identity -v -p codesigning`.
+- `desktop/build/icon.icns` (gitignored build artifact). If missing, the build
+  falls back to the default Electron icon. (The icon-generation pipeline is
+  maintained separately.)
+
+### Build environment variables
+
+Set these in the shell that runs the package step (never commit them):
+
+- `NEXT_PUBLIC_CONVEX_URL` and `CONVEX_URL` — the **prod** Convex deployment URL
+  (`npx convex deploy` first). The renderer bakes `NEXT_PUBLIC_CONVEX_URL` at Vite
+  build time; `CONVEX_URL` is baked into `app-config.json` for the daemon.
+- `NEXT_PUBLIC_HITCH_PROJECT` — project id the renderer should render.
+- Notarization (read by `@electron/notarize`): `APPLE_ID`,
+  `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`.
+
+### Run it
+
+```sh
+npx convex deploy                 # deploy the prod backend (manual)
+CONVEX_URL=https://<prod>.convex.cloud \
+NEXT_PUBLIC_CONVEX_URL=https://<prod>.convex.cloud \
+NEXT_PUBLIC_HITCH_PROJECT=<project-id> \
+APPLE_ID=... APPLE_APP_SPECIFIC_PASSWORD=... APPLE_TEAM_ID=... \
+  npm run package:desktop
+```
+
+To smoke-test the pipeline without signing (produces an unsigned, un-notarized
+`.dmg` that macOS will warn on):
+
+```sh
+cd desktop && CSC_IDENTITY_AUTO_DISCOVERY=false \
+  npx electron-builder --mac --arm64 -c.mac.notarize=false -c.mac.identity=null
+```
+
+### Verify the result
+
+```sh
+APP="desktop/release/mac-arm64/Hitch.app"
+codesign --verify --deep --strict --verbose=2 "$APP"
+spctl -a -vvv -t install "$APP"     # expect: accepted, source=Notarized Developer ID
+xcrun stapler validate "$APP"        # expect: The validate action worked
+```
+
+Then copy `Hitch.app` to `/Applications` and launch it: it should open with no
+Gatekeeper warning, and the in-app daemon log should report the daemon idle
+("No projects hitched yet") on a fresh install. Add a project, paste a device
+token, and confirm a file in `.hitch/` syncs to the prod Convex deployment.
+
 ## Local Dev Setup
 
 1. `npm install`

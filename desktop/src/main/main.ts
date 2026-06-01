@@ -114,9 +114,15 @@ interface RunnerMessage {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
+// In dev the app lives inside the repo, so the parent of the app path is the
+// repo root (used for the dev config fallback and as the daemon cwd). A packaged
+// app has no repo, so anchor on the writable userData dir instead — local config
+// paths are absolute, so the daemon's cwd is not load-bearing in production.
 const repoRoot = process.env.HITCH_ROOT
   ? resolve(process.env.HITCH_ROOT)
-  : resolve(app.getAppPath(), "..");
+  : isDev
+    ? resolve(app.getAppPath(), "..")
+    : app.getPath("userData");
 const localConfigPath =
   process.env.HITCH_CONFIG_PATH ?? join(homedir(), "Library/Application Support/Hitch/config.json");
 const localSecretsPath =
@@ -476,10 +482,37 @@ function daemonRunnerCommand(): { command: string; args: string[] } {
     };
   }
 
+  // In a packaged app there is no system `node` to rely on, so run the bundled
+  // daemon under Electron's own Node by launching the Electron binary with
+  // ELECTRON_RUN_AS_NODE=1 (set in the spawn env in startDaemon). The daemon
+  // never imports `electron`, so running it as plain Node is fine.
   return {
-    command: nodeBin,
+    command: process.execPath,
     args: [join(process.resourcesPath, "daemon/runner.js")],
   };
+}
+
+// Packaged builds ship an app-config.json (written at build time from the prod
+// CONVEX_URL) into the app resources. The Convex deployment URL is not secret —
+// the renderer ships it too — so baking it lets the daemon reach the right
+// backend without a system .env. In dev this file is absent and the daemon
+// derives the URL from .env.local (CONVEX_DEPLOYMENT) as before.
+function readBakedConvexUrl(): string | undefined {
+  if (isDev) return undefined;
+  try {
+    const raw = readFileSync(join(process.resourcesPath, "app-config.json"), "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      isRecord(parsed) &&
+      typeof parsed.convexUrl === "string" &&
+      parsed.convexUrl.trim()
+    ) {
+      return parsed.convexUrl.trim();
+    }
+  } catch {
+    // No baked config — fall back to env-file derivation in the daemon.
+  }
+  return undefined;
 }
 
 function migrateRepoConfigToLocalConfig(raw: unknown): unknown {
@@ -543,9 +576,18 @@ function ensureLocalConfig(): void {
   const wasExisting = existsSync(localConfigPath);
   const sourcePath = wasExisting ? localConfigPath : repoConfigPath;
   if (!existsSync(sourcePath)) {
-    throw new Error(
-      `No local Hitch config found at ${localConfigPath}, and no dev fallback found at ${repoConfigPath}`,
+    // Fresh install: no local config and no dev repo fallback. Bootstrap an
+    // empty config so the UI (readLocalConfig / addHitch) works and the user can
+    // hitch their first project; the daemon stays idle until a hitch exists.
+    const emptyConfig: LocalHitchConfig = { activeProject: "", hitches: [] };
+    mkdirSync(dirname(localConfigPath), { recursive: true });
+    writeFileSync(
+      localConfigPath,
+      `${JSON.stringify(emptyConfig, null, 2)}\n`,
+      "utf8",
     );
+    addLog("system", `Created empty Hitch config at ${localConfigPath}`);
+    return;
   }
 
   const existingText = readFileSync(sourcePath, "utf8");
@@ -1091,22 +1133,39 @@ function startDaemon(): DaemonState {
   if (daemon) return state();
 
   setStatus("starting");
+  let config: LocalHitchConfig;
   try {
     ensureLocalConfig();
+    config = readLocalConfig();
   } catch (err) {
     addLog("stderr", `Failed to prepare local config: ${String(err)}`);
     setStatus("stopped");
     return state();
   }
 
+  // Nothing hitched yet (the normal fresh-install state): stay idle instead of
+  // spawning a daemon that would immediately error on an empty config. The user
+  // adds a project via the UI, which calls addHitch -> restartDaemon.
+  if (config.hitches.filter((hitch) => hitch.enabled).length === 0) {
+    addLog("system", "No projects hitched yet — daemon idle. Add a project to start syncing.");
+    setStatus("stopped");
+    return state();
+  }
+
   const { command, args } = daemonRunnerCommand();
+  const bakedConvexUrl = readBakedConvexUrl();
+  const deviceToken = readDeviceToken();
   const child = spawn(command, args, {
     cwd: repoRoot,
     env: {
       ...process.env,
       HITCH_ROOT: repoRoot,
       HITCH_CONFIG_PATH: localConfigPath,
-      ...(readDeviceToken() ? { HITCH_DEVICE_TOKEN: readDeviceToken() } : {}),
+      // Run the bundled daemon as plain Node under the Electron binary in prod.
+      ...(isDev ? {} : { ELECTRON_RUN_AS_NODE: "1" }),
+      // Point the daemon at the baked prod Convex deployment when present.
+      ...(bakedConvexUrl ? { CONVEX_URL: bakedConvexUrl } : {}),
+      ...(deviceToken ? { HITCH_DEVICE_TOKEN: deviceToken } : {}),
     },
     stdio: ["ignore", "pipe", "pipe", "ipc"],
   });

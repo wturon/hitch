@@ -1,0 +1,48 @@
+appId: ai.jakib.hitch
+productName: Hitch
+# npm workspaces hoist electron to the repo-root node_modules, so electron-builder
+# can't auto-detect the version from the desktop workspace. Keep this in sync with
+# the `electron` devDependency in package.json.
+electronVersion: 42.3.0
+# buildResources is where the icon lives (build/icon.icns is a gitignored,
+# generated artifact — regenerate it before packaging). The entitlements plist is
+# tracked source, so it lives in build-config/ (see mac.entitlements below).
+directories:
+  buildResources: build
+  output: release
+
+# The main process and preload import only Node built-ins + electron, and the
+# renderer is fully bundled by Vite into dist/renderer. Nothing in the app reads
+# from node_modules at runtime, so we ship only the build outputs (and exclude
+# node_modules to stay robust against npm-workspace hoisting and keep the app lean).
+files:
+  - dist/main/**
+  - dist/preload/**
+  - dist/renderer/**
+  - package.json
+  - "!**/node_modules/**"
+
+# The bundled daemon and its backend-URL config live outside the asar, where
+# main.ts looks for them (process.resourcesPath/daemon/runner.js and
+# process.resourcesPath/app-config.json). Both are produced by the package script.
+extraResources:
+  - from: dist-daemon/runner.js
+    to: daemon/runner.js
+  - from: dist-daemon/app-config.json
+    to: app-config.json
+
+mac:
+  target:
+    - target: dmg
+      arch: arm64
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  entitlements: build-config/entitlements.mac.plist
+  entitlementsInherit: build-config/entitlements.mac.plist
+  # Code-signing uses a "Developer ID Application" identity from the keychain
+  # (or CSC_LINK/CSC_KEY_PASSWORD). Notarization uses @electron/notarize and
+  # reads APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, and APPLE_TEAM_ID from the env.
+  notarize: true
+
+dmg:
+  sign: false
