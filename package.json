@@ -23,7 +23,8 @@
     "dev:renderer": "npm -w desktop run dev:renderer",
     "dev:electron": "npm -w desktop run dev:electron",
     "dev:web": "npm -w web run dev",
-    "typecheck": "npm -w @hitch/daemon run typecheck && npm -w desktop run typecheck",
+    "typecheck": "npm run typecheck:convex && npm -w @hitch/daemon run typecheck && npm -w desktop run typecheck",
+    "typecheck:convex": "tsc -p convex/tsconfig.json --noEmit",
     "check": "npm run typecheck && npm -w desktop run build",
     "package:desktop": "npm -w desktop run package",
     "setup": "convex dev --once",
@@ -35,6 +36,7 @@
     "convex": "^1.39.1"
   },
   "devDependencies": {
+    "@types/node": "^25.9.1",
     "@resvg/resvg-js": "^2.6.2",
     "concurrently": "^10.0.1",
     "png-to-ico": "^3.0.1"
