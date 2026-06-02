@@ -20,7 +20,6 @@ import {
   AlertCircleIcon,
   CalendarIcon,
   CheckCircle2Icon,
-  Code2Icon,
   FolderOpenIcon,
   GripVerticalIcon,
   HashIcon,
@@ -28,7 +27,6 @@ import {
   PlusIcon,
   RefreshCwIcon,
   ShieldCheckIcon,
-  TerminalIcon,
   Trash2Icon,
   UsersIcon,
 } from "lucide-react";
@@ -83,26 +81,6 @@ interface ProjectSetupStatus {
   gitignorePath: string | null;
   gitignoreExists: boolean;
   gitignoreHasHitch: boolean;
-}
-
-type Harness = "codex" | "claude-code";
-
-interface HarnessHookStatus {
-  harness: Harness;
-  installed: boolean;
-  configPath: string | null;
-  scriptPath: string | null;
-  configExists: boolean;
-  scriptExists: boolean;
-  configWired: boolean;
-}
-
-interface HarnessSetupStatus {
-  projectId: Id<"projects">;
-  hitch: HitchBinding | null;
-  localPathExists: boolean;
-  codex: HarnessHookStatus;
-  claudeCode: HarnessHookStatus;
 }
 
 function formatDate(timestamp: number) {
@@ -305,17 +283,14 @@ function ProjectDetailsForm({
     statusesForProject(details.project.statuses),
   );
   const [setup, setSetup] = useState<ProjectSetupStatus | null>(null);
-  const [harnessSetup, setHarnessSetup] = useState<HarnessSetupStatus | null>(null);
   const [localPath, setLocalPath] = useState("");
   const [saving, setSaving] = useState(false);
   const [savingStatuses, setSavingStatuses] = useState(false);
   const [activeStatusId, setActiveStatusId] = useState<string | null>(null);
   const [setupBusy, setSetupBusy] = useState<string | null>(null);
-  const [harnessBusy, setHarnessBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
-  const [harnessError, setHarnessError] = useState<string | null>(null);
   const canEdit = details.membership?.role === "owner";
   const trimmedName = name.trim();
   const hasNameChange = trimmedName !== details.project.name;
@@ -336,12 +311,8 @@ function ProjectDetailsForm({
 
   async function refreshSetup() {
     if (!bridge) return;
-    const [next, nextHarnessSetup] = await Promise.all([
-      bridge.getProjectSetup(projectId),
-      bridge.getHarnessSetup(projectId),
-    ]);
+    const next = await bridge.getProjectSetup(projectId);
     setSetup(next);
-    setHarnessSetup(nextHarnessSetup);
     setLocalPath(next.hitch?.localPath ?? "");
   }
 
@@ -457,33 +428,6 @@ function ProjectDetailsForm({
       setSetupError(err instanceof Error ? err.message : String(err));
     } finally {
       setSetupBusy(null);
-    }
-  }
-
-  async function installHarness(harness: Harness) {
-    if (!bridge) return;
-    setHarnessBusy(harness);
-    setHarnessError(null);
-    try {
-      const next = await bridge.installHarnessHooks(projectId, harness);
-      setHarnessSetup(next);
-    } catch (err) {
-      setHarnessError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setHarnessBusy(null);
-    }
-  }
-
-  async function openCodexTrust() {
-    if (!bridge) return;
-    setHarnessBusy("codex-trust");
-    setHarnessError(null);
-    try {
-      await bridge.openCodexHookTrust(projectId);
-    } catch (err) {
-      setHarnessError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setHarnessBusy(null);
     }
   }
 
@@ -726,89 +670,6 @@ function ProjectDetailsForm({
         {setupError && <p className="text-sm text-destructive">{setupError}</p>}
       </section>
 
-      <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <h3 className="text-sm font-medium">Harness configuration</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Install lifecycle hooks when you want chat cards to show working and waiting states.
-            </p>
-          </div>
-          <Code2Icon className="size-4 shrink-0 text-muted-foreground" />
-        </div>
-
-        {!bridge ? (
-          <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-            Harness setup is only available inside Hitch Desktop.
-          </p>
-        ) : setup === null || harnessSetup === null ? (
-          <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-            Checking harness setup...
-          </p>
-        ) : !setup.hitch || !setup.localPathExists ? (
-          <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-            Hitch this project to a local folder before installing harness hooks.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            <HarnessCheck
-              status={harnessSetup.codex}
-              title="Codex"
-              detail={harnessDetail(harnessSetup.codex)}
-              action={
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <Button
-                    type="button"
-                    variant={harnessSetup.codex.installed ? "ghost" : "outline"}
-                    size="sm"
-                    disabled={harnessBusy !== null}
-                    onClick={() => void installHarness("codex")}
-                  >
-                    {harnessBusy === "codex"
-                      ? "Installing..."
-                      : harnessSetup.codex.installed
-                        ? "Repair"
-                        : "Install"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!harnessSetup.codex.installed || harnessBusy !== null}
-                    onClick={() => void openCodexTrust()}
-                  >
-                    <TerminalIcon />
-                    {harnessBusy === "codex-trust" ? "Opening..." : "Trust"}
-                  </Button>
-                </div>
-              }
-            />
-            <HarnessCheck
-              status={harnessSetup.claudeCode}
-              title="Claude Code"
-              detail={harnessDetail(harnessSetup.claudeCode)}
-              action={
-                <Button
-                  type="button"
-                  variant={harnessSetup.claudeCode.installed ? "ghost" : "outline"}
-                  size="sm"
-                  disabled={harnessBusy !== null}
-                  onClick={() => void installHarness("claude-code")}
-                >
-                  {harnessBusy === "claude-code"
-                    ? "Installing..."
-                    : harnessSetup.claudeCode.installed
-                      ? "Repair"
-                      : "Install"}
-                </Button>
-              }
-            />
-          </div>
-        )}
-
-        {harnessError && <p className="text-sm text-destructive">{harnessError}</p>}
-      </section>
-
       <section className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <UsersIcon className="size-4 text-muted-foreground" />
@@ -895,48 +756,6 @@ function SetupCheck({
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{title}</p>
         <p className="truncate text-xs text-muted-foreground" title={detail}>
-          {detail}
-        </p>
-      </div>
-      {action}
-    </div>
-  );
-}
-
-function harnessDetail(status: HarnessHookStatus): string {
-  if (status.installed) return "Lifecycle hooks are installed";
-  if (!status.scriptExists && !status.configWired) {
-    return "Hook script and config entries are missing";
-  }
-  if (!status.scriptExists) return "Hook script is missing";
-  if (!status.configWired) return "Hook config is not wired";
-  return "Lifecycle hooks need repair";
-}
-
-function HarnessCheck({
-  status,
-  title,
-  detail,
-  action,
-}: {
-  status: HarnessHookStatus;
-  title: string;
-  detail: string;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="flex min-h-12 items-center gap-3 rounded-md border bg-background px-3 py-2">
-      {status.installed ? (
-        <CheckCircle2Icon className="size-4 shrink-0 text-emerald-500" />
-      ) : (
-        <AlertCircleIcon className="size-4 shrink-0 text-amber-500" />
-      )}
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{title}</p>
-        <p
-          className="truncate text-xs text-muted-foreground"
-          title={status.configPath ?? detail}
-        >
           {detail}
         </p>
       </div>

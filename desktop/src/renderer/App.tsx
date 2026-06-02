@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { ChatLaunch } from "@/components/ChatLaunch";
 import { DeviceTokens } from "@/components/DeviceTokens";
+import { GlobalSettingsDialog } from "@/components/GlobalSettingsDialog";
 import { LocalSyncDialog } from "@/components/LocalSyncDialog";
 import { ProjectDetailsDialog } from "@/components/ProjectDetailsDialog";
 import { Button } from "@/components/ui/button";
@@ -284,6 +285,7 @@ function AppSidebar({
   onSelectProject,
   onCreateProject,
   onShowProjectDetails,
+  onShowGlobalSettings,
   onShowDeviceTokens,
   onSignOut,
 }: {
@@ -293,6 +295,7 @@ function AppSidebar({
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
+  onShowGlobalSettings: () => void;
   onShowDeviceTokens: () => void;
   onSignOut: () => void;
 }) {
@@ -387,6 +390,16 @@ function AppSidebar({
         <Button
           variant="ghost"
           size="sm"
+          onClick={onShowGlobalSettings}
+          aria-label="Global settings"
+          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
+        >
+          <SettingsIcon />
+          <span className="hidden md:inline">Settings</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onShowDeviceTokens}
           aria-label="Device tokens"
           className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
@@ -416,6 +429,7 @@ function AppShell({
   onSelectProject,
   onCreateProject,
   onShowProjectDetails,
+  onShowGlobalSettings,
   onShowDeviceTokens,
   onSignOut,
   children,
@@ -426,6 +440,7 @@ function AppShell({
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
+  onShowGlobalSettings: () => void;
   onShowDeviceTokens: () => void;
   onSignOut: () => void;
   children: ReactNode;
@@ -439,6 +454,7 @@ function AppShell({
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
         onShowProjectDetails={onShowProjectDetails}
+        onShowGlobalSettings={onShowGlobalSettings}
         onShowDeviceTokens={onShowDeviceTokens}
         onSignOut={onSignOut}
       />
@@ -1113,6 +1129,7 @@ function BoardContent({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showDeviceTokens, setShowDeviceTokens] = useState(false);
+  const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showLocalSync, setShowLocalSync] = useState(false);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
@@ -1159,6 +1176,7 @@ function BoardContent({
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
         onShowProjectDetails={() => setShowProjectDetails(true)}
+        onShowGlobalSettings={() => setShowGlobalSettings(true)}
         onShowDeviceTokens={() => setShowDeviceTokens(true)}
         onSignOut={() => void signOut()}
       >
@@ -1168,6 +1186,10 @@ function BoardContent({
         <DeviceTokens
           open={showDeviceTokens}
           onOpenChange={setShowDeviceTokens}
+        />
+        <GlobalSettingsDialog
+          open={showGlobalSettings}
+          onOpenChange={setShowGlobalSettings}
         />
         <LocalSyncDialog
           projectId={projectId}
@@ -1366,6 +1388,7 @@ function BoardContent({
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
       onShowProjectDetails={() => setShowProjectDetails(true)}
+      onShowGlobalSettings={() => setShowGlobalSettings(true)}
       onShowDeviceTokens={() => setShowDeviceTokens(true)}
       onSignOut={() => void signOut()}
     >
@@ -1484,6 +1507,10 @@ function BoardContent({
         <DeviceTokens
           open={showDeviceTokens}
           onOpenChange={setShowDeviceTokens}
+        />
+        <GlobalSettingsDialog
+          open={showGlobalSettings}
+          onOpenChange={setShowGlobalSettings}
         />
 
         <LocalSyncDialog

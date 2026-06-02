@@ -9,6 +9,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -82,10 +83,7 @@ interface HarnessHookStatus {
   configWired: boolean;
 }
 
-interface HarnessSetupStatus {
-  projectId: ProjectId;
-  hitch: HitchBinding | null;
-  localPathExists: boolean;
+interface GlobalHarnessSetupStatus {
   codex: HarnessHookStatus;
   claudeCode: HarnessHookStatus;
 }
@@ -131,19 +129,18 @@ const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
 const run = promisify(execFile);
 
-const CODEX_HOOK_COMMAND = "node .codex/hooks/chat-status.mjs";
-const CLAUDE_HOOK_COMMAND =
-  'node "$CLAUDE_PROJECT_DIR/.claude/hooks/chat-status.mjs"';
-
-const CODEX_CHAT_STATUS_HOOK = `#!/usr/bin/env node
-// Codex lifecycle hook: stamp a task's live chat status into frontmatter so the
-// Hitch board can show whether the linked Codex chat is actively working.
+function globalCodexChatStatusHook(): string {
+  return `#!/usr/bin/env node
+// Hitch user-level Codex lifecycle hook. This hook is installed globally, so it
+// must scope itself: it only touches task files inside enabled Hitch roots.
 //
-// Contract: hooks must never break the session. We read the event payload from
-// stdin, do a best-effort frontmatter edit, and always exit 0.
+// Contract: never break Codex. Parse stdin, do a best-effort frontmatter edit,
+// and exit 0 without output for unrelated sessions or failures.
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
+
+const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
 
 const STATUS_FOR_EVENT = {
   UserPromptSubmit: "working",
@@ -169,7 +166,7 @@ function parseFrontmatter(content) {
     fm[key] = line
       .slice(idx + 1)
       .trim()
-      .replace(/^[\"']|[\"']$/g, "");
+      .replace(/^[\\"']|[\\"']$/g, "");
   }
   return fm;
 }
@@ -208,12 +205,12 @@ function candidateChatIds(payload) {
     .map((value) => value.trim())
     .filter(Boolean);
 
-  let transcriptPath = "";
-  if (typeof payload.transcript_path === "string") {
-    transcriptPath = payload.transcript_path;
-  } else if (typeof payload.transcriptPath === "string") {
-    transcriptPath = payload.transcriptPath;
-  }
+  const transcriptPath =
+    typeof payload.transcript_path === "string"
+      ? payload.transcript_path
+      : typeof payload.transcriptPath === "string"
+        ? payload.transcriptPath
+        : "";
   const transcriptId = transcriptPath.match(
     /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
   );
@@ -224,6 +221,32 @@ function candidateChatIds(payload) {
 
 function taskStatus(fm) {
   return (fm.status ?? "").trim().toLowerCase().replace(/\\s+/g, "-");
+}
+
+function isInside(root, cwd) {
+  const rel = relative(root, cwd);
+  return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep));
+}
+
+function hitchRoots() {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(HITCH_CONFIG_PATH, "utf8"));
+  } catch {
+    return [];
+  }
+  if (!raw || !Array.isArray(raw.hitches)) return [];
+
+  return raw.hitches
+    .filter((entry) => entry && entry.enabled !== false)
+    .map((entry) => (typeof entry.localPath === "string" ? entry.localPath.trim() : ""))
+    .filter(Boolean)
+    .map((localPath) => resolve(localPath));
+}
+
+function rootForCwd(cwd) {
+  const resolvedCwd = resolve(cwd || process.cwd());
+  return hitchRoots().find((root) => isInside(root, resolvedCwd)) ?? null;
 }
 
 function main() {
@@ -241,11 +264,14 @@ function main() {
   const chatIds = candidateChatIds(payload);
   if (chatIds.size === 0) return;
 
-  const root =
+  const root = rootForCwd(
     payload.cwd ||
-    process.env.CODEX_PROJECT_DIR ||
-    process.env.PWD ||
-    process.cwd();
+      process.env.CODEX_PROJECT_DIR ||
+      process.env.PWD ||
+      process.cwd(),
+  );
+  if (!root) return;
+
   const tasksDir = join(root, ".hitch", "tasks");
   if (!existsSync(tasksDir)) return;
 
@@ -269,7 +295,9 @@ function main() {
     }
 
     const fm = parseFrontmatter(content);
-    if (!fm || !chatIds.has(fm["chat-id"])) continue;
+    if (!fm || fm["chat-harness"] !== "codex" || !chatIds.has(fm["chat-id"])) {
+      continue;
+    }
 
     const nextStatus =
       status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm))
@@ -293,17 +321,21 @@ try {
   // Never let a hook error interrupt the session.
 }
 `;
+}
 
-const CLAUDE_CHAT_STATUS_HOOK = `#!/usr/bin/env node
-// Claude Code lifecycle hook: stamp a task's live chat status into its
-// frontmatter so the Hitch board can show a "working / ready / needs input"
-// indicator on the card. Wired up in ../settings.json for the events below.
+function globalClaudeChatStatusHook(): string {
+  return `#!/usr/bin/env node
+// Hitch user-level Claude Code lifecycle hook. This hook is installed globally,
+// so it must scope itself: it only touches task files inside enabled Hitch
+// roots and only for tasks whose chat-harness is claude-code.
 //
-// Contract: hooks must never break the session. We read the event payload from
-// stdin, do a best-effort frontmatter edit, and always exit 0.
+// Contract: never break the session. Parse stdin, do a best-effort frontmatter
+// edit, and exit 0 without output for unrelated sessions or failures.
 
-import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
+
+const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
 
 const STATUS_FOR_EVENT = {
   UserPromptSubmit: "working",
@@ -327,7 +359,7 @@ function parseFrontmatter(content) {
     fm[key] = line
       .slice(idx + 1)
       .trim()
-      .replace(/^[\"']|[\"']$/g, "");
+      .replace(/^[\\"']|[\\"']$/g, "");
   }
   return fm;
 }
@@ -357,6 +389,32 @@ function taskStatus(fm) {
   return (fm.status ?? "").trim().toLowerCase().replace(/\\s+/g, "-");
 }
 
+function isInside(root, cwd) {
+  const rel = relative(root, cwd);
+  return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep));
+}
+
+function hitchRoots() {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(HITCH_CONFIG_PATH, "utf8"));
+  } catch {
+    return [];
+  }
+  if (!raw || !Array.isArray(raw.hitches)) return [];
+
+  return raw.hitches
+    .filter((entry) => entry && entry.enabled !== false)
+    .map((entry) => (typeof entry.localPath === "string" ? entry.localPath.trim() : ""))
+    .filter(Boolean)
+    .map((localPath) => resolve(localPath));
+}
+
+function rootForCwd(cwd) {
+  const resolvedCwd = resolve(cwd || process.cwd());
+  return hitchRoots().find((root) => isInside(root, resolvedCwd)) ?? null;
+}
+
 function main() {
   let payload;
   try {
@@ -372,8 +430,11 @@ function main() {
   const sessionId = payload.session_id;
   if (!sessionId) return;
 
-  const root =
-    payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const root = rootForCwd(
+    payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.PWD || process.cwd(),
+  );
+  if (!root) return;
+
   const tasksDir = join(root, ".hitch", "tasks");
   if (!existsSync(tasksDir)) return;
 
@@ -397,7 +458,9 @@ function main() {
     }
 
     const fm = parseFrontmatter(content);
-    if (!fm || fm["chat-id"] !== sessionId) continue;
+    if (!fm || fm["chat-harness"] !== "claude-code" || fm["chat-id"] !== sessionId) {
+      continue;
+    }
 
     const nextStatus =
       status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm))
@@ -409,7 +472,7 @@ function main() {
     try {
       writeFileSync(file, setKey(content, "chat-status", nextStatus));
     } catch {
-      // best-effort; never fail the hook
+      // Best effort; never fail the hook.
     }
     return;
   }
@@ -421,6 +484,7 @@ try {
   // Never let a hook error interrupt the session.
 }
 `;
+}
 
 let mainWindow: BrowserWindow | null = null;
 let daemon: ChildProcess | null = null;
@@ -746,34 +810,6 @@ function ensureProjectGitignore(projectId: ProjectId): ProjectSetupStatus {
   return projectSetupStatus(projectId);
 }
 
-function emptyHarnessHookStatus(harness: Harness): HarnessHookStatus {
-  return {
-    harness,
-    installed: false,
-    configPath: null,
-    scriptPath: null,
-    configExists: false,
-    scriptExists: false,
-    configWired: false,
-  };
-}
-
-function hookConfigPath(localPath: string, harness: Harness): string {
-  return harness === "codex"
-    ? join(localPath, ".codex", "hooks.json")
-    : join(localPath, ".claude", "settings.json");
-}
-
-function hookScriptPath(localPath: string, harness: Harness): string {
-  return harness === "codex"
-    ? join(localPath, ".codex", "hooks", "chat-status.mjs")
-    : join(localPath, ".claude", "hooks", "chat-status.mjs");
-}
-
-function hookCommand(harness: Harness): string {
-  return harness === "codex" ? CODEX_HOOK_COMMAND : CLAUDE_HOOK_COMMAND;
-}
-
 function hookEvents(harness: Harness): string[] {
   return harness === "codex"
     ? ["UserPromptSubmit", "Stop"]
@@ -822,90 +858,6 @@ function ensureHookCommand(
   });
 }
 
-function harnessHookStatus(localPath: string, harness: Harness): HarnessHookStatus {
-  const configPath = hookConfigPath(localPath, harness);
-  const scriptPath = hookScriptPath(localPath, harness);
-  const configExists = existsSync(configPath);
-  const scriptExists = existsSync(scriptPath);
-  let configWired = false;
-
-  if (configExists) {
-    try {
-      const config = readJsonObject(configPath);
-      const command = hookCommand(harness);
-      configWired = hookEvents(harness).every((event) =>
-        hookCommandExists(config, event, command),
-      );
-    } catch {
-      configWired = false;
-    }
-  }
-
-  return {
-    harness,
-    installed: scriptExists && configWired,
-    configPath,
-    scriptPath,
-    configExists,
-    scriptExists,
-    configWired,
-  };
-}
-
-function harnessSetupStatus(projectId: ProjectId): HarnessSetupStatus {
-  const setup = projectSetupStatus(projectId);
-  if (!setup.hitch || !setup.localPathExists) {
-    return {
-      projectId: setup.projectId,
-      hitch: setup.hitch,
-      localPathExists: setup.localPathExists,
-      codex: emptyHarnessHookStatus("codex"),
-      claudeCode: emptyHarnessHookStatus("claude-code"),
-    };
-  }
-
-  return {
-    projectId: setup.projectId,
-    hitch: setup.hitch,
-    localPathExists: setup.localPathExists,
-    codex: harnessHookStatus(setup.hitch.localPath, "codex"),
-    claudeCode: harnessHookStatus(setup.hitch.localPath, "claude-code"),
-  };
-}
-
-function installHarnessHooks(
-  projectId: ProjectId,
-  harness: Harness,
-): HarnessSetupStatus {
-  const setup = projectSetupStatus(projectId);
-  if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
-  if (!setup.localPathExists) {
-    throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
-  }
-
-  const configPath = hookConfigPath(setup.hitch.localPath, harness);
-  const scriptPath = hookScriptPath(setup.hitch.localPath, harness);
-  mkdirSync(dirname(scriptPath), { recursive: true });
-  mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(
-    scriptPath,
-    harness === "codex" ? CODEX_CHAT_STATUS_HOOK : CLAUDE_CHAT_STATUS_HOOK,
-    "utf8",
-  );
-
-  const config = readJsonObject(configPath);
-  const command = hookCommand(harness);
-  for (const event of hookEvents(harness)) {
-    ensureHookCommand(config, event, command);
-  }
-  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  addLog(
-    "system",
-    `Installed ${harness === "codex" ? "Codex" : "Claude Code"} lifecycle hooks for ${projectId}`,
-  );
-  return harnessSetupStatus(projectId);
-}
-
 const CODEX_CANDIDATES = [
   process.env.CODEX_BIN,
   "/Applications/Codex.app/Contents/Resources/codex",
@@ -925,22 +877,351 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-async function openCodexHookTrust(projectId: ProjectId): Promise<string> {
-  const setup = harnessSetupStatus(projectId);
-  if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
-  if (!setup.localPathExists) {
-    throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
+function codexHomePath(): string {
+  return process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+}
+
+function globalCodexHooksJsonPath(): string {
+  return join(codexHomePath(), "hooks.json");
+}
+
+function globalCodexConfigTomlPath(): string {
+  return join(codexHomePath(), "config.toml");
+}
+
+function globalCodexHookScriptPath(): string {
+  return join(dirname(localConfigPath), "hooks", "codex-chat-status.mjs");
+}
+
+function globalCodexHookCommand(): string {
+  return `node ${shellQuote(globalCodexHookScriptPath())}`;
+}
+
+const HITCH_CODEX_TOML_START = "# Hitch Codex chat status hooks: begin";
+const HITCH_CODEX_TOML_END = "# Hitch Codex chat status hooks: end";
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function codexConfigHasInlineHooks(): boolean {
+  const path = globalCodexConfigTomlPath();
+  if (!existsSync(path)) return false;
+  return /^\s*\[\[?hooks[.\]]/m.test(readFileSync(path, "utf8"));
+}
+
+function removeHitchCodexTomlBlock(content: string): string {
+  const start = content.indexOf(HITCH_CODEX_TOML_START);
+  if (start === -1) return content;
+  const end = content.indexOf(HITCH_CODEX_TOML_END, start);
+  if (end === -1) return content;
+  const afterEnd = end + HITCH_CODEX_TOML_END.length;
+  const before = content.slice(0, start).replace(/\n{2,}$/u, "\n");
+  const after = content.slice(afterEnd).replace(/^\n{1,2}/u, "");
+  return `${before}${after}`.replace(/\n?$/u, "\n");
+}
+
+function hitchCodexTomlBlock(command: string): string {
+  const quotedCommand = tomlString(command);
+  return [
+    HITCH_CODEX_TOML_START,
+    "[[hooks.UserPromptSubmit]]",
+    "",
+    "[[hooks.UserPromptSubmit.hooks]]",
+    'type = "command"',
+    `command = ${quotedCommand}`,
+    "timeout = 30",
+    'statusMessage = "Updating Hitch chat status"',
+    "",
+    "[[hooks.Stop]]",
+    "",
+    "[[hooks.Stop.hooks]]",
+    'type = "command"',
+    `command = ${quotedCommand}`,
+    "timeout = 30",
+    'statusMessage = "Updating Hitch chat status"',
+    HITCH_CODEX_TOML_END,
+    "",
+  ].join("\n");
+}
+
+function ensureCodexTomlHook(command: string): void {
+  const path = globalCodexConfigTomlPath();
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const withoutHitchBlock = removeHitchCodexTomlBlock(current).trimEnd();
+  const next = [withoutHitchBlock, hitchCodexTomlBlock(command)]
+    .filter(Boolean)
+    .join("\n\n");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${next.trimEnd()}\n`, "utf8");
+}
+
+function removeHookCommand(
+  config: Record<string, unknown>,
+  event: string,
+  command: string,
+): boolean {
+  const hooks = isRecord(config.hooks) ? config.hooks : {};
+  const blocks = Array.isArray(hooks[event]) ? hooks[event] : [];
+  let changed = false;
+  const nextBlocks = blocks
+    .map((block) => {
+      if (!isRecord(block) || !Array.isArray(block.hooks)) return block;
+      const nextHooks = block.hooks.filter(
+        (hook) =>
+          !(
+            isRecord(hook) &&
+            hook.type === "command" &&
+            hook.command === command
+          ),
+      );
+      if (nextHooks.length !== block.hooks.length) changed = true;
+      return { ...block, hooks: nextHooks };
+    })
+    .filter((block) => !isRecord(block) || !Array.isArray(block.hooks) || block.hooks.length > 0);
+
+  if (nextBlocks.length !== blocks.length) changed = true;
+  if (changed) {
+    if (nextBlocks.length > 0) {
+      hooks[event] = nextBlocks;
+    } else {
+      delete hooks[event];
+    }
   }
+  return changed;
+}
+
+function globalCodexHookStatus(): HarnessHookStatus {
+  const command = globalCodexHookCommand();
+  const hooksJsonPath = globalCodexHooksJsonPath();
+  const configTomlPath = globalCodexConfigTomlPath();
+  const scriptPath = globalCodexHookScriptPath();
+  const scriptExists = existsSync(scriptPath);
+  const jsonExists = existsSync(hooksJsonPath);
+  const tomlExists = existsSync(configTomlPath);
+  let jsonWired = false;
+  let tomlWired = false;
+
+  if (jsonExists) {
+    try {
+      const config = readJsonObject(hooksJsonPath);
+      jsonWired = hookEvents("codex").every((event) =>
+        hookCommandExists(config, event, command),
+      );
+    } catch {
+      jsonWired = false;
+    }
+  }
+
+  if (tomlExists) {
+    try {
+      const content = readFileSync(configTomlPath, "utf8");
+      tomlWired =
+        content.includes(command) &&
+        content.includes("[[hooks.UserPromptSubmit]]") &&
+        content.includes("[[hooks.Stop]]");
+    } catch {
+      tomlWired = false;
+    }
+  }
+
+  const configPath =
+    jsonWired || jsonExists
+      ? hooksJsonPath
+      : tomlWired || tomlExists
+        ? configTomlPath
+        : hooksJsonPath;
+
+  return {
+    harness: "codex",
+    installed: scriptExists && (jsonWired || tomlWired),
+    configPath,
+    scriptPath,
+    configExists: jsonExists || tomlExists,
+    scriptExists,
+    configWired: jsonWired || tomlWired,
+  };
+}
+
+function globalHarnessSetupStatus(): GlobalHarnessSetupStatus {
+  return {
+    codex: globalCodexHookStatus(),
+    claudeCode: globalClaudeHookStatus(),
+  };
+}
+
+function installGlobalCodexHooks(): GlobalHarnessSetupStatus {
+  const scriptPath = globalCodexHookScriptPath();
+  const command = globalCodexHookCommand();
+  mkdirSync(dirname(scriptPath), { recursive: true });
+  writeFileSync(scriptPath, globalCodexChatStatusHook(), "utf8");
+
+  if (existsSync(globalCodexHooksJsonPath()) || !codexConfigHasInlineHooks()) {
+    const configPath = globalCodexHooksJsonPath();
+    mkdirSync(dirname(configPath), { recursive: true });
+    const config = readJsonObject(configPath);
+    for (const event of hookEvents("codex")) {
+      ensureHookCommand(config, event, command);
+    }
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  } else {
+    ensureCodexTomlHook(command);
+  }
+
+  addLog("system", "Installed global Codex lifecycle hooks");
+  return globalHarnessSetupStatus();
+}
+
+function removeGlobalCodexHooks(): GlobalHarnessSetupStatus {
+  const command = globalCodexHookCommand();
+  const hooksJsonPath = globalCodexHooksJsonPath();
+  const configTomlPath = globalCodexConfigTomlPath();
+
+  if (existsSync(hooksJsonPath)) {
+    try {
+      const config = readJsonObject(hooksJsonPath);
+      let changed = false;
+      for (const event of hookEvents("codex")) {
+        changed = removeHookCommand(config, event, command) || changed;
+      }
+      if (changed) {
+        writeFileSync(hooksJsonPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      }
+    } catch {
+      // Leave malformed user config untouched.
+    }
+  }
+
+  if (existsSync(configTomlPath)) {
+    const current = readFileSync(configTomlPath, "utf8");
+    const next = removeHitchCodexTomlBlock(current);
+    if (next !== current) writeFileSync(configTomlPath, next, "utf8");
+  }
+
+  if (existsSync(globalCodexHookScriptPath())) {
+    rmSync(globalCodexHookScriptPath(), { force: true });
+  }
+
+  addLog("system", "Removed global Codex lifecycle hooks");
+  return globalHarnessSetupStatus();
+}
+
+function claudeHomePath(): string {
+  return process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+}
+
+function globalClaudeSettingsPath(): string {
+  return join(claudeHomePath(), "settings.json");
+}
+
+function globalClaudeHookScriptPath(): string {
+  return join(dirname(localConfigPath), "hooks", "claude-chat-status.mjs");
+}
+
+function globalClaudeHookCommand(): string {
+  return `node ${shellQuote(globalClaudeHookScriptPath())}`;
+}
+
+function globalClaudeHookStatus(): HarnessHookStatus {
+  const command = globalClaudeHookCommand();
+  const configPath = globalClaudeSettingsPath();
+  const scriptPath = globalClaudeHookScriptPath();
+  const scriptExists = existsSync(scriptPath);
+  const configExists = existsSync(configPath);
+  let configWired = false;
+
+  if (configExists) {
+    try {
+      const config = readJsonObject(configPath);
+      configWired = hookEvents("claude-code").every((event) =>
+        hookCommandExists(config, event, command),
+      );
+    } catch {
+      configWired = false;
+    }
+  }
+
+  return {
+    harness: "claude-code",
+    installed: scriptExists && configWired,
+    configPath,
+    scriptPath,
+    configExists,
+    scriptExists,
+    configWired,
+  };
+}
+
+function installGlobalClaudeHooks(): GlobalHarnessSetupStatus {
+  const scriptPath = globalClaudeHookScriptPath();
+  const command = globalClaudeHookCommand();
+  mkdirSync(dirname(scriptPath), { recursive: true });
+  writeFileSync(scriptPath, globalClaudeChatStatusHook(), "utf8");
+
+  const configPath = globalClaudeSettingsPath();
+  mkdirSync(dirname(configPath), { recursive: true });
+  const config = readJsonObject(configPath);
+  for (const event of hookEvents("claude-code")) {
+    ensureHookCommand(config, event, command);
+  }
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  addLog("system", "Installed global Claude Code lifecycle hooks");
+  return globalHarnessSetupStatus();
+}
+
+function removeGlobalClaudeHooks(): GlobalHarnessSetupStatus {
+  const command = globalClaudeHookCommand();
+  const configPath = globalClaudeSettingsPath();
+
+  if (existsSync(configPath)) {
+    try {
+      const config = readJsonObject(configPath);
+      let changed = false;
+      for (const event of hookEvents("claude-code")) {
+        changed = removeHookCommand(config, event, command) || changed;
+      }
+      if (changed) {
+        writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      }
+    } catch {
+      // Leave malformed user config untouched.
+    }
+  }
+
+  if (existsSync(globalClaudeHookScriptPath())) {
+    rmSync(globalClaudeHookScriptPath(), { force: true });
+  }
+
+  addLog("system", "Removed global Claude Code lifecycle hooks");
+  return globalHarnessSetupStatus();
+}
+
+function firstEnabledHitchPath(): string {
+  try {
+    const config = readLocalConfig();
+    const hitch = config.hitches.find((entry) => entry.enabled !== false);
+    return hitch?.localPath ?? homedir();
+  } catch {
+    return homedir();
+  }
+}
+
+async function openGlobalCodexHookTrust(): Promise<string> {
+  const setup = globalHarnessSetupStatus();
   if (!setup.codex.installed) {
-    throw new Error("Install Codex lifecycle hooks before trusting them");
+    throw new Error("Install global Codex lifecycle hooks before trusting them");
   }
   if (process.platform !== "darwin") {
     throw new Error("Opening Codex for hook trust is only supported on macOS");
   }
 
+  const cwd = firstEnabledHitchPath();
+  const prompt =
+    "Review Hitch's user-level Codex hook for chat status updates. If Codex asks about hooks, approve the Hitch user hook. If needed, run /hooks.";
   const command = [
-    `cd ${shellQuote(setup.hitch.localPath)}`,
-    `${shellQuote(codexBin())} -C ${shellQuote(setup.hitch.localPath)} ${shellQuote("Review this project's hooks for Hitch lifecycle updates. If Codex asks about hooks, approve the project hooks. If needed, run /hooks.")}`,
+    `cd ${shellQuote(cwd)}`,
+    `${shellQuote(codexBin())} -C ${shellQuote(cwd)} ${shellQuote(prompt)}`,
   ].join(" && ");
   const script = [
     'tell application "Terminal"',
@@ -950,7 +1231,7 @@ async function openCodexHookTrust(projectId: ProjectId): Promise<string> {
   ].join("\n");
 
   await run("/usr/bin/osascript", ["-e", script], { timeout: 5_000 });
-  addLog("system", `Opened Codex hook trust flow for ${projectId}`);
+  addLog("system", "Opened Codex hook trust flow for global Hitch hooks");
   return "opened";
 }
 
@@ -1229,16 +1510,23 @@ ipcMain.handle("config:ensure-hitch-directory", (_event, projectId: ProjectId) =
 ipcMain.handle("config:ensure-gitignore", (_event, projectId: ProjectId) =>
   ensureProjectGitignore(projectId),
 );
-ipcMain.handle("config:get-harness-setup", (_event, projectId: ProjectId) =>
-  harnessSetupStatus(projectId),
+ipcMain.handle("config:get-global-harness-setup", () =>
+  globalHarnessSetupStatus(),
 );
-ipcMain.handle(
-  "config:install-harness-hooks",
-  (_event, projectId: ProjectId, harness: Harness) =>
-    installHarnessHooks(projectId, harness),
+ipcMain.handle("config:install-global-codex-hooks", () =>
+  installGlobalCodexHooks(),
 );
-ipcMain.handle("config:open-codex-hook-trust", (_event, projectId: ProjectId) =>
-  openCodexHookTrust(projectId),
+ipcMain.handle("config:remove-global-codex-hooks", () =>
+  removeGlobalCodexHooks(),
+);
+ipcMain.handle("config:install-global-claude-hooks", () =>
+  installGlobalClaudeHooks(),
+);
+ipcMain.handle("config:remove-global-claude-hooks", () =>
+  removeGlobalClaudeHooks(),
+);
+ipcMain.handle("config:open-global-codex-hook-trust", () =>
+  openGlobalCodexHookTrust(),
 );
 ipcMain.handle("dialog:choose-local-path", (_event, defaultPath?: string) =>
   chooseLocalPath(defaultPath),

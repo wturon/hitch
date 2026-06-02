@@ -69,10 +69,7 @@ export interface HarnessHookStatus {
   configWired: boolean;
 }
 
-export interface HarnessSetupStatus {
-  projectId: ProjectId;
-  hitch: HitchBinding | null;
-  localPathExists: boolean;
+export interface GlobalHarnessSetupStatus {
   codex: HarnessHookStatus;
   claudeCode: HarnessHookStatus;
 }
@@ -94,12 +91,12 @@ export interface HitchDaemonApi {
   getProjectSetup: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   ensureHitchDirectory: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   ensureGitignore: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
-  getHarnessSetup: (projectId: ProjectId) => Promise<HarnessSetupStatus>;
-  installHarnessHooks: (
-    projectId: ProjectId,
-    harness: Harness,
-  ) => Promise<HarnessSetupStatus>;
-  openCodexHookTrust: (projectId: ProjectId) => Promise<string>;
+  getGlobalHarnessSetup: () => Promise<GlobalHarnessSetupStatus>;
+  installGlobalCodexHooks: () => Promise<GlobalHarnessSetupStatus>;
+  removeGlobalCodexHooks: () => Promise<GlobalHarnessSetupStatus>;
+  installGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
+  removeGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
+  openGlobalCodexHookTrust: () => Promise<string>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
   getDeviceAuth: () => Promise<DeviceAuthState>;
   setDeviceToken: (token: string) => Promise<DeviceAuthState>;
@@ -117,11 +114,17 @@ const api: HitchDaemonApi = {
   getProjectSetup: (projectId) => ipcRenderer.invoke("config:get-project-setup", projectId),
   ensureHitchDirectory: (projectId) => ipcRenderer.invoke("config:ensure-hitch-directory", projectId),
   ensureGitignore: (projectId) => ipcRenderer.invoke("config:ensure-gitignore", projectId),
-  getHarnessSetup: (projectId) => ipcRenderer.invoke("config:get-harness-setup", projectId),
-  installHarnessHooks: (projectId, harness) =>
-    ipcRenderer.invoke("config:install-harness-hooks", projectId, harness),
-  openCodexHookTrust: (projectId) =>
-    ipcRenderer.invoke("config:open-codex-hook-trust", projectId),
+  getGlobalHarnessSetup: () => ipcRenderer.invoke("config:get-global-harness-setup"),
+  installGlobalCodexHooks: () =>
+    ipcRenderer.invoke("config:install-global-codex-hooks"),
+  removeGlobalCodexHooks: () =>
+    ipcRenderer.invoke("config:remove-global-codex-hooks"),
+  installGlobalClaudeHooks: () =>
+    ipcRenderer.invoke("config:install-global-claude-hooks"),
+  removeGlobalClaudeHooks: () =>
+    ipcRenderer.invoke("config:remove-global-claude-hooks"),
+  openGlobalCodexHookTrust: () =>
+    ipcRenderer.invoke("config:open-global-codex-hook-trust"),
   chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),
   getDeviceAuth: () => ipcRenderer.invoke("device-auth:get"),
   setDeviceToken: (token) => ipcRenderer.invoke("device-auth:set-token", token),
