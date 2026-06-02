@@ -18,6 +18,7 @@ import {
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  CopyIcon,
   ExternalLinkIcon,
   FolderSyncIcon,
   KeyRoundIcon,
@@ -29,6 +30,7 @@ import {
 } from "lucide-react";
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
 import {
+  clearChatFields,
   parseChatRef,
   parseChatStatus,
   type ChatRef,
@@ -620,6 +622,7 @@ interface DraggableCardProps {
   pending: boolean;
   onOpen: (card: Card) => void;
   onArchiveToggle: (card: Card, archived: boolean) => void;
+  onDuplicate: (card: Card) => void;
   onDelete: (card: Card) => void;
 }
 
@@ -634,6 +637,7 @@ function DraggableCard({
   pending,
   onOpen,
   onArchiveToggle,
+  onDuplicate,
   onDelete,
 }: DraggableCardProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -691,6 +695,10 @@ function DraggableCard({
         >
           {card.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
           {card.archived ? "Unarchive" : "Archive"}
+        </ContextMenuItem>
+        <ContextMenuItem disabled={pending} onClick={() => onDuplicate(card)}>
+          <CopyIcon />
+          Duplicate
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
@@ -1188,6 +1196,27 @@ function BoardContent({
     });
   }
 
+  // Duplicate a task: write a fresh `tasks/<slug>/task.md` that keeps the
+  // original body, status, and other frontmatter, but with a "COPY OF: …" title
+  // and the source's coding-chat link cleared so the copy starts un-linked. Same
+  // upsert path as createTask — the live query renders the new card instantly via
+  // the optimistic insert.
+  async function duplicateTask(card: Card) {
+    const taken = new Set(cards.map((c) => c.slug));
+    const title = `COPY OF: ${card.title}`;
+    const slug = uniqueSlug(title, taken);
+    const content = setFrontmatterKeys(clearChatFields(card.content), {
+      title,
+    });
+    await upsertFile({
+      project: project,
+      path: taskBodyPath(slug),
+      content,
+      hash: await sha256(content),
+      deleted: false,
+    });
+  }
+
   async function setArchived(card: Card, archived: boolean) {
     const { frontmatter } = parseFrontmatter(card.content);
     const restoreStatus = columnFor(frontmatter.archivedFrom);
@@ -1352,6 +1381,7 @@ function BoardContent({
                     onArchiveToggle={(c, archived) =>
                       void setArchived(c, archived)
                     }
+                    onDuplicate={(c) => void duplicateTask(c)}
                     onDelete={(c) => void deleteCard(c)}
                   />
                 ))}
