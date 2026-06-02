@@ -14,7 +14,7 @@
     "build:main": "tsc -p tsconfig.main.json",
     "bundle:daemon": "node scripts/bundle-daemon.mjs",
     "gen:app-config": "node scripts/gen-app-config.mjs",
-    "package": "npm run build && npm run bundle:daemon && npm run gen:app-config && electron-builder --mac --arm64",
+    "package": "[ -f ../.env.production ] && { set -a; . ../.env.production; set +a; }; npm run build && npm run bundle:daemon && npm run gen:app-config && electron-builder --mac --arm64",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "doctor": "react-doctor"
   },
