@@ -263,26 +263,20 @@ function CreateProjectDialog({
 function AppSidebar({
   projects,
   selectedProject,
-  localHitches,
-  deviceAuth,
   creatingProject,
   onSelectProject,
   onCreateProject,
   onShowProjectDetails,
   onShowDeviceTokens,
-  onShowLocalSync,
   onSignOut,
 }: {
   projects: ProjectNavEntry[];
   selectedProject: string;
-  localHitches: HitchBinding[];
-  deviceAuth: DeviceAuthState | null;
   creatingProject: boolean;
   onSelectProject: (project: string) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
   onShowDeviceTokens: () => void;
-  onShowLocalSync: () => void;
   onSignOut: () => void;
 }) {
   const [showCreateProject, setShowCreateProject] = useState(false);
@@ -317,7 +311,6 @@ function AppSidebar({
           </p>
         ) : (
           projects.map(({ project }) => {
-            const hitch = localHitches.find((entry) => entry.project === project.slug);
             const selected = project.slug === selectedProject;
             return (
               <div
@@ -337,16 +330,9 @@ function AppSidebar({
                   <LayoutDashboardIcon className="size-4 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{project.name}</span>
                 </button>
-                {/* Fixed trailing slot: the hitch status dot, swapped for the
-                    project-details gear on hover so neither crowds the name. */}
+                {/* Fixed trailing slot: the project-details gear, revealed on
+                    hover so it doesn't crowd the project name. */}
                 <div className="flex w-6 shrink-0 items-center justify-center">
-                  <span
-                    className={cn(
-                      "size-2 rounded-full group-hover:hidden",
-                      hitch?.enabled ? "bg-emerald-500" : "bg-sidebar-border",
-                    )}
-                    title={hitch?.enabled ? "Hitched locally" : "Not hitched locally"}
-                  />
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -391,19 +377,6 @@ function AppSidebar({
           <KeyRoundIcon />
           <span className="hidden md:inline">Device tokens</span>
         </Button>
-        <div className="hidden px-2 text-xs text-sidebar-foreground/55 md:block">
-          This Mac: {deviceAuth?.hasToken ? "authorized" : "not authorized"}
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onShowLocalSync}
-          aria-label="Local sync"
-          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
-        >
-          <FolderSyncIcon />
-          <span className="hidden md:inline">Local sync</span>
-        </Button>
         <Button
           variant="ghost"
           size="sm"
@@ -422,27 +395,21 @@ function AppSidebar({
 function AppShell({
   projects,
   selectedProject,
-  localHitches,
-  deviceAuth,
   creatingProject,
   onSelectProject,
   onCreateProject,
   onShowProjectDetails,
   onShowDeviceTokens,
-  onShowLocalSync,
   onSignOut,
   children,
 }: {
   projects: ProjectNavEntry[];
   selectedProject: string;
-  localHitches: HitchBinding[];
-  deviceAuth: DeviceAuthState | null;
   creatingProject: boolean;
   onSelectProject: (project: string) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
   onShowDeviceTokens: () => void;
-  onShowLocalSync: () => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
@@ -451,14 +418,11 @@ function AppShell({
       <AppSidebar
         projects={projects}
         selectedProject={selectedProject}
-        localHitches={localHitches}
-        deviceAuth={deviceAuth}
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
         onShowProjectDetails={onShowProjectDetails}
         onShowDeviceTokens={onShowDeviceTokens}
-        onShowLocalSync={onShowLocalSync}
         onSignOut={onSignOut}
       />
       <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
@@ -542,8 +506,6 @@ function ProjectWorkspace() {
     <BoardContent
       project={currentProject}
       projects={projects}
-      localHitches={localConfig.hitches}
-      deviceAuth={deviceAuth}
       creatingProject={creatingProject}
       onSelectProject={(project) => void selectProject(project)}
       onCreateProject={createProject}
@@ -988,8 +950,6 @@ function DroppableColumn({
 function BoardContent({
   project,
   projects,
-  localHitches,
-  deviceAuth,
   creatingProject,
   onSelectProject,
   onCreateProject,
@@ -997,8 +957,6 @@ function BoardContent({
 }: {
   project: string;
   projects: ProjectNavEntry[];
-  localHitches: HitchBinding[];
-  deviceAuth: DeviceAuthState | null;
   creatingProject: boolean;
   onSelectProject: (project: string) => void;
   onCreateProject: (name: string) => Promise<void>;
@@ -1105,14 +1063,11 @@ function BoardContent({
       <AppShell
         projects={projects}
         selectedProject={project}
-        localHitches={localHitches}
-        deviceAuth={deviceAuth}
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
         onShowProjectDetails={() => setShowProjectDetails(true)}
         onShowDeviceTokens={() => setShowDeviceTokens(true)}
-        onShowLocalSync={() => setShowLocalSync(true)}
         onSignOut={() => void signOut()}
       >
         <div className="flex min-h-[50vh] items-center justify-center text-muted-foreground">
@@ -1223,7 +1178,6 @@ function BoardContent({
     const nextContent = setFrontmatterKeys(card.content, {
       status: archived ? "archived" : restoreStatus,
       archivedFrom: archived ? card.column : undefined,
-      "chat-status": archived ? undefined : card.chatStatus ?? undefined,
     });
 
     setPendingCardId(card.id);
@@ -1272,13 +1226,11 @@ function BoardContent({
     );
   }
 
-  // Move a card to another column by rewriting just its `status` frontmatter,
-  // through the same save path the dialog and archive use.
+  // Move a card to another column by rewriting just its `status` frontmatter.
+  // Chat lifecycle fields are owned by the harness hooks, so a board move
+  // should never reset or replay them from this card snapshot.
   async function setStatus(card: Card, status: Column) {
-    const nextContent = setFrontmatterKeys(card.content, {
-      status,
-      "chat-status": status === "done" ? undefined : card.chatStatus ?? undefined,
-    });
+    const nextContent = setFrontmatterKeys(card.content, { status });
 
     setPendingCardId(card.id);
     try {
@@ -1314,14 +1266,11 @@ function BoardContent({
     <AppShell
       projects={projects}
       selectedProject={project}
-      localHitches={localHitches}
-      deviceAuth={deviceAuth}
       creatingProject={creatingProject}
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
       onShowProjectDetails={() => setShowProjectDetails(true)}
       onShowDeviceTokens={() => setShowDeviceTokens(true)}
-      onShowLocalSync={() => setShowLocalSync(true)}
       onSignOut={() => void signOut()}
     >
       <div className="flex flex-col gap-6">
@@ -1333,20 +1282,38 @@ function BoardContent({
               {activeCards.length === 1 ? "" : "s"} · live
             </span>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={archivedCards.length === 0}
-            onClick={() => setShowArchived(true)}
-          >
-            <ArchiveIcon />
-            Archived
-            {archivedCards.length > 0 && (
-              <span className="ml-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                {archivedCards.length}
-              </span>
-            )}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowLocalSync(true)}
+            >
+              <FolderSyncIcon />
+              Local sync
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowProjectDetails(true)}
+            >
+              <SettingsIcon />
+              Project settings
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={archivedCards.length === 0}
+              onClick={() => setShowArchived(true)}
+            >
+              <ArchiveIcon />
+              Archived
+              {archivedCards.length > 0 && (
+                <span className="ml-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                  {archivedCards.length}
+                </span>
+              )}
+            </Button>
+          </div>
         </header>
 
         <DndContext

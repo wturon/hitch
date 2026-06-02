@@ -300,13 +300,37 @@ async function startHitchBinding({
   async function linkCodexThread(path: string, threadId: string) {
     const absPath = toAbs(path);
     const current = await readFile(absPath, "utf8");
+    // Stamp chat-status: working in the same write that links the thread. The
+    // daemon is about to submit the first turn, so the chat is working *now* —
+    // don't wait for the codex Stop hook (the first lifecycle event we'd
+    // otherwise see) to light up the card.
     const next = setFrontmatterKeys(current, {
       "chat-harness": "codex",
       "chat-id": threadId,
       "chat-cwd": undefined,
+      "chat-status": "working",
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${project}] linked codex thread ${threadId} → ${path}`);
+  }
+
+  // Optimistically mark a task's chat working when the daemon kicks off a chat,
+  // rather than waiting for the harness's first lifecycle hook. Best-effort: a
+  // failure here must not abort the start-chat command.
+  async function markChatWorking(path: string) {
+    const absPath = toAbs(path);
+    try {
+      const current = await readFile(absPath, "utf8");
+      const next = setFrontmatterKeys(current, { "chat-status": "working" });
+      if (next === current) return;
+      await writeFile(absPath, next, "utf8");
+      logger.info(`[hitch:${project}] marked ${path} chat-status=working`);
+    } catch (err) {
+      logError(
+        logger,
+        `[hitch:${project}] failed to mark ${path} working: ${String(err)}`,
+      );
+    }
   }
 
   async function taskTitle(path: string): Promise<string | undefined> {
@@ -418,6 +442,10 @@ async function startHitchBinding({
       } else if (cmd.kind === "start-chat" && cmd.harness === "claude-code") {
         if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
+        // Claude self-links its session id via the UserPromptSubmit hook once it
+        // boots, but that can lag. We already know the task, so flip the card to
+        // working now and let the Stop hook settle it to waiting later.
+        await markChatWorking(cmd.path);
         const result = await startChat({
           taskKey: cmd.path,
           prompt: cmd.initialPrompt,
