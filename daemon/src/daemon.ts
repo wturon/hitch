@@ -4,7 +4,7 @@
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import dotenv from "dotenv";
@@ -314,23 +314,21 @@ async function startHitchBinding({
     logger.info(`[hitch:${project}] linked codex thread ${threadId} → ${path}`);
   }
 
-  // Optimistically mark a task's chat working when the daemon kicks off a chat,
-  // rather than waiting for the harness's first lifecycle hook. Best-effort: a
-  // failure here must not abort the start-chat command.
-  async function markChatWorking(path: string) {
+  async function linkClaudeSession(path: string, sessionId: string, cwd: string) {
     const absPath = toAbs(path);
-    try {
-      const current = await readFile(absPath, "utf8");
-      const next = setFrontmatterKeys(current, { "chat-status": "working" });
-      if (next === current) return;
-      await writeFile(absPath, next, "utf8");
-      logger.info(`[hitch:${project}] marked ${path} chat-status=working`);
-    } catch (err) {
-      logError(
-        logger,
-        `[hitch:${project}] failed to mark ${path} working: ${String(err)}`,
-      );
-    }
+    const current = await readFile(absPath, "utf8");
+    // Pin the session id (we pass it to `claude --session-id`), so the task is
+    // linked before the agent boots — no introspecting the newest *.jsonl. Stamp
+    // chat-status: working in the same write, since the agent is about to take
+    // its first turn; the Stop hook settles it to waiting later.
+    const next = setFrontmatterKeys(current, {
+      "chat-harness": "claude-code",
+      "chat-id": sessionId,
+      "chat-cwd": cwd,
+      "chat-status": "working",
+    });
+    await writeFile(absPath, next, "utf8");
+    logger.info(`[hitch:${project}] linked claude session ${sessionId} → ${path}`);
   }
 
   async function taskTitle(path: string): Promise<string | undefined> {
@@ -442,13 +440,15 @@ async function startHitchBinding({
       } else if (cmd.kind === "start-chat" && cmd.harness === "claude-code") {
         if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
-        // Claude self-links its session id via the UserPromptSubmit hook once it
-        // boots, but that can lag. We already know the task, so flip the card to
-        // working now and let the Stop hook settle it to waiting later.
-        await markChatWorking(cmd.path);
+        // Pin the session id and link the task before we spawn, the same way we
+        // link codex threads via onThreadStarted. The agent never has to
+        // introspect its own session id; openChat() resumes by this id later.
+        const sessionId = randomUUID();
+        await linkClaudeSession(cmd.path, sessionId, root.localPath);
         const result = await startChat({
           taskKey: cmd.path,
           prompt: cmd.initialPrompt,
+          sessionId,
           cwd: root.localPath,
         });
         await client.mutation(anyApi.commands.completeCommand, {

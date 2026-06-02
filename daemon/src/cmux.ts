@@ -170,17 +170,18 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
 export interface StartSpec {
   taskKey: string; // dedup key for fresh task spawns, e.g. "tasks/slug"
   prompt: string;
+  sessionId: string; // pinned via `claude --session-id`, so we know it up front
   cwd?: string;
 }
 
 // Launch a BRAND-NEW Claude Code session seeded with `prompt`, in a fresh cmux
 // workspace. The prompt rides as claude's positional argument — NOT `-p` — so it
 // stays an interactive session on subscription auth (the user drives it); claude
-// just submits it as the first turn. There's no session id yet, so dedup keys on
-// the task: a second click within the grace window focuses the workspace we just
-// made instead of spawning a duplicate. The spawned agent writes its own session
-// id back into the task frontmatter, after which the task is "linked" and
-// openChat() takes over for resuming.
+// just submits it as the first turn. We pin the session id with `--session-id`,
+// so the daemon already linked the task before this spawn (no agent
+// introspection needed) and openChat() can resume by that same id later. Dedup
+// still keys on the task: a second click within the grace window focuses the
+// workspace we just made instead of spawning a duplicate.
 export async function startChat(spec: StartSpec): Promise<OpenResult> {
   // We spawned for this task moments ago (agent may still be booting) → focus
   // that workspace rather than spawn a duplicate.
@@ -204,7 +205,7 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
   spawning.add(spec.taskKey);
   try {
     const before = await workspaceUuids();
-    const command = `claude ${shellQuote(spec.prompt)}`;
+    const command = `claude --session-id ${spec.sessionId} ${shellQuote(spec.prompt)}`;
     const args = ["new-workspace", "--command", command, "--focus", "true"];
     if (spec.cwd) args.push("--cwd", spec.cwd);
     await cmux(args);
