@@ -5,6 +5,7 @@ import {
 } from "electron";
 
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
+type ProjectId = string;
 
 export interface LogEntry {
   id: number;
@@ -22,19 +23,18 @@ export interface DaemonState {
 }
 
 export interface HitchBinding {
-  project: string;
+  projectId: ProjectId;
   projectName?: string;
   localPath: string;
   enabled: boolean;
 }
 
 export interface LocalHitchConfig {
-  activeProject: string;
   hitches: HitchBinding[];
 }
 
 export interface AddHitchInput {
-  project: string;
+  projectId: ProjectId;
   projectName?: string;
   localPath: string;
   updateGitignore?: boolean;
@@ -47,7 +47,7 @@ export interface AddHitchResult {
 }
 
 export interface ProjectSetupStatus {
-  project: string;
+  projectId: ProjectId;
   hitch: HitchBinding | null;
   localPathExists: boolean;
   hitchPath: string | null;
@@ -70,7 +70,7 @@ export interface HarnessHookStatus {
 }
 
 export interface HarnessSetupStatus {
-  project: string;
+  projectId: ProjectId;
   hitch: HitchBinding | null;
   localPathExists: boolean;
   codex: HarnessHookStatus;
@@ -90,17 +90,16 @@ export interface HitchDaemonApi {
   stop: () => Promise<DaemonState>;
   clearLogs: () => Promise<DaemonState>;
   getConfig: () => Promise<LocalHitchConfig>;
-  setActiveProject: (project: string) => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
-  getProjectSetup: (project: string) => Promise<ProjectSetupStatus>;
-  ensureHitchDirectory: (project: string) => Promise<ProjectSetupStatus>;
-  ensureGitignore: (project: string) => Promise<ProjectSetupStatus>;
-  getHarnessSetup: (project: string) => Promise<HarnessSetupStatus>;
+  getProjectSetup: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
+  ensureHitchDirectory: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
+  ensureGitignore: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
+  getHarnessSetup: (projectId: ProjectId) => Promise<HarnessSetupStatus>;
   installHarnessHooks: (
-    project: string,
+    projectId: ProjectId,
     harness: Harness,
   ) => Promise<HarnessSetupStatus>;
-  openCodexHookTrust: (project: string) => Promise<string>;
+  openCodexHookTrust: (projectId: ProjectId) => Promise<string>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
   getDeviceAuth: () => Promise<DeviceAuthState>;
   setDeviceToken: (token: string) => Promise<DeviceAuthState>;
@@ -114,16 +113,15 @@ const api: HitchDaemonApi = {
   stop: () => ipcRenderer.invoke("daemon:stop"),
   clearLogs: () => ipcRenderer.invoke("daemon:clear-logs"),
   getConfig: () => ipcRenderer.invoke("config:get"),
-  setActiveProject: (project) => ipcRenderer.invoke("config:set-active-project", project),
   addHitch: (input) => ipcRenderer.invoke("config:add-hitch", input),
-  getProjectSetup: (project) => ipcRenderer.invoke("config:get-project-setup", project),
-  ensureHitchDirectory: (project) => ipcRenderer.invoke("config:ensure-hitch-directory", project),
-  ensureGitignore: (project) => ipcRenderer.invoke("config:ensure-gitignore", project),
-  getHarnessSetup: (project) => ipcRenderer.invoke("config:get-harness-setup", project),
-  installHarnessHooks: (project, harness) =>
-    ipcRenderer.invoke("config:install-harness-hooks", project, harness),
-  openCodexHookTrust: (project) =>
-    ipcRenderer.invoke("config:open-codex-hook-trust", project),
+  getProjectSetup: (projectId) => ipcRenderer.invoke("config:get-project-setup", projectId),
+  ensureHitchDirectory: (projectId) => ipcRenderer.invoke("config:ensure-hitch-directory", projectId),
+  ensureGitignore: (projectId) => ipcRenderer.invoke("config:ensure-gitignore", projectId),
+  getHarnessSetup: (projectId) => ipcRenderer.invoke("config:get-harness-setup", projectId),
+  installHarnessHooks: (projectId, harness) =>
+    ipcRenderer.invoke("config:install-harness-hooks", projectId, harness),
+  openCodexHookTrust: (projectId) =>
+    ipcRenderer.invoke("config:open-codex-hook-trust", projectId),
   chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),
   getDeviceAuth: () => ipcRenderer.invoke("device-auth:get"),
   setDeviceToken: (token) => ipcRenderer.invoke("device-auth:set-token", token),

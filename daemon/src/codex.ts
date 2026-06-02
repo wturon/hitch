@@ -28,6 +28,11 @@ interface JsonRpcResponse {
   error?: { code: number; message: string };
 }
 
+interface JsonRpcNotification {
+  method: string;
+  params?: unknown;
+}
+
 interface PendingRequest {
   method: string;
   resolve: (value: unknown) => void;
@@ -45,17 +50,12 @@ export interface CodexStartSpec {
   cwd: string;
   threadName?: string;
   onThreadStarted?: (threadId: string) => Promise<void>;
+  onTurnCompleted?: (threadId: string) => Promise<void>;
 }
 
 export interface CodexStartResult {
   status: "focused" | "started";
   threadId: string;
-}
-
-export interface CodexDraftSpec {
-  prompt: string;
-  cwd: string;
-  originUrl?: string;
 }
 
 const recentStarts = new Map<string, { threadId: string; at: number }>();
@@ -67,6 +67,7 @@ class CodexAppServer {
   private initializing: Promise<void> | null = null;
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
+  private turnCompletedHandlers = new Map<string, Set<() => void>>();
   private stdoutBuffer = "";
   private stderrBuffer = "";
 
@@ -85,6 +86,20 @@ class CodexAppServer {
     this.initializing = null;
     if (!child || child.killed) return;
     child.kill("SIGTERM");
+  }
+
+  onTurnCompleted(threadId: string, handler: () => void): () => void {
+    let handlers = this.turnCompletedHandlers.get(threadId);
+    if (!handlers) {
+      handlers = new Set();
+      this.turnCompletedHandlers.set(threadId, handlers);
+    }
+    handlers.add(handler);
+
+    return () => {
+      handlers.delete(handler);
+      if (handlers.size === 0) this.turnCompletedHandlers.delete(threadId);
+    };
   }
 
   private async ensureInitialized(): Promise<void> {
@@ -163,15 +178,18 @@ class CodexAppServer {
 
     for (const line of lines) {
       if (!line.trim()) continue;
-      let message: JsonRpcResponse;
+      let message: JsonRpcResponse | JsonRpcNotification;
       try {
-        message = JSON.parse(line) as JsonRpcResponse;
+        message = JSON.parse(line) as JsonRpcResponse | JsonRpcNotification;
       } catch {
         console.log(`[hitch] codex app-server: ${line}`);
         continue;
       }
 
-      if (!("id" in message)) continue; // notification; nothing to resolve
+      if (!("id" in message)) {
+        this.onNotification(message);
+        continue;
+      }
       const pending = this.pending.get(message.id);
       if (!pending) continue;
       clearTimeout(pending.timer);
@@ -197,6 +215,18 @@ class CodexAppServer {
       if (line.trim()) console.log(`[hitch] codex app-server: ${line}`);
     }
   }
+
+  private onNotification(message: JsonRpcNotification): void {
+    if (message.method !== "turn/completed") return;
+    const params = message.params as { threadId?: unknown } | undefined;
+    const threadId = typeof params?.threadId === "string" ? params.threadId : "";
+    if (!threadId) return;
+
+    const handlers = this.turnCompletedHandlers.get(threadId);
+    if (!handlers) return;
+    for (const handler of handlers) handler();
+    this.turnCompletedHandlers.delete(threadId);
+  }
 }
 
 const server = new CodexAppServer();
@@ -206,14 +236,12 @@ export async function startCodexChat(
 ): Promise<CodexStartResult> {
   const recent = recentStarts.get(spec.taskKey);
   if (recent && Date.now() - recent.at < START_GRACE_MS) {
-    await openCodexThread(recent.threadId);
     return { status: "focused", threadId: recent.threadId };
   }
 
   const inFlight = inFlightStarts.get(spec.taskKey);
   if (inFlight) {
     const result = await inFlight;
-    await openCodexThread(result.threadId);
     return { status: "focused", threadId: result.threadId };
   }
 
@@ -244,17 +272,33 @@ async function doStartCodexChat(
 
   if (spec.onThreadStarted) await spec.onThreadStarted(threadId);
 
-  await server.request(
-    "turn/start",
-    {
-      threadId,
-      cwd: spec.cwd,
-      input: [{ type: "text", text: spec.prompt, text_elements: [] }],
-    },
-    45_000,
-  );
+  let unsubscribeTurnCompleted: (() => void) | undefined;
+  if (spec.onTurnCompleted) {
+    unsubscribeTurnCompleted = server.onTurnCompleted(threadId, () => {
+      unsubscribeTurnCompleted?.();
+      void spec.onTurnCompleted?.(threadId).catch((err) => {
+        console.log(
+          `[hitch] codex app-server: failed to handle turn completion for ${threadId}: ${String(err)}`,
+        );
+      });
+    });
+  }
 
-  await openCodexThread(threadId);
+  try {
+    await server.request(
+      "turn/start",
+      {
+        threadId,
+        cwd: spec.cwd,
+        input: [{ type: "text", text: spec.prompt, text_elements: [] }],
+      },
+      45_000,
+    );
+  } catch (err) {
+    unsubscribeTurnCompleted?.();
+    throw err;
+  }
+
   return { status: "started", threadId };
 }
 
@@ -263,18 +307,6 @@ export async function openCodexThread(threadId: string): Promise<void> {
   await run("/usr/bin/open", [`codex://threads/${encodeURIComponent(threadId)}`], {
     timeout: 5_000,
   });
-}
-
-export async function openCodexDraft(spec: CodexDraftSpec): Promise<string> {
-  if (platform() !== "darwin") return "unsupported-platform";
-
-  const url = new URL("codex://threads/new");
-  url.searchParams.set("prompt", spec.prompt);
-  url.searchParams.set("path", spec.cwd);
-  if (spec.originUrl) url.searchParams.set("originUrl", spec.originUrl);
-
-  await run("/usr/bin/open", [url.toString()], { timeout: 5_000 });
-  return "drafted";
 }
 
 export async function closeCodexAppServer(): Promise<void> {

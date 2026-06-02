@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain, nativeImage } from "electron";
 
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
+type ProjectId = string;
 
 interface LogEntry {
   id: number;
@@ -35,19 +36,18 @@ interface DaemonState {
 }
 
 interface HitchBinding {
-  project: string;
+  projectId: ProjectId;
   projectName?: string;
   localPath: string;
   enabled: boolean;
 }
 
 interface LocalHitchConfig {
-  activeProject: string;
   hitches: HitchBinding[];
 }
 
 interface AddHitchInput {
-  project: string;
+  projectId: ProjectId;
   projectName?: string;
   localPath: string;
   updateGitignore?: boolean;
@@ -60,7 +60,7 @@ interface AddHitchResult {
 }
 
 interface ProjectSetupStatus {
-  project: string;
+  projectId: ProjectId;
   hitch: HitchBinding | null;
   localPathExists: boolean;
   hitchPath: string | null;
@@ -83,7 +83,7 @@ interface HarnessHookStatus {
 }
 
 interface HarnessSetupStatus {
-  project: string;
+  projectId: ProjectId;
   hitch: HitchBinding | null;
   localPathExists: boolean;
   codex: HarnessHookStatus;
@@ -106,7 +106,7 @@ interface RunnerMessage {
   type?: unknown;
   stream?: unknown;
   message?: unknown;
-  project?: unknown;
+  projectId?: unknown;
   localPath?: unknown;
   hitchPath?: unknown;
   hitches?: unknown;
@@ -515,60 +515,8 @@ function readBakedConvexUrl(): string | undefined {
   return undefined;
 }
 
-function migrateRepoConfigToLocalConfig(raw: unknown): unknown {
-  if (!isRecord(raw)) throw new Error("expected repo config to be an object");
-
-  if (Array.isArray(raw.hitches)) {
-    return {
-      activeProject:
-        typeof raw.activeProject === "string"
-          ? raw.activeProject
-          : typeof raw.activeWorkspace === "string"
-            ? raw.activeWorkspace
-            : undefined,
-      hitches: raw.hitches.map((entry) => {
-        if (!isRecord(entry)) return entry;
-        const localPath =
-          typeof entry.localPath === "string"
-            ? resolve(repoRoot, entry.localPath)
-            : typeof entry.repoPath === "string"
-              ? resolve(repoRoot, entry.repoPath)
-              : typeof entry.hitchPath === "string"
-                ? resolve(resolve(repoRoot, entry.hitchPath), "..")
-                : repoRoot;
-        return {
-          project:
-            typeof entry.project === "string"
-              ? entry.project
-              : typeof entry.workspace === "string"
-                ? entry.workspace
-                : undefined,
-          projectName:
-            typeof entry.projectName === "string" ? entry.projectName : undefined,
-          localPath,
-          enabled: entry.enabled,
-        };
-      }),
-    };
-  }
-
-  if (typeof raw.workspace === "string" && Array.isArray(raw.watch)) {
-    return {
-      activeProject: raw.workspace,
-      hitches: raw.watch.map((entry) => {
-        if (!isRecord(entry)) return entry;
-        const rawPath = typeof entry.path === "string" ? entry.path : ".hitch";
-        const hitchPath = resolve(repoRoot, rawPath);
-        return {
-          project: raw.workspace,
-          localPath: resolve(hitchPath, ".."),
-          enabled: true,
-        };
-      }),
-    };
-  }
-
-  throw new Error("expected hitches or legacy watch array");
+function emptyLocalConfig(): LocalHitchConfig {
+  return { hitches: [] };
 }
 
 function ensureLocalConfig(): void {
@@ -579,7 +527,7 @@ function ensureLocalConfig(): void {
     // Fresh install: no local config and no dev repo fallback. Bootstrap an
     // empty config so the UI (readLocalConfig / addHitch) works and the user can
     // hitch their first project; the daemon stays idle until a hitch exists.
-    const emptyConfig: LocalHitchConfig = { activeProject: "", hitches: [] };
+    const emptyConfig = emptyLocalConfig();
     mkdirSync(dirname(localConfigPath), { recursive: true });
     writeFileSync(
       localConfigPath,
@@ -591,10 +539,16 @@ function ensureLocalConfig(): void {
   }
 
   const existingText = readFileSync(sourcePath, "utf8");
-  const parsed = JSON.parse(existingText) as unknown;
-  const localConfig = normalizeLocalConfig(
-    wasExisting ? parsed : migrateRepoConfigToLocalConfig(parsed),
-  );
+  let localConfig: LocalHitchConfig;
+  try {
+    localConfig = normalizeLocalConfig(JSON.parse(existingText) as unknown);
+  } catch (err) {
+    localConfig = emptyLocalConfig();
+    addLog(
+      "system",
+      `Discarded old Hitch config at ${sourcePath}: ${String(err)}`,
+    );
+  }
   const nextText = `${JSON.stringify(localConfig, null, 2)}\n`;
   if (wasExisting && existingText === nextText) return;
 
@@ -614,12 +568,8 @@ function normalizeLocalConfig(raw: unknown): LocalHitchConfig {
 
   const hitches = raw.hitches.map((entry, index): HitchBinding => {
     if (!isRecord(entry)) throw new Error(`hitches[${index}] must be an object`);
-    const project =
-      typeof entry.project === "string"
-        ? entry.project.trim()
-        : typeof entry.workspace === "string"
-          ? entry.workspace.trim()
-          : "";
+    const projectId =
+      typeof entry.projectId === "string" ? entry.projectId.trim() : "";
     const projectName =
       typeof entry.projectName === "string" && entry.projectName.trim()
         ? entry.projectName.trim()
@@ -634,20 +584,13 @@ function normalizeLocalConfig(raw: unknown): LocalHitchConfig {
             : "";
     const enabled = entry.enabled !== false;
 
-    if (!project) throw new Error(`hitches[${index}].project is required`);
+    if (!projectId) throw new Error(`hitches[${index}].projectId is required`);
     if (!localPath) throw new Error(`hitches[${index}].localPath is required`);
 
-    return { project, projectName, localPath, enabled };
+    return { projectId, projectName, localPath, enabled };
   });
 
-  const activeProject =
-    typeof raw.activeProject === "string" && raw.activeProject.trim()
-      ? raw.activeProject.trim()
-      : typeof raw.activeWorkspace === "string" && raw.activeWorkspace.trim()
-        ? raw.activeWorkspace.trim()
-        : hitches[0]?.project ?? "";
-
-  return { activeProject, hitches };
+  return { hitches };
 }
 
 function readLocalConfig(): LocalHitchConfig {
@@ -720,16 +663,6 @@ async function clearDeviceToken(): Promise<DeviceAuthState> {
   return deviceAuthState();
 }
 
-async function setActiveProject(project: string): Promise<LocalHitchConfig> {
-  const trimmed = project.trim();
-  if (!trimmed) throw new Error("Project is required");
-  const config = readLocalConfig();
-  config.activeProject = trimmed;
-  const saved = writeLocalConfig(config);
-  addLog("system", `Selected project ${trimmed}`);
-  return saved;
-}
-
 function updateGitignore(localPath: string): boolean {
   const gitignorePath = join(localPath, ".gitignore");
   const existing = existsSync(gitignorePath)
@@ -758,14 +691,14 @@ function gitignoreHasHitch(localPath: string): boolean {
     .some((line) => line === ".hitch/" || line === ".hitch");
 }
 
-function projectSetupStatus(project: string): ProjectSetupStatus {
-  const trimmed = project.trim();
-  if (!trimmed) throw new Error("Project is required");
+function projectSetupStatus(projectId: ProjectId): ProjectSetupStatus {
+  const trimmed = projectId.trim();
+  if (!trimmed) throw new Error("Project ID is required");
   const config = readLocalConfig();
-  const hitch = config.hitches.find((entry) => entry.project === trimmed) ?? null;
+  const hitch = config.hitches.find((entry) => entry.projectId === trimmed) ?? null;
   if (!hitch) {
     return {
-      project: trimmed,
+      projectId: trimmed,
       hitch: null,
       localPathExists: false,
       hitchPath: null,
@@ -780,7 +713,7 @@ function projectSetupStatus(project: string): ProjectSetupStatus {
   const hitchPath = join(hitch.localPath, ".hitch");
   const gitignorePath = join(hitch.localPath, ".gitignore");
   return {
-    project: trimmed,
+    projectId: trimmed,
     hitch,
     localPathExists,
     hitchPath,
@@ -791,26 +724,26 @@ function projectSetupStatus(project: string): ProjectSetupStatus {
   };
 }
 
-function ensureProjectHitchDirectory(project: string): ProjectSetupStatus {
-  const setup = projectSetupStatus(project);
+function ensureProjectHitchDirectory(projectId: ProjectId): ProjectSetupStatus {
+  const setup = projectSetupStatus(projectId);
   if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
   if (!setup.localPathExists) {
     throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
   }
   mkdirSync(join(setup.hitch.localPath, ".hitch"), { recursive: true });
-  addLog("system", `Ensured .hitch folder for ${project}`);
-  return projectSetupStatus(project);
+  addLog("system", `Ensured .hitch folder for ${projectId}`);
+  return projectSetupStatus(projectId);
 }
 
-function ensureProjectGitignore(project: string): ProjectSetupStatus {
-  const setup = projectSetupStatus(project);
+function ensureProjectGitignore(projectId: ProjectId): ProjectSetupStatus {
+  const setup = projectSetupStatus(projectId);
   if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
   if (!setup.localPathExists) {
     throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
   }
   updateGitignore(setup.hitch.localPath);
-  addLog("system", `Ensured .hitch/ is ignored for ${project}`);
-  return projectSetupStatus(project);
+  addLog("system", `Ensured .hitch/ is ignored for ${projectId}`);
+  return projectSetupStatus(projectId);
 }
 
 function emptyHarnessHookStatus(harness: Harness): HarnessHookStatus {
@@ -919,11 +852,11 @@ function harnessHookStatus(localPath: string, harness: Harness): HarnessHookStat
   };
 }
 
-function harnessSetupStatus(project: string): HarnessSetupStatus {
-  const setup = projectSetupStatus(project);
+function harnessSetupStatus(projectId: ProjectId): HarnessSetupStatus {
+  const setup = projectSetupStatus(projectId);
   if (!setup.hitch || !setup.localPathExists) {
     return {
-      project: setup.project,
+      projectId: setup.projectId,
       hitch: setup.hitch,
       localPathExists: setup.localPathExists,
       codex: emptyHarnessHookStatus("codex"),
@@ -932,7 +865,7 @@ function harnessSetupStatus(project: string): HarnessSetupStatus {
   }
 
   return {
-    project: setup.project,
+    projectId: setup.projectId,
     hitch: setup.hitch,
     localPathExists: setup.localPathExists,
     codex: harnessHookStatus(setup.hitch.localPath, "codex"),
@@ -941,10 +874,10 @@ function harnessSetupStatus(project: string): HarnessSetupStatus {
 }
 
 function installHarnessHooks(
-  project: string,
+  projectId: ProjectId,
   harness: Harness,
 ): HarnessSetupStatus {
-  const setup = projectSetupStatus(project);
+  const setup = projectSetupStatus(projectId);
   if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
   if (!setup.localPathExists) {
     throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
@@ -968,9 +901,9 @@ function installHarnessHooks(
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   addLog(
     "system",
-    `Installed ${harness === "codex" ? "Codex" : "Claude Code"} lifecycle hooks for ${project}`,
+    `Installed ${harness === "codex" ? "Codex" : "Claude Code"} lifecycle hooks for ${projectId}`,
   );
-  return harnessSetupStatus(project);
+  return harnessSetupStatus(projectId);
 }
 
 const CODEX_CANDIDATES = [
@@ -992,8 +925,8 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-async function openCodexHookTrust(project: string): Promise<string> {
-  const setup = harnessSetupStatus(project);
+async function openCodexHookTrust(projectId: ProjectId): Promise<string> {
+  const setup = harnessSetupStatus(projectId);
   if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
   if (!setup.localPathExists) {
     throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
@@ -1017,7 +950,7 @@ async function openCodexHookTrust(project: string): Promise<string> {
   ].join("\n");
 
   await run("/usr/bin/osascript", ["-e", script], { timeout: 5_000 });
-  addLog("system", `Opened Codex hook trust flow for ${project}`);
+  addLog("system", `Opened Codex hook trust flow for ${projectId}`);
   return "opened";
 }
 
@@ -1057,10 +990,10 @@ async function restartDaemon(): Promise<boolean> {
 }
 
 async function addHitch(input: AddHitchInput): Promise<AddHitchResult> {
-  const project = input.project.trim();
+  const projectId = input.projectId.trim();
   const projectName = input.projectName?.trim() || undefined;
   const localPath = resolve(input.localPath.trim());
-  if (!project) throw new Error("Project is required");
+  if (!projectId) throw new Error("Project ID is required");
   if (!localPath) throw new Error("Local path is required");
   if (!existsSync(localPath)) throw new Error(`Local path does not exist: ${localPath}`);
 
@@ -1068,16 +1001,15 @@ async function addHitch(input: AddHitchInput): Promise<AddHitchResult> {
   mkdirSync(hitchPath, { recursive: true });
 
   const config = readLocalConfig();
-  config.activeProject = project;
   const next: HitchBinding = {
-    project,
+    projectId,
     projectName,
     localPath,
     enabled: true,
   };
 
   const existingIndex = config.hitches.findIndex(
-    (hitch) => hitch.project === project,
+    (hitch) => hitch.projectId === projectId,
   );
   if (existingIndex >= 0) {
     config.hitches[existingIndex] = next;
@@ -1087,7 +1019,7 @@ async function addHitch(input: AddHitchInput): Promise<AddHitchResult> {
 
   const savedConfig = writeLocalConfig(config);
   const gitignoreUpdated = input.updateGitignore === false ? false : updateGitignore(localPath);
-  addLog("system", `Hitched project ${project} to ${localPath}`);
+  addLog("system", `Hitched project ${projectName ?? projectId} to ${localPath}`);
   const restarted = await restartDaemon();
   return { config: savedConfig, gitignoreUpdated, restarted };
 }
@@ -1096,8 +1028,8 @@ function handleRunnerMessage(message: RunnerMessage): void {
   if (!isRecord(message)) return;
 
   if (message.type === "ready") {
-    const project =
-      typeof message.project === "string" ? message.project : "unknown";
+    const projectId =
+      typeof message.projectId === "string" ? message.projectId : "unknown";
     const localPath =
       typeof message.localPath === "string" ? message.localPath : "unknown local path";
     const hitchPath =
@@ -1106,8 +1038,8 @@ function handleRunnerMessage(message: RunnerMessage): void {
     addLog(
       "system",
       hitchCount > 1
-        ? `Daemon runtime ready for ${hitchCount} projects; active project ${project} at ${hitchPath}`
-        : `Daemon runtime ready for project ${project} at ${hitchPath}`,
+        ? `Daemon runtime ready for ${hitchCount} projects; primary project ${projectId} at ${hitchPath}`
+        : `Daemon runtime ready for project ${projectId} at ${hitchPath}`,
     );
     setStatus("running");
     return;
@@ -1285,31 +1217,28 @@ ipcMain.handle("daemon:start", () => startDaemon());
 ipcMain.handle("daemon:stop", () => stopDaemon());
 ipcMain.handle("daemon:clear-logs", () => clearLogs());
 ipcMain.handle("config:get", () => readLocalConfig());
-ipcMain.handle("config:set-active-project", (_event, project: string) =>
-  setActiveProject(project),
-);
 ipcMain.handle("config:add-hitch", (_event, input: AddHitchInput) =>
   addHitch(input),
 );
-ipcMain.handle("config:get-project-setup", (_event, project: string) =>
-  projectSetupStatus(project),
+ipcMain.handle("config:get-project-setup", (_event, projectId: ProjectId) =>
+  projectSetupStatus(projectId),
 );
-ipcMain.handle("config:ensure-hitch-directory", (_event, project: string) =>
-  ensureProjectHitchDirectory(project),
+ipcMain.handle("config:ensure-hitch-directory", (_event, projectId: ProjectId) =>
+  ensureProjectHitchDirectory(projectId),
 );
-ipcMain.handle("config:ensure-gitignore", (_event, project: string) =>
-  ensureProjectGitignore(project),
+ipcMain.handle("config:ensure-gitignore", (_event, projectId: ProjectId) =>
+  ensureProjectGitignore(projectId),
 );
-ipcMain.handle("config:get-harness-setup", (_event, project: string) =>
-  harnessSetupStatus(project),
+ipcMain.handle("config:get-harness-setup", (_event, projectId: ProjectId) =>
+  harnessSetupStatus(projectId),
 );
 ipcMain.handle(
   "config:install-harness-hooks",
-  (_event, project: string, harness: Harness) =>
-    installHarnessHooks(project, harness),
+  (_event, projectId: ProjectId, harness: Harness) =>
+    installHarnessHooks(projectId, harness),
 );
-ipcMain.handle("config:open-codex-hook-trust", (_event, project: string) =>
-  openCodexHookTrust(project),
+ipcMain.handle("config:open-codex-hook-trust", (_event, projectId: ProjectId) =>
+  openCodexHookTrust(projectId),
 );
 ipcMain.handle("dialog:choose-local-path", (_event, defaultPath?: string) =>
   chooseLocalPath(defaultPath),

@@ -15,7 +15,6 @@ import { anyApi } from "convex/server";
 import { openChat, startChat } from "./cmux.js";
 import {
   closeCodexAppServer,
-  openCodexDraft,
   startCodexChat,
 } from "./codex.js";
 
@@ -24,26 +23,24 @@ if (!globalThis.WebSocket) {
 }
 
 export interface HitchBinding {
-  project: string;
+  projectId: string;
   projectName?: string;
   localPath: string;
   enabled?: boolean;
 }
 
 export interface LocalHitchConfig {
-  activeProject?: string;
   hitches: HitchBinding[];
 }
 
 interface ResolvedHitch {
-  project: string;
+  projectId: string;
   projectName?: string;
   localPath: string;
   hitchPath: string;
 }
 
 interface RuntimeConfig {
-  activeProject?: string;
   hitches: ResolvedHitch[];
 }
 
@@ -61,7 +58,7 @@ export interface HitchDaemonOptions {
 }
 
 export interface HitchDaemonHandle {
-  project: string;
+  projectId: string;
   localPath: string;
   hitchPath: string;
   hitches: ResolvedHitch[];
@@ -164,18 +161,19 @@ export function loadHitchConfig(path: string, cwd = process.cwd()): RuntimeConfi
       if (!isRecord(entry)) configError(path, `hitches[${index}] must be an object`);
       if (entry.enabled === false) return null;
 
-      const project = typeof entry.project === "string" ? entry.project.trim() : "";
+      const projectId =
+        typeof entry.projectId === "string" ? entry.projectId.trim() : "";
       const projectName =
         typeof entry.projectName === "string" ? entry.projectName.trim() : undefined;
       const localPath =
         typeof entry.localPath === "string" ? entry.localPath.trim() : "";
 
-      if (!project) configError(path, `hitches[${index}].project is required`);
+      if (!projectId) configError(path, `hitches[${index}].projectId is required`);
       if (!localPath) configError(path, `hitches[${index}].localPath is required`);
 
       const resolvedLocalPath = resolveMaybeRelative(localPath, cwd);
       return {
-        project,
+        projectId,
         projectName,
         localPath: resolvedLocalPath,
         hitchPath: join(resolvedLocalPath, ".hitch"),
@@ -189,18 +187,13 @@ export function loadHitchConfig(path: string, cwd = process.cwd()): RuntimeConfi
 
   const seenProjects = new Set<string>();
   for (const hitch of hitches) {
-    if (seenProjects.has(hitch.project)) {
-      configError(path, `multiple enabled hitches for project "${hitch.project}"`);
+    if (seenProjects.has(hitch.projectId)) {
+      configError(path, `multiple enabled hitches for project "${hitch.projectId}"`);
     }
-    seenProjects.add(hitch.project);
+    seenProjects.add(hitch.projectId);
   }
 
-  const activeProject =
-    typeof parsed.activeProject === "string" && parsed.activeProject.trim()
-      ? parsed.activeProject.trim()
-      : hitches[0].project;
-
-  return { activeProject, hitches };
+  return { hitches };
 }
 
 const hashOf = (content: string): string =>
@@ -279,7 +272,8 @@ async function startHitchBinding({
   logger,
   host,
 }: HitchBindingRuntimeOptions): Promise<HitchBindingHandle> {
-  const project = root.project;
+  const projectId = root.projectId;
+  const projectLabel = root.projectName || projectId;
   mkdirSync(root.hitchPath, { recursive: true });
 
   const lastHash = new Map<string, string>();
@@ -311,7 +305,19 @@ async function startHitchBinding({
       "chat-status": "working",
     });
     await writeFile(absPath, next, "utf8");
-    logger.info(`[hitch:${project}] linked codex thread ${threadId} → ${path}`);
+    logger.info(`[hitch:${projectLabel}] linked codex thread ${threadId} → ${path}`);
+  }
+
+  async function settleCodexThread(path: string, threadId: string) {
+    const absPath = toAbs(path);
+    const current = await readFile(absPath, "utf8");
+    if (frontmatterValue(current, "chat-id") !== threadId) return;
+
+    const next = setFrontmatterKeys(current, {
+      "chat-status": "waiting",
+    });
+    await writeFile(absPath, next, "utf8");
+    logger.info(`[hitch:${projectLabel}] codex thread ${threadId} is waiting → ${path}`);
   }
 
   async function linkClaudeSession(path: string, sessionId: string, cwd: string) {
@@ -328,7 +334,7 @@ async function startHitchBinding({
       "chat-status": "working",
     });
     await writeFile(absPath, next, "utf8");
-    logger.info(`[hitch:${project}] linked claude session ${sessionId} → ${path}`);
+    logger.info(`[hitch:${projectLabel}] linked claude session ${sessionId} → ${path}`);
   }
 
   async function taskTitle(path: string): Promise<string | undefined> {
@@ -352,14 +358,14 @@ async function startHitchBinding({
     if (lastHash.get(absPath) === hash) return;
     lastHash.set(absPath, hash);
     await client.mutation(anyApi.files.upsertFile, {
-      project,
+      projectId,
       deviceToken,
       path: loc.rel,
       content,
       hash,
       deleted: false,
     });
-    logger.info(`[hitch:${project}] ↑ ${loc.rel}`);
+    logger.info(`[hitch:${projectLabel}] ↑ ${loc.rel}`);
   }
 
   async function pushDelete(absPath: string): Promise<void> {
@@ -367,20 +373,20 @@ async function startHitchBinding({
     if (!loc) return;
     lastHash.delete(absPath);
     await client.mutation(anyApi.files.upsertFile, {
-      project,
+      projectId,
       deviceToken,
       path: loc.rel,
       content: "",
       hash: "",
       deleted: true,
     });
-    logger.info(`[hitch:${project}] ✗ ${loc.rel}`);
+    logger.info(`[hitch:${projectLabel}] ✗ ${loc.rel}`);
   }
 
   subscriptions.push(
     client.onUpdate(
       anyApi.files.listFiles,
-      { project, deviceToken },
+      { projectId, deviceToken },
       async (files: FileDoc[]) => {
         for (const f of files) {
           const absPath = toAbs(f.path);
@@ -389,7 +395,7 @@ async function startHitchBinding({
             if (existsSync(absPath)) {
               lastHash.delete(absPath);
               await rm(absPath, { force: true });
-              logger.info(`[hitch:${project}] ↓✗ ${f.path}`);
+              logger.info(`[hitch:${projectLabel}] ↓✗ ${f.path}`);
             }
             continue;
           }
@@ -399,18 +405,18 @@ async function startHitchBinding({
           lastHash.set(absPath, contentHash);
           await mkdir(dirname(absPath), { recursive: true });
           await writeFile(absPath, f.content, "utf8");
-          logger.info(`[hitch:${project}] ↓ ${f.path}`);
+          logger.info(`[hitch:${projectLabel}] ↓ ${f.path}`);
         }
       },
       (err) =>
-        logError(logger, `[hitch:${project}] files subscription failed: ${String(err)}`),
+        logError(logger, `[hitch:${projectLabel}] files subscription failed: ${String(err)}`),
     ),
   );
 
   async function sendHeartbeat(): Promise<void> {
     try {
       await client.mutation(anyApi.status.heartbeat, {
-        project,
+        projectId,
         deviceToken,
         hostname: host,
       });
@@ -433,10 +439,10 @@ async function startHitchBinding({
           id: cmd._id,
           status: "done",
           result,
-          project,
+          projectId,
           deviceToken,
         });
-        logger.info(`[hitch:${project}] ⮑ open-chat ${sessionId} → ${result}`);
+        logger.info(`[hitch:${projectLabel}] ⮑ open-chat ${sessionId} → ${result}`);
       } else if (cmd.kind === "start-chat" && cmd.harness === "claude-code") {
         if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
@@ -455,44 +461,37 @@ async function startHitchBinding({
           id: cmd._id,
           status: "done",
           result,
-          project,
+          projectId,
           deviceToken,
         });
-        logger.info(`[hitch:${project}] ⮑ start-chat ${cmd.path} → ${result}`);
+        logger.info(`[hitch:${projectLabel}] ⮑ start-chat ${cmd.path} → ${result}`);
       } else if (cmd.kind === "start-chat" && cmd.harness === "codex") {
         if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
 
-        let result: string;
-        if (env.HITCH_CODEX_START_MODE === "app-server") {
-          const started = await startCodexChat({
-            taskKey: cmd.path,
-            prompt: cmd.initialPrompt,
-            cwd: root.localPath,
-            threadName: await taskTitle(cmd.path),
-            onThreadStarted: (threadId) => linkCodexThread(cmd.path as string, threadId),
-          });
-          result = `${started.status}:${started.threadId}`;
-        } else {
-          result = await openCodexDraft({
-            prompt: cmd.initialPrompt,
-            cwd: root.localPath,
-          });
-        }
+        const started = await startCodexChat({
+          taskKey: cmd.path,
+          prompt: cmd.initialPrompt,
+          cwd: root.localPath,
+          threadName: await taskTitle(cmd.path),
+          onThreadStarted: (threadId) => linkCodexThread(cmd.path as string, threadId),
+          onTurnCompleted: (threadId) => settleCodexThread(cmd.path as string, threadId),
+        });
+        const result = `${started.status}:${started.threadId}`;
         await client.mutation(anyApi.commands.completeCommand, {
           id: cmd._id,
           status: "done",
           result,
-          project,
+          projectId,
           deviceToken,
         });
-        logger.info(`[hitch:${project}] ⮑ start-chat codex ${cmd.path} → ${result}`);
+        logger.info(`[hitch:${projectLabel}] ⮑ start-chat codex ${cmd.path} → ${result}`);
       } else {
         await client.mutation(anyApi.commands.completeCommand, {
           id: cmd._id,
           status: "error",
           result: `unsupported command: ${cmd.kind}/${cmd.harness}`,
-          project,
+          projectId,
           deviceToken,
         });
       }
@@ -501,17 +500,17 @@ async function startHitchBinding({
         id: cmd._id,
         status: "error",
         result: String(err),
-        project,
+        projectId,
         deviceToken,
       });
-      logger.info(`[hitch:${project}] ⚠ command ${cmd._id} failed: ${String(err)}`);
+      logger.info(`[hitch:${projectLabel}] ⚠ command ${cmd._id} failed: ${String(err)}`);
     }
   }
 
   subscriptions.push(
     client.onUpdate(
       anyApi.commands.pendingCommands,
-      { project, deviceToken },
+      { projectId, deviceToken },
       (commands: CommandDoc[]) => {
         for (const cmd of commands) {
           if (handledCommands.has(cmd._id)) continue;
@@ -521,7 +520,7 @@ async function startHitchBinding({
         }
       },
       (err) =>
-        logError(logger, `[hitch:${project}] command subscription failed: ${String(err)}`),
+        logError(logger, `[hitch:${projectLabel}] command subscription failed: ${String(err)}`),
     ),
   );
 
@@ -532,24 +531,24 @@ async function startHitchBinding({
   watcher
     .on("add", (path) =>
       void pushLocal(path).catch((err) =>
-        logError(logger, `[hitch:${project}] add failed for ${path}: ${String(err)}`),
+        logError(logger, `[hitch:${projectLabel}] add failed for ${path}: ${String(err)}`),
       ),
     )
     .on("change", (path) =>
       void pushLocal(path).catch((err) =>
-        logError(logger, `[hitch:${project}] change failed for ${path}: ${String(err)}`),
+        logError(logger, `[hitch:${projectLabel}] change failed for ${path}: ${String(err)}`),
       ),
     )
     .on("unlink", (path) =>
       void pushDelete(path).catch((err) =>
-        logError(logger, `[hitch:${project}] unlink failed for ${path}: ${String(err)}`),
+        logError(logger, `[hitch:${projectLabel}] unlink failed for ${path}: ${String(err)}`),
       ),
     )
     .on("error", (err) =>
-      logError(logger, `[hitch:${project}] watcher failed: ${err}`),
+      logError(logger, `[hitch:${projectLabel}] watcher failed: ${err}`),
     )
     .on("ready", () =>
-      logger.info(`[hitch:${project}] watching ${root.hitchPath}`),
+      logger.info(`[hitch:${projectLabel}] watching ${root.hitchPath}`),
     );
 
   let stopped = false;
@@ -611,9 +610,7 @@ export async function startHitchDaemon(
       }),
     ),
   );
-  const primaryHitch =
-    config.hitches.find((hitch) => hitch.project === config.activeProject) ??
-    config.hitches[0];
+  const primaryHitch = config.hitches[0];
 
   let stopped = false;
   async function stop(): Promise<void> {
@@ -625,7 +622,7 @@ export async function startHitchDaemon(
   }
 
   return {
-    project: primaryHitch.project,
+    projectId: primaryHitch.projectId,
     localPath: primaryHitch.localPath,
     hitchPath: primaryHitch.hitchPath,
     hitches: config.hitches,

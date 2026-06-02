@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
+import type { Id } from "@convex/_generated/dataModel";
 import { Terminal } from "lucide-react";
 
 import {
@@ -17,11 +18,11 @@ import { Button } from "@/components/ui/button";
 // The browser enqueues a local daemon command; the daemon performs the OS/app
 // work, then the new session writes its chat id back to the task.
 export function ChatStart({
-  project,
+  projectId,
   path,
   title,
 }: {
-  project: string;
+  projectId: Id<"projects">;
   path: string;
   title: string;
 }) {
@@ -41,7 +42,7 @@ export function ChatStart({
     setStarting(true);
     try {
       await enqueue({
-        project,
+        projectId,
         kind: "start-chat",
         harness,
         path,
@@ -56,11 +57,11 @@ export function ChatStart({
 
   const label = harnessLabel(harness);
   const buttonLabel =
-    harness === "codex" ? "Open in Codex" : `Start in ${label}`;
-  const busyLabel = harness === "codex" ? "Opening…" : "Starting…";
+    harness === "codex" ? "Send to Codex" : `Start in ${label}`;
+  const busyLabel = harness === "codex" ? "Sending…" : "Starting…";
   const helpText =
     harness === "codex"
-      ? "Opens Codex with this prompt ready. Press Enter in Codex to start, and the new thread will link itself back to this task."
+      ? "Starts Codex in the background and links the task immediately. You can open the chat after the first turn is ready."
       : "Spawns a local Claude Code session; Hitch links it back to this task once it starts.";
 
   return (

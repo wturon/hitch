@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { requireUser, requireProjectMemberBySlug, sha256 } from "./authz";
+import { requireUser, sha256 } from "./authz";
 
 function randomToken(): string {
   const bytes = new Uint8Array(32);
@@ -12,9 +12,9 @@ function randomToken(): string {
 }
 
 export const list = query({
-  args: { project: v.string() },
-  handler: async (ctx, args) => {
-    const { user } = await requireProjectMemberBySlug(ctx, args.project);
+  args: {},
+  handler: async (ctx) => {
+    const user = await requireUser(ctx);
     return await ctx.db
       .query("deviceTokens")
       .withIndex("by_user", (q) => q.eq("userId", user._id))
@@ -35,12 +35,10 @@ export const listMine = query({
 
 export const create = mutation({
   args: {
-    project: v.string(),
     name: v.string(),
   },
   handler: async (ctx, args) => {
     const user = await requireUser(ctx);
-    await requireProjectMemberBySlug(ctx, args.project);
 
     const token = randomToken();
     const now = Date.now();
@@ -97,11 +95,10 @@ export const authorizeDevice = mutation({
 
 export const revoke = mutation({
   args: {
-    project: v.string(),
     id: v.id("deviceTokens"),
   },
   handler: async (ctx, args) => {
-    const { user } = await requireProjectMemberBySlug(ctx, args.project);
+    const user = await requireUser(ctx);
     const token = await ctx.db.get(args.id);
     if (!token || token.userId !== user._id) {
       throw new Error("Device token not found");

@@ -7,7 +7,7 @@ import { requireProjectAccess } from "./authz";
 // file locally.
 export const upsertFile = mutation({
   args: {
-    project: v.string(),
+    projectId: v.id("projects"),
     path: v.string(),
     content: v.string(),
     hash: v.string(),
@@ -15,7 +15,7 @@ export const upsertFile = mutation({
     deviceToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const access = await requireProjectAccess(ctx, args.project, args.deviceToken);
+    const access = await requireProjectAccess(ctx, args.projectId, args.deviceToken);
     if (!access.project) throw new Error("Project does not exist");
     const existing = await ctx.db
       .query("files")
@@ -46,9 +46,9 @@ export const upsertFile = mutation({
 // All files for a project (including tombstones, so the daemon can apply
 // deletes). The web UI filters out deleted rows.
 export const listFiles = query({
-  args: { project: v.string(), deviceToken: v.optional(v.string()) },
+  args: { projectId: v.id("projects"), deviceToken: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const access = await requireProjectAccess(ctx, args.project, args.deviceToken);
+    const access = await requireProjectAccess(ctx, args.projectId, args.deviceToken);
     if (!access.project) throw new Error("Project does not exist");
     return await ctx.db
       .query("files")
@@ -60,12 +60,12 @@ export const listFiles = query({
 // A single file by its (projectId, path) key. Returns null if missing.
 export const getFile = query({
   args: {
-    project: v.string(),
+    projectId: v.id("projects"),
     path: v.string(),
     deviceToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const access = await requireProjectAccess(ctx, args.project, args.deviceToken);
+    const access = await requireProjectAccess(ctx, args.projectId, args.deviceToken);
     if (!access.project) throw new Error("Project does not exist");
     return await ctx.db
       .query("files")

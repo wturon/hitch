@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
+import type { Id } from "@convex/_generated/dataModel";
 import { ExternalLink, LoaderCircle, Terminal } from "lucide-react";
 
 import {
@@ -38,14 +39,14 @@ function LaunchIcon({
 export function ChatLaunch({
   chat,
   status,
-  project,
+  projectId,
   size = "sm",
   stopPropagation = false,
   className,
 }: {
   chat: ChatRef;
   status?: ChatStatus | null;
-  project: string;
+  projectId: Id<"projects">;
   size?: "xs" | "sm" | "default";
   stopPropagation?: boolean;
   className?: string;
@@ -59,6 +60,21 @@ export function ChatLaunch({
   };
 
   if (launch.kind === "url") {
+    if (chat.harness === "codex" && status === "working") {
+      return (
+        <Button
+          variant="secondary"
+          size={size}
+          disabled
+          className={className}
+          aria-label="Codex is working"
+        >
+          <LaunchIcon status={status} fallback={<ExternalLink />} />
+          Codex working…
+        </Button>
+      );
+    }
+
     return (
       <Button
         variant="secondary"
@@ -78,7 +94,7 @@ export function ChatLaunch({
     setOpening(true);
     try {
       await enqueue({
-        project,
+        projectId,
         kind: "open-chat",
         harness: "claude-code",
         sessionId: chat.id,

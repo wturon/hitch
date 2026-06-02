@@ -16,27 +16,25 @@ import {
 } from "@/components/ui/dialog";
 
 export function DeviceTokens({
-  project,
   open,
   onOpenChange,
 }: {
-  project: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
-        {open && <DeviceTokensContent project={project} />}
+        {open && <DeviceTokensContent />}
       </DialogContent>
     </Dialog>
   );
 }
 
-function DeviceTokensContent({ project }: { project: string }) {
+function DeviceTokensContent() {
   const deviceNameId = "device-token-name";
   const newTokenId = "device-token-value";
-  const tokens = useQuery(api.deviceTokens.list, { project });
+  const tokens = useQuery(api.deviceTokens.list, {});
   const createToken = useMutation(api.deviceTokens.create);
   const revokeToken = useMutation(api.deviceTokens.revoke);
   const [name, setName] = useState("This Mac");
@@ -50,7 +48,7 @@ function DeviceTokensContent({ project }: { project: string }) {
     const tokenName = name.trim() || "This Mac";
     setCreating(true);
     try {
-      const result = await createToken({ project, name: tokenName });
+      const result = await createToken({ name: tokenName });
       setCreatedToken(result.token);
       setName(tokenName);
     } finally {
@@ -61,7 +59,7 @@ function DeviceTokensContent({ project }: { project: string }) {
   async function revoke(id: Id<"deviceTokens">) {
     setBusyId(id);
     try {
-      await revokeToken({ project, id });
+      await revokeToken({ id });
     } finally {
       setBusyId(null);
     }

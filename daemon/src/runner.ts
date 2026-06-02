@@ -44,11 +44,11 @@ async function main(): Promise<void> {
     });
     send({
       type: "ready",
-      project: daemon.project,
+      projectId: daemon.projectId,
       localPath: daemon.localPath,
       hitchPath: daemon.hitchPath,
       hitches: daemon.hitches.map((hitch) => ({
-        project: hitch.project,
+        projectId: hitch.projectId,
         localPath: hitch.localPath,
         hitchPath: hitch.hitchPath,
       })),

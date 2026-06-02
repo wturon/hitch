@@ -2,14 +2,14 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import {
   requireProjectAccess,
-  requireProjectMemberBySlug,
+  requireProjectMemberById,
 } from "./authz";
 
 // Enqueue an action for a daemon to run locally (the browser can't open a
 // terminal itself). Returns the new command's id so the caller can watch it.
 export const enqueueCommand = mutation({
   args: {
-    project: v.string(),
+    projectId: v.id("projects"),
     host: v.optional(v.string()),
     kind: v.string(),
     harness: v.string(),
@@ -19,10 +19,9 @@ export const enqueueCommand = mutation({
     cwd: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const access = await requireProjectMemberBySlug(ctx, args.project);
-    if (!access.project) throw new Error("Project does not exist");
+    const access = await requireProjectMemberById(ctx, args.projectId);
     const now = Date.now();
-    const { project: _project, ...command } = args;
+    const { projectId: _projectId, ...command } = args;
     return await ctx.db.insert("commands", {
       ...command,
       projectId: access.project._id,
@@ -36,11 +35,11 @@ export const enqueueCommand = mutation({
 // The pending commands for a project. The daemon subscribes to this; as soon as
 // it marks one done, it drops out of the result set.
 export const pendingCommands = query({
-  args: { project: v.string(), deviceToken: v.string() },
+  args: { projectId: v.id("projects"), deviceToken: v.string() },
   handler: async (ctx, args) => {
     const { project } = await requireProjectAccess(
       ctx,
-      args.project,
+      args.projectId,
       args.deviceToken,
     );
     if (!project) throw new Error("Project does not exist");
@@ -59,7 +58,7 @@ export const completeCommand = mutation({
     id: v.id("commands"),
     status: v.string(),
     result: v.optional(v.string()),
-    project: v.string(),
+    projectId: v.id("projects"),
     deviceToken: v.string(),
   },
   handler: async (ctx, args) => {
@@ -67,7 +66,7 @@ export const completeCommand = mutation({
     if (!command) throw new Error("Command not found");
     const { project } = await requireProjectAccess(
       ctx,
-      args.project,
+      args.projectId,
       args.deviceToken,
     );
     if (!project) throw new Error("Project does not exist");

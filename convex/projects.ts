@@ -1,11 +1,17 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import {
-  requireProjectMemberBySlug,
-  requireProjectOwnerBySlug,
-  projectBySlug,
+  requireProjectMemberById,
+  requireProjectOwnerById,
   requireUser,
 } from "./authz";
+
+const DEFAULT_STATUSES = [
+  { id: "todo", name: "To Do" },
+  { id: "in-progress", name: "In Progress" },
+  { id: "review", name: "Review" },
+  { id: "done", name: "Done" },
+] as const;
 
 function slugify(input: string): string {
   return input
@@ -16,41 +22,47 @@ function slugify(input: string): string {
     .slice(0, 64);
 }
 
-async function uniqueSlug(ctx: Parameters<typeof projectBySlug>[0], base: string) {
-  const root = slugify(base) || "project";
-  let slug = root;
-  let suffix = 2;
-  while (await projectBySlug(ctx, slug)) {
-    slug = `${root}-${suffix}`;
-    suffix += 1;
+function normalizeStatusId(input: string): string {
+  return slugify(input).slice(0, 40);
+}
+
+function normalizeStatuses(
+  statuses:
+    | Array<{
+        id?: string;
+        name?: string;
+      }>
+    | undefined,
+) {
+  const seen = new Set<string>();
+  const normalized = [];
+
+  for (const status of statuses ?? []) {
+    const name = (status.name ?? "").trim().replace(/\s+/g, " ");
+    const id = normalizeStatusId(status.id ?? name);
+    if (!name || !id || id === "archived" || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push({ id, name: name.slice(0, 40) });
   }
-  return slug;
+
+  return normalized.length > 0 ? normalized : [...DEFAULT_STATUSES];
 }
 
 export const current = query({
-  args: { project: v.string() },
+  args: { projectId: v.id("projects") },
   handler: async (ctx, args) => {
-    const access = await requireProjectMemberBySlug(ctx, args.project);
-    if (!access.project) {
-      return {
-        project: null,
-        membership: null,
-        legacy: true,
-      };
-    }
+    const access = await requireProjectMemberById(ctx, args.projectId);
     return {
       project: access.project,
       membership: access.membership,
-      legacy: false,
     };
   },
 });
 
 export const details = query({
-  args: { project: v.string() },
+  args: { projectId: v.id("projects") },
   handler: async (ctx, args) => {
-    const access = await requireProjectMemberBySlug(ctx, args.project);
-    if (!access.project) return null;
+    const access = await requireProjectMemberById(ctx, args.projectId);
 
     const memberships = await ctx.db
       .query("projectMembers")
@@ -112,11 +124,11 @@ export const listMine = query({
 
 export const updateDetails = mutation({
   args: {
-    project: v.string(),
+    projectId: v.id("projects"),
     name: v.string(),
   },
   handler: async (ctx, args) => {
-    const access = await requireProjectOwnerBySlug(ctx, args.project);
+    const access = await requireProjectOwnerById(ctx, args.projectId);
     const name = args.name.trim();
     if (!name) throw new Error("Project name is required");
     if (name.length > 120) throw new Error("Project name is too long");
@@ -126,50 +138,36 @@ export const updateDetails = mutation({
   },
 });
 
-export const create = mutation({
+export const updateStatuses = mutation({
   args: {
-    name: v.string(),
-    slug: v.optional(v.string()),
+    projectId: v.id("projects"),
+    statuses: v.array(
+      v.object({
+        id: v.string(),
+        name: v.string(),
+      }),
+    ),
   },
   handler: async (ctx, args) => {
-    const user = await requireUser(ctx);
-    const now = Date.now();
-    const slug = args.slug?.trim()
-      ? await uniqueSlug(ctx, args.slug)
-      : await uniqueSlug(ctx, args.name);
-    const projectId = await ctx.db.insert("projects", {
-      name: args.name.trim() || slug,
-      slug,
-      createdBy: user._id,
-      createdAt: now,
-    });
-    await ctx.db.insert("projectMembers", {
-      projectId,
-      userId: user._id,
-      role: "owner",
-      createdAt: now,
-    });
-    return await ctx.db.get(projectId);
+    const access = await requireProjectOwnerById(ctx, args.projectId);
+    const statuses = normalizeStatuses(args.statuses);
+
+    await ctx.db.patch(access.project._id, { statuses });
+    return await ctx.db.get(access.project._id);
   },
 });
 
-export const claimLegacyProject = mutation({
+export const create = mutation({
   args: {
-    project: v.string(),
-    name: v.optional(v.string()),
+    name: v.string(),
   },
   handler: async (ctx, args) => {
     const user = await requireUser(ctx);
-    const existing = await projectBySlug(ctx, args.project);
-    if (existing) {
-      const access = await requireProjectMemberBySlug(ctx, args.project);
-      return access.project;
-    }
-
     const now = Date.now();
+    const name = args.name.trim() || "Project";
     const projectId = await ctx.db.insert("projects", {
-      name: args.name ?? args.project,
-      slug: args.project,
+      name,
+      statuses: [...DEFAULT_STATUSES],
       createdBy: user._id,
       createdAt: now,
     });

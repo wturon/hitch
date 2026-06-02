@@ -30,6 +30,8 @@ On first launch, the app creates a local daemon config at:
 ```
 
 In development, that file is seeded from the repo's `hitch.config.json`. The
-local config stores machine-specific hitches: project, optional project display
-name, local path, and whether the hitch is enabled. The daemon derives the
-watched `.hitch` directory from each local path.
+local config stores machine-specific hitches: Convex project id, optional
+project display name, local path, and whether the hitch is enabled. The daemon
+derives the watched `.hitch` directory from each local path. The renderer's
+current project comes from the authenticated server project list, not this local
+config.

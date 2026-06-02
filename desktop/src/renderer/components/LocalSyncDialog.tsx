@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { Id } from "@convex/_generated/dataModel";
 import {
   CircleIcon,
   FolderPlusIcon,
@@ -37,19 +38,18 @@ interface DaemonState {
 }
 
 interface HitchBinding {
-  project: string;
+  projectId: Id<"projects">;
   projectName?: string;
   localPath: string;
   enabled: boolean;
 }
 
 interface LocalHitchConfig {
-  activeProject: string;
   hitches: HitchBinding[];
 }
 
 interface AddHitchInput {
-  project: string;
+  projectId: Id<"projects">;
   projectName?: string;
   localPath: string;
   updateGitignore?: boolean;
@@ -62,7 +62,7 @@ interface AddHitchResult {
 }
 
 interface ProjectSetupStatus {
-  project: string;
+  projectId: Id<"projects">;
   hitch: HitchBinding | null;
   localPathExists: boolean;
   hitchPath: string | null;
@@ -85,7 +85,7 @@ interface HarnessHookStatus {
 }
 
 interface HarnessSetupStatus {
-  project: string;
+  projectId: Id<"projects">;
   hitch: HitchBinding | null;
   localPathExists: boolean;
   codex: HarnessHookStatus;
@@ -98,17 +98,16 @@ interface HitchDaemonApi {
   stop: () => Promise<DaemonState>;
   clearLogs: () => Promise<DaemonState>;
   getConfig: () => Promise<LocalHitchConfig>;
-  setActiveProject: (project: string) => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
-  getProjectSetup: (project: string) => Promise<ProjectSetupStatus>;
-  ensureHitchDirectory: (project: string) => Promise<ProjectSetupStatus>;
-  ensureGitignore: (project: string) => Promise<ProjectSetupStatus>;
-  getHarnessSetup: (project: string) => Promise<HarnessSetupStatus>;
+  getProjectSetup: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
+  ensureHitchDirectory: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
+  ensureGitignore: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
+  getHarnessSetup: (projectId: Id<"projects">) => Promise<HarnessSetupStatus>;
   installHarnessHooks: (
-    project: string,
+    projectId: Id<"projects">,
     harness: Harness,
   ) => Promise<HarnessSetupStatus>;
-  openCodexHookTrust: (project: string) => Promise<string>;
+  openCodexHookTrust: (projectId: Id<"projects">) => Promise<string>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
   getDeviceAuth: () => Promise<{
     deviceId: string;
@@ -140,7 +139,6 @@ const emptyState: DaemonState = {
 };
 
 const emptyConfig: LocalHitchConfig = {
-  activeProject: "",
   hitches: [],
 };
 
@@ -166,12 +164,12 @@ function StatusPill({ status }: { status: DaemonStatus }) {
 }
 
 export function LocalSyncDialog({
-  project,
+  projectId,
   open,
   onOpenChange,
   onConfigChange,
 }: {
-  project: string;
+  projectId: Id<"projects">;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfigChange?: (config: LocalHitchConfig) => void;
@@ -192,18 +190,18 @@ export function LocalSyncDialog({
     void bridge.getConfig().then((next) => {
       setConfig(next);
       onConfigChange?.(next);
-      setProjectName(next.hitches.find((hitch) => hitch.project === project)?.projectName ?? "");
+      setProjectName(next.hitches.find((hitch) => hitch.projectId === projectId)?.projectName ?? "");
     });
     return bridge.onState(setDaemon);
-  }, [bridge, onConfigChange, open, project]);
+  }, [bridge, onConfigChange, open, projectId]);
 
   useEffect(() => {
     if (open) logEndRef.current?.scrollIntoView({ block: "end" });
   }, [daemon.logs.length, open]);
 
   const activeHitch = useMemo(
-    () => config.hitches.find((hitch) => hitch.project === config.activeProject),
-    [config],
+    () => config.hitches.find((hitch) => hitch.projectId === projectId),
+    [config, projectId],
   );
   const isBusy = daemon.status === "starting" || daemon.status === "stopping";
   const isRunning = daemon.status === "running";
@@ -215,7 +213,7 @@ export function LocalSyncDialog({
     setBusy(true);
     try {
       const result = await bridge.addHitch({
-        project,
+        projectId,
         projectName,
         localPath,
         updateGitignore,
@@ -237,7 +235,7 @@ export function LocalSyncDialog({
         <DialogHeader>
           <DialogTitle>Local sync</DialogTitle>
           <DialogDescription>
-            Configure the local folder this desktop app watches for the active project.
+	            Configure the local folder this desktop app watches for this project.
           </DialogDescription>
         </DialogHeader>
 
@@ -322,11 +320,11 @@ export function LocalSyncDialog({
             <section className="flex flex-col gap-3">
               <div className="rounded-lg border bg-muted/20 p-3">
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Active hitch
+	                  Project hitch
                 </p>
                 {activeHitch ? (
                   <div className="mt-2 space-y-1 text-sm">
-                    <p className="font-medium">{activeHitch.projectName || activeHitch.project}</p>
+	                    <p className="font-medium">{activeHitch.projectName || activeHitch.projectId}</p>
                     <p className="truncate text-muted-foreground" title={activeHitch.localPath}>
                       {activeHitch.localPath}
                     </p>

@@ -136,9 +136,8 @@ export function launchFor(ref: ChatRef): Launch {
 }
 
 // The seed prompt for a brand-new coding-agent session launched from a task.
-// Claude Code sessions are linked by the daemon before they boot (it pins the
-// session id), so the prompt is link-free. Codex still self-links in-prompt as a
-// belt-and-suspenders alongside the daemon's onThreadStarted link.
+// Both harnesses are linked by the daemon before the first model turn starts, so
+// the agent can focus on the task instead of introspecting its own session id.
 export function defaultStartPrompt(
   task: { title: string; path: string },
   harness: Harness,
@@ -148,17 +147,10 @@ export function defaultStartPrompt(
       `You're picking up the Hitch task "${task.title}".`,
       `Its file is at .hitch/${task.path}, relative to your current directory (the repo root).`,
       ``,
-      `First, link this Codex thread to the task so the Hitch board can reopen it later.`,
-      `Add these frontmatter keys to .hitch/${task.path}, keeping the existing title/status:`,
-      `  chat-harness: codex`,
-      `  chat-id: <this Codex thread's id — use CODEX_THREAD_ID if available, otherwise the id from the active thread URL>`,
-      ``,
-      `Then read the task, keep the task status/progress current as you work, and start implementing it.`,
+      `Read the task, keep the task status/progress current as you work, and start implementing it.`,
     ].join("\n");
   }
 
-  // No self-linking step: the daemon pins the session id via `claude
-  // --session-id` and writes the chat-* frontmatter before this session boots.
   return [
     `You're picking up the Hitch task "${task.title}".`,
     `Its file is at .hitch/${task.path}, relative to your current directory (the repo root).`,

@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
+import type { Id } from "@convex/_generated/dataModel";
 import { sha256 } from "@/lib/hash";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import {
@@ -31,7 +32,7 @@ import {
 // What the dialog needs to render and save a task. `content` is the raw file
 // text (frontmatter + body); we edit it wholesale and write it back verbatim.
 export interface TaskTarget {
-  project: string;
+  projectId: Id<"projects">;
   path: string; // tasks/<slug>/task.md
   title: string;
   content: string;
@@ -69,11 +70,15 @@ function TaskEditor({
   onClose: () => void;
 }) {
   const upsertFile = useMutation(api.files.upsertFile);
-  // Snapshot on open: we don't live-patch the textarea from remote changes
-  // while editing. Save is last-write-wins, which is fine for a single user.
+  // Follow the live task file. Hitch is last-write-wins, so if another writer
+  // updates the task while the modal is open, the visible editor updates too.
   const [draft, setDraft] = useState(() => task.content);
   const [saving, setSaving] = useState(false);
   const dirty = draft !== task.content;
+
+  useEffect(() => {
+    setDraft(task.content);
+  }, [task.content]);
 
   // The linked chat is stored in the draft's frontmatter, so editing it here
   // and hitting Save flows through the same path as any other edit. Read the
@@ -96,7 +101,7 @@ function TaskEditor({
     setSaving(true);
     try {
       await upsertFile({
-        project: task.project,
+        projectId: task.projectId,
         path: task.path,
         content: draft,
         hash: await sha256(draft),
@@ -132,7 +137,7 @@ function TaskEditor({
               <ChatLaunch
                 chat={chat}
                 status={chatStatus}
-                project={task.project}
+                projectId={task.projectId}
                 size="xs"
               />
             </div>
@@ -189,7 +194,7 @@ function TaskEditor({
           resume button above replaces this. */}
       {!chat && (
         <ChatStart
-          project={task.project}
+          projectId={task.projectId}
           path={task.path}
           title={task.title}
         />

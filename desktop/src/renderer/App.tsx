@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { api } from "@convex/_generated/api";
+import type { Id } from "@convex/_generated/dataModel";
 import {
   DndContext,
   DragOverlay,
@@ -44,7 +45,6 @@ import { ChatLaunch } from "@/components/ChatLaunch";
 import { DeviceTokens } from "@/components/DeviceTokens";
 import { LocalSyncDialog } from "@/components/LocalSyncDialog";
 import { ProjectDetailsDialog } from "@/components/ProjectDetailsDialog";
-import { HITCH_PROJECT } from "@/lib/config";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -74,16 +74,34 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 
-// Columns the board shows, in order. Any task whose `status` frontmatter
-// doesn't match one of these falls into "todo". Legacy `blocked` cards land in
-// review so old files don't disappear from the expected workflow.
-const COLUMNS = ["todo", "in-progress", "review", "done"] as const;
-type Column = (typeof COLUMNS)[number];
+// Default status columns for old projects and for new projects before custom
+// statuses are saved. Task files still store the normalized status id string in
+// `status` frontmatter.
+const DEFAULT_STATUSES = [
+  { id: "todo", name: "To Do" },
+  { id: "in-progress", name: "In Progress" },
+  { id: "review", name: "Review" },
+  { id: "done", name: "Done" },
+] as const satisfies ProjectStatus[];
 
-function columnFor(status: string | undefined): Column {
+interface ProjectStatus {
+  id: string;
+  name: string;
+}
+
+function statusesForProject(statuses: ProjectStatus[] | undefined): ProjectStatus[] {
+  return statuses?.length ? statuses : [...DEFAULT_STATUSES];
+}
+
+function columnFor(
+  status: string | undefined,
+  statuses: ProjectStatus[],
+): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "blocked") return "review";
-  return (COLUMNS as readonly string[]).includes(s) ? (s as Column) : "todo";
+  if (s === "blocked" && statuses.some((col) => col.id === "review")) {
+    return "review";
+  }
+  return statuses.some((col) => col.id === s) ? s : statuses[0].id;
 }
 
 interface Card {
@@ -95,16 +113,16 @@ interface Card {
   content: string; // raw file text
   chat: ChatRef | null; // the coding-agent chat driving this task, if linked
   chatStatus: ChatStatus | null; // live working/ready state, if the chat reports it
-  column: Column;
+  column: string;
   archived: boolean;
   updatedAt: number;
 }
 
 interface ProjectNavEntry {
   project: {
-    _id: string;
+    _id: Id<"projects">;
     name: string;
-    slug: string;
+    statuses?: ProjectStatus[];
   };
   membership: {
     role: "owner" | "member";
@@ -112,14 +130,13 @@ interface ProjectNavEntry {
 }
 
 interface HitchBinding {
-  project: string;
+  projectId: Id<"projects">;
   projectName?: string;
   localPath: string;
   enabled: boolean;
 }
 
 interface LocalHitchConfig {
-  activeProject: string;
   hitches: HitchBinding[];
 }
 
@@ -141,7 +158,7 @@ function CardSummary({ card }: { card: Card }) {
   );
 }
 
-function CardChat({ card, project }: { card: Card; project: string }) {
+function CardChat({ card, projectId }: { card: Card; projectId: Id<"projects"> }) {
   if (!card.chat) return null;
 
   return (
@@ -149,7 +166,7 @@ function CardChat({ card, project }: { card: Card; project: string }) {
       <ChatLaunch
         chat={card.chat}
         status={card.chatStatus}
-        project={project}
+        projectId={projectId}
         size="xs"
         stopPropagation
       />
@@ -157,12 +174,12 @@ function CardChat({ card, project }: { card: Card; project: string }) {
   );
 }
 
-function CardContents({ card, project }: { card: Card; project: string }) {
+function CardContents({ card, projectId }: { card: Card; projectId: Id<"projects"> }) {
   return (
     <>
       <CardSummary card={card} />
       {card.chat && (
-        <CardChat card={card} project={project} />
+        <CardChat card={card} projectId={projectId} />
       )}
     </>
   );
@@ -262,7 +279,7 @@ function CreateProjectDialog({
 
 function AppSidebar({
   projects,
-  selectedProject,
+  selectedProjectId,
   creatingProject,
   onSelectProject,
   onCreateProject,
@@ -271,9 +288,9 @@ function AppSidebar({
   onSignOut,
 }: {
   projects: ProjectNavEntry[];
-  selectedProject: string;
+  selectedProjectId: Id<"projects">;
   creatingProject: boolean;
-  onSelectProject: (project: string) => void;
+  onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
   onShowDeviceTokens: () => void;
@@ -311,7 +328,7 @@ function AppSidebar({
           </p>
         ) : (
           projects.map(({ project }) => {
-            const selected = project.slug === selectedProject;
+            const selected = project._id === selectedProjectId;
             return (
               <div
                 key={project._id}
@@ -324,7 +341,7 @@ function AppSidebar({
               >
                 <button
                   type="button"
-                  onClick={() => onSelectProject(project.slug)}
+                  onClick={() => onSelectProject(project._id)}
                   className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pl-2 text-left text-sm"
                 >
                   <LayoutDashboardIcon className="size-4 shrink-0" />
@@ -340,7 +357,7 @@ function AppSidebar({
                           variant="ghost"
                           size="icon-xs"
                           onClick={() => {
-                            onSelectProject(project.slug);
+                            onSelectProject(project._id);
                             onShowProjectDetails();
                           }}
                           aria-label="Project details"
@@ -394,7 +411,7 @@ function AppSidebar({
 
 function AppShell({
   projects,
-  selectedProject,
+  selectedProjectId,
   creatingProject,
   onSelectProject,
   onCreateProject,
@@ -404,9 +421,9 @@ function AppShell({
   children,
 }: {
   projects: ProjectNavEntry[];
-  selectedProject: string;
+  selectedProjectId: Id<"projects">;
   creatingProject: boolean;
-  onSelectProject: (project: string) => void;
+  onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
   onShowDeviceTokens: () => void;
@@ -417,7 +434,7 @@ function AppShell({
     <div className="flex min-h-screen flex-col bg-background md:flex-row">
       <AppSidebar
         projects={projects}
-        selectedProject={selectedProject}
+        selectedProjectId={selectedProjectId}
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
@@ -427,6 +444,53 @@ function AppShell({
       />
       <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
     </div>
+  );
+}
+
+function NoProjectWelcome({
+  creatingProject,
+  onCreateProject,
+  onSignOut,
+}: {
+  creatingProject: boolean;
+  onCreateProject: (name: string) => Promise<void>;
+  onSignOut: () => void;
+}) {
+  const [showCreateProject, setShowCreateProject] = useState(false);
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background p-6">
+      <section className="flex w-full max-w-md flex-col gap-5 rounded-lg border bg-card p-6 shadow-sm">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Welcome to Hitch
+          </p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight">
+            Create your first project
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Projects are now driven by your Hitch account. Create one, then bind
+            it to a local folder when you are ready to sync task files.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => setShowCreateProject(true)}>
+            <PlusIcon />
+            Create project
+          </Button>
+          <Button variant="ghost" onClick={onSignOut}>
+            <LogOutIcon />
+            Sign out
+          </Button>
+        </div>
+      </section>
+      <CreateProjectDialog
+        open={showCreateProject}
+        onOpenChange={setShowCreateProject}
+        creating={creatingProject}
+        onCreate={onCreateProject}
+      />
+    </main>
   );
 }
 
@@ -447,13 +511,13 @@ function AuthenticatedBoard() {
 }
 
 function ProjectWorkspace() {
+  const { signOut } = useAuthActions();
   const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
-  const projects = useQuery(api.projects.listMine) ?? [];
+  const projects = useQuery(api.projects.listMine);
   const createProjectMutation = useMutation(api.projects.create);
   const authorizeDevice = useMutation(api.deviceTokens.authorizeDevice);
-  const [selectedProject, setSelectedProject] = useState(HITCH_PROJECT);
-  const [localConfig, setLocalConfig] = useState<LocalHitchConfig>({
-    activeProject: HITCH_PROJECT,
+  const [selectedProjectId, setSelectedProjectId] = useState<Id<"projects"> | null>(null);
+  const [, setLocalConfig] = useState<LocalHitchConfig>({
     hitches: [],
   });
   const [deviceAuth, setDeviceAuth] = useState<DeviceAuthState | null>(null);
@@ -463,7 +527,6 @@ function ProjectWorkspace() {
     if (!bridge) return;
     void bridge.getConfig().then((config) => {
       setLocalConfig(config);
-      if (config.activeProject) setSelectedProject(config.activeProject);
     });
     void bridge.getDeviceAuth().then(setDeviceAuth);
   }, [bridge]);
@@ -483,31 +546,66 @@ function ProjectWorkspace() {
     });
   }, [authorizeDevice, bridge, deviceAuth]);
 
-  const currentProject =
-    selectedProject || projects[0]?.project.slug || HITCH_PROJECT;
+  useEffect(() => {
+    if (projects === undefined) return;
+    if (projects.length === 0) {
+      if (selectedProjectId !== null) setSelectedProjectId(null);
+      return;
+    }
+    if (!selectedProjectId || !projects.some(({ project }) => project._id === selectedProjectId)) {
+      setSelectedProjectId(projects[0].project._id);
+    }
+  }, [projects, selectedProjectId]);
 
-  async function selectProject(project: string) {
-    setSelectedProject(project);
-    if (!bridge) return;
-    setLocalConfig(await bridge.setActiveProject(project));
+  function selectProject(projectId: Id<"projects">) {
+    setSelectedProjectId(projectId);
   }
 
   async function createProject(name: string) {
     setCreatingProject(true);
     try {
       const project = await createProjectMutation({ name });
-      if (project) await selectProject(project.slug);
+      if (project) selectProject(project._id);
     } finally {
       setCreatingProject(false);
     }
   }
 
+  if (projects === undefined) {
+    return (
+      <main className="flex min-h-screen items-center justify-center text-muted-foreground">
+        Loading projects…
+      </main>
+    );
+  }
+
+  if (projects.length === 0) {
+    return (
+      <NoProjectWelcome
+        creatingProject={creatingProject}
+        onCreateProject={createProject}
+        onSignOut={() => void signOut()}
+      />
+    );
+  }
+
+  const selectedProject =
+    projects.find(({ project }) => project._id === selectedProjectId)?.project ?? null;
+
+  if (!selectedProject) {
+    return (
+      <main className="flex min-h-screen items-center justify-center text-muted-foreground">
+        Opening project…
+      </main>
+    );
+  }
+
   return (
     <BoardContent
-      project={currentProject}
+      projectId={selectedProject._id}
       projects={projects}
       creatingProject={creatingProject}
-      onSelectProject={(project) => void selectProject(project)}
+      onSelectProject={selectProject}
       onCreateProject={createProject}
       onLocalConfigChange={setLocalConfig}
     />
@@ -580,7 +678,7 @@ function ArchiveShortcut({
 
 interface DraggableCardProps {
   card: Card;
-  project: string;
+  projectId: Id<"projects">;
   pending: boolean;
   onOpen: (card: Card) => void;
   onArchiveToggle: (card: Card, archived: boolean) => void;
@@ -595,7 +693,7 @@ interface DraggableCardProps {
 // isn't a fresh component type each render, which would remount mid-drag.
 function DraggableCard({
   card,
-  project,
+  projectId,
   pending,
   onOpen,
   onArchiveToggle,
@@ -636,7 +734,7 @@ function DraggableCard({
           >
             <CardSummary card={card} />
           </button>
-          <CardChat card={card} project={project} />
+          <CardChat card={card} projectId={projectId} />
           {!card.archived && (
             <ArchiveShortcut
               confirming={confirmingArchive}
@@ -885,29 +983,29 @@ function TaskComposer({
 // A column that accepts dropped cards. Its droppable id IS the status value, so
 // the drop handler can read the destination status straight off `over.id`.
 function DroppableColumn({
-  col,
+  status,
   count,
   onAdd,
   children,
 }: {
-  col: Column;
+  status: ProjectStatus;
   count: number;
   onAdd: () => void;
   children: ReactNode;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: col });
+  const { setNodeRef, isOver } = useDroppable({ id: status.id });
 
   return (
     <section
       ref={setNodeRef}
       className={cn(
-        "relative flex flex-col gap-3 rounded-xl bg-muted p-3 transition-colors",
+        "relative flex min-h-[24rem] w-[17rem] shrink-0 flex-col gap-3 rounded-xl bg-muted p-3 transition-colors",
         isOver && "ring-2 ring-ring",
       )}
     >
       <div className="relative z-20 flex items-center justify-between px-1">
         <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {col} · {count}
+          {status.name} · {count}
         </h2>
         <Tooltip>
           <TooltipTrigger
@@ -948,28 +1046,23 @@ function DroppableColumn({
 }
 
 function BoardContent({
-  project,
+  projectId,
   projects,
   creatingProject,
   onSelectProject,
   onCreateProject,
   onLocalConfigChange,
 }: {
-  project: string;
+  projectId: Id<"projects">;
   projects: ProjectNavEntry[];
   creatingProject: boolean;
-  onSelectProject: (project: string) => void;
+  onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onLocalConfigChange: (config: LocalHitchConfig) => void;
 }) {
   const { signOut } = useAuthActions();
-  const projectAccess = useQuery(api.projects.current, { project });
-  const claimProject = useMutation(api.projects.claimLegacyProject);
-  const projectReady = projectAccess?.project !== null && projectAccess !== undefined;
-  const files = useQuery(
-    api.files.listFiles,
-    projectReady ? { project } : "skip",
-  );
+  const currentProject = projects.find(({ project }) => project._id === projectId)?.project;
+  const files = useQuery(api.files.listFiles, { projectId });
   // Optimistically patch the cached file so a drag/archive/delete — and a brand
   // new task — reflects instantly instead of waiting on the frontmatter →
   // daemon → Convex round trip. Bumping updatedAt lands the card at the top of
@@ -979,7 +1072,7 @@ function BoardContent({
   const upsertFile = useMutation(api.files.upsertFile).withOptimisticUpdate(
     (localStore, args) => {
       const existing = localStore.getQuery(api.files.listFiles, {
-        project: args.project,
+        projectId: args.projectId,
       });
       if (existing === undefined) return;
       type FileDoc = (typeof existing)[number];
@@ -1012,12 +1105,12 @@ function BoardContent({
           : [...existing, patched];
       localStore.setQuery(
         api.files.listFiles,
-        { project: args.project },
+        { projectId: args.projectId },
         next,
       );
     },
   );
-  const [selected, setSelected] = useState<Card | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showDeviceTokens, setShowDeviceTokens] = useState(false);
   const [showLocalSync, setShowLocalSync] = useState(false);
@@ -1025,15 +1118,14 @@ function BoardContent({
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
-  const [composingCol, setComposingCol] = useState<Column | null>(null);
+  const [composingCol, setComposingCol] = useState<string | null>(null);
+  const boardStatuses = useMemo(
+    () => statusesForProject(currentProject?.statuses),
+    [currentProject?.statuses],
+  );
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
-
-  useEffect(() => {
-    if (projectAccess?.legacy !== true) return;
-    void claimProject({ project, name: project });
-  }, [claimProject, project, projectAccess?.legacy]);
 
   // `C` arms the composer on the first column for keyboard-driven creation.
   // Ignored while typing in a field or with the editor open, and when chorded
@@ -1042,7 +1134,7 @@ function BoardContent({
     function onKey(e: KeyboardEvent) {
       if (e.key !== "c" && e.key !== "C") return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (selected) return;
+      if (selectedPath) return;
       const el = e.target as HTMLElement | null;
       if (
         el &&
@@ -1052,17 +1144,17 @@ function BoardContent({
         return;
       }
       e.preventDefault();
-      setComposingCol(COLUMNS[0]);
+      setComposingCol(boardStatuses[0].id);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected]);
+  }, [boardStatuses, selectedPath]);
 
-  if (!projectReady || files === undefined) {
+  if (!currentProject || files === undefined) {
     return (
       <AppShell
         projects={projects}
-        selectedProject={project}
+        selectedProjectId={projectId}
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
@@ -1071,23 +1163,20 @@ function BoardContent({
         onSignOut={() => void signOut()}
       >
         <div className="flex min-h-[50vh] items-center justify-center text-muted-foreground">
-          {projectAccess?.legacy === true
-            ? "Creating project..."
-            : "Connecting to Convex..."}
+          Connecting to Convex...
         </div>
         <DeviceTokens
-          project={project}
           open={showDeviceTokens}
           onOpenChange={setShowDeviceTokens}
         />
         <LocalSyncDialog
-          project={project}
+          projectId={projectId}
           open={showLocalSync}
           onOpenChange={setShowLocalSync}
           onConfigChange={onLocalConfigChange}
         />
         <ProjectDetailsDialog
-          project={project}
+          projectId={projectId}
           open={showProjectDetails}
           onOpenChange={setShowProjectDetails}
           onLocalConfigChange={onLocalConfigChange}
@@ -1114,7 +1203,7 @@ function BoardContent({
         content: f.content,
         chat: parseChatRef(frontmatter),
         chatStatus: parseChatStatus(frontmatter),
-        column: columnFor(status),
+        column: columnFor(status, boardStatuses),
         archived: status === "archived",
         updatedAt: f.updatedAt,
       });
@@ -1125,11 +1214,17 @@ function BoardContent({
   const activeCards = cards.filter((card) => !card.archived);
   const archivedCards = cards.filter((card) => card.archived);
   const byColumn = Object.fromEntries(
-    COLUMNS.map((c) => [c, activeCards.filter((card) => card.column === c)]),
-  ) as Record<Column, Card[]>;
+    boardStatuses.map((c) => [
+      c.id,
+      activeCards.filter((card) => card.column === c.id),
+    ]),
+  ) as Record<string, Card[]>;
 
+  const selected = selectedPath
+    ? cards.find((card) => card.path === selectedPath) ?? null
+    : null;
   const target: TaskTarget | null = selected && {
-    project,
+    projectId,
     path: selected.path,
     title: selected.title,
     content: selected.content,
@@ -1138,12 +1233,12 @@ function BoardContent({
   // Create a task by writing a fresh `tasks/<slug>/task.md` through the same
   // upsert path everything else uses; the daemon writes the file and the live
   // query renders the card (instantly, via the optimistic insert above).
-  async function createTask(column: Column, title: string) {
+  async function createTask(column: string, title: string) {
     const taken = new Set(cards.map((card) => card.slug));
     const slug = uniqueSlug(title, taken);
     const content = setFrontmatterKeys("", { title, status: column });
     await upsertFile({
-      project: project,
+      projectId,
       path: taskBodyPath(slug),
       content,
       hash: await sha256(content),
@@ -1164,7 +1259,7 @@ function BoardContent({
       title,
     });
     await upsertFile({
-      project: project,
+      projectId,
       path: taskBodyPath(slug),
       content,
       hash: await sha256(content),
@@ -1174,7 +1269,7 @@ function BoardContent({
 
   async function setArchived(card: Card, archived: boolean) {
     const { frontmatter } = parseFrontmatter(card.content);
-    const restoreStatus = columnFor(frontmatter.archivedFrom);
+    const restoreStatus = columnFor(frontmatter.archivedFrom, boardStatuses);
     const nextContent = setFrontmatterKeys(card.content, {
       status: archived ? "archived" : restoreStatus,
       archivedFrom: archived ? card.column : undefined,
@@ -1183,7 +1278,7 @@ function BoardContent({
     setPendingCardId(card.id);
     try {
       await upsertFile({
-        project: project,
+        projectId,
         path: card.path,
         content: nextContent,
         hash: await sha256(nextContent),
@@ -1198,7 +1293,7 @@ function BoardContent({
     setPendingCardId(card.id);
     try {
       await upsertFile({
-        project: project,
+        projectId,
         path: card.path,
         content: "",
         hash: "",
@@ -1216,7 +1311,7 @@ function BoardContent({
     await Promise.all(
       archivedCards.map((card) =>
         upsertFile({
-          project: project,
+          projectId,
           path: card.path,
           content: "",
           hash: "",
@@ -1229,13 +1324,13 @@ function BoardContent({
   // Move a card to another column by rewriting just its `status` frontmatter.
   // Chat lifecycle fields are owned by the harness hooks, so a board move
   // should never reset or replay them from this card snapshot.
-  async function setStatus(card: Card, status: Column) {
+  async function setStatus(card: Card, status: string) {
     const nextContent = setFrontmatterKeys(card.content, { status });
 
     setPendingCardId(card.id);
     try {
       await upsertFile({
-        project: project,
+        projectId,
         path: card.path,
         content: nextContent,
         hash: await sha256(nextContent),
@@ -1253,7 +1348,8 @@ function BoardContent({
     // Dropping anywhere onto an archived card's origin or the same column is a
     // no-op. `over.id` is always a column id (only columns are droppable).
     const card = cards.find((c) => c.id === active.id);
-    const dest = over.id as Column;
+    const dest = String(over.id);
+    if (!boardStatuses.some((status) => status.id === dest)) return;
     if (!card || (card.column === dest && !card.archived)) return;
     void setStatus(card, dest);
   }
@@ -1265,7 +1361,7 @@ function BoardContent({
   return (
     <AppShell
       projects={projects}
-      selectedProject={project}
+      selectedProjectId={projectId}
       creatingProject={creatingProject}
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
@@ -1324,27 +1420,27 @@ function BoardContent({
           onDragEnd={onDragEnd}
           onDragCancel={() => setActiveId(null)}
         >
-          <div className="grid flex-1 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {COLUMNS.map((col) => (
+          <div className="-mx-4 flex flex-1 gap-4 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+            {boardStatuses.map((col) => (
               <DroppableColumn
-                key={col}
-                col={col}
-                count={byColumn[col].length}
-                onAdd={() => setComposingCol(col)}
+                key={col.id}
+                status={col}
+                count={byColumn[col.id].length}
+                onAdd={() => setComposingCol(col.id)}
               >
-                {composingCol === col && (
+                {composingCol === col.id && (
                   <TaskComposer
-                    onCreate={(title) => void createTask(col, title)}
+                    onCreate={(title) => void createTask(col.id, title)}
                     onClose={() => setComposingCol(null)}
                   />
                 )}
-                {byColumn[col].map((card) => (
+                {byColumn[col.id].map((card) => (
                   <DraggableCard
                     key={card.id}
                     card={card}
-                    project={project}
+                    projectId={projectId}
                     pending={pendingCardId === card.id}
-                    onOpen={setSelected}
+                    onOpen={(card) => setSelectedPath(card.path)}
                     onArchiveToggle={(c, archived) =>
                       void setArchived(c, archived)
                     }
@@ -1369,7 +1465,7 @@ function BoardContent({
                   "cursor-grabbing shadow-lg ring-foreground/20",
                 )}
               >
-                <CardContents card={activeCard} project={project} />
+                <CardContents card={activeCard} projectId={projectId} />
               </div>
             ) : null}
           </DragOverlay>
@@ -1386,20 +1482,19 @@ function BoardContent({
         />
 
         <DeviceTokens
-          project={project}
           open={showDeviceTokens}
           onOpenChange={setShowDeviceTokens}
         />
 
         <LocalSyncDialog
-          project={project}
+          projectId={projectId}
           open={showLocalSync}
           onOpenChange={setShowLocalSync}
           onConfigChange={onLocalConfigChange}
         />
 
         <ProjectDetailsDialog
-          project={project}
+          projectId={projectId}
           open={showProjectDetails}
           onOpenChange={setShowProjectDetails}
           onLocalConfigChange={onLocalConfigChange}
@@ -1408,7 +1503,7 @@ function BoardContent({
         <TaskDialog
           task={target}
           onOpenChange={(open) => {
-            if (!open) setSelected(null);
+            if (!open) setSelectedPath(null);
           }}
         />
       </div>

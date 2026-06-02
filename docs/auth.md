@@ -41,9 +41,8 @@ The target authorization model is:
 - each local daemon authenticates as a user/device with a device token;
 - daemon access to a project is computed from that user's project membership.
 
-During the migration from the original string-only model, a signed-in user can
-still access a missing project slug until that slug is claimed into a `projects`
-document. Once the project document exists, membership checks are enforced.
+Project APIs use Convex project document IDs. Project names are display-only;
+membership checks are enforced directly against the requested project ID.
 
 ## Device Tokens
 

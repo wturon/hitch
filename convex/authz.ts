@@ -47,26 +47,6 @@ export async function projectMembershipForUser(
   return membership;
 }
 
-export async function projectBySlug(ctx: Ctx, slug: string) {
-  return await ctx.db
-    .query("projects")
-    .withIndex("by_slug", (q) => q.eq("slug", slug))
-    .unique();
-}
-
-export async function requireProjectMemberBySlug(ctx: Ctx, slug: string) {
-  const project = await projectBySlug(ctx, slug);
-  if (!project) {
-    const user = await requireUser(ctx);
-    return { user, project: null, membership: null };
-  }
-
-  return {
-    project,
-    ...(await requireProjectMember(ctx, project._id)),
-  };
-}
-
 export async function requireProjectOwner(
   ctx: Ctx,
   projectId: Id<"projects">,
@@ -76,8 +56,23 @@ export async function requireProjectOwner(
   return { user, membership };
 }
 
-export async function requireProjectOwnerBySlug(ctx: Ctx, slug: string) {
-  const project = await projectBySlug(ctx, slug);
+export async function requireProjectMemberById(
+  ctx: Ctx,
+  projectId: Id<"projects">,
+) {
+  const project = await ctx.db.get(projectId);
+  if (!project) throw new Error("Project does not exist");
+  return {
+    project,
+    ...(await requireProjectMember(ctx, project._id)),
+  };
+}
+
+export async function requireProjectOwnerById(
+  ctx: Ctx,
+  projectId: Id<"projects">,
+) {
+  const project = await ctx.db.get(projectId);
   if (!project) throw new Error("Project does not exist");
   return {
     project,
@@ -112,16 +107,16 @@ export async function requireDeviceToken(
 
 export async function requireProjectAccess(
   ctx: Ctx,
-  projectSlug: string,
+  projectId: Id<"projects">,
   deviceToken?: string,
 ) {
   if (deviceToken) {
     const { user, token } = await requireDeviceToken(ctx, deviceToken);
-    const project = await projectBySlug(ctx, projectSlug);
+    const project = await ctx.db.get(projectId);
     if (!project) throw new Error("Project does not exist");
     const membership = await projectMembershipForUser(ctx, project._id, user._id);
     if (!membership) throw new Error("Project access denied");
     return { user, project, membership, token };
   }
-  return await requireProjectMemberBySlug(ctx, projectSlug);
+  return await requireProjectMemberById(ctx, projectId);
 }

@@ -7,12 +7,17 @@ export default defineSchema({
 
   projects: defineTable({
     name: v.string(),
-    slug: v.string(),
+    statuses: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          name: v.string(),
+        }),
+      ),
+    ),
     createdBy: v.id("users"),
     createdAt: v.number(),
-  })
-    .index("by_slug", ["slug"])
-    .index("by_created_by", ["createdBy"]),
+  }).index("by_created_by", ["createdBy"]),
 
   projectMembers: defineTable({
     projectId: v.id("projects"),

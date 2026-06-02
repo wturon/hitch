@@ -1,11 +1,3 @@
 {
-  "activeProject": "will-default",
-  "hitches": [
-    {
-      "project": "will-default",
-      "projectName": "Hitch",
-      "localPath": ".",
-      "enabled": true
-    }
-  ]
+  "hitches": []
 }

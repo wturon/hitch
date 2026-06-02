@@ -16,8 +16,9 @@ engineers.
 Desktop app / local daemon:
 
 - `hitch.config.json`
-  - `activeProject`: project slug, for example `will-default`
-  - `hitches`: one or more project/local-path bindings
+  - `hitches`: zero or more project-id/local-path bindings
+  - `projectId`: Convex project document id for a binding
+  - `localPath`: local folder whose `.hitch/` directory is synced
 - `.env` or `.env.local`
   - `CONVEX_URL`: optional when `npx convex dev` writes `CONVEX_DEPLOYMENT`
   - `HITCH_DEVICE_TOKEN`: user/device-scoped token used by the local daemon
@@ -25,7 +26,8 @@ Desktop app / local daemon:
 Renderer:
 
 - `NEXT_PUBLIC_CONVEX_URL`: Convex deployment URL
-- `NEXT_PUBLIC_HITCH_PROJECT`: project id to render
+- Projects are loaded from the authenticated user's Convex project list; no
+  project env var is used.
 
 Run `npm run check` before deploying. It typechecks the daemon and desktop app,
 then builds the desktop renderer.
@@ -63,7 +65,6 @@ Set these in the shell that runs the package step (never commit them):
 - `NEXT_PUBLIC_CONVEX_URL` and `CONVEX_URL` — the **prod** Convex deployment URL
   (`npx convex deploy` first). The renderer bakes `NEXT_PUBLIC_CONVEX_URL` at Vite
   build time; `CONVEX_URL` is baked into `app-config.json` for the daemon.
-- `NEXT_PUBLIC_HITCH_PROJECT` — project id the renderer should render.
 - Notarization (read by `@electron/notarize`): `APPLE_ID`,
   `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`.
 
@@ -73,7 +74,6 @@ Set these in the shell that runs the package step (never commit them):
 npx convex deploy                 # deploy the prod backend (manual)
 CONVEX_URL=https://<prod>.convex.cloud \
 NEXT_PUBLIC_CONVEX_URL=https://<prod>.convex.cloud \
-NEXT_PUBLIC_HITCH_PROJECT=<project-id> \
 APPLE_ID=... APPLE_APP_SPECIFIC_PASSWORD=... APPLE_TEAM_ID=... \
   npm run package:desktop
 ```
@@ -105,8 +105,8 @@ token, and confirm a file in `.hitch/` syncs to the prod Convex deployment.
 1. `npm install`
 2. `npx convex dev` once to create/login to a dev deployment.
 3. Add `HITCH_DEVICE_TOKEN` to `.env.local` until Desktop can mint/store it
-   automatically. `NEXT_PUBLIC_CONVEX_URL` and `NEXT_PUBLIC_HITCH_PROJECT` are
-   optional overrides for the renderer.
+   automatically. `NEXT_PUBLIC_CONVEX_URL` is an optional override for the
+   renderer.
 4. Run `npm run dev:convex` and `npm run dev` in separate terminals, or use the
    `.cmux` Hitch Dev command for split logs.
 5. Create or edit a file under a watched `.hitch/` folder and confirm it appears
@@ -117,8 +117,8 @@ token, and confirm a file in `.hitch/` syncs to the prod Convex deployment.
 - Authentication is partially implemented with Convex Auth. Production still
   needs final project membership/backfill and device-token onboarding before
   untrusted users can access it.
-- Project discovery is manual. The desktop board uses one configured project id;
-  there is no project picker or invite flow yet.
+- Project discovery comes from Convex Auth membership. There is a project picker,
+  but no invite flow yet.
 - Command execution is trusted-local. Browser commands are executed by matching
   local daemons, so the command queue should stay limited to trusted users until
   auth and command authorization exist.

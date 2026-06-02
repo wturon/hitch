@@ -4,16 +4,32 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@convex/_generated/api";
+import type { Id } from "@convex/_generated/dataModel";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import {
   AlertCircleIcon,
   CalendarIcon,
   CheckCircle2Icon,
   Code2Icon,
   FolderOpenIcon,
+  GripVerticalIcon,
   HashIcon,
+  ListChecksIcon,
+  PlusIcon,
   RefreshCwIcon,
   ShieldCheckIcon,
   TerminalIcon,
+  Trash2Icon,
   UsersIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,6 +41,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 const projectDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -34,20 +51,31 @@ const projectDateFormatter = new Intl.DateTimeFormat(undefined, {
 
 type ProjectDetails = NonNullable<FunctionReturnType<typeof api.projects.details>>;
 
+const DEFAULT_STATUSES = [
+  { id: "todo", name: "To Do" },
+  { id: "in-progress", name: "In Progress" },
+  { id: "review", name: "Review" },
+  { id: "done", name: "Done" },
+] as const satisfies ProjectStatus[];
+
+interface ProjectStatus {
+  id: string;
+  name: string;
+}
+
 interface HitchBinding {
-  project: string;
+  projectId: Id<"projects">;
   projectName?: string;
   localPath: string;
   enabled: boolean;
 }
 
 interface LocalHitchConfig {
-  activeProject: string;
   hitches: HitchBinding[];
 }
 
 interface ProjectSetupStatus {
-  project: string;
+  projectId: Id<"projects">;
   hitch: HitchBinding | null;
   localPathExists: boolean;
   hitchPath: string | null;
@@ -70,7 +98,7 @@ interface HarnessHookStatus {
 }
 
 interface HarnessSetupStatus {
-  project: string;
+  projectId: Id<"projects">;
   hitch: HitchBinding | null;
   localPathExists: boolean;
   codex: HarnessHookStatus;
@@ -90,26 +118,152 @@ function initials(name: string) {
     .join("");
 }
 
+function statusFingerprint(statuses: ProjectStatus[]) {
+  return JSON.stringify(statuses.map((status) => [status.id, status.name]));
+}
+
+function statusesForProject(statuses: ProjectStatus[] | undefined): ProjectStatus[] {
+  return statuses?.length ? statuses : [...DEFAULT_STATUSES];
+}
+
+function statusIdFromName(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+}
+
+function uniqueStatusId(name: string, existing: ProjectStatus[]) {
+  const root = statusIdFromName(name) || "status";
+  const taken = new Set(existing.map((status) => status.id));
+  let id = root === "archived" ? "status" : root;
+  let suffix = 2;
+  while (taken.has(id) || id === "archived") {
+    id = `${root}-${suffix}`;
+    suffix += 1;
+  }
+  return id;
+}
+
+function reorderStatuses(
+  statuses: ProjectStatus[],
+  activeId: string,
+  overId: string,
+) {
+  const activeIndex = statuses.findIndex((status) => status.id === activeId);
+  const overIndex = statuses.findIndex((status) => status.id === overId);
+  if (activeIndex < 0 || overIndex < 0 || activeIndex === overIndex) {
+    return statuses;
+  }
+
+  const next = [...statuses];
+  const [moved] = next.splice(activeIndex, 1);
+  next.splice(overIndex, 0, moved);
+  return next;
+}
+
+function StatusRow({
+  status,
+  index,
+  canEdit,
+  disabled,
+  canRemove,
+  isActive,
+  onNameChange,
+  onRemove,
+}: {
+  status: ProjectStatus;
+  index: number;
+  canEdit: boolean;
+  disabled: boolean;
+  canRemove: boolean;
+  isActive: boolean;
+  onNameChange: (id: string, name: string) => void;
+  onRemove: (id: string) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef: setDraggableNodeRef,
+    isDragging,
+  } = useDraggable({
+    id: status.id,
+    disabled: disabled || !canEdit,
+  });
+  const { setNodeRef: setDroppableNodeRef, isOver } = useDroppable({
+    id: status.id,
+  });
+
+  function setNodeRef(node: HTMLDivElement | null) {
+    setDraggableNodeRef(node);
+    setDroppableNodeRef(node);
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 transition-shadow",
+        isOver && !isActive && "ring-2 ring-ring",
+        isDragging && "opacity-40",
+      )}
+    >
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        disabled={disabled || !canEdit}
+        aria-label={`Drag ${status.name}`}
+        className="flex size-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <GripVerticalIcon className="size-4" />
+      </button>
+      <span className="w-5 shrink-0 text-center text-xs text-muted-foreground">
+        {index + 1}
+      </span>
+      <input
+        value={status.name}
+        onChange={(event) => onNameChange(status.id, event.target.value)}
+        disabled={!canEdit || disabled}
+        className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        disabled={!canEdit || disabled || !canRemove}
+        onClick={() => onRemove(status.id)}
+        aria-label="Remove status"
+        className="text-muted-foreground hover:text-destructive"
+      >
+        <Trash2Icon />
+      </Button>
+    </div>
+  );
+}
+
 export function ProjectDetailsDialog({
-  project,
+  projectId,
   open,
   onOpenChange,
   onLocalConfigChange,
 }: {
-  project: string;
+  projectId: Id<"projects">;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onLocalConfigChange?: (config: LocalHitchConfig) => void;
 }) {
-  const details = useQuery(api.projects.details, open ? { project } : "skip");
+  const details = useQuery(api.projects.details, open ? { projectId } : "skip");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Project details</DialogTitle>
           <DialogDescription>
-            {details?.project?.slug ?? project}
+            {details?.project?.name ?? "Project settings"}
           </DialogDescription>
         </DialogHeader>
 
@@ -124,7 +278,7 @@ export function ProjectDetailsDialog({
         ) : (
           <ProjectDetailsForm
             key={`${details.project._id}:${details.project.name}`}
-            project={project}
+            projectId={projectId}
             details={details}
             onLocalConfigChange={onLocalConfigChange}
           />
@@ -135,35 +289,56 @@ export function ProjectDetailsDialog({
 }
 
 function ProjectDetailsForm({
-  project,
+  projectId,
   details,
   onLocalConfigChange,
 }: {
-  project: string;
+  projectId: Id<"projects">;
   details: ProjectDetails;
   onLocalConfigChange?: (config: LocalHitchConfig) => void;
 }) {
   const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
   const updateDetails = useMutation(api.projects.updateDetails);
+  const updateStatuses = useMutation(api.projects.updateStatuses);
   const [name, setName] = useState(details.project.name);
+  const [statuses, setStatuses] = useState<ProjectStatus[]>(
+    statusesForProject(details.project.statuses),
+  );
   const [setup, setSetup] = useState<ProjectSetupStatus | null>(null);
   const [harnessSetup, setHarnessSetup] = useState<HarnessSetupStatus | null>(null);
   const [localPath, setLocalPath] = useState("");
   const [saving, setSaving] = useState(false);
+  const [savingStatuses, setSavingStatuses] = useState(false);
+  const [activeStatusId, setActiveStatusId] = useState<string | null>(null);
   const [setupBusy, setSetupBusy] = useState<string | null>(null);
   const [harnessBusy, setHarnessBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [harnessError, setHarnessError] = useState<string | null>(null);
   const canEdit = details.membership?.role === "owner";
   const trimmedName = name.trim();
   const hasNameChange = trimmedName !== details.project.name;
+  const savedStatuses = statusesForProject(details.project.statuses);
+  const hasStatusChange =
+    statusFingerprint(statuses) !== statusFingerprint(savedStatuses);
+  const hasInvalidStatus = statuses.some((status) => !status.name.trim());
+  const statusSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+  const activeStatus = activeStatusId
+    ? statuses.find((status) => status.id === activeStatusId) ?? null
+    : null;
+
+  useEffect(() => {
+    setStatuses(statusesForProject(details.project.statuses));
+  }, [details.project._id, details.project.statuses]);
 
   async function refreshSetup() {
     if (!bridge) return;
     const [next, nextHarnessSetup] = await Promise.all([
-      bridge.getProjectSetup(project),
-      bridge.getHarnessSetup(project),
+      bridge.getProjectSetup(projectId),
+      bridge.getHarnessSetup(projectId),
     ]);
     setSetup(next);
     setHarnessSetup(nextHarnessSetup);
@@ -174,7 +349,7 @@ function ProjectDetailsForm({
     void refreshSetup().catch((err) => {
       setSetupError(err instanceof Error ? err.message : String(err));
     });
-  }, [bridge, project]);
+  }, [bridge, projectId]);
 
   async function saveProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -183,13 +358,62 @@ function ProjectDetailsForm({
     setSaving(true);
     setError(null);
     try {
-      await updateDetails({ project, name: trimmedName });
+      await updateDetails({ projectId, name: trimmedName });
       setName(trimmedName);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
+  }
+
+  async function saveStatuses() {
+    if (!canEdit || !hasStatusChange || hasInvalidStatus) return;
+
+    setSavingStatuses(true);
+    setStatusError(null);
+    try {
+      const next = await updateStatuses({ projectId, statuses });
+      setStatuses(statusesForProject(next?.statuses));
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingStatuses(false);
+    }
+  }
+
+  function updateStatusName(id: string, nextName: string) {
+    setStatuses((current) =>
+      current.map((status) =>
+        status.id === id ? { ...status, name: nextName } : status,
+      ),
+    );
+  }
+
+  function addStatus() {
+    setStatuses((current) => [
+      ...current,
+      { id: uniqueStatusId("New status", current), name: "New status" },
+    ]);
+  }
+
+  function removeStatus(id: string) {
+    setStatuses((current) =>
+      current.length <= 1 ? current : current.filter((status) => status.id !== id),
+    );
+  }
+
+  function onStatusDragStart(event: DragStartEvent) {
+    setActiveStatusId(String(event.active.id));
+  }
+
+  function onStatusDragEnd(event: DragEndEvent) {
+    setActiveStatusId(null);
+    const { active, over } = event;
+    if (!over) return;
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    setStatuses((current) => reorderStatuses(current, activeId, overId));
   }
 
   async function chooseFolder() {
@@ -205,7 +429,7 @@ function ProjectDetailsForm({
     setSetupError(null);
     try {
       const result = await bridge.addHitch({
-        project,
+        projectId,
         projectName: details.project.name,
         localPath,
         updateGitignore: true,
@@ -226,8 +450,8 @@ function ProjectDetailsForm({
     try {
       const next =
         action === "hitch"
-          ? await bridge.ensureHitchDirectory(project)
-          : await bridge.ensureGitignore(project);
+          ? await bridge.ensureHitchDirectory(projectId)
+          : await bridge.ensureGitignore(projectId);
       setSetup(next);
     } catch (err) {
       setSetupError(err instanceof Error ? err.message : String(err));
@@ -241,7 +465,7 @@ function ProjectDetailsForm({
     setHarnessBusy(harness);
     setHarnessError(null);
     try {
-      const next = await bridge.installHarnessHooks(project, harness);
+      const next = await bridge.installHarnessHooks(projectId, harness);
       setHarnessSetup(next);
     } catch (err) {
       setHarnessError(err instanceof Error ? err.message : String(err));
@@ -255,7 +479,7 @@ function ProjectDetailsForm({
     setHarnessBusy("codex-trust");
     setHarnessError(null);
     try {
-      await bridge.openCodexHookTrust(project);
+      await bridge.openCodexHookTrust(projectId);
     } catch (err) {
       setHarnessError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -264,7 +488,11 @@ function ProjectDetailsForm({
   }
 
   return (
-    <form className="flex flex-col gap-4" onSubmit={saveProject}>
+    <form
+      className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]"
+      onSubmit={saveProject}
+    >
+      <div className="flex flex-col gap-4">
       <label className="flex flex-col gap-1.5">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Title
@@ -281,10 +509,10 @@ function ProjectDetailsForm({
         <div className="rounded-lg border bg-muted/40 p-3">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <HashIcon className="size-3.5" />
-            Slug
+            Project ID
           </div>
           <p className="mt-1 truncate text-sm font-medium">
-            {details.project.slug}
+            {details.project._id}
           </p>
         </div>
         <div className="rounded-lg border bg-muted/40 p-3">
@@ -306,6 +534,79 @@ function ProjectDetailsForm({
           </p>
         </div>
       </div>
+
+      <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <h3 className="text-sm font-medium">Board statuses</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Configure this project's Kanban columns.
+            </p>
+          </div>
+          <ListChecksIcon className="size-4 shrink-0 text-muted-foreground" />
+        </div>
+
+        <DndContext
+          sensors={statusSensors}
+          onDragStart={onStatusDragStart}
+          onDragEnd={onStatusDragEnd}
+          onDragCancel={() => setActiveStatusId(null)}
+        >
+          <div className="flex flex-col gap-2">
+            {statuses.map((status, index) => (
+              <StatusRow
+                key={status.id}
+                status={status}
+                index={index}
+                canEdit={canEdit}
+                disabled={savingStatuses}
+                canRemove={statuses.length > 1}
+                isActive={activeStatusId === status.id}
+                onNameChange={updateStatusName}
+                onRemove={removeStatus}
+              />
+            ))}
+          </div>
+          <DragOverlay dropAnimation={null}>
+            {activeStatus ? (
+              <div className="flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 shadow-lg ring-foreground/20">
+                <GripVerticalIcon className="size-4 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                  {activeStatus.name}
+                </span>
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!canEdit || savingStatuses}
+            onClick={addStatus}
+          >
+            <PlusIcon />
+            Add status
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={
+              !canEdit || savingStatuses || !hasStatusChange || hasInvalidStatus
+            }
+            onClick={() => void saveStatuses()}
+          >
+            {savingStatuses ? "Saving..." : "Save statuses"}
+          </Button>
+        </div>
+
+        {hasInvalidStatus && (
+          <p className="text-sm text-destructive">Status names cannot be blank.</p>
+        )}
+        {statusError && <p className="text-sm text-destructive">{statusError}</p>}
+      </section>
 
       <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
         <div className="flex items-center justify-between gap-2">
@@ -560,14 +861,15 @@ function ProjectDetailsForm({
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <DialogFooter>
-        <Button
-          type="submit"
-          disabled={!canEdit || saving || !trimmedName || !hasNameChange}
-        >
-          {saving ? "Saving…" : "Save changes"}
-        </Button>
-      </DialogFooter>
+        <DialogFooter>
+          <Button
+            type="submit"
+            disabled={!canEdit || saving || !trimmedName || !hasNameChange}
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </Button>
+        </DialogFooter>
+      </div>
     </form>
   );
 }
