@@ -17,6 +17,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain, nativeImage } from "electron";
+import {
+  autoUpdater,
+  type ProgressInfo,
+  type UpdateDownloadedEvent,
+  type UpdateInfo,
+} from "electron-updater";
 
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
 type ProjectId = string;
@@ -573,6 +579,8 @@ const logs: LogEntry[] = [];
 const maxLogs = 500;
 let stopTimer: NodeJS.Timeout | null = null;
 let quitAfterDaemonStops = false;
+let updaterConfigured = false;
+let lastUpdateProgressBucket = -1;
 
 function state(): DaemonState {
   return {
@@ -1514,6 +1522,104 @@ function clearLogs(): DaemonState {
   return state();
 }
 
+function updateConfigPath(): string {
+  return join(process.resourcesPath, "app-update.yml");
+}
+
+function updateVersionLabel(info: UpdateInfo): string {
+  return info.version ? `version ${info.version}` : "a new version";
+}
+
+async function showMessageBox(
+  options: Electron.MessageBoxOptions,
+): Promise<Electron.MessageBoxReturnValue> {
+  return mainWindow
+    ? dialog.showMessageBox(mainWindow, options)
+    : dialog.showMessageBox(options);
+}
+
+function configureAutoUpdates(): void {
+  if (updaterConfigured) return;
+  updaterConfigured = true;
+
+  if (isDev) {
+    addLog("system", "Auto updates disabled in development");
+    return;
+  }
+
+  if (!existsSync(updateConfigPath())) {
+    addLog(
+      "system",
+      "Auto updates disabled: no app-update.yml was bundled. Set HITCH_UPDATE_FEED_URL before packaging to enable beta updates.",
+    );
+    return;
+  }
+
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("checking-for-update", () => {
+    addLog("system", "Checking for Hitch updates");
+  });
+
+  autoUpdater.on("update-not-available", () => {
+    addLog("system", "Hitch is up to date");
+  });
+
+  autoUpdater.on("update-available", (info: UpdateInfo) => {
+    addLog("system", `Update available: ${updateVersionLabel(info)}`);
+    void showMessageBox({
+      type: "info",
+      buttons: ["Download", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Hitch update available",
+      message: `Download Hitch ${updateVersionLabel(info)}?`,
+      detail: "The update downloads in the background. Hitch will ask before restarting to install it.",
+    }).then(({ response }) => {
+      if (response !== 0) {
+        addLog("system", "Update download skipped");
+        return;
+      }
+      void autoUpdater.downloadUpdate().catch((error: unknown) => {
+        addLog("stderr", `Failed to download update: ${String(error)}`);
+      });
+    });
+  });
+
+  autoUpdater.on("download-progress", (progress: ProgressInfo) => {
+    const bucket = Math.floor(progress.percent / 10) * 10;
+    if (bucket === lastUpdateProgressBucket) return;
+    lastUpdateProgressBucket = bucket;
+    addLog("system", `Update download ${bucket}%`);
+  });
+
+  autoUpdater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
+    addLog("system", `Update downloaded: ${updateVersionLabel(info)}`);
+    void showMessageBox({
+      type: "info",
+      buttons: ["Restart", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Hitch update ready",
+      message: `Restart Hitch to install ${updateVersionLabel(info)}?`,
+      detail: "Choosing Later installs the update the next time Hitch quits.",
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall(false, true);
+    });
+  });
+
+  autoUpdater.on("error", (error: Error) => {
+    addLog("stderr", `Update check failed: ${error.message}`);
+  });
+
+  setTimeout(() => {
+    void autoUpdater.checkForUpdates().catch((error: unknown) => {
+      addLog("stderr", `Update check failed: ${String(error)}`);
+    });
+  }, 5_000);
+}
+
 function redirectLegacyDevAuthUrl(rawUrl: string): string | null {
   if (!isDev) return null;
 
@@ -1628,6 +1734,7 @@ app.whenReady().then(async () => {
 
   await createWindow();
   startDaemon();
+  configureAutoUpdates();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();

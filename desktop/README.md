@@ -35,3 +35,38 @@ project display name, local path, and whether the hitch is enabled. The daemon
 derives the watched `.hitch` directory from each local path. The renderer's
 current project comes from the authenticated server project list, not this local
 config.
+
+## Beta distribution and updates
+
+For the first install, build the signed/notarized DMG and share it directly.
+That is enough to onboard a beta user.
+
+For iterative updates, use GitHub Releases as the update host:
+
+1. Commit the changes you want to ship.
+2. Run from the repo root:
+
+   ```sh
+   npm run release:desktop -- 0.1.1
+   ```
+
+The release script:
+
+- loads `.env.production` for signing/notarization credentials
+- uses `GITHUB_RELEASE_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`
+  for GitHub publishing
+- updates `desktop/package.json` and `package-lock.json` to the requested
+  version
+- commits the version bump
+- tags and pushes `v<version>` to `main`
+- builds the signed/notarized DMG + zip artifacts
+- publishes the GitHub Release assets and auto-update metadata
+
+The generated GitHub Release page is also the initial install link. Send the
+release URL to a beta user and have them download the DMG. After that first
+install, the app checks GitHub Releases shortly after startup. Hitch asks before
+it downloads an available update, then asks again before restarting to install
+it.
+
+If something goes wrong with auto-update, the fallback is still manual: send the
+same GitHub Release link and have the beta user download the newer DMG.

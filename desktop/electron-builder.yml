@@ -11,16 +11,18 @@ directories:
   buildResources: build
   output: release
 
-# The main process and preload import only Node built-ins + electron, and the
-# renderer is fully bundled by Vite into dist/renderer. Nothing in the app reads
-# from node_modules at runtime, so we ship only the build outputs (and exclude
-# node_modules to stay robust against npm-workspace hoisting and keep the app lean).
+# The main process is bundled with esbuild, the preload imports only Node
+# built-ins + electron, and the renderer is bundled by Vite into dist/renderer.
+# Nothing in the app reads from node_modules at runtime, so we ship only the
+# build outputs (and exclude node_modules to stay robust against npm-workspace
+# hoisting and keep the app lean).
 files:
   - dist/main/**
   - dist/preload/**
   - dist/renderer/**
   - package.json
   - "!**/node_modules/**"
+  - "!**/*.map"
 
 # The bundled daemon and its backend-URL config live outside the asar, where
 # main.ts looks for them (process.resourcesPath/daemon/runner.js and
@@ -34,6 +36,8 @@ extraResources:
 mac:
   target:
     - target: dmg
+      arch: arm64
+    - target: zip
       arch: arm64
   category: public.app-category.developer-tools
   hardenedRuntime: true

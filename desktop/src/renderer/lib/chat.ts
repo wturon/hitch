@@ -60,6 +60,17 @@ export function parseChatStatus(fm: Frontmatter): ChatStatus | null {
   return normalizeChatStatus(fm["chat-status"] ?? "");
 }
 
+// The three states the delegation UI distinguishes: the agent is mid-turn
+// ("working"), it has a live signal but isn't mid-turn ("not-working"), or we
+// have no live signal at all ("none" — closed, never linked, or a harness like
+// Codex with no status hooks). "waiting" collapses into "not-working".
+export type ChatActivity = "working" | "not-working" | "none";
+
+export function chatActivity(status: ChatStatus | null): ChatActivity {
+  if (status === "working") return "working";
+  return status ? "not-working" : "none";
+}
+
 function isHarness(value: string): value is Harness {
   return (HARNESSES as string[]).includes(value);
 }

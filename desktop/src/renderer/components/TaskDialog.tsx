@@ -7,17 +7,12 @@ import type { Id } from "@convex/_generated/dataModel";
 import { sha256 } from "@/lib/hash";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import {
-  HARNESSES,
   clearChatFields,
-  harnessLabel,
   parseChatRef,
   parseChatStatus,
-  readChatFields,
-  writeChatFields,
-  type ChatFields,
+  type Harness,
 } from "@/lib/chat";
-import { ChatLaunch } from "@/components/ChatLaunch";
-import { ChatStart } from "@/components/ChatStart";
+import { DelegationBand } from "@/components/DelegationBand";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -47,7 +42,7 @@ export function TaskDialog({
 }) {
   return (
     <Dialog open={task !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-3xl">
         {task && (
           // Key by identity so the editor's draft state resets per task,
           // rather than persisting a stale draft when a different card opens.
@@ -70,8 +65,10 @@ function TaskEditor({
   onClose: () => void;
 }) {
   const upsertFile = useMutation(api.files.upsertFile);
+  const enqueue = useMutation(api.commands.enqueueCommand);
   // Follow the live task file. Hitch is last-write-wins, so if another writer
-  // updates the task while the modal is open, the visible editor updates too.
+  // (e.g. the agent linking a session) updates the task while the modal is open,
+  // the editor — and the delegation band, which reads the draft — updates too.
   const [draft, setDraft] = useState(() => task.content);
   const [saving, setSaving] = useState(false);
   const dirty = draft !== task.content;
@@ -80,37 +77,50 @@ function TaskEditor({
     setDraft(task.content);
   }, [task.content]);
 
-  // The linked chat is stored in the draft's frontmatter, so editing it here
-  // and hitting Save flows through the same path as any other edit. Read the
-  // (possibly half-filled) fields for the form, and a validated ref for launch.
+  // The linked chat rides the file's frontmatter; the band reads it from the
+  // (live-following) draft, so it swaps compose↔linked on its own.
   const fm = parseFrontmatter(draft).frontmatter;
-  const fields = readChatFields(fm);
   const chat = parseChatRef(fm);
   const chatStatus = parseChatStatus(fm);
 
-  function updateChat(patch: Partial<ChatFields>) {
-    setDraft((d) =>
-      writeChatFields(d, {
-        ...readChatFields(parseFrontmatter(d).frontmatter),
-        ...patch,
-      }),
-    );
+  async function persist(content: string) {
+    await upsertFile({
+      projectId: task.projectId,
+      path: task.path,
+      content,
+      hash: await sha256(content),
+      deleted: false,
+    });
   }
 
-  async function save() {
+  async function save({ close }: { close: boolean }) {
     setSaving(true);
     try {
-      await upsertFile({
-        projectId: task.projectId,
-        path: task.path,
-        content: draft,
-        hash: await sha256(draft),
-        deleted: false,
-      });
-      onClose();
+      await persist(draft);
+      if (close) onClose();
     } finally {
       setSaving(false);
     }
+  }
+
+  // Save the current edits, then ask the daemon to spawn the session. We keep
+  // the modal open: the daemon links the session into the file, the live task
+  // flows back, and the band swaps to its linked state on its own.
+  async function startChat(harness: Harness, prompt: string) {
+    await persist(draft);
+    await enqueue({
+      projectId: task.projectId,
+      kind: "start-chat",
+      harness,
+      path: task.path,
+      initialPrompt: prompt,
+    });
+  }
+
+  async function clearChat() {
+    const cleared = clearChatFields(draft);
+    setDraft(cleared);
+    await persist(cleared);
   }
 
   return (
@@ -120,85 +130,15 @@ function TaskEditor({
         <DialogDescription>{task.path}</DialogDescription>
       </DialogHeader>
 
-      <section className="flex flex-col gap-2 rounded-md border bg-muted/40 p-3">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Linked chat
-          </span>
-          {chat ? (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() => setDraft(clearChatFields)}
-              >
-                Clear
-              </Button>
-              <ChatLaunch
-                chat={chat}
-                status={chatStatus}
-                projectId={task.projectId}
-                size="xs"
-              />
-            </div>
-          ) : (
-            fields.harness && (
-              <span className="text-xs text-muted-foreground/70">
-                add a session id to enable
-              </span>
-            )
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <select
-            aria-label="Chat harness"
-            value={fields.harness}
-            onChange={(e) => updateChat({ harness: e.target.value })}
-            className="h-8 rounded-md border bg-transparent px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <option value="">No chat</option>
-            {HARNESSES.map((h) => (
-              <option key={h} value={h}>
-                {harnessLabel(h)}
-              </option>
-            ))}
-          </select>
-
-          {fields.harness && (
-            <input
-              aria-label="Chat session id"
-              value={fields.id}
-              onChange={(e) => updateChat({ id: e.target.value })}
-              placeholder="session / thread id"
-              spellCheck={false}
-              className="h-8 min-w-0 flex-1 rounded-md border bg-transparent px-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          )}
-        </div>
-
-        {fields.harness === "claude-code" && (
-          <input
-            aria-label="Working directory"
-            value={fields.cwd}
-            onChange={(e) => updateChat({ cwd: e.target.value })}
-            placeholder="working directory (optional, for resume)"
-            spellCheck={false}
-            className="h-8 w-full rounded-md border bg-transparent px-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-        )}
-      </section>
-
-      {/* No chat yet → offer to spawn a fresh coding-agent session for this
-          task. Once the daemon/agent links it, `chat` becomes non-null and the
-          resume button above replaces this. */}
-      {!chat && (
-        <ChatStart
-          projectId={task.projectId}
-          path={task.path}
-          title={task.title}
-        />
-      )}
+      <DelegationBand
+        projectId={task.projectId}
+        chat={chat}
+        chatStatus={chatStatus}
+        title={task.title}
+        path={task.path}
+        onStart={startChat}
+        onClear={() => void clearChat()}
+      />
 
       <textarea
         aria-label="Task content"
@@ -210,13 +150,18 @@ function TaskEditor({
       />
 
       <DialogFooter>
-        <DialogClose
-          render={<Button variant="outline" disabled={saving} />}
-        >
+        <DialogClose render={<Button variant="outline" disabled={saving} />}>
           Cancel
         </DialogClose>
-        <Button onClick={save} disabled={!dirty || saving}>
+        <Button
+          variant="outline"
+          onClick={() => void save({ close: false })}
+          disabled={!dirty || saving}
+        >
           {saving ? "Saving…" : "Save"}
+        </Button>
+        <Button onClick={() => void save({ close: true })} disabled={saving}>
+          Save &amp; close
         </Button>
       </DialogFooter>
     </>
