@@ -14,7 +14,7 @@ import chokidar, { type FSWatcher } from "chokidar";
 import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { openChat, startChat } from "./cmux.js";
+import { CmuxError, openChat, startChat } from "./cmux.js";
 import {
   closeCodexAppServer,
   latestCodexTurn,
@@ -646,10 +646,14 @@ async function startHitchBinding({
         });
       }
     } catch (err) {
+      // Tag known cmux failures so the browser can guide the user (e.g. flip the
+      // cmux socket mode) instead of surfacing a raw "Broken pipe".
+      const errorCode = err instanceof CmuxError ? err.code : undefined;
       await client.mutation(anyApi.commands.completeCommand, {
         id: cmd._id,
         status: "error",
         result: String(err),
+        errorCode,
         projectId,
         deviceToken,
       });

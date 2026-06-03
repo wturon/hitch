@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useMutation } from "convex/react";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import { ExternalLink, Info, LoaderCircle, Terminal } from "lucide-react";
@@ -14,6 +14,10 @@ import {
   type ChatStatus,
 } from "@/lib/chat";
 import { Button } from "@/components/ui/button";
+import {
+  CmuxAccessDialog,
+  type CmuxAccessReason,
+} from "@/components/CmuxAccessDialog";
 import {
   Tooltip,
   TooltipContent,
@@ -63,6 +67,29 @@ export function ChatLaunch({
   const launch = launchFor(chat);
   const enqueue = useMutation(api.commands.enqueueCommand);
   const [opening, setOpening] = useState(false);
+  // Watch the launch command we just enqueued so we can react to how the daemon
+  // resolved it — chiefly to guide the user when cmux refuses the connection.
+  const [pendingCommandId, setPendingCommandId] =
+    useState<Id<"commands"> | null>(null);
+  const [cmuxReason, setCmuxReason] = useState<CmuxAccessReason | null>(null);
+  const command = useQuery(
+    api.commands.getCommand,
+    pendingCommandId ? { id: pendingCommandId, projectId } : "skip",
+  );
+
+  useEffect(() => {
+    if (!command || command.status === "pending") return;
+    // Terminal: stop watching. Open the guided dialog for the cmux failures we
+    // recognize; other outcomes (done, or an unrecognized error) just clear.
+    setPendingCommandId(null);
+    if (
+      command.status === "error" &&
+      (command.errorCode === "cmux-access-denied" ||
+        command.errorCode === "cmux-unavailable")
+    ) {
+      setCmuxReason(command.errorCode);
+    }
+  }, [command]);
 
   const stop = (e: React.MouseEvent) => {
     if (stopPropagation) e.stopPropagation();
@@ -118,35 +145,47 @@ export function ChatLaunch({
     stop(e);
     setOpening(true);
     try {
-      await enqueue({
+      const id = await enqueue({
         projectId,
         kind: "open-chat",
         harness: "claude-code",
         sessionId: chat.id,
         cwd: chat.cwd,
       });
+      setPendingCommandId(id);
     } finally {
       setTimeout(() => setOpening(false), 1500);
     }
   }
 
   return (
-    <Button
-      variant="secondary"
-      size={size}
-      onClick={open}
-      disabled={opening}
-      className={className}
-    >
-      <LaunchIcon status={status} fallback={<Terminal />} />
-      {opening ? (
-        "Opening…"
-      ) : (
-        <>
-          Open in {harnessLabel(chat.harness)}
-          <span className="text-muted-foreground">(cmux)</span>
-        </>
+    <>
+      <Button
+        variant="secondary"
+        size={size}
+        onClick={open}
+        disabled={opening}
+        className={className}
+      >
+        <LaunchIcon status={status} fallback={<Terminal />} />
+        {opening ? (
+          "Opening…"
+        ) : (
+          <>
+            Open in {harnessLabel(chat.harness)}
+            <span className="text-muted-foreground">(cmux)</span>
+          </>
+        )}
+      </Button>
+      {cmuxReason && (
+        <CmuxAccessDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) setCmuxReason(null);
+          }}
+          reason={cmuxReason}
+        />
       )}
-    </Button>
+    </>
   );
 }

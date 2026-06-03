@@ -53,11 +53,14 @@ export const pendingCommands = query({
 });
 
 // Mark a command finished (status "done" or "error"), recording the outcome.
+// errorCode is a machine-readable failure kind (e.g. "cmux-access-denied") the
+// browser uses to show targeted guidance instead of a raw error string.
 export const completeCommand = mutation({
   args: {
     id: v.id("commands"),
     status: v.string(),
     result: v.optional(v.string()),
+    errorCode: v.optional(v.string()),
     projectId: v.id("projects"),
     deviceToken: v.string(),
   },
@@ -74,7 +77,21 @@ export const completeCommand = mutation({
     await ctx.db.patch(args.id, {
       status: args.status,
       result: args.result,
+      errorCode: args.errorCode,
       updatedAt: Date.now(),
     });
+  },
+});
+
+// Fetch a single command for the user that enqueued it, so the browser can watch
+// how its launch resolved (done, or error with an errorCode to guide the user).
+// Returns null if it's gone or belongs to another project.
+export const getCommand = query({
+  args: { id: v.id("commands"), projectId: v.id("projects") },
+  handler: async (ctx, args) => {
+    const { project } = await requireProjectMemberById(ctx, args.projectId);
+    const command = await ctx.db.get(args.id);
+    if (!command || command.projectId !== project._id) return null;
+    return command;
   },
 });

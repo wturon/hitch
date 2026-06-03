@@ -10,6 +10,14 @@ that section as the GitHub Release notes.
 
 - Add release notes here before running `npm run release:desktop -- <version>`.
 
+## [0.1.4] - 2026-06-03
+
+- Guide you through cmux setup when "Open in Claude Code (cmux)" fails. When cmux
+  refuses the connection — its default "cmux processes only" mode blocks apps not
+  launched from a cmux terminal — Hitch now shows a dialog with the one-time fix
+  (Settings → Automation → "Automation", then ⌘⇧, to reload) instead of failing
+  silently. A separate message appears when cmux simply isn't running.
+
 ## [0.1.3] - 2026-06-03
 
 - Fix GitHub sign-in. OAuth now opens in your system browser and completes via a

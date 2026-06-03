@@ -81,6 +81,7 @@ export default defineSchema({
     cwd: v.optional(v.string()),
     status: v.string(), // "pending" | "done" | "error"
     result: v.optional(v.string()), // "focused"/"spawned" or an error message
+    errorCode: v.optional(v.string()), // machine-readable failure kind, e.g. "cmux-access-denied"
     createdAt: v.number(),
     updatedAt: v.number(),
   })

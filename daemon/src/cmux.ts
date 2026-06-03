@@ -27,13 +27,81 @@ function cmuxBin(): string {
   return "cmux";
 }
 
+// Why a connecting attempt failed, in terms the UI can act on:
+// - access-denied: cmux is running but refused us. Its default "cmux processes
+//   only" socket mode does an ancestry check, so a daemon launched from the Dock
+//   (not from a cmux terminal) is rejected — the socket connects, then closes
+//   mid-write ("Broken pipe"). The fix is a cmux Settings change, which the
+//   desktop app surfaces as a guided dialog.
+// - unavailable: cmux isn't installed / isn't running (binary missing, or no
+//   socket to connect to). The fix is "open cmux and try again".
+// - error: anything else; show the raw message.
+export type CmuxErrorCode =
+  | "cmux-access-denied"
+  | "cmux-unavailable"
+  | "cmux-error";
+
+export class CmuxError extends Error {
+  constructor(
+    readonly code: CmuxErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "CmuxError";
+  }
+}
+
+// Map a failed `cmux` invocation onto a CmuxErrorCode. execFile rejects with an
+// ErrnoException that also carries the process's stdout/stderr; cmux prints its
+// socket diagnostics there (e.g. "Failed to write to socket (Broken pipe, errno
+// 32)"), so we classify on that text plus the spawn errno.
+function classifyCmuxError(err: unknown): CmuxError {
+  const e = err as NodeJS.ErrnoException & {
+    stdout?: string;
+    stderr?: string;
+  };
+  const text = `${e.stderr ?? ""}\n${e.stdout ?? ""}\n${e.message ?? ""}`;
+
+  // execFile couldn't launch the binary at all → cmux isn't installed here.
+  if (e.code === "ENOENT") {
+    return new CmuxError(
+      "cmux-unavailable",
+      "cmux is not installed or not on PATH.",
+    );
+  }
+  // cmux accepted the socket connection then dropped it on the ancestry check.
+  if (/broken pipe|errno\s*32|connection reset|econnreset/i.test(text)) {
+    return new CmuxError(
+      "cmux-access-denied",
+      'cmux refused the connection (its default "cmux processes only" mode ' +
+        "blocks apps not launched from a cmux terminal).",
+    );
+  }
+  // Nothing listening on the socket → cmux isn't running.
+  if (
+    /no such file|connection refused|econnrefused|could not connect|socket .*not found/i.test(
+      text,
+    )
+  ) {
+    return new CmuxError("cmux-unavailable", "cmux does not appear to be running.");
+  }
+  return new CmuxError(
+    "cmux-error",
+    (e.stderr || e.stdout || e.message || "cmux command failed").trim(),
+  );
+}
+
 async function cmux(args: string[]): Promise<string> {
-  const { stdout } = await run(cmuxBin(), args, {
-    timeout: 10_000,
-    // A daemon outside cmux may need the socket password; pass it through if set.
-    env: process.env,
-  });
-  return stdout;
+  try {
+    const { stdout } = await run(cmuxBin(), args, {
+      timeout: 10_000,
+      // A daemon outside cmux may need the socket password; pass it through if set.
+      env: process.env,
+    });
+    return stdout;
+  } catch (err) {
+    throw classifyCmuxError(err);
+  }
 }
 
 // `cmux tree --all` spans every window, workspace, pane, and surface — important
