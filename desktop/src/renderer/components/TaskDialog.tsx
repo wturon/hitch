@@ -8,6 +8,7 @@ import { sha256 } from "@/lib/hash";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import {
   clearChatFields,
+  parseChatOpenState,
   parseChatRef,
   parseChatStatus,
   type Harness,
@@ -82,6 +83,7 @@ function TaskEditor({
   const fm = parseFrontmatter(draft).frontmatter;
   const chat = parseChatRef(fm);
   const chatStatus = parseChatStatus(fm);
+  const chatOpenState = parseChatOpenState(fm);
 
   async function persist(content: string) {
     await upsertFile({
@@ -134,6 +136,7 @@ function TaskEditor({
         projectId={task.projectId}
         chat={chat}
         chatStatus={chatStatus}
+        chatOpenState={chatOpenState}
         title={task.title}
         path={task.path}
         onStart={startChat}

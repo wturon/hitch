@@ -177,16 +177,19 @@ function parseFrontmatter(content) {
   return fm;
 }
 
-function setKey(content, key, value) {
+function setKeys(content, updates) {
   const eol = content.includes("\\r\\n") ? "\\r\\n" : "\\n";
   const match = content.match(FRONTMATTER_RE);
   let lines = match ? match[1].split(/\\r?\\n/) : [];
   const body = match ? match[2] : content;
+  const touched = new Set(Object.keys(updates));
   lines = lines.filter((line) => {
     const idx = line.indexOf(":");
-    return idx === -1 || line.slice(0, idx).trim() !== key;
+    return idx === -1 || !touched.has(line.slice(0, idx).trim());
   });
-  if (value != null && value !== "") lines.push(\`\${key}: \${value}\`);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value != null && value !== "") lines.push(\`\${key}: \${value}\`);
+  }
   return \`---\${eol}\${lines.join(eol)}\${eol}---\${eol}\${body}\`;
 }
 
@@ -310,10 +313,18 @@ function main() {
         ? undefined
         : status;
     const current = (fm["chat-status"] ?? "").trim() || null;
-    if (current === (nextStatus ?? null)) return;
+    const currentOpenState = (fm["chat-open-state"] ?? "").trim() || null;
+    const nextOpenState = status === "waiting" ? null : currentOpenState;
+    if (current === (nextStatus ?? null) && currentOpenState === nextOpenState) return;
 
     try {
-      writeFileSync(file, setKey(content, "chat-status", nextStatus));
+      writeFileSync(
+        file,
+        setKeys(content, {
+          "chat-status": nextStatus,
+          "chat-open-state": status === "waiting" ? undefined : currentOpenState,
+        }),
+      );
     } catch {
       // Best effort; never fail the hook.
     }

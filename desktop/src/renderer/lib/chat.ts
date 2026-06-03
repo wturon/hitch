@@ -60,6 +60,17 @@ export function parseChatStatus(fm: Frontmatter): ChatStatus | null {
   return normalizeChatStatus(fm["chat-status"] ?? "");
 }
 
+// Codex threads launched by Hitch's daemon briefly exist only inside the
+// daemon-managed app-server. During that handoff window, opening the normal
+// `codex://threads/<id>` deep link can strand the user on a loading screen.
+export type ChatOpenState = "pending";
+
+export function parseChatOpenState(fm: Frontmatter): ChatOpenState | null {
+  return normalizeStatusValue(fm["chat-open-state"] ?? "") === "pending"
+    ? "pending"
+    : null;
+}
+
 // The three states the delegation UI distinguishes: the agent is mid-turn
 // ("working"), it has a live signal but isn't mid-turn ("not-working"), or we
 // have no live signal at all ("none" — closed, never linked, or a harness like
@@ -120,6 +131,7 @@ export function clearChatFields(content: string): string {
     "chat-id": undefined,
     "chat-cwd": undefined,
     "chat-status": undefined,
+    "chat-open-state": undefined,
   });
 }
 

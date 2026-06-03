@@ -9,6 +9,7 @@ import {
   defaultStartPrompt,
   harnessLabel,
   type ChatActivity,
+  type ChatOpenState,
   type ChatRef,
   type ChatStatus,
   type Harness,
@@ -59,6 +60,7 @@ export function DelegationBand({
   projectId,
   chat,
   chatStatus,
+  chatOpenState,
   title,
   path,
   onStart,
@@ -67,6 +69,7 @@ export function DelegationBand({
   projectId: Id<"projects">;
   chat: ChatRef | null;
   chatStatus: ChatStatus | null;
+  chatOpenState: ChatOpenState | null;
   title: string;
   path: string;
   onStart: (harness: Harness, prompt: string) => Promise<void> | void;
@@ -117,6 +120,7 @@ export function DelegationBand({
           <ChatLaunch
             chat={chat}
             status={chatStatus}
+            openState={chatOpenState}
             projectId={projectId}
             size="sm"
           />

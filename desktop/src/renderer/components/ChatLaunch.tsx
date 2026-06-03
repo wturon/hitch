@@ -9,6 +9,7 @@ import { ExternalLink, LoaderCircle, Terminal } from "lucide-react";
 import {
   harnessLabel,
   launchFor,
+  type ChatOpenState,
   type ChatRef,
   type ChatStatus,
 } from "@/lib/chat";
@@ -39,6 +40,7 @@ function LaunchIcon({
 export function ChatLaunch({
   chat,
   status,
+  openState,
   projectId,
   size = "sm",
   stopPropagation = false,
@@ -46,6 +48,7 @@ export function ChatLaunch({
 }: {
   chat: ChatRef;
   status?: ChatStatus | null;
+  openState?: ChatOpenState | null;
   projectId: Id<"projects">;
   size?: "xs" | "sm" | "default";
   stopPropagation?: boolean;
@@ -60,17 +63,17 @@ export function ChatLaunch({
   };
 
   if (launch.kind === "url") {
-    if (chat.harness === "codex" && status === "working") {
+    if (chat.harness === "codex" && openState === "pending") {
       return (
         <Button
           variant="secondary"
           size={size}
           disabled
           className={className}
-          aria-label="Codex is working"
+          aria-label="Codex thread is starting"
         >
           <LaunchIcon status={status} fallback={<ExternalLink />} />
-          Codex working…
+          Codex starting…
         </Button>
       );
     }

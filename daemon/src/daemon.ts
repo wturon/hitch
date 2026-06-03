@@ -358,6 +358,7 @@ async function startHitchBinding({
       "chat-id": threadId,
       "chat-cwd": undefined,
       "chat-status": "working",
+      "chat-open-state": "pending",
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${projectLabel}] linked codex thread ${threadId} → ${path}`);
@@ -370,6 +371,7 @@ async function startHitchBinding({
 
     const next = setFrontmatterKeys(current, {
       "chat-status": "waiting",
+      "chat-open-state": undefined,
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${projectLabel}] codex thread ${threadId} is waiting → ${path}`);
@@ -548,6 +550,7 @@ async function startHitchBinding({
 
         const next = setFrontmatterKeys(content, {
           "chat-status": settledChatStatus(content),
+          "chat-open-state": undefined,
         });
         if (next === content) continue;
         try {

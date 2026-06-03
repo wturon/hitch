@@ -39,8 +39,10 @@ import {
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
 import {
   clearChatFields,
+  parseChatOpenState,
   parseChatRef,
   parseChatStatus,
+  type ChatOpenState,
   type ChatRef,
   type ChatStatus,
 } from "@/lib/chat";
@@ -123,6 +125,7 @@ interface Card {
   content: string; // raw file text
   chat: ChatRef | null; // the coding-agent chat driving this task, if linked
   chatStatus: ChatStatus | null; // live working/ready state, if the chat reports it
+  chatOpenState: ChatOpenState | null; // whether the chat link is safe to open
   column: string;
   archived: boolean;
   updatedAt: number;
@@ -182,6 +185,7 @@ function CardChat({
       <ChatLaunch
         chat={card.chat}
         status={card.chatStatus}
+        openState={card.chatOpenState}
         projectId={projectId}
         size="xs"
         stopPropagation
@@ -1271,6 +1275,7 @@ function BoardContent({
         content: f.content,
         chat: parseChatRef(frontmatter),
         chatStatus: parseChatStatus(frontmatter),
+        chatOpenState: parseChatOpenState(frontmatter),
         column: columnFor(status, boardStatuses),
         archived: status === "archived",
         updatedAt: f.updatedAt,
