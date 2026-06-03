@@ -44,7 +44,9 @@ That is enough to onboard a beta user.
 For iterative updates, use GitHub Releases as the update host:
 
 1. Commit the changes you want to ship.
-2. Run from the repo root:
+2. Add release notes to `CHANGELOG.md` under a `## [<version>] - YYYY-MM-DD`
+   heading.
+3. Run from the repo root:
 
    ```sh
    npm run release:desktop -- 0.1.1
@@ -61,6 +63,7 @@ The release script:
 - tags and pushes `v<version>` to `main`
 - builds the signed/notarized DMG + zip artifacts
 - publishes the GitHub Release assets and auto-update metadata
+- copies the matching `CHANGELOG.md` section into the GitHub Release notes
 
 The generated GitHub Release page is also the initial install link. Send the
 release URL to a beta user and have them download the DMG. After that first

@@ -85,6 +85,7 @@ interface HarnessHookStatus {
   configPath: string | null;
   scriptPath: string | null;
   configExists: boolean;
+  configHasHook: boolean;
   scriptExists: boolean;
   configWired: boolean;
 }
@@ -630,6 +631,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isEmptyConfigValue(value: unknown): boolean {
+  if (Array.isArray(value)) return value.every(isEmptyConfigValue);
+  if (isRecord(value)) {
+    return Object.values(value).every(isEmptyConfigValue);
+  }
+  return false;
+}
+
 function daemonRunnerCommand(): { command: string; args: string[] } {
   const nodeBin =
     process.env.HITCH_NODE_BIN ?? process.env.npm_node_execpath ?? "node";
@@ -1098,11 +1107,16 @@ function globalCodexHookStatus(): HarnessHookStatus {
   const jsonExists = existsSync(hooksJsonPath);
   const tomlExists = existsSync(configTomlPath);
   let jsonWired = false;
+  let jsonHasHook = false;
   let tomlWired = false;
+  let tomlHasHook = false;
 
   if (jsonExists) {
     try {
       const config = readJsonObject(hooksJsonPath);
+      jsonHasHook = hookEvents("codex").some((event) =>
+        hookCommandExists(config, event, command),
+      );
       jsonWired = hookEvents("codex").every((event) =>
         hookCommandExists(config, event, command),
       );
@@ -1114,6 +1128,7 @@ function globalCodexHookStatus(): HarnessHookStatus {
   if (tomlExists) {
     try {
       const content = readFileSync(configTomlPath, "utf8");
+      tomlHasHook = content.includes(command);
       tomlWired =
         content.includes(command) &&
         content.includes("[[hooks.UserPromptSubmit]]") &&
@@ -1124,11 +1139,15 @@ function globalCodexHookStatus(): HarnessHookStatus {
   }
 
   const configPath =
-    jsonWired || jsonExists
+    jsonHasHook
       ? hooksJsonPath
-      : tomlWired || tomlExists
+      : tomlHasHook
         ? configTomlPath
-        : hooksJsonPath;
+        : jsonExists
+          ? hooksJsonPath
+          : tomlExists
+            ? configTomlPath
+            : hooksJsonPath;
 
   return {
     harness: "codex",
@@ -1136,6 +1155,7 @@ function globalCodexHookStatus(): HarnessHookStatus {
     configPath,
     scriptPath,
     configExists: jsonExists || tomlExists,
+    configHasHook: jsonHasHook || tomlHasHook,
     scriptExists,
     configWired: jsonWired || tomlWired,
   };
@@ -1183,7 +1203,11 @@ function removeGlobalCodexHooks(): GlobalHarnessSetupStatus {
         changed = removeHookCommand(config, event, command) || changed;
       }
       if (changed) {
-        writeFileSync(hooksJsonPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+        if (isEmptyConfigValue(config)) {
+          rmSync(hooksJsonPath, { force: true });
+        } else {
+          writeFileSync(hooksJsonPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+        }
       }
     } catch {
       // Leave malformed user config untouched.
@@ -1193,7 +1217,13 @@ function removeGlobalCodexHooks(): GlobalHarnessSetupStatus {
   if (existsSync(configTomlPath)) {
     const current = readFileSync(configTomlPath, "utf8");
     const next = removeHitchCodexTomlBlock(current);
-    if (next !== current) writeFileSync(configTomlPath, next, "utf8");
+    if (next !== current) {
+      if (next.trim()) {
+        writeFileSync(configTomlPath, next, "utf8");
+      } else {
+        rmSync(configTomlPath, { force: true });
+      }
+    }
   }
 
   if (existsSync(globalCodexHookScriptPath())) {
@@ -1226,11 +1256,15 @@ function globalClaudeHookStatus(): HarnessHookStatus {
   const scriptPath = globalClaudeHookScriptPath();
   const scriptExists = existsSync(scriptPath);
   const configExists = existsSync(configPath);
+  let configHasHook = false;
   let configWired = false;
 
   if (configExists) {
     try {
       const config = readJsonObject(configPath);
+      configHasHook = hookEvents("claude-code").some((event) =>
+        hookCommandExists(config, event, command),
+      );
       configWired = hookEvents("claude-code").every((event) =>
         hookCommandExists(config, event, command),
       );
@@ -1245,6 +1279,7 @@ function globalClaudeHookStatus(): HarnessHookStatus {
     configPath,
     scriptPath,
     configExists,
+    configHasHook,
     scriptExists,
     configWired,
   };
@@ -1280,7 +1315,11 @@ function removeGlobalClaudeHooks(): GlobalHarnessSetupStatus {
         changed = removeHookCommand(config, event, command) || changed;
       }
       if (changed) {
-        writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+        if (isEmptyConfigValue(config)) {
+          rmSync(configPath, { force: true });
+        } else {
+          writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+        }
       }
     } catch {
       // Leave malformed user config untouched.

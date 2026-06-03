@@ -5,8 +5,12 @@ import {
   AlertCircleIcon,
   CheckCircle2Icon,
   Code2Icon,
+  InfoIcon,
+  PowerIcon,
   RefreshCwIcon,
-  TerminalIcon,
+  ShieldCheckIcon,
+  Trash2Icon,
+  WrenchIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -26,6 +30,7 @@ interface HarnessHookStatus {
   configPath: string | null;
   scriptPath: string | null;
   configExists: boolean;
+  configHasHook: boolean;
   scriptExists: boolean;
   configWired: boolean;
 }
@@ -81,9 +86,10 @@ export function GlobalSettingsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Global settings</DialogTitle>
+          <DialogTitle>Harness settings</DialogTitle>
           <DialogDescription>
-            Configure user-level integrations that apply across Hitch projects.
+            Manage user-level lifecycle hooks for the coding harnesses Hitch can
+            launch.
           </DialogDescription>
         </DialogHeader>
 
@@ -93,10 +99,19 @@ export function GlobalSettingsDialog({
           </p>
         ) : (
           <div className="flex flex-col gap-3">
+            <div className="flex gap-3 rounded-lg border bg-muted/35 px-3 py-2.5 text-sm">
+              <InfoIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <p className="leading-5 text-muted-foreground">
+                These hooks let Hitch track chat lifecycle events and show live
+                working or waiting states on task cards. They only update task
+                frontmatter inside enabled Hitch folders.
+              </p>
+            </div>
+
             <HookSection
               title="Codex chat status hooks"
               harnessLabel="Codex"
-              description="Installs a user-level Codex hook that updates Hitch task frontmatter only inside enabled Hitch folders."
+              description="User-level Codex hook script and config entries."
               status={setup?.codex ?? null}
               refreshing={refreshing}
               onRefresh={() => void refresh()}
@@ -110,7 +125,7 @@ export function GlobalSettingsDialog({
             <HookSection
               title="Claude Code chat status hooks"
               harnessLabel="Claude Code"
-              description="Installs a user-level Claude Code hook that updates Hitch task frontmatter only inside enabled Hitch folders."
+              description="User-level Claude Code hook script and config entries."
               status={setup?.claudeCode ?? null}
               refreshing={refreshing}
               onRefresh={() => void refresh()}
@@ -157,8 +172,13 @@ function HookSection({
   const disabled = busy !== null || refreshing;
 
   const hasFootprint =
-    Boolean(status?.scriptExists) || Boolean(status?.configWired);
-  const installLabel = status?.installed || hasFootprint ? "Repair" : "Enable";
+    Boolean(status?.scriptExists) || Boolean(status?.configHasHook);
+  const installLabel = status?.installed
+    ? "Repair"
+    : hasFootprint
+      ? "Heal"
+      : "Install";
+  const removeLabel = status?.installed ? "Turn off" : "Delete";
 
   async function runSetup(
     action: "install" | "remove",
@@ -222,21 +242,23 @@ function HookSection({
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
               <Button
                 type="button"
-                variant={status.installed ? "ghost" : "outline"}
+                variant={status.installed ? "outline" : "default"}
                 size="sm"
                 disabled={disabled}
                 onClick={() => void runSetup("install", install)}
               >
-                {busy === "install" ? "Installing..." : installLabel}
+                {status.installed ? <WrenchIcon /> : <PowerIcon />}
+                {busy === "install" ? "Working..." : installLabel}
               </Button>
               <Button
                 type="button"
-                variant="outline"
+                variant="destructive"
                 size="sm"
                 disabled={!hasFootprint || disabled}
                 onClick={() => void runSetup("remove", remove)}
               >
-                {busy === "remove" ? "Disabling..." : "Disable"}
+                {status.installed ? <PowerIcon /> : <Trash2Icon />}
+                {busy === "remove" ? "Removing..." : removeLabel}
               </Button>
               {trust && (
                 <Button
@@ -246,7 +268,7 @@ function HookSection({
                   disabled={!status.installed || disabled}
                   onClick={() => void runTrust()}
                 >
-                  <TerminalIcon />
+                  <ShieldCheckIcon />
                   {busy === "trust" ? "Opening..." : "Trust"}
                 </Button>
               )}
@@ -281,7 +303,25 @@ function HookStatusRow({
       )}
       <Code2Icon className="size-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{title}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-medium">{title}</p>
+          <span
+            className={[
+              "rounded-full px-2 py-0.5 text-[0.7rem] font-medium",
+              status.installed
+                ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                : status.scriptExists || status.configHasHook
+                  ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                  : "bg-muted text-muted-foreground",
+            ].join(" ")}
+          >
+            {status.installed
+              ? "On"
+              : status.scriptExists || status.configHasHook
+                ? "Needs repair"
+                : "Off"}
+          </span>
+        </div>
         <p className="text-xs text-muted-foreground">{detail}</p>
       </div>
       {action}
@@ -301,11 +341,14 @@ function PathLine({ label, value }: { label: string; value: string }) {
 }
 
 function hookDetail(status: HarnessHookStatus): string {
-  if (status.installed) return "User-level lifecycle hooks are installed";
-  if (!status.scriptExists && !status.configWired) {
-    return "Global hook script and user config entries are missing";
+  if (status.installed) {
+    return "User-level lifecycle hooks are installed and active";
+  }
+  if (!status.scriptExists && !status.configHasHook) {
+    return "Hook script and user config entries are not installed";
   }
   if (!status.scriptExists) return "Global hook script is missing";
-  if (!status.configWired) return "User config is not wired";
+  if (!status.configHasHook) return "User config is not wired";
+  if (!status.configWired) return "Some user config entries are missing";
   return "Hooks need repair";
 }

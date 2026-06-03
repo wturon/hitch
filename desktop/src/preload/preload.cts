@@ -65,6 +65,7 @@ export interface HarnessHookStatus {
   configPath: string | null;
   scriptPath: string | null;
   configExists: boolean;
+  configHasHook: boolean;
   scriptExists: boolean;
   configWired: boolean;
 }

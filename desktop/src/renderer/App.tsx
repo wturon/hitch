@@ -26,6 +26,7 @@ import {
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  Code2Icon,
   CopyIcon,
   ExternalLinkIcon,
   FolderSyncIcon,
@@ -430,11 +431,11 @@ function AppSidebar({
           variant="ghost"
           size="sm"
           onClick={onShowGlobalSettings}
-          aria-label="Global settings"
+          aria-label="Harness settings"
           className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
         >
-          <SettingsIcon />
-          <span className="hidden md:inline">Settings</span>
+          <Code2Icon />
+          <span className="hidden md:inline">Harnesses</span>
         </Button>
         <Button
           variant="ghost"

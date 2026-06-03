@@ -131,7 +131,11 @@ function ensureGitHubToken() {
     process.env.GH_TOKEN ||
     process.env.GITHUB_TOKEN
   ) {
-    return;
+    return (
+      process.env.GITHUB_RELEASE_TOKEN ||
+      process.env.GH_TOKEN ||
+      process.env.GITHUB_TOKEN
+    );
   }
 
   const ghToken = spawnSync("gh", ["auth", "token"], {
@@ -141,12 +145,86 @@ function ensureGitHubToken() {
   });
   if (ghToken.status === 0 && ghToken.stdout.trim()) {
     process.env.GH_TOKEN = ghToken.stdout.trim();
-    return;
+    return process.env.GH_TOKEN;
   }
 
   fail(
     "GitHub publishing needs GITHUB_RELEASE_TOKEN, GH_TOKEN, GITHUB_TOKEN, or an authenticated `gh` CLI.",
   );
+}
+
+function releaseNotesForVersion(version) {
+  const changelogPath = resolve(repoRoot, "CHANGELOG.md");
+  if (!existsSync(changelogPath)) return null;
+
+  const changelog = readFileSync(changelogPath, "utf8");
+  const lines = changelog.split(/\r?\n/);
+  const wanted = new Set([version, `v${version}`]);
+  let start = -1;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = lines[i].match(/^##\s+(?:\[([^\]]+)\]|([^\s]+))/);
+    if (!match) continue;
+
+    const headingVersion = match[1] ?? match[2];
+    if (wanted.has(headingVersion)) {
+      start = i + 1;
+      break;
+    }
+  }
+
+  if (start === -1) return null;
+
+  let end = lines.length;
+  for (let i = start; i < lines.length; i += 1) {
+    if (lines[i].startsWith("## ")) {
+      end = i;
+      break;
+    }
+  }
+
+  const notes = lines.slice(start, end).join("\n").trim();
+  return notes || null;
+}
+
+async function githubJson(path, { method = "GET", token, body } = {}) {
+  const response = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: body == null ? undefined : JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    fail(`GitHub API ${method} ${path} failed: ${response.status} ${text}`);
+  }
+
+  return response.status === 204 ? null : response.json();
+}
+
+async function updateGitHubReleaseNotes({ owner, repo, tag, token, notes }) {
+  if (!notes) {
+    console.warn(
+      `[release:desktop] No CHANGELOG.md section found for ${tag}; leaving GitHub Release notes unchanged.`,
+    );
+    return;
+  }
+
+  const release = await githubJson(
+    `/repos/${owner}/${repo}/releases/tags/${tag}`,
+    { token },
+  );
+  await githubJson(`/repos/${owner}/${repo}/releases/${release.id}`, {
+    method: "PATCH",
+    token,
+    body: { body: notes },
+  });
+  console.log(`[release:desktop] Updated GitHub Release notes from CHANGELOG.md`);
 }
 
 function ensureTagAvailable(tag) {
@@ -186,7 +264,7 @@ const { versionArg, options } = parseArgs(process.argv.slice(2));
 loadEnvFile(resolve(repoRoot, ".env.production"));
 ensureCleanWorktree();
 ensureMainBranch();
-ensureGitHubToken();
+const githubToken = ensureGitHubToken();
 
 const { owner, repo } = ownerAndRepoFromOrigin();
 const version = npmVersion(versionArg);
@@ -221,6 +299,14 @@ console.log(
 );
 
 run("npm", ["-w", "desktop", "run", "package"]);
+
+await updateGitHubReleaseNotes({
+  owner,
+  repo,
+  tag,
+  token: githubToken,
+  notes: releaseNotesForVersion(version),
+});
 
 console.log(
   `[release:desktop] Done. Initial install URL: https://github.com/${owner}/${repo}/releases/tag/${tag}`,
