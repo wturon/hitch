@@ -26,6 +26,7 @@ import {
   ListChecksIcon,
   PlusIcon,
   RefreshCwIcon,
+  Settings2Icon,
   ShieldCheckIcon,
   Trash2Icon,
   UsersIcon,
@@ -47,7 +48,22 @@ const projectDateFormatter = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
 });
 
-type ProjectDetails = NonNullable<FunctionReturnType<typeof api.projects.details>>;
+type ProjectDetails = NonNullable<
+  FunctionReturnType<typeof api.projects.details>
+>;
+
+type DetailsTab = "general" | "statuses" | "local" | "members";
+
+const TABS = [
+  { id: "general", label: "General", icon: Settings2Icon },
+  { id: "statuses", label: "Statuses", icon: ListChecksIcon },
+  { id: "local", label: "Local setup", icon: FolderOpenIcon },
+  { id: "members", label: "Members", icon: UsersIcon },
+] as const satisfies ReadonlyArray<{
+  id: DetailsTab;
+  label: string;
+  icon: typeof Settings2Icon;
+}>;
 
 const DEFAULT_STATUSES = [
   { id: "todo", name: "To Do" },
@@ -100,7 +116,9 @@ function statusFingerprint(statuses: ProjectStatus[]) {
   return JSON.stringify(statuses.map((status) => [status.id, status.name]));
 }
 
-function statusesForProject(statuses: ProjectStatus[] | undefined): ProjectStatus[] {
+function statusesForProject(
+  statuses: ProjectStatus[] | undefined,
+): ProjectStatus[] {
   return statuses?.length ? statuses : [...DEFAULT_STATUSES];
 }
 
@@ -237,7 +255,7 @@ export function ProjectDetailsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-2xl">
+      <DialogContent className="flex h-[600px] max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Project details</DialogTitle>
           <DialogDescription>
@@ -278,6 +296,7 @@ function ProjectDetailsForm({
   const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
   const updateDetails = useMutation(api.projects.updateDetails);
   const updateStatuses = useMutation(api.projects.updateStatuses);
+  const [tab, setTab] = useState<DetailsTab>("general");
   const [name, setName] = useState(details.project.name);
   const [statuses, setStatuses] = useState<ProjectStatus[]>(
     statusesForProject(details.project.statuses),
@@ -302,7 +321,7 @@ function ProjectDetailsForm({
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
   const activeStatus = activeStatusId
-    ? statuses.find((status) => status.id === activeStatusId) ?? null
+    ? (statuses.find((status) => status.id === activeStatusId) ?? null)
     : null;
 
   useEffect(() => {
@@ -370,7 +389,9 @@ function ProjectDetailsForm({
 
   function removeStatus(id: string) {
     setStatuses((current) =>
-      current.length <= 1 ? current : current.filter((status) => status.id !== id),
+      current.length <= 1
+        ? current
+        : current.filter((status) => status.id !== id),
     );
   }
 
@@ -432,306 +453,348 @@ function ProjectDetailsForm({
   }
 
   return (
-    <form
-      className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]"
-      onSubmit={saveProject}
-    >
-      <div className="flex flex-col gap-4">
-      <label className="flex flex-col gap-1.5">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Title
-        </span>
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          disabled={!canEdit || saving}
-          className="h-9 rounded-md border bg-background px-3 text-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-        />
-      </label>
+    <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
+      <nav className="flex w-36 shrink-0 flex-col gap-1 overflow-y-auto">
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setTab(id)}
+            className={cn(
+              "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors",
+              tab === id
+                ? "bg-muted font-medium text-foreground"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+            )}
+          >
+            <Icon className="size-4 shrink-0" />
+            {label}
+          </button>
+        ))}
+      </nav>
 
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-        <div className="rounded-lg border bg-muted/40 p-3">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <HashIcon className="size-3.5" />
-            Project ID
-          </div>
-          <p className="mt-1 truncate text-sm font-medium">
-            {details.project._id}
-          </p>
-        </div>
-        <div className="rounded-lg border bg-muted/40 p-3">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <ShieldCheckIcon className="size-3.5" />
-            Your role
-          </div>
-          <p className="mt-1 capitalize text-sm font-medium">
-            {details.membership?.role ?? "member"}
-          </p>
-        </div>
-        <div className="rounded-lg border bg-muted/40 p-3">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <CalendarIcon className="size-3.5" />
-            Created
-          </div>
-          <p className="mt-1 text-sm font-medium">
-            {formatDate(details.project.createdAt)}
-          </p>
-        </div>
-      </div>
-
-      <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <h3 className="text-sm font-medium">Board statuses</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Configure this project's Kanban columns.
-            </p>
-          </div>
-          <ListChecksIcon className="size-4 shrink-0 text-muted-foreground" />
-        </div>
-
-        <DndContext
-          sensors={statusSensors}
-          onDragStart={onStatusDragStart}
-          onDragEnd={onStatusDragEnd}
-          onDragCancel={() => setActiveStatusId(null)}
-        >
-          <div className="flex flex-col gap-2">
-            {statuses.map((status, index) => (
-              <StatusRow
-                key={status.id}
-                status={status}
-                index={index}
-                canEdit={canEdit}
-                disabled={savingStatuses}
-                canRemove={statuses.length > 1}
-                isActive={activeStatusId === status.id}
-                onNameChange={updateStatusName}
-                onRemove={removeStatus}
-              />
-            ))}
-          </div>
-          <DragOverlay dropAnimation={null}>
-            {activeStatus ? (
-              <div className="flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 shadow-lg ring-foreground/20">
-                <GripVerticalIcon className="size-4 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                  {activeStatus.name}
+      <form
+        className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]"
+        onSubmit={saveProject}
+      >
+        <div className="flex flex-col gap-4">
+          {tab === "general" && (
+            <>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Title
                 </span>
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
+                <input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  disabled={!canEdit || saving}
+                  className="h-9 rounded-md border bg-background px-3 text-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              </label>
 
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!canEdit || savingStatuses}
-            onClick={addStatus}
-          >
-            <PlusIcon />
-            Add status
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            disabled={
-              !canEdit || savingStatuses || !hasStatusChange || hasInvalidStatus
-            }
-            onClick={() => void saveStatuses()}
-          >
-            {savingStatuses ? "Saving..." : "Save statuses"}
-          </Button>
-        </div>
-
-        {hasInvalidStatus && (
-          <p className="text-sm text-destructive">Status names cannot be blank.</p>
-        )}
-        {statusError && <p className="text-sm text-destructive">{statusError}</p>}
-      </section>
-
-      <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <h3 className="text-sm font-medium">Local setup</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Bind this project to a folder and keep its .hitch workspace private.
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            disabled={!bridge || setupBusy !== null}
-            onClick={() => void refreshSetup()}
-            aria-label="Refresh local setup"
-          >
-            <RefreshCwIcon />
-          </Button>
-        </div>
-
-        {!bridge ? (
-          <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-            Local setup checks are only available inside Hitch Desktop.
-          </p>
-        ) : setup === null ? (
-          <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-            Checking local setup...
-          </p>
-        ) : setup.hitch ? (
-          <div className="flex flex-col gap-2">
-            <SetupCheck
-              ok={setup.localPathExists}
-              title="Project folder"
-              detail={setup.hitch.localPath}
-            />
-            <SetupCheck
-              ok={setup.hitchPathExists}
-              title=".hitch folder"
-              detail={setup.hitchPath ?? ""}
-              action={
-                setup.localPathExists && !setup.hitchPathExists ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={setupBusy !== null}
-                    onClick={() => void repairSetup("hitch")}
-                  >
-                    {setupBusy === "hitch" ? "Creating..." : "Create"}
-                  </Button>
-                ) : null
-              }
-            />
-            <SetupCheck
-              ok={setup.gitignoreHasHitch}
-              title=".gitignore"
-              detail={
-                setup.gitignoreHasHitch
-                  ? ".hitch/ is ignored"
-                  : setup.gitignoreExists
-                    ? ".hitch/ is not ignored yet"
-                    : ".gitignore will be created"
-              }
-              action={
-                setup.localPathExists && !setup.gitignoreHasHitch ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={setupBusy !== null}
-                    onClick={() => void repairSetup("gitignore")}
-                  >
-                    {setupBusy === "gitignore" ? "Adding..." : "Add"}
-                  </Button>
-                ) : null
-              }
-            />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            <div className="flex gap-2">
-              <input
-                value={localPath}
-                onChange={(event) => setLocalPath(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void hitchProject();
-                  }
-                }}
-                placeholder="/Users/you/code/project"
-                spellCheck={false}
-                className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="icon-lg"
-                disabled={setupBusy !== null}
-                onClick={() => void chooseFolder()}
-                aria-label="Choose local folder"
-              >
-                <FolderOpenIcon />
-              </Button>
-            </div>
-            <Button
-              type="button"
-              disabled={!localPath.trim() || setupBusy !== null}
-              onClick={() => void hitchProject()}
-            >
-              {setupBusy === "hitch" ? "Hitching..." : "Hitch project"}
-            </Button>
-          </div>
-        )}
-
-        {setupError && <p className="text-sm text-destructive">{setupError}</p>}
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <UsersIcon className="size-4 text-muted-foreground" />
-          <h3 className="text-sm font-medium">
-            Members ({details.members.length})
-          </h3>
-        </div>
-        <div className="overflow-hidden rounded-lg border">
-          {details.members.map((member) => {
-            const displayName =
-              member.user?.name ?? member.user?.email ?? "Unknown member";
-            const email =
-              member.user?.email && member.user.email !== displayName
-                ? member.user.email
-                : null;
-            return (
-              <div
-                key={member.membershipId}
-                className="flex items-center gap-3 border-b px-3 py-2.5 last:border-b-0"
-              >
-                {member.user?.image ? (
-                  <img
-                    src={member.user.image}
-                    alt=""
-                    className="size-8 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
-                    {initials(displayName) || "?"}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="rounded-lg border bg-muted/40 p-3">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <HashIcon className="size-3.5" />
+                    Project ID
                   </div>
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">
-                    {displayName}
+                  <p className="mt-1 truncate text-sm font-medium">
+                    {details.project._id}
                   </p>
-                  {email && (
-                    <p className="truncate text-xs text-muted-foreground">
-                      {email}
-                    </p>
-                  )}
                 </div>
-                <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
-                  {member.role}
-                </span>
+                <div className="rounded-lg border bg-muted/40 p-3">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <ShieldCheckIcon className="size-3.5" />
+                    Your role
+                  </div>
+                  <p className="mt-1 capitalize text-sm font-medium">
+                    {details.membership?.role ?? "member"}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-muted/40 p-3">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <CalendarIcon className="size-3.5" />
+                    Created
+                  </div>
+                  <p className="mt-1 text-sm font-medium">
+                    {formatDate(details.project.createdAt)}
+                  </p>
+                </div>
               </div>
-            );
-          })}
+
+              {error && <p className="text-sm text-destructive">{error}</p>}
+              <DialogFooter>
+                <Button
+                  type="submit"
+                  disabled={
+                    !canEdit || saving || !trimmedName || !hasNameChange
+                  }
+                >
+                  {saving ? "Saving…" : "Save changes"}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {tab === "statuses" && (
+            <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium">Board statuses</h3>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Configure this project's Kanban columns.
+                  </p>
+                </div>
+                <ListChecksIcon className="size-4 shrink-0 text-muted-foreground" />
+              </div>
+
+              <DndContext
+                sensors={statusSensors}
+                onDragStart={onStatusDragStart}
+                onDragEnd={onStatusDragEnd}
+                onDragCancel={() => setActiveStatusId(null)}
+              >
+                <div className="flex flex-col gap-2">
+                  {statuses.map((status, index) => (
+                    <StatusRow
+                      key={status.id}
+                      status={status}
+                      index={index}
+                      canEdit={canEdit}
+                      disabled={savingStatuses}
+                      canRemove={statuses.length > 1}
+                      isActive={activeStatusId === status.id}
+                      onNameChange={updateStatusName}
+                      onRemove={removeStatus}
+                    />
+                  ))}
+                </div>
+                <DragOverlay dropAnimation={null}>
+                  {activeStatus ? (
+                    <div className="flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 shadow-lg ring-foreground/20">
+                      <GripVerticalIcon className="size-4 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {activeStatus.name}
+                      </span>
+                    </div>
+                  ) : null}
+                </DragOverlay>
+              </DndContext>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!canEdit || savingStatuses}
+                  onClick={addStatus}
+                >
+                  <PlusIcon />
+                  Add status
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={
+                    !canEdit ||
+                    savingStatuses ||
+                    !hasStatusChange ||
+                    hasInvalidStatus
+                  }
+                  onClick={() => void saveStatuses()}
+                >
+                  {savingStatuses ? "Saving..." : "Save statuses"}
+                </Button>
+              </div>
+
+              {hasInvalidStatus && (
+                <p className="text-sm text-destructive">
+                  Status names cannot be blank.
+                </p>
+              )}
+              {statusError && (
+                <p className="text-sm text-destructive">{statusError}</p>
+              )}
+            </section>
+          )}
+
+          {tab === "local" && (
+            <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium">Local setup</h3>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Bind this project to a folder and keep its .hitch workspace
+                    private.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={!bridge || setupBusy !== null}
+                  onClick={() => void refreshSetup()}
+                  aria-label="Refresh local setup"
+                >
+                  <RefreshCwIcon />
+                </Button>
+              </div>
+
+              {!bridge ? (
+                <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                  Local setup checks are only available inside Hitch Desktop.
+                </p>
+              ) : setup === null ? (
+                <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                  Checking local setup...
+                </p>
+              ) : setup.hitch ? (
+                <div className="flex flex-col gap-2">
+                  <SetupCheck
+                    ok={setup.localPathExists}
+                    title="Project folder"
+                    detail={setup.hitch.localPath}
+                  />
+                  <SetupCheck
+                    ok={setup.hitchPathExists}
+                    title=".hitch folder"
+                    detail={setup.hitchPath ?? ""}
+                    action={
+                      setup.localPathExists && !setup.hitchPathExists ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={setupBusy !== null}
+                          onClick={() => void repairSetup("hitch")}
+                        >
+                          {setupBusy === "hitch" ? "Creating..." : "Create"}
+                        </Button>
+                      ) : null
+                    }
+                  />
+                  <SetupCheck
+                    ok={setup.gitignoreHasHitch}
+                    title=".gitignore"
+                    detail={
+                      setup.gitignoreHasHitch
+                        ? ".hitch/ is ignored"
+                        : setup.gitignoreExists
+                          ? ".hitch/ is not ignored yet"
+                          : ".gitignore will be created"
+                    }
+                    action={
+                      setup.localPathExists && !setup.gitignoreHasHitch ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={setupBusy !== null}
+                          onClick={() => void repairSetup("gitignore")}
+                        >
+                          {setupBusy === "gitignore" ? "Adding..." : "Add"}
+                        </Button>
+                      ) : null
+                    }
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <div className="flex gap-2">
+                    <input
+                      value={localPath}
+                      onChange={(event) => setLocalPath(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void hitchProject();
+                        }
+                      }}
+                      placeholder="/Users/you/code/project"
+                      spellCheck={false}
+                      className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-lg"
+                      disabled={setupBusy !== null}
+                      onClick={() => void chooseFolder()}
+                      aria-label="Choose local folder"
+                    >
+                      <FolderOpenIcon />
+                    </Button>
+                  </div>
+                  <Button
+                    type="button"
+                    disabled={!localPath.trim() || setupBusy !== null}
+                    onClick={() => void hitchProject()}
+                  >
+                    {setupBusy === "hitch" ? "Hitching..." : "Hitch project"}
+                  </Button>
+                </div>
+              )}
+
+              {setupError && (
+                <p className="text-sm text-destructive">{setupError}</p>
+              )}
+            </section>
+          )}
+
+          {tab === "members" && (
+            <section className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <UsersIcon className="size-4 text-muted-foreground" />
+                <h3 className="text-sm font-medium">
+                  Members ({details.members.length})
+                </h3>
+              </div>
+              <div className="overflow-hidden rounded-lg border">
+                {details.members.map((member) => {
+                  const displayName =
+                    member.user?.name ?? member.user?.email ?? "Unknown member";
+                  const email =
+                    member.user?.email && member.user.email !== displayName
+                      ? member.user.email
+                      : null;
+                  return (
+                    <div
+                      key={member.membershipId}
+                      className="flex items-center gap-3 border-b px-3 py-2.5 last:border-b-0"
+                    >
+                      {member.user?.image ? (
+                        <img
+                          src={member.user.image}
+                          alt=""
+                          className="size-8 rounded-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+                          {initials(displayName) || "?"}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">
+                          {displayName}
+                        </p>
+                        {email && (
+                          <p className="truncate text-xs text-muted-foreground">
+                            {email}
+                          </p>
+                        )}
+                      </div>
+                      <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
+                        {member.role}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
         </div>
-      </section>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-
-        <DialogFooter>
-          <Button
-            type="submit"
-            disabled={!canEdit || saving || !trimmedName || !hasNameChange}
-          >
-            {saving ? "Saving…" : "Save changes"}
-          </Button>
-        </DialogFooter>
-      </div>
-    </form>
+      </form>
+    </div>
   );
 }
 
