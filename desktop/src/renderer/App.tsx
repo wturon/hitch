@@ -56,6 +56,7 @@ import { DeviceTokens } from "@/components/DeviceTokens";
 import { GlobalSettingsDialog } from "@/components/GlobalSettingsDialog";
 import { LocalSyncDialog } from "@/components/LocalSyncDialog";
 import { ProjectDetailsDialog } from "@/components/ProjectDetailsDialog";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -417,6 +418,7 @@ function AppSidebar({
       />
 
       <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-3">
+        <UpdateBanner />
         <Button
           variant="ghost"
           size="sm"

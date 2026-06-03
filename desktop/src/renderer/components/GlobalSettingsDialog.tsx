@@ -5,15 +5,18 @@ import {
   AlertCircleIcon,
   CheckCircle2Icon,
   Code2Icon,
+  DownloadIcon,
   InfoIcon,
   PowerIcon,
   RefreshCwIcon,
+  RotateCwIcon,
   ShieldCheckIcon,
   Trash2Icon,
   WrenchIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useUpdater } from "@/components/UpdateBanner";
 import {
   Dialog,
   DialogContent,
@@ -135,11 +138,108 @@ export function GlobalSettingsDialog({
               onError={setError}
             />
 
+            <UpdatesSection />
+
             {error && <p className="text-sm text-destructive">{error}</p>}
           </div>
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function UpdatesSection() {
+  const { status, check, download, install } = useUpdater();
+
+  const phase = status?.phase ?? "idle";
+  const busy = phase === "checking" || phase === "downloading";
+  const enabled = status?.enabled ?? false;
+
+  const version = status?.version ?? null;
+  const versionLabel = version ? `v${version}` : "a new version";
+
+  function detail(): string {
+    if (!status) return "Loading update status…";
+    if (!status.enabled) {
+      return "Automatic updates aren't available in this build.";
+    }
+    switch (status.phase) {
+      case "checking":
+        return "Checking for updates…";
+      case "available":
+        return `Hitch ${versionLabel} is available.`;
+      case "downloading":
+        return `Downloading ${versionLabel}… ${status.percent ?? 0}%`;
+      case "downloaded":
+        return `Hitch ${versionLabel} is ready — restart to install.`;
+      case "up-to-date":
+        return "Hitch is up to date.";
+      case "error":
+        return status.error ?? "Update check failed.";
+      default:
+        return "Check for a newer version of Hitch.";
+    }
+  }
+
+  // The primary action mirrors the sidebar banner: download when an update is
+  // waiting, restart when one is downloaded, otherwise a plain check.
+  let action = (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      disabled={!enabled || busy}
+      onClick={check}
+    >
+      <RefreshCwIcon />
+      {phase === "checking" ? "Checking…" : "Check for updates"}
+    </Button>
+  );
+  if (phase === "available") {
+    action = (
+      <Button type="button" size="sm" onClick={download}>
+        <DownloadIcon />
+        Download
+      </Button>
+    );
+  } else if (phase === "downloading") {
+    action = (
+      <Button type="button" size="sm" disabled>
+        <DownloadIcon />
+        Downloading…
+      </Button>
+    );
+  } else if (phase === "downloaded") {
+    action = (
+      <Button type="button" size="sm" onClick={install}>
+        <RotateCwIcon />
+        Restart to install
+      </Button>
+    );
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium">App updates</h3>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            {status
+              ? `You're running Hitch v${status.currentVersion}.`
+              : "Hitch checks for updates automatically."}
+          </p>
+        </div>
+        {action}
+      </div>
+      <div className="flex min-h-12 items-center gap-3 rounded-md border bg-background px-3 py-2">
+        {phase === "error" ? (
+          <AlertCircleIcon className="size-4 shrink-0 text-amber-500" />
+        ) : (
+          <CheckCircle2Icon className="size-4 shrink-0 text-emerald-500" />
+        )}
+        <p className="text-sm text-muted-foreground">{detail()}</p>
+      </div>
+    </section>
   );
 }
 

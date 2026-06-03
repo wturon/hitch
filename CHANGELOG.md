@@ -8,6 +8,14 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-03
+
+- Updates now surface in the app instead of interrupting you with a native
+  dialog. When a new version is available, an "Update to vX.Y.Z" button appears
+  in the sidebar — click it to download, watch progress inline, then "Restart to
+  update" when it's ready. Hitch also re-checks hourly while running (not just at
+  launch), and the Harness settings dialog has a "Check for updates" button with
+  the current version and live status.
 - The cmux setup dialog now does the work for you: an "open cmux's Automation
   settings" link jumps straight to the right pane, and "Reload cmux & retry"
   applies the change and reopens the chat — no hunting through menus or ⌘⇧,.

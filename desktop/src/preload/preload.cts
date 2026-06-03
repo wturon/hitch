@@ -87,6 +87,24 @@ export interface DeviceAuthState {
   hasToken: boolean;
 }
 
+export type UpdaterPhase =
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export interface UpdaterStatus {
+  enabled: boolean;
+  phase: UpdaterPhase;
+  currentVersion: string;
+  version: string | null;
+  percent: number | null;
+  error: string | null;
+}
+
 export interface HitchDaemonApi {
   getState: () => Promise<DaemonState>;
   start: () => Promise<DaemonState>;
@@ -112,8 +130,13 @@ export interface HitchDaemonApi {
   getAuthStorageItem: (key: string) => Promise<string | null>;
   setAuthStorageItem: (key: string, value: string) => Promise<void>;
   removeAuthStorageItem: (key: string) => Promise<void>;
+  getUpdaterStatus: () => Promise<UpdaterStatus>;
+  checkForUpdates: () => Promise<UpdaterStatus>;
+  downloadUpdate: () => Promise<void>;
+  installUpdate: () => Promise<void>;
   onState: (callback: (state: DaemonState) => void) => () => void;
   onAuthCallback: (callback: (payload: AuthCallback) => void) => () => void;
+  onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => () => void;
 }
 
 const api: HitchDaemonApi = {
@@ -148,12 +171,23 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("auth-storage:set", key, value),
   removeAuthStorageItem: (key) =>
     ipcRenderer.invoke("auth-storage:remove", key),
+  getUpdaterStatus: () => ipcRenderer.invoke("updater:get-status"),
+  checkForUpdates: () => ipcRenderer.invoke("updater:check"),
+  downloadUpdate: () => ipcRenderer.invoke("updater:download"),
+  installUpdate: () => ipcRenderer.invoke("updater:install"),
   onState: (callback) => {
     const listener = (_event: IpcRendererEvent, state: DaemonState) => {
       callback(state);
     };
     ipcRenderer.on("daemon:state", listener);
     return () => ipcRenderer.removeListener("daemon:state", listener);
+  },
+  onUpdaterStatus: (callback) => {
+    const listener = (_event: IpcRendererEvent, status: UpdaterStatus) => {
+      callback(status);
+    };
+    ipcRenderer.on("updater:status", listener);
+    return () => ipcRenderer.removeListener("updater:status", listener);
   },
   onAuthCallback: (callback) => {
     const listener = (_event: IpcRendererEvent, payload: AuthCallback) => {

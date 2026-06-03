@@ -616,6 +616,46 @@ let stopTimer: NodeJS.Timeout | null = null;
 let quitAfterDaemonStops = false;
 let updaterConfigured = false;
 let lastUpdateProgressBucket = -1;
+let updateCheckInterval: NodeJS.Timeout | null = null;
+
+// How often to re-check for updates after the initial startup check, so a
+// long-running session surfaces new versions without needing a restart.
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+
+type UpdaterPhase =
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+interface UpdaterStatus {
+  // false in dev and in builds without a bundled app-update.yml, where the
+  // autoUpdater never runs. The renderer uses this to explain why checking is
+  // unavailable instead of showing a dead button.
+  enabled: boolean;
+  phase: UpdaterPhase;
+  currentVersion: string;
+  version: string | null;
+  percent: number | null;
+  error: string | null;
+}
+
+let updaterStatus: UpdaterStatus = {
+  enabled: false,
+  phase: "idle",
+  currentVersion: app.getVersion(),
+  version: null,
+  percent: null,
+  error: null,
+};
+
+function setUpdaterStatus(patch: Partial<UpdaterStatus>): void {
+  updaterStatus = { ...updaterStatus, ...patch };
+  mainWindow?.webContents.send("updater:status", updaterStatus);
+}
 
 function state(): DaemonState {
   return {
@@ -1670,13 +1710,6 @@ function updateVersionLabel(info: UpdateInfo): string {
   return info.version ? `version ${info.version}` : "a new version";
 }
 
-async function showMessageBox(
-  options: Electron.MessageBoxOptions,
-): Promise<Electron.MessageBoxReturnValue> {
-  return mainWindow
-    ? dialog.showMessageBox(mainWindow, options)
-    : dialog.showMessageBox(options);
-}
 
 function configureAutoUpdates(): void {
   if (updaterConfigured) return;
@@ -1695,39 +1728,38 @@ function configureAutoUpdates(): void {
     return;
   }
 
+  setUpdaterStatus({ enabled: true });
+
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
+  // The renderer surfaces update state in an in-app sidebar banner and the
+  // settings dialog. Each event updates the broadcast status; download and
+  // restart are driven by the user via IPC (autoDownload is off), replacing the
+  // native message-box prompts we used to show here.
   autoUpdater.on("checking-for-update", () => {
     addLog("system", "Checking for Hitch updates");
+    setUpdaterStatus({ phase: "checking", error: null });
   });
 
   autoUpdater.on("update-not-available", () => {
     addLog("system", "Hitch is up to date");
+    setUpdaterStatus({ phase: "up-to-date", version: null, percent: null });
   });
 
   autoUpdater.on("update-available", (info: UpdateInfo) => {
     addLog("system", `Update available: ${updateVersionLabel(info)}`);
-    void showMessageBox({
-      type: "info",
-      buttons: ["Download", "Later"],
-      defaultId: 0,
-      cancelId: 1,
-      title: "Hitch update available",
-      message: `Download Hitch ${updateVersionLabel(info)}?`,
-      detail: "The update downloads in the background. Hitch will ask before restarting to install it.",
-    }).then(({ response }) => {
-      if (response !== 0) {
-        addLog("system", "Update download skipped");
-        return;
-      }
-      void autoUpdater.downloadUpdate().catch((error: unknown) => {
-        addLog("stderr", `Failed to download update: ${String(error)}`);
-      });
+    lastUpdateProgressBucket = -1;
+    setUpdaterStatus({
+      phase: "available",
+      version: info.version ?? null,
+      percent: null,
+      error: null,
     });
   });
 
   autoUpdater.on("download-progress", (progress: ProgressInfo) => {
+    setUpdaterStatus({ phase: "downloading", percent: Math.round(progress.percent) });
     const bucket = Math.floor(progress.percent / 10) * 10;
     if (bucket === lastUpdateProgressBucket) return;
     lastUpdateProgressBucket = bucket;
@@ -1736,28 +1768,26 @@ function configureAutoUpdates(): void {
 
   autoUpdater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
     addLog("system", `Update downloaded: ${updateVersionLabel(info)}`);
-    void showMessageBox({
-      type: "info",
-      buttons: ["Restart", "Later"],
-      defaultId: 0,
-      cancelId: 1,
-      title: "Hitch update ready",
-      message: `Restart Hitch to install ${updateVersionLabel(info)}?`,
-      detail: "Choosing Later installs the update the next time Hitch quits.",
-    }).then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall(false, true);
+    setUpdaterStatus({
+      phase: "downloaded",
+      version: info.version ?? null,
+      percent: 100,
     });
   });
 
   autoUpdater.on("error", (error: Error) => {
     addLog("stderr", `Update check failed: ${error.message}`);
+    setUpdaterStatus({ phase: "error", error: error.message });
   });
 
-  setTimeout(() => {
+  const runCheck = () => {
     void autoUpdater.checkForUpdates().catch((error: unknown) => {
       addLog("stderr", `Update check failed: ${String(error)}`);
     });
-  }, 5_000);
+  };
+
+  setTimeout(runCheck, 5_000);
+  updateCheckInterval = setInterval(runCheck, UPDATE_CHECK_INTERVAL_MS);
 }
 
 // Convex Auth starts OAuth by navigating the window to
@@ -1924,6 +1954,36 @@ ipcMain.handle("auth-storage:remove", (_event, key: string) =>
   authStorageRemove(key),
 );
 
+ipcMain.handle("updater:get-status", () => updaterStatus);
+ipcMain.handle("updater:check", async () => {
+  // No-op in dev / unconfigured builds: the autoUpdater isn't wired, so there's
+  // nothing to check. Return the disabled status for the UI to explain.
+  if (!updaterStatus.enabled) return updaterStatus;
+  setUpdaterStatus({ phase: "checking", error: null });
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    addLog("stderr", `Update check failed: ${message}`);
+    setUpdaterStatus({ phase: "error", error: message });
+  }
+  return updaterStatus;
+});
+ipcMain.handle("updater:download", async () => {
+  if (!updaterStatus.enabled) return;
+  try {
+    await autoUpdater.downloadUpdate();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    addLog("stderr", `Failed to download update: ${message}`);
+    setUpdaterStatus({ phase: "error", error: message });
+  }
+});
+ipcMain.handle("updater:install", () => {
+  if (!updaterStatus.enabled) return;
+  autoUpdater.quitAndInstall(false, true);
+});
+
 app.whenReady().then(async () => {
   // Packaged macOS builds get the dock icon from the bundled .icns; set it
   // explicitly in dev so the H shows up instead of the generic Electron icon.
@@ -1946,6 +2006,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", (event) => {
   stopAuthLoopback();
+  if (updateCheckInterval) clearInterval(updateCheckInterval);
   if (!daemon || quitAfterDaemonStops) return;
   event.preventDefault();
   quitAfterDaemonStops = true;
