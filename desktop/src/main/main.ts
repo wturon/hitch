@@ -121,6 +121,13 @@ interface RunnerMessage {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
+// Give the dev build its own identity so its Chromium cookie store and the
+// keychain key Electron derives from app.name ("Hitch Dev Safe Storage") are
+// separate from the installed, Developer-ID-signed production app. Otherwise the
+// unsigned dev binary and the signed prod app contend over one shared
+// "@hitch/desktop Safe Storage" item and macOS prompts for keychain access. Must
+// run before the app is ready so the name is set before Chromium initializes.
+if (isDev) app.setName("Hitch Dev");
 // In dev the app lives inside the repo, so the parent of the app path is the
 // repo root (used for the dev config fallback and as the daemon cwd). A packaged
 // app has no repo, so anchor on the writable userData dir instead — local config
