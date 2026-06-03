@@ -137,10 +137,19 @@ const repoRoot = process.env.HITCH_ROOT
   : isDev
     ? resolve(app.getAppPath(), "..")
     : app.getPath("userData");
+// The dev build uses a separate app-data dir so its config (deployment-specific
+// project IDs) and secrets (device token + auth, scoped to the dev Convex
+// deployment) never collide with the installed production app. Mirrors the
+// "Hitch Dev" split applied to app.name / the Chromium profile / the keychain key.
+const appSupportDir = join(
+  homedir(),
+  "Library/Application Support",
+  isDev ? "Hitch Dev" : "Hitch",
+);
 const localConfigPath =
-  process.env.HITCH_CONFIG_PATH ?? join(homedir(), "Library/Application Support/Hitch/config.json");
+  process.env.HITCH_CONFIG_PATH ?? join(appSupportDir, "config.json");
 const localSecretsPath =
-  process.env.HITCH_SECRETS_PATH ?? join(homedir(), "Library/Application Support/Hitch/secrets.json");
+  process.env.HITCH_SECRETS_PATH ?? join(appSupportDir, "secrets.json");
 const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
 // GitHub OAuth runs in the system browser (RFC 8252); Convex Auth's SITE_URL is
