@@ -7,6 +7,11 @@ import {
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
 type ProjectId = string;
 
+export interface AuthCallback {
+  code?: string;
+  error?: string;
+}
+
 export interface LogEntry {
   id: number;
   at: string;
@@ -106,6 +111,7 @@ export interface HitchDaemonApi {
   setAuthStorageItem: (key: string, value: string) => Promise<void>;
   removeAuthStorageItem: (key: string) => Promise<void>;
   onState: (callback: (state: DaemonState) => void) => () => void;
+  onAuthCallback: (callback: (payload: AuthCallback) => void) => () => void;
 }
 
 const api: HitchDaemonApi = {
@@ -144,6 +150,13 @@ const api: HitchDaemonApi = {
     };
     ipcRenderer.on("daemon:state", listener);
     return () => ipcRenderer.removeListener("daemon:state", listener);
+  },
+  onAuthCallback: (callback) => {
+    const listener = (_event: IpcRendererEvent, payload: AuthCallback) => {
+      callback(payload);
+    };
+    ipcRenderer.on("auth:callback", listener);
+    return () => ipcRenderer.removeListener("auth:callback", listener);
   },
 };
 

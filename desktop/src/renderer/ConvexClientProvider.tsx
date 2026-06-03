@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ConvexReactClient } from "convex/react";
 import {
   ConvexAuthProvider,
+  useAuthActions,
   type TokenStorage,
 } from "@convex-dev/auth/react";
 import {
@@ -45,6 +46,45 @@ function createAuthStorage(): TokenStorage {
   };
 }
 
+// After the system-browser OAuth round-trip, the main process delivers the
+// authorization code over IPC (the renderer is loaded from file:// and never
+// receives it in its URL). We feed it to Convex Auth here, inside the provider so
+// `useAuthActions` is available. The exchange must pass `provider: undefined` so
+// the server takes its code-verification branch — passing a provider alongside a
+// code restarts OAuth instead. This mirrors what the library does internally for
+// code-from-URL (client.js); the public type only exposes the `provider: string`
+// form, hence the cast.
+function AuthCallbackBridge() {
+  const { signIn } = useAuthActions();
+  useEffect(() => {
+    const bridge =
+      typeof window !== "undefined"
+        ? (
+            window as Window & {
+              hitchDaemon?: {
+                onAuthCallback?: (
+                  cb: (payload: { code?: string; error?: string }) => void,
+                ) => () => void;
+              };
+            }
+          ).hitchDaemon
+        : undefined;
+    if (!bridge?.onAuthCallback) return;
+    const completeSignIn = signIn as unknown as (
+      provider: undefined,
+      params: { code: string },
+    ) => Promise<unknown>;
+    return bridge.onAuthCallback(({ code, error }) => {
+      if (error) {
+        console.error("Hitch sign-in failed:", error);
+        return;
+      }
+      if (code) void completeSignIn(undefined, { code });
+    });
+  }, [signIn]);
+  return null;
+}
+
 export function ConvexClientProvider({ children }: { children: ReactNode }) {
   // One client for the whole app. Created lazily in the browser — Convex's
   // reactive queries run over a WebSocket the client owns.
@@ -72,6 +112,7 @@ export function ConvexClientProvider({ children }: { children: ReactNode }) {
         window.history.replaceState({}, "", relativeUrl);
       }}
     >
+      <AuthCallbackBridge />
       {children}
     </ConvexAuthProvider>
   );

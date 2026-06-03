@@ -15,8 +15,9 @@ import {
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createServer, type Server } from "node:http";
 import { promisify } from "node:util";
-import { app, BrowserWindow, dialog, ipcMain, nativeImage } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
 import {
   autoUpdater,
   type ProgressInfo,
@@ -135,6 +136,11 @@ const localSecretsPath =
   process.env.HITCH_SECRETS_PATH ?? join(homedir(), "Library/Application Support/Hitch/secrets.json");
 const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
+// GitHub OAuth runs in the system browser (RFC 8252); Convex Auth's SITE_URL is
+// set to this loopback origin so the final redirect lands back in the app. The
+// port is fixed because SITE_URL is a single configured value — see startAuthLoopback.
+const AUTH_LOOPBACK_PORT = 51789;
+const AUTH_LOOPBACK_ORIGIN = `http://127.0.0.1:${AUTH_LOOPBACK_PORT}`;
 const run = promisify(execFile);
 
 function globalCodexChatStatusHook(): string {
@@ -1705,26 +1711,76 @@ function configureAutoUpdates(): void {
   }, 5_000);
 }
 
-function redirectLegacyDevAuthUrl(rawUrl: string): string | null {
-  if (!isDev) return null;
-
+// Convex Auth starts OAuth by navigating the window to
+// {CONVEX_SITE}/api/auth/signin/<provider>, which then 302s to the provider
+// (github.com). We send that whole flow to the system browser instead of the
+// embedded window — matching both the signin entrypoint and the provider host so
+// it works whether the hop arrives as a navigation or an HTTP redirect.
+function isExternalSignInUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl);
-    if (
-      (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") ||
-      url.port !== "3000"
-    ) {
-      return null;
-    }
-
-    const target = new URL(devRendererUrl);
-    target.pathname = url.pathname;
-    target.search = url.search;
-    target.hash = url.hash;
-    return target.toString();
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    return (
+      url.pathname.startsWith("/api/auth/signin/") ||
+      url.hostname === "github.com"
+    );
   } catch {
-    return null;
+    return false;
   }
+}
+
+let authLoopbackServer: Server | null = null;
+
+// Receives Convex Auth's final OAuth redirect after the system-browser round-trip
+// (SITE_URL -> http://127.0.0.1:51789/?code=...) and hands the code to the renderer,
+// which holds the PKCE verifier and completes the token exchange.
+function startAuthLoopback(): void {
+  if (authLoopbackServer) return;
+  const server = createServer((req, res) => {
+    let code: string | null = null;
+    try {
+      code = new URL(req.url ?? "/", AUTH_LOOPBACK_ORIGIN).searchParams.get(
+        "code",
+      );
+    } catch {
+      code = null;
+    }
+    res.writeHead(code ? 200 : 404, {
+      "Content-Type": "text/html; charset=utf-8",
+    });
+    res.end(authLoopbackPage(code != null));
+    if (!code) return;
+    mainWindow?.webContents.send("auth:callback", { code });
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+    app.focus({ steal: true });
+  });
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    authLoopbackServer = null;
+    const detail =
+      error.code === "EADDRINUSE"
+        ? `Sign-in can't complete: port ${AUTH_LOOPBACK_PORT} is already in use. Quit whatever is using it and try again.`
+        : `Sign-in callback server failed: ${error.message}`;
+    addLog("stderr", detail);
+    mainWindow?.webContents.send("auth:callback", { error: detail });
+  });
+  server.listen({ host: "127.0.0.1", port: AUTH_LOOPBACK_PORT, exclusive: true });
+  authLoopbackServer = server;
+}
+
+function stopAuthLoopback(): void {
+  authLoopbackServer?.close();
+  authLoopbackServer = null;
+}
+
+function authLoopbackPage(ok: boolean): string {
+  const title = ok ? "Signed in to Hitch" : "Hitch sign-in";
+  const detail = ok
+    ? "You can close this tab and return to Hitch."
+    : "No authorization code was found. Return to Hitch and try again.";
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:-apple-system,system-ui,sans-serif;background:#101316;color:#e6e8ea;display:flex;min-height:100vh;margin:0;align-items:center;justify-content:center}main{text-align:center;max-width:28rem;padding:2rem}h1{font-size:1.25rem;margin:0 0 .5rem}p{color:#9aa3ab;margin:0}</style></head><body><main><h1>${title}</h1><p>${detail}</p></main></body></html>`;
 }
 
 async function createWindow(): Promise<void> {
@@ -1742,17 +1798,20 @@ async function createWindow(): Promise<void> {
     },
   });
 
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    const redirect = redirectLegacyDevAuthUrl(url);
-    if (!redirect) return;
+  // Keep OAuth out of the embedded window: open the sign-in flow in the system
+  // browser (RFC 8252). Cover both will-navigate (the initial location change)
+  // and will-redirect (the convex.site -> github.com 302).
+  const externalizeSignIn = (event: { preventDefault: () => void }, url: string) => {
+    if (!isExternalSignInUrl(url)) return;
     event.preventDefault();
-    void mainWindow?.loadURL(redirect);
-  });
+    void shell.openExternal(url);
+  };
+  mainWindow.webContents.on("will-navigate", externalizeSignIn);
+  mainWindow.webContents.on("will-redirect", externalizeSignIn);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    const redirect = redirectLegacyDevAuthUrl(url);
-    if (!redirect) return { action: "allow" };
-    void mainWindow?.loadURL(redirect);
+    if (!isExternalSignInUrl(url)) return { action: "allow" };
+    void shell.openExternal(url);
     return { action: "deny" };
   });
 
@@ -1825,6 +1884,7 @@ app.whenReady().then(async () => {
   }
 
   await createWindow();
+  startAuthLoopback();
   startDaemon();
   configureAutoUpdates();
 
@@ -1834,6 +1894,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", (event) => {
+  stopAuthLoopback();
   if (!daemon || quitAfterDaemonStops) return;
   event.preventDefault();
   quitAfterDaemonStops = true;
