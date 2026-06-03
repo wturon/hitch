@@ -105,6 +105,7 @@ interface DeviceAuthState {
 interface LocalSecrets {
   deviceId?: string;
   deviceToken?: string;
+  authStorage?: Record<string, string>;
 }
 
 interface RunnerMessage {
@@ -785,9 +786,17 @@ function readLocalSecrets(): LocalSecrets {
   if (!existsSync(localSecretsPath)) return {};
   const raw = JSON.parse(readFileSync(localSecretsPath, "utf8")) as unknown;
   if (!isRecord(raw)) return {};
+  const rawAuthStorage = isRecord(raw.authStorage) ? raw.authStorage : {};
+  const authStorage = Object.fromEntries(
+    Object.entries(rawAuthStorage).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[0] === "string" && typeof entry[1] === "string",
+    ),
+  );
   return {
     deviceId: typeof raw.deviceId === "string" ? raw.deviceId : undefined,
     deviceToken: typeof raw.deviceToken === "string" ? raw.deviceToken : undefined,
+    authStorage,
   };
 }
 
@@ -828,10 +837,36 @@ async function saveDeviceToken(token: string): Promise<DeviceAuthState> {
 
 async function clearDeviceToken(): Promise<DeviceAuthState> {
   const secrets = readLocalSecrets();
-  writeLocalSecrets({ deviceId: secrets.deviceId ?? ensureDeviceId() });
+  writeLocalSecrets({
+    ...secrets,
+    deviceId: secrets.deviceId ?? ensureDeviceId(),
+    deviceToken: undefined,
+  });
   addLog("system", "Cleared local device authorization");
   await restartDaemon();
   return deviceAuthState();
+}
+
+function authStorageGet(key: string): string | null {
+  return readLocalSecrets().authStorage?.[key] ?? null;
+}
+
+function authStorageSet(key: string, value: string): void {
+  const secrets = readLocalSecrets();
+  writeLocalSecrets({
+    ...secrets,
+    authStorage: {
+      ...(secrets.authStorage ?? {}),
+      [key]: value,
+    },
+  });
+}
+
+function authStorageRemove(key: string): void {
+  const secrets = readLocalSecrets();
+  const authStorage = { ...(secrets.authStorage ?? {}) };
+  delete authStorage[key];
+  writeLocalSecrets({ ...secrets, authStorage });
 }
 
 function updateGitignore(localPath: string): boolean {
@@ -1771,6 +1806,13 @@ ipcMain.handle("device-auth:set-token", (_event, token: string) =>
   saveDeviceToken(token),
 );
 ipcMain.handle("device-auth:clear-token", () => clearDeviceToken());
+ipcMain.handle("auth-storage:get", (_event, key: string) => authStorageGet(key));
+ipcMain.handle("auth-storage:set", (_event, key: string, value: string) =>
+  authStorageSet(key, value),
+);
+ipcMain.handle("auth-storage:remove", (_event, key: string) =>
+  authStorageRemove(key),
+);
 
 app.whenReady().then(async () => {
   // Packaged macOS builds get the dock icon from the bundled .icns; set it

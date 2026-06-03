@@ -102,6 +102,9 @@ export interface HitchDaemonApi {
   getDeviceAuth: () => Promise<DeviceAuthState>;
   setDeviceToken: (token: string) => Promise<DeviceAuthState>;
   clearDeviceToken: () => Promise<DeviceAuthState>;
+  getAuthStorageItem: (key: string) => Promise<string | null>;
+  setAuthStorageItem: (key: string, value: string) => Promise<void>;
+  removeAuthStorageItem: (key: string) => Promise<void>;
   onState: (callback: (state: DaemonState) => void) => () => void;
 }
 
@@ -130,6 +133,11 @@ const api: HitchDaemonApi = {
   getDeviceAuth: () => ipcRenderer.invoke("device-auth:get"),
   setDeviceToken: (token) => ipcRenderer.invoke("device-auth:set-token", token),
   clearDeviceToken: () => ipcRenderer.invoke("device-auth:clear-token"),
+  getAuthStorageItem: (key) => ipcRenderer.invoke("auth-storage:get", key),
+  setAuthStorageItem: (key, value) =>
+    ipcRenderer.invoke("auth-storage:set", key, value),
+  removeAuthStorageItem: (key) =>
+    ipcRenderer.invoke("auth-storage:remove", key),
   onState: (callback) => {
     const listener = (_event: IpcRendererEvent, state: DaemonState) => {
       callback(state);
