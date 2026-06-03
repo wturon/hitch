@@ -8,7 +8,11 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
-- Add release notes here before running `npm run release:desktop -- <version>`.
+- The cmux setup dialog now does the work for you: an "open cmux's Automation
+  settings" link jumps straight to the right pane, and "Reload cmux & retry"
+  applies the change and reopens the chat — no hunting through menus or ⌘⇧,.
+  (Both use cmux's URL-dispatched CLI, so they work even while its socket is in
+  the mode that blocks Hitch.)
 
 ## [0.1.4] - 2026-06-03
 

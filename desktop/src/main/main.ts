@@ -1036,6 +1036,39 @@ function codexBin(): string {
   return "codex";
 }
 
+const CMUX_CANDIDATES = [
+  process.env.CMUX_BIN,
+  "/Applications/cmux.app/Contents/Resources/bin/cmux",
+  "cmux",
+].filter((value): value is string => Boolean(value));
+
+function cmuxBin(): string {
+  for (const candidate of CMUX_CANDIDATES) {
+    if (candidate === "cmux" || existsSync(candidate)) return candidate;
+  }
+  return "cmux";
+}
+
+// Open cmux's settings UI on the Automation pane — where the user flips Socket
+// control so Hitch (a Dock-launched, non-cmux-descendant app) is allowed to
+// drive cmux. Unlike the automation socket the daemon uses, `cmux settings
+// open` is dispatched via cmux's URL handler, so it works even when the socket
+// is in its default "cmux processes only" mode that's blocking us.
+async function openCmuxSettings(): Promise<string> {
+  await run(cmuxBin(), ["settings", "open", "automation"], { timeout: 5_000 });
+  addLog("system", "Opened cmux Automation settings");
+  return "opened";
+}
+
+// Apply an edited cmux.json without an app restart (same as ⌘⇧, in cmux). Also
+// works from outside cmux's process tree, so we can offer it as a one-click
+// "reload and retry" after the user changes the socket mode.
+async function reloadCmuxConfig(): Promise<string> {
+  await run(cmuxBin(), ["reload-config"], { timeout: 5_000 });
+  addLog("system", "Reloaded cmux config");
+  return "reloaded";
+}
+
 function shellQuote(value: string): string {
   if (!/[^A-Za-z0-9_./:-]/.test(value)) return value;
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -1873,6 +1906,8 @@ ipcMain.handle("config:remove-global-claude-hooks", () =>
 ipcMain.handle("config:open-global-codex-hook-trust", () =>
   openGlobalCodexHookTrust(),
 );
+ipcMain.handle("cmux:open-settings", () => openCmuxSettings());
+ipcMain.handle("cmux:reload-config", () => reloadCmuxConfig());
 ipcMain.handle("dialog:choose-local-path", (_event, defaultPath?: string) =>
   chooseLocalPath(defaultPath),
 );

@@ -141,8 +141,7 @@ export function ChatLaunch({
     );
   }
 
-  async function open(e: React.MouseEvent) {
-    stop(e);
+  async function launchOpen() {
     setOpening(true);
     try {
       const id = await enqueue({
@@ -156,6 +155,11 @@ export function ChatLaunch({
     } finally {
       setTimeout(() => setOpening(false), 1500);
     }
+  }
+
+  async function open(e: React.MouseEvent) {
+    stop(e);
+    await launchOpen();
   }
 
   return (
@@ -184,6 +188,7 @@ export function ChatLaunch({
             if (!next) setCmuxReason(null);
           }}
           reason={cmuxReason}
+          onRetry={() => void launchOpen()}
         />
       )}
     </>
