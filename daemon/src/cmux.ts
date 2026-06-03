@@ -80,6 +80,150 @@ async function workspaceUuids(): Promise<Set<string>> {
   return new Set(matchAll(await tree(), WORKSPACE_LINE_RE));
 }
 
+// We tag the workspace that owns a project's chats with this in its cmux
+// "description" field, then match on it. Using the description (not the title)
+// as the key means the user can rename the workspace and we still find it; and
+// a process-only workspace that merely shares the project's cwd has no tag, so
+// we never hijack it.
+function projectTag(projectId: string): string {
+  return `hitch:${projectId}`;
+}
+
+interface WsInfo {
+  id: string;
+  description: string | null;
+  index: number;
+}
+
+// Every workspace across every window. workspace.list is per-window (like the
+// CLI's list-workspaces), so we fan out over window.list — a project workspace
+// living in another window would otherwise be missed and wrongly re-created.
+async function listAllWorkspaces(): Promise<WsInfo[]> {
+  const result: WsInfo[] = [];
+  try {
+    const windowsOut = await cmux(["rpc", "window.list", "{}"]);
+    const windows =
+      (JSON.parse(windowsOut) as { windows?: Array<{ id: string }> }).windows ?? [];
+    for (const win of windows) {
+      try {
+        const out = await cmux(["rpc", "workspace.list", JSON.stringify({ window_id: win.id })]);
+        const wss =
+          (JSON.parse(out) as {
+            workspaces?: Array<{ id: string; description?: string | null; index?: number }>;
+          }).workspaces ?? [];
+        for (const w of wss) {
+          result.push({ id: w.id, description: w.description ?? null, index: w.index ?? 0 });
+        }
+      } catch {
+        // Skip a window we can't enumerate rather than failing the whole lookup.
+      }
+    }
+  } catch {
+    // No windows / cmux unreachable → caller falls back to spawning a workspace.
+  }
+  return result;
+}
+
+// The UUID of this project's chat workspace, or null if none is tagged yet. If
+// several somehow carry the tag (the "lax" case the user is fine with), the
+// lowest index wins — that's the most recently active / top-of-list one.
+async function findProjectWorkspace(projectId: string): Promise<string | null> {
+  const tag = projectTag(projectId);
+  const matches = (await listAllWorkspaces()).filter((w) => w.description === tag);
+  if (matches.length === 0) return null;
+  matches.sort((a, b) => a.index - b.index);
+  return matches[0].id;
+}
+
+// Claim a workspace as this project's chat home: give it the project name (an
+// explicit name also stops cmux from auto-retitling it per active tab) and the
+// hidden tag we match on. Best-effort — an untagged workspace just won't
+// consolidate next time; it's never fatal.
+async function tagWorkspace(workspaceId: string, name: string, projectId: string): Promise<void> {
+  try {
+    await cmux([
+      "workspace-action",
+      "--workspace",
+      workspaceId,
+      "--action",
+      "rename",
+      "--title",
+      name,
+    ]);
+    await cmux([
+      "workspace-action",
+      "--workspace",
+      workspaceId,
+      "--action",
+      "set-description",
+      "--description",
+      projectTag(projectId),
+    ]);
+  } catch {
+    // Non-fatal: see above.
+  }
+}
+
+// Select a surface AND make it the active tab in its workspace. A single
+// surface.focus on a tab in a backgrounded workspace only raises the
+// workspace — and that switch restores the workspace's previously-active tab,
+// clobbering our selection. So we focus once (which raises the workspace and
+// tells us its id), explicitly select that workspace, then focus again so the
+// tab selection finally sticks.
+async function focusSurface(surfaceId: string): Promise<void> {
+  const params = JSON.stringify({ surface_id: surfaceId });
+  const out = await cmux(["rpc", "surface.focus", params]);
+  try {
+    const workspaceId = (JSON.parse(out) as { workspace_id?: string }).workspace_id;
+    if (workspaceId) {
+      await cmux(["select-workspace", "--workspace", workspaceId]);
+      await cmux(["rpc", "surface.focus", params]);
+    }
+  } catch {
+    // Best-effort: the first focus already raised the workspace.
+  }
+}
+
+// Open `command` as a new tab (surface) in an existing workspace. A freshly
+// created surface does NOT inherit the workspace's cwd, so the command cd's
+// into the project dir itself before launching. `send` types the command and
+// the trailing escape submits it — multi-line prompts survive because they're
+// single-quoted (the shell reads them via its quote-continuation).
+async function addChatTab(workspaceId: string, cwd: string | undefined, command: string): Promise<void> {
+  const out = await cmux(["rpc", "surface.create", JSON.stringify({ workspace_id: workspaceId })]);
+  const surfaceId = (JSON.parse(out) as { surface_id?: string }).surface_id;
+  if (!surfaceId) throw new Error("surface.create returned no surface_id");
+  const line = cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
+  await cmux(["send", "--workspace", workspaceId, "--surface", surfaceId, `${line}\\n`]);
+  await focusSurface(surfaceId);
+}
+
+export interface PlaceSpec {
+  projectId: string;
+  projectName: string;
+  cwd?: string;
+  command: string;
+}
+
+// Put a chat into cmux deterministically: as a new tab in this project's
+// workspace if one already exists, otherwise as a fresh workspace that we tag
+// so every later chat for the project consolidates into it. Returns the UUID of
+// the workspace the chat landed in (for the recentSpawns memo), or null.
+async function placeChat(spec: PlaceSpec): Promise<string | null> {
+  const existing = await findProjectWorkspace(spec.projectId);
+  if (existing) {
+    await addChatTab(existing, spec.cwd, spec.command);
+    return existing;
+  }
+  const before = await workspaceUuids();
+  const args = ["new-workspace", "--command", spec.command, "--focus", "true"];
+  if (spec.cwd) args.push("--cwd", spec.cwd);
+  await cmux(args);
+  const created = [...(await workspaceUuids())].find((w) => !before.has(w)) ?? null;
+  if (created) await tagWorkspace(created, spec.projectName, spec.projectId);
+  return created;
+}
+
 // Bring the cmux app to the foreground at the OS level (the macOS equivalent of
 // cmd-tabbing to it). cmux's own window.focus can't do this from a background
 // process — macOS blocks apps from stealing focus — but LaunchServices'
@@ -105,6 +249,9 @@ export interface OpenSpec {
   cwd?: string;
   // The command to run when spawning fresh. Defaults to a plain resume.
   command?: string;
+  // Identifies the project workspace to consolidate this chat into.
+  projectId: string;
+  projectName: string;
 }
 
 export type OpenResult = "focused" | "spawned";
@@ -124,7 +271,7 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
   const uuid = await findSurfaceUuid(spec.sessionId);
   if (uuid) {
     recentSpawns.delete(spec.sessionId);
-    await cmux(["rpc", "surface.focus", JSON.stringify({ surface_id: uuid })]);
+    await focusSurface(uuid);
     await activateApp();
     return "focused";
   }
@@ -148,17 +295,19 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
     return "focused";
   }
 
-  // 4. Genuinely not open → spawn and remember the workspace we created.
+  // 4. Genuinely not open → place it (tab in the project workspace, or a fresh
+  //    tagged workspace) and remember where it landed.
   spawning.add(spec.sessionId);
   try {
-    const before = await workspaceUuids();
     const command = spec.command ?? `claude --resume ${spec.sessionId}`;
-    const args = ["new-workspace", "--command", command, "--focus", "true"];
-    if (spec.cwd) args.push("--cwd", spec.cwd);
-    await cmux(args);
-    const created = [...(await workspaceUuids())].find((w) => !before.has(w));
-    if (created) {
-      recentSpawns.set(spec.sessionId, { workspace: created, at: Date.now() });
+    const workspace = await placeChat({
+      projectId: spec.projectId,
+      projectName: spec.projectName,
+      cwd: spec.cwd,
+      command,
+    });
+    if (workspace) {
+      recentSpawns.set(spec.sessionId, { workspace, at: Date.now() });
     }
     await activateApp();
     return "spawned";
@@ -172,6 +321,9 @@ export interface StartSpec {
   prompt: string;
   sessionId: string; // pinned via `claude --session-id`, so we know it up front
   cwd?: string;
+  // Identifies the project workspace to consolidate this chat into.
+  projectId: string;
+  projectName: string;
 }
 
 // Launch a BRAND-NEW Claude Code session seeded with `prompt`, in a fresh cmux
@@ -204,14 +356,15 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
 
   spawning.add(spec.taskKey);
   try {
-    const before = await workspaceUuids();
     const command = `claude --session-id ${spec.sessionId} ${shellQuote(spec.prompt)}`;
-    const args = ["new-workspace", "--command", command, "--focus", "true"];
-    if (spec.cwd) args.push("--cwd", spec.cwd);
-    await cmux(args);
-    const created = [...(await workspaceUuids())].find((w) => !before.has(w));
-    if (created) {
-      recentSpawns.set(spec.taskKey, { workspace: created, at: Date.now() });
+    const workspace = await placeChat({
+      projectId: spec.projectId,
+      projectName: spec.projectName,
+      cwd: spec.cwd,
+      command,
+    });
+    if (workspace) {
+      recentSpawns.set(spec.taskKey, { workspace, at: Date.now() });
     }
     await activateApp();
     return "spawned";

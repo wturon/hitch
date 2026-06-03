@@ -3,10 +3,12 @@
 // tests; it does not install signal handlers or call process.exit().
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import dotenv from "dotenv";
 import chokidar, { type FSWatcher } from "chokidar";
 import WebSocket from "ws";
@@ -15,6 +17,7 @@ import { anyApi } from "convex/server";
 import { openChat, startChat } from "./cmux.js";
 import {
   closeCodexAppServer,
+  latestCodexTurn,
   startCodexChat,
 } from "./codex.js";
 
@@ -239,6 +242,58 @@ function frontmatterValue(content: string, key: string): string | undefined {
   return undefined;
 }
 
+const execFileP = promisify(execFile);
+const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
+const FINISHED_CODEX_TURN_STATUSES = new Set([
+  "completed",
+  "failed",
+  "interrupted",
+]);
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // ESRCH → no such process (dead). EPERM → exists but owned by another
+    // user, so still alive.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function processCommand(pid: number): Promise<string> {
+  try {
+    const { stdout } = await execFileP("ps", ["-o", "command=", "-p", String(pid)]);
+    return stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
+// Same-machine liveness for the agent process recorded as chat-pid. A coding
+// agent stays alive between turns and dies only when the session truly ends, so
+// a dead pid is an unambiguous "the chat is over" signal — no timeout needed.
+// We also guard against PID reuse: if the live pid is now some unrelated
+// process (its command is no longer the harness binary), the agent is gone.
+async function isAgentAlive(pid: number, harness: string): Promise<boolean> {
+  if (!isProcessAlive(pid)) return false;
+  const command = await processCommand(pid);
+  if (!command) return true; // can't verify — don't over-heal a live session
+  const needle = harness === "codex" ? "codex" : "claude";
+  return command.includes(needle);
+}
+
+function taskStatus(content: string): string {
+  return (frontmatterValue(content, "status") ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+}
+
+function settledChatStatus(content: string): string | undefined {
+  return TERMINAL_TASK_STATUSES.has(taskStatus(content)) ? undefined : "waiting";
+}
+
 function unsubscribe(subscription: Unsubscribe): void {
   if (typeof subscription === "function") {
     subscription();
@@ -428,13 +483,103 @@ async function startHitchBinding({
   void sendHeartbeat();
   const heartbeatTimer = setInterval(() => void sendHeartbeat(), 15_000);
 
+  // Heal stale chat-status without fighting the hooks. Claude Code gets a
+  // per-session pid, so pid death clears stale working/waiting. Codex has no
+  // per-chat process; global hooks are the live signal, and this loop only
+  // settles stale working cards once durable turn history says the turn ended.
+  async function reconcileChatStatus(): Promise<void> {
+    const tasksDir = join(root.hitchPath, "tasks");
+    let entries;
+    try {
+      entries = await readdir(tasksDir, { withFileTypes: true });
+    } catch {
+      return; // no tasks dir yet
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const absPath = join(tasksDir, entry.name, "task.md");
+      let content: string;
+      try {
+        content = await readFile(absPath, "utf8");
+      } catch {
+        continue;
+      }
+      const status = frontmatterValue(content, "chat-status");
+      if (status !== "working" && status !== "waiting") continue;
+      const harness = frontmatterValue(content, "chat-harness") ?? "";
+
+      if (harness === "claude-code") {
+        const pidRaw = frontmatterValue(content, "chat-pid");
+        const pid = pidRaw ? Number(pidRaw) : NaN;
+        // No usable pid yet (freshly linked, before the first hook) → leave it
+        // to the hooks rather than risk clearing a session that's just booting.
+        if (!Number.isInteger(pid) || pid <= 1) continue;
+        if (await isAgentAlive(pid, harness)) continue;
+
+        const next = setFrontmatterKeys(content, {
+          "chat-status": undefined,
+          "chat-pid": undefined,
+        });
+        if (next === content) continue;
+        try {
+          await writeFile(absPath, next, "utf8");
+          logger.info(
+            `[hitch:${projectLabel}] healed stale claude chat-status (pid ${pid} gone) → tasks/${entry.name}/task.md`,
+          );
+        } catch {
+          // best-effort; the next tick retries
+        }
+        continue;
+      }
+
+      if (harness === "codex" && status === "working") {
+        const threadId = frontmatterValue(content, "chat-id") ?? "";
+        if (!threadId) continue;
+
+        let latestTurn;
+        try {
+          latestTurn = await latestCodexTurn(threadId);
+        } catch {
+          continue; // transient app-server/read issue; retry next tick
+        }
+        if (!latestTurn || !FINISHED_CODEX_TURN_STATUSES.has(latestTurn.status)) {
+          continue;
+        }
+
+        const next = setFrontmatterKeys(content, {
+          "chat-status": settledChatStatus(content),
+        });
+        if (next === content) continue;
+        try {
+          await writeFile(absPath, next, "utf8");
+          logger.info(
+            `[hitch:${projectLabel}] healed stale codex chat-status (latest turn ${latestTurn.id} ${latestTurn.status}) → tasks/${entry.name}/task.md`,
+          );
+        } catch {
+          // best-effort; the next tick retries
+        }
+      }
+    }
+  }
+
+  void reconcileChatStatus();
+  const reconcileTimer = setInterval(
+    () => void reconcileChatStatus().catch(() => {}),
+    15_000,
+  );
+
   const handledCommands = new Set<string>();
 
   async function runCommand(cmd: CommandDoc): Promise<void> {
     try {
       if (cmd.kind === "open-chat" && cmd.harness === "claude-code") {
         const sessionId = cmd.sessionId ?? "";
-        const result = await openChat({ sessionId, cwd: cmd.cwd });
+        const result = await openChat({
+          sessionId,
+          cwd: cmd.cwd,
+          projectId,
+          projectName: projectLabel,
+        });
         await client.mutation(anyApi.commands.completeCommand, {
           id: cmd._id,
           status: "done",
@@ -456,6 +601,8 @@ async function startHitchBinding({
           prompt: cmd.initialPrompt,
           sessionId,
           cwd: root.localPath,
+          projectId,
+          projectName: projectLabel,
         });
         await client.mutation(anyApi.commands.completeCommand, {
           id: cmd._id,
@@ -557,6 +704,7 @@ async function startHitchBinding({
       if (stopped) return;
       stopped = true;
       clearInterval(heartbeatTimer);
+      clearInterval(reconcileTimer);
       for (const subscription of subscriptions) unsubscribe(subscription);
       await watcher.close();
     },

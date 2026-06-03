@@ -329,18 +329,28 @@ function globalClaudeChatStatusHook(): string {
 // so it must scope itself: it only touches task files inside enabled Hitch
 // roots and only for tasks whose chat-harness is claude-code.
 //
+// It stamps chat-status (working↔waiting) on the happy path AND records the
+// agent's process id as chat-pid. The daemon uses chat-pid to heal cards whose
+// session ended without a clean Stop/SessionEnd (terminal closed, killed,
+// crashed): a dead pid means the chat is over. See daemon reconcileChatStatus.
+//
 // Contract: never break the session. Parse stdin, do a best-effort frontmatter
 // edit, and exit 0 without output for unrelated sessions or failures.
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, relative, resolve, sep } from "node:path";
 
 const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
 
-const STATUS_FOR_EVENT = {
-  UserPromptSubmit: "working",
-  Stop: "waiting",
-  SessionEnd: null,
+// Per event: which chat-status to write (if any) and whether to (re)stamp the
+// agent pid. SessionStart only refreshes the pid — a resumed session is a new
+// process — without forcing a status. SessionEnd clears both.
+const EVENT_PLAN = {
+  UserPromptSubmit: { status: "working", touchPid: true },
+  Stop: { status: "waiting", touchPid: true },
+  SessionStart: { touchPid: true },
+  SessionEnd: { clear: true },
 };
 
 const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
@@ -364,17 +374,29 @@ function parseFrontmatter(content) {
   return fm;
 }
 
-function setKey(content, key, value) {
+function setKeys(content, updates) {
   const eol = content.includes("\\r\\n") ? "\\r\\n" : "\\n";
   const match = content.match(FRONTMATTER_RE);
   let lines = match ? match[1].split(/\\r?\\n/) : [];
   const body = match ? match[2] : content;
+  const touched = new Set(Object.keys(updates));
   lines = lines.filter((line) => {
     const idx = line.indexOf(":");
-    return idx === -1 || line.slice(0, idx).trim() !== key;
+    return idx === -1 || !touched.has(line.slice(0, idx).trim());
   });
-  if (value != null && value !== "") lines.push(\`\${key}: \${value}\`);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value != null && value !== "") lines.push(\`\${key}: \${value}\`);
+  }
   return \`---\${eol}\${lines.join(eol)}\${eol}---\${eol}\${body}\`;
+}
+
+function willChange(fm, updates) {
+  for (const [key, value] of Object.entries(updates)) {
+    const current = (fm[key] ?? "").trim() || null;
+    const next = value == null || value === "" ? null : String(value);
+    if (current !== next) return true;
+  }
+  return false;
 }
 
 function readStdin() {
@@ -383,6 +405,39 @@ function readStdin() {
   } catch {
     return "";
   }
+}
+
+function basename(p) {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? p : p.slice(i + 1);
+}
+
+function psInfo(pid) {
+  try {
+    const out = execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], {
+      encoding: "utf8",
+    }).trim();
+    const m = out.match(/^\\s*(\\d+)\\s+(.*)$/);
+    if (!m) return null;
+    return { ppid: Number(m[1]), comm: m[2] };
+  } catch {
+    return null;
+  }
+}
+
+// The hook runs as a descendant of the claude process, so walk up the parent
+// chain to find it. Bounded so an odd tree can't loop; falls back to the
+// immediate parent if claude isn't positively identified.
+function resolveAgentPid() {
+  let pid = process.ppid;
+  for (let i = 0; i < 6 && pid > 1; i++) {
+    const info = psInfo(pid);
+    if (!info) break;
+    if (basename(info.comm) === "claude") return pid;
+    if (!info.ppid || info.ppid <= 1) break;
+    pid = info.ppid;
+  }
+  return process.ppid || null;
 }
 
 function taskStatus(fm) {
@@ -424,8 +479,8 @@ function main() {
   }
 
   const event = payload.hook_event_name;
-  if (!(event in STATUS_FOR_EVENT)) return;
-  const status = STATUS_FOR_EVENT[event];
+  const plan = EVENT_PLAN[event];
+  if (!plan) return;
 
   const sessionId = payload.session_id;
   if (!sessionId) return;
@@ -445,6 +500,13 @@ function main() {
     return;
   }
 
+  // Resolve the agent pid at most once, and only if we'll actually stamp it.
+  let cachedPid;
+  function agentPid() {
+    if (cachedPid === undefined) cachedPid = resolveAgentPid() ?? null;
+    return cachedPid;
+  }
+
   for (const entry of slugs) {
     if (!entry.isDirectory()) continue;
     const file = join(tasksDir, entry.name, "task.md");
@@ -462,15 +524,32 @@ function main() {
       continue;
     }
 
-    const nextStatus =
-      status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm))
-        ? undefined
-        : status;
-    const current = (fm["chat-status"] ?? "").trim() || null;
-    if (current === (nextStatus ?? null)) return;
+    const updates = {};
+    if (plan.clear) {
+      updates["chat-status"] = undefined;
+      updates["chat-pid"] = undefined;
+    } else {
+      if (plan.touchPid) {
+        const pid = agentPid();
+        if (pid) updates["chat-pid"] = String(pid);
+      }
+      if (plan.status) {
+        // A done/archived task should settle (clear), not light up as waiting.
+        const settle =
+          plan.status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm));
+        if (settle) {
+          updates["chat-status"] = undefined;
+          updates["chat-pid"] = undefined;
+        } else {
+          updates["chat-status"] = plan.status;
+        }
+      }
+    }
+
+    if (!willChange(fm, updates)) return;
 
     try {
-      writeFileSync(file, setKey(content, "chat-status", nextStatus));
+      writeFileSync(file, setKeys(content, updates));
     } catch {
       // Best effort; never fail the hook.
     }
@@ -813,7 +892,7 @@ function ensureProjectGitignore(projectId: ProjectId): ProjectSetupStatus {
 function hookEvents(harness: Harness): string[] {
   return harness === "codex"
     ? ["UserPromptSubmit", "Stop"]
-    : ["UserPromptSubmit", "Stop", "SessionEnd"];
+    : ["UserPromptSubmit", "Stop", "SessionStart", "SessionEnd"];
 }
 
 function readJsonObject(path: string): Record<string, unknown> {

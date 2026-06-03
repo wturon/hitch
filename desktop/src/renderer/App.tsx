@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { api } from "@convex/_generated/api";
@@ -90,7 +97,9 @@ interface ProjectStatus {
   name: string;
 }
 
-function statusesForProject(statuses: ProjectStatus[] | undefined): ProjectStatus[] {
+function statusesForProject(
+  statuses: ProjectStatus[] | undefined,
+): ProjectStatus[] {
   return statuses?.length ? statuses : [...DEFAULT_STATUSES];
 }
 
@@ -159,7 +168,13 @@ function CardSummary({ card }: { card: Card }) {
   );
 }
 
-function CardChat({ card, projectId }: { card: Card; projectId: Id<"projects"> }) {
+function CardChat({
+  card,
+  projectId,
+}: {
+  card: Card;
+  projectId: Id<"projects">;
+}) {
   if (!card.chat) return null;
 
   return (
@@ -175,13 +190,17 @@ function CardChat({ card, projectId }: { card: Card; projectId: Id<"projects"> }
   );
 }
 
-function CardContents({ card, projectId }: { card: Card; projectId: Id<"projects"> }) {
+function CardContents({
+  card,
+  projectId,
+}: {
+  card: Card;
+  projectId: Id<"projects">;
+}) {
   return (
     <>
       <CardSummary card={card} />
-      {card.chat && (
-        <CardChat card={card} projectId={projectId} />
-      )}
+      {card.chat && <CardChat card={card} projectId={projectId} />}
     </>
   );
 }
@@ -206,7 +225,9 @@ function SignInScreen() {
     <main className="flex min-h-screen items-center justify-center p-8">
       <section className="flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-card p-5 shadow-sm">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Sign in to Hitch</h1>
+          <h1 className="text-xl font-semibold tracking-tight">
+            Sign in to Hitch
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Use GitHub to open your live project board.
           </p>
@@ -285,6 +306,7 @@ function AppSidebar({
   onSelectProject,
   onCreateProject,
   onShowProjectDetails,
+  onShowLocalSync,
   onShowGlobalSettings,
   onShowDeviceTokens,
   onSignOut,
@@ -295,6 +317,7 @@ function AppSidebar({
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
+  onShowLocalSync: () => void;
   onShowGlobalSettings: () => void;
   onShowDeviceTokens: () => void;
   onSignOut: () => void;
@@ -348,7 +371,9 @@ function AppSidebar({
                   className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pl-2 text-left text-sm"
                 >
                   <LayoutDashboardIcon className="size-4 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {project.name}
+                  </span>
                 </button>
                 {/* Fixed trailing slot: the project-details gear, revealed on
                     hover so it doesn't crowd the project name. */}
@@ -387,6 +412,16 @@ function AppSidebar({
       />
 
       <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-3">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onShowLocalSync}
+          aria-label="Local sync"
+          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
+        >
+          <FolderSyncIcon />
+          <span className="hidden md:inline">Local sync</span>
+        </Button>
         <Button
           variant="ghost"
           size="sm"
@@ -429,6 +464,7 @@ function AppShell({
   onSelectProject,
   onCreateProject,
   onShowProjectDetails,
+  onShowLocalSync,
   onShowGlobalSettings,
   onShowDeviceTokens,
   onSignOut,
@@ -440,6 +476,7 @@ function AppShell({
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
+  onShowLocalSync: () => void;
   onShowGlobalSettings: () => void;
   onShowDeviceTokens: () => void;
   onSignOut: () => void;
@@ -454,6 +491,7 @@ function AppShell({
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
         onShowProjectDetails={onShowProjectDetails}
+        onShowLocalSync={onShowLocalSync}
         onShowGlobalSettings={onShowGlobalSettings}
         onShowDeviceTokens={onShowDeviceTokens}
         onSignOut={onSignOut}
@@ -532,7 +570,8 @@ function ProjectWorkspace() {
   const projects = useQuery(api.projects.listMine);
   const createProjectMutation = useMutation(api.projects.create);
   const authorizeDevice = useMutation(api.deviceTokens.authorizeDevice);
-  const [selectedProjectId, setSelectedProjectId] = useState<Id<"projects"> | null>(null);
+  const [selectedProjectId, setSelectedProjectId] =
+    useState<Id<"projects"> | null>(null);
   const [, setLocalConfig] = useState<LocalHitchConfig>({
     hitches: [],
   });
@@ -568,7 +607,10 @@ function ProjectWorkspace() {
       if (selectedProjectId !== null) setSelectedProjectId(null);
       return;
     }
-    if (!selectedProjectId || !projects.some(({ project }) => project._id === selectedProjectId)) {
+    if (
+      !selectedProjectId ||
+      !projects.some(({ project }) => project._id === selectedProjectId)
+    ) {
       setSelectedProjectId(projects[0].project._id);
     }
   }, [projects, selectedProjectId]);
@@ -606,7 +648,8 @@ function ProjectWorkspace() {
   }
 
   const selectedProject =
-    projects.find(({ project }) => project._id === selectedProjectId)?.project ?? null;
+    projects.find(({ project }) => project._id === selectedProjectId)
+      ?.project ?? null;
 
   if (!selectedProject) {
     return (
@@ -1040,7 +1083,9 @@ function DroppableColumn({
         </Tooltip>
       </div>
       {children}
-      {count === 0 && <p className="px-1 text-xs text-muted-foreground/70">No tasks</p>}
+      {count === 0 && (
+        <p className="px-1 text-xs text-muted-foreground/70">No tasks</p>
+      )}
 
       {/* While a card is hovering this column, fade its cards and explain that
           drop position isn't user-controlled — the board sorts by last update,
@@ -1077,7 +1122,9 @@ function BoardContent({
   onLocalConfigChange: (config: LocalHitchConfig) => void;
 }) {
   const { signOut } = useAuthActions();
-  const currentProject = projects.find(({ project }) => project._id === projectId)?.project;
+  const currentProject = projects.find(
+    ({ project }) => project._id === projectId,
+  )?.project;
   const files = useQuery(api.files.listFiles, { projectId });
   // Optimistically patch the cached file so a drag/archive/delete — and a brand
   // new task — reflects instantly instead of waiting on the frontmatter →
@@ -1155,8 +1202,7 @@ function BoardContent({
       const el = e.target as HTMLElement | null;
       if (
         el &&
-        (el.isContentEditable ||
-          /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
+        (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
       ) {
         return;
       }
@@ -1176,6 +1222,7 @@ function BoardContent({
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
         onShowProjectDetails={() => setShowProjectDetails(true)}
+        onShowLocalSync={() => setShowLocalSync(true)}
         onShowGlobalSettings={() => setShowGlobalSettings(true)}
         onShowDeviceTokens={() => setShowDeviceTokens(true)}
         onSignOut={() => void signOut()}
@@ -1192,7 +1239,6 @@ function BoardContent({
           onOpenChange={setShowGlobalSettings}
         />
         <LocalSyncDialog
-          projectId={projectId}
           open={showLocalSync}
           onOpenChange={setShowLocalSync}
           onConfigChange={onLocalConfigChange}
@@ -1243,7 +1289,7 @@ function BoardContent({
   ) as Record<string, Card[]>;
 
   const selected = selectedPath
-    ? cards.find((card) => card.path === selectedPath) ?? null
+    ? (cards.find((card) => card.path === selectedPath) ?? null)
     : null;
   const target: TaskTarget | null = selected && {
     projectId,
@@ -1388,6 +1434,7 @@ function BoardContent({
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
       onShowProjectDetails={() => setShowProjectDetails(true)}
+      onShowLocalSync={() => setShowLocalSync(true)}
       onShowGlobalSettings={() => setShowGlobalSettings(true)}
       onShowDeviceTokens={() => setShowDeviceTokens(true)}
       onSignOut={() => void signOut()}
@@ -1402,14 +1449,6 @@ function BoardContent({
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowLocalSync(true)}
-            >
-              <FolderSyncIcon />
-              Local sync
-            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -1514,7 +1553,6 @@ function BoardContent({
         />
 
         <LocalSyncDialog
-          projectId={projectId}
           open={showLocalSync}
           onOpenChange={setShowLocalSync}
           onConfigChange={onLocalConfigChange}

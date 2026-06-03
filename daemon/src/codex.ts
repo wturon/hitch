@@ -44,6 +44,23 @@ interface ThreadStartResponse {
   thread: { id: string };
 }
 
+export type CodexTurnStatus =
+  | "completed"
+  | "interrupted"
+  | "failed"
+  | "inProgress";
+
+interface ThreadReadResponse {
+  thread: {
+    turns?: Array<{
+      id: string;
+      status: CodexTurnStatus;
+      startedAt?: number | null;
+      completedAt?: number | null;
+    }>;
+  };
+}
+
 export interface CodexStartSpec {
   taskKey: string;
   prompt: string;
@@ -56,6 +73,13 @@ export interface CodexStartSpec {
 export interface CodexStartResult {
   status: "focused" | "started";
   threadId: string;
+}
+
+export interface CodexTurnSnapshot {
+  id: string;
+  status: CodexTurnStatus;
+  startedAt?: number | null;
+  completedAt?: number | null;
 }
 
 const recentStarts = new Map<string, { threadId: string; at: number }>();
@@ -307,6 +331,19 @@ export async function openCodexThread(threadId: string): Promise<void> {
   await run("/usr/bin/open", [`codex://threads/${encodeURIComponent(threadId)}`], {
     timeout: 5_000,
   });
+}
+
+export async function latestCodexTurn(
+  threadId: string,
+): Promise<CodexTurnSnapshot | null> {
+  if (!threadId) return null;
+  const response = await server.request<ThreadReadResponse>(
+    "thread/read",
+    { threadId, includeTurns: true },
+    10_000,
+  );
+  const turns = response.thread.turns ?? [];
+  return turns.at(-1) ?? null;
 }
 
 export async function closeCodexAppServer(): Promise<void> {

@@ -1,14 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Id } from "@convex/_generated/dataModel";
-import {
-  CircleIcon,
-  FolderPlusIcon,
-  PlayIcon,
-  SquareIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { CircleIcon, PlayIcon, SquareIcon, Trash2Icon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -80,7 +74,9 @@ interface HitchDaemonApi {
   getConfig: () => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
   getProjectSetup: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
-  ensureHitchDirectory: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
+  ensureHitchDirectory: (
+    projectId: Id<"projects">,
+  ) => Promise<ProjectSetupStatus>;
   ensureGitignore: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
   getDeviceAuth: () => Promise<{
@@ -138,12 +134,10 @@ function StatusPill({ status }: { status: DaemonStatus }) {
 }
 
 export function LocalSyncDialog({
-  projectId,
   open,
   onOpenChange,
   onConfigChange,
 }: {
-  projectId: Id<"projects">;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfigChange?: (config: LocalHitchConfig) => void;
@@ -151,11 +145,6 @@ export function LocalSyncDialog({
   const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
   const [daemon, setDaemon] = useState<DaemonState>(emptyState);
   const [config, setConfig] = useState<LocalHitchConfig>(emptyConfig);
-  const [projectName, setProjectName] = useState("");
-  const [localPath, setLocalPath] = useState("");
-  const [updateGitignore, setUpdateGitignore] = useState(true);
-  const [formError, setFormError] = useState("");
-  const [busy, setBusy] = useState(false);
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -164,44 +153,17 @@ export function LocalSyncDialog({
     void bridge.getConfig().then((next) => {
       setConfig(next);
       onConfigChange?.(next);
-      setProjectName(next.hitches.find((hitch) => hitch.projectId === projectId)?.projectName ?? "");
     });
     return bridge.onState(setDaemon);
-  }, [bridge, onConfigChange, open, projectId]);
+  }, [bridge, onConfigChange, open]);
 
   useEffect(() => {
     if (open) logEndRef.current?.scrollIntoView({ block: "end" });
   }, [daemon.logs.length, open]);
 
-  const activeHitch = useMemo(
-    () => config.hitches.find((hitch) => hitch.projectId === projectId),
-    [config, projectId],
-  );
   const isBusy = daemon.status === "starting" || daemon.status === "stopping";
   const isRunning = daemon.status === "running";
-
-  async function submitHitch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!bridge) return;
-    setFormError("");
-    setBusy(true);
-    try {
-      const result = await bridge.addHitch({
-        projectId,
-        projectName,
-        localPath,
-        updateGitignore,
-      });
-      setConfig(result.config);
-      onConfigChange?.(result.config);
-      setLocalPath("");
-      setUpdateGitignore(true);
-    } catch (err) {
-      setFormError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const hitches = config.hitches;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -209,7 +171,8 @@ export function LocalSyncDialog({
         <DialogHeader>
           <DialogTitle>Local sync</DialogTitle>
           <DialogDescription>
-	            Configure the local folder this desktop app watches for this project.
+            Monitor the sync daemon and every project folder it&apos;s watching.
+            Add or remove folders from a project&apos;s settings.
           </DialogDescription>
         </DialogHeader>
 
@@ -229,11 +192,16 @@ export function LocalSyncDialog({
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">PID</p>
-                  <p className="mt-2 truncate text-sm font-medium">{daemon.pid ?? "none"}</p>
+                  <p className="mt-2 truncate text-sm font-medium">
+                    {daemon.pid ?? "none"}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Config</p>
-                  <p className="mt-2 truncate text-sm font-medium" title={daemon.configPath}>
+                  <p
+                    className="mt-2 truncate text-sm font-medium"
+                    title={daemon.configPath}
+                  >
                     {daemon.configPath || "Unknown"}
                   </p>
                 </div>
@@ -279,10 +247,19 @@ export function LocalSyncDialog({
                     </p>
                   ) : (
                     daemon.logs.map((entry) => (
-                      <div className="grid grid-cols-[4.5rem_4rem_minmax(0,1fr)] gap-2 py-0.5" key={entry.id}>
-                        <time className="text-muted-foreground">{entry.at}</time>
-                        <span className="text-muted-foreground">{entry.stream}</span>
-                        <pre className="min-w-0 whitespace-pre-wrap break-words">{entry.message}</pre>
+                      <div
+                        className="grid grid-cols-[4.5rem_4rem_minmax(0,1fr)] gap-2 py-0.5"
+                        key={entry.id}
+                      >
+                        <time className="text-muted-foreground">
+                          {entry.at}
+                        </time>
+                        <span className="text-muted-foreground">
+                          {entry.stream}
+                        </span>
+                        <pre className="min-w-0 whitespace-pre-wrap break-words">
+                          {entry.message}
+                        </pre>
                       </div>
                     ))
                   )}
@@ -294,62 +271,53 @@ export function LocalSyncDialog({
             <section className="flex flex-col gap-3">
               <div className="rounded-lg border bg-muted/20 p-3">
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-	                  Project hitch
+                  Watched folders
                 </p>
-                {activeHitch ? (
-                  <div className="mt-2 space-y-1 text-sm">
-	                    <p className="font-medium">{activeHitch.projectName || activeHitch.projectId}</p>
-                    <p className="truncate text-muted-foreground" title={activeHitch.localPath}>
-                      {activeHitch.localPath}
-                    </p>
-                    <p className="truncate text-xs text-muted-foreground" title={hitchPathFromLocalPath(activeHitch.localPath)}>
-                      {hitchPathFromLocalPath(activeHitch.localPath)}
-                    </p>
-                  </div>
-                ) : (
+                {hitches.length === 0 ? (
                   <p className="mt-2 text-sm text-muted-foreground">
-                    No local folder is configured for this project.
+                    No folders are hitched yet. Bind one from a project&apos;s
+                    settings.
                   </p>
+                ) : (
+                  <ul className="mt-2 flex flex-col gap-2">
+                    {hitches.map((hitch) => (
+                      <li
+                        key={hitch.projectId}
+                        className={cn(
+                          "rounded-md border bg-background px-3 py-2 text-sm",
+                          !hitch.enabled && "opacity-60",
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p
+                            className="min-w-0 flex-1 truncate font-medium"
+                            title={hitch.projectName || hitch.projectId}
+                          >
+                            {hitch.projectName || hitch.projectId}
+                          </p>
+                          {!hitch.enabled && (
+                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                              Disabled
+                            </span>
+                          )}
+                        </div>
+                        <p
+                          className="truncate text-muted-foreground"
+                          title={hitch.localPath}
+                        >
+                          {hitch.localPath}
+                        </p>
+                        <p
+                          className="truncate text-xs text-muted-foreground"
+                          title={hitchPathFromLocalPath(hitch.localPath)}
+                        >
+                          {hitchPathFromLocalPath(hitch.localPath)}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
-
-              <form className="flex flex-col gap-3 rounded-lg border p-3" onSubmit={submitHitch}>
-                <h3 className="text-sm font-medium">Hitch this project</h3>
-                <label className="flex flex-col gap-1.5 text-sm">
-                  Local path
-                  <input
-                    value={localPath}
-                    onChange={(event) => setLocalPath(event.target.value)}
-                    placeholder="/Users/you/code/project"
-                    spellCheck={false}
-                    className="h-9 rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </label>
-                <label className="flex flex-col gap-1.5 text-sm">
-                  Project name
-                  <input
-                    value={projectName}
-                    onChange={(event) => setProjectName(event.target.value)}
-                    placeholder="Optional display name"
-                    spellCheck={false}
-                    className="h-9 rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={updateGitignore}
-                    onChange={(event) => setUpdateGitignore(event.target.checked)}
-                    className="size-4"
-                  />
-                  Add .hitch/ to .gitignore
-                </label>
-                {formError && <p className="text-sm text-destructive">{formError}</p>}
-                <Button type="submit" disabled={!bridge || busy}>
-                  <FolderPlusIcon />
-                  {busy ? "Adding..." : "Add hitch"}
-                </Button>
-              </form>
             </section>
           </div>
         )}
