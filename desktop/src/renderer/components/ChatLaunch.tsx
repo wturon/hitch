@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
-import { ExternalLink, LoaderCircle, Terminal } from "lucide-react";
+import { ExternalLink, Info, LoaderCircle, Terminal } from "lucide-react";
 
 import {
   harnessLabel,
@@ -14,6 +14,11 @@ import {
   type ChatStatus,
 } from "@/lib/chat";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 // Leading glyph for the launch button: the chat's live state when we have one
 // (spinner while working, a steady dot once it's your turn — the "blue dot"),
@@ -65,16 +70,32 @@ export function ChatLaunch({
   if (launch.kind === "url") {
     if (chat.harness === "codex" && openState === "pending") {
       return (
-        <Button
-          variant="secondary"
-          size={size}
-          disabled
-          className={className}
-          aria-label="Codex thread is starting"
-        >
-          <LaunchIcon status={status} fallback={<ExternalLink />} />
-          Codex starting…
-        </Button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                tabIndex={0}
+                className={className}
+                aria-label="Why Codex cannot open yet"
+              />
+            }
+          >
+            <Button
+              variant="secondary"
+              size={size}
+              disabled
+              aria-label="Codex thread is starting"
+            >
+              <LaunchIcon status={status} fallback={<ExternalLink />} />
+              Codex starting…
+              <Info className="opacity-70" aria-hidden />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-56">
+            You'll be able to open the chat after the first turn. This may take
+            a few minutes.
+          </TooltipContent>
+        </Tooltip>
       );
     }
 
