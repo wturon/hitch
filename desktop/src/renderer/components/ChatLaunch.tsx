@@ -19,6 +19,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 // Leading glyph for the launch button: the chat's live state when we have one
 // (spinner while working, a steady dot once it's your turn — the "blue dot"),
@@ -75,7 +76,7 @@ export function ChatLaunch({
             render={
               <span
                 tabIndex={0}
-                className={className}
+                className={cn("inline-flex", className)}
                 aria-label="Why Codex cannot open yet"
               />
             }
