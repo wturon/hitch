@@ -67,7 +67,7 @@ export default defineSchema({
     .index("by_key", ["projectId", "hostname"]),
 
   // A queue of actions for daemons to run on the local machine — things the
-  // browser can't do itself, like opening a terminal. The web UI enqueues a
+  // browser can't do itself, like opening a terminal. The desktop UI enqueues a
   // command; the matching daemon (by project, optionally pinned to a host)
   // picks it up via a reactive query, runs it, and marks it done.
   commands: defineTable({

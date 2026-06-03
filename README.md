@@ -24,8 +24,7 @@ Coding agents are great at reading and writing files in a repo. But task/status 
 
 ## Status
 
-Early. The local development target is the Electron desktop app, with the older
-Next web app considered deprecated scaffolding.
+Early. The local development target is the Electron desktop app.
 
 ## Local Development
 

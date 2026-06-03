@@ -16,7 +16,6 @@ to git.
   echo suppression so a synced write never loops.
 - `desktop/` — Electron app with the canonical Vite/React Kanban board and
   local daemon controls.
-- `web/` — deprecated Next.js scaffold; keep changes focused on `desktop/`.
 - `hitch.config.json` — the active project + which local paths are hitched.
 
 ## Run

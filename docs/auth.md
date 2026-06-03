@@ -31,7 +31,7 @@ npx convex env set SITE_URL http://127.0.0.1:5173
 ```
 
 If `SITE_URL` is still `http://localhost:3000`, GitHub sign-in can complete and
-then redirect the Electron window to the deprecated Next.js dev server.
+then redirect the Electron window away from the Vite renderer.
 
 ## Project Authorization
 

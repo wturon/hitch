@@ -7,7 +7,6 @@
 // Tracked outputs (committed, consumed directly by the apps):
 //   assets/icon.png                   1024px master raster (dev dock icon, electron-builder source)
 //   desktop/src/renderer/public/      favicon.svg + favicon.ico for the renderer
-//   web/app/                          icon.svg + favicon.ico for the (deprecated) web app
 // Build-only output (gitignored, regenerate on demand for packaging):
 //   desktop/build/icon.icns           macOS .icns (via native `iconutil`)
 import { execFileSync } from "node:child_process";
@@ -49,9 +48,9 @@ rmSync(dirname(iconset), { recursive: true, force: true });
 
 // Favicons. Ship the SVG for modern browsers + a multi-size .ico fallback.
 const ico = await pngToIco([render(16), render(32), render(48)]);
-for (const dir of ["desktop/src/renderer/public", "web/app"]) {
+for (const dir of ["desktop/src/renderer/public"]) {
   mkdirSync(join(root, dir), { recursive: true });
-  copyFileSync(masterSvgPath, join(root, dir, dir.includes("web") ? "icon.svg" : "favicon.svg"));
+  copyFileSync(masterSvgPath, join(root, dir, "favicon.svg"));
   writeFileSync(join(root, dir, "favicon.ico"), ico);
 }
 

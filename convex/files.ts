@@ -44,7 +44,7 @@ export const upsertFile = mutation({
 });
 
 // All files for a project (including tombstones, so the daemon can apply
-// deletes). The web UI filters out deleted rows.
+// deletes). The desktop UI filters out deleted rows.
 export const listFiles = query({
   args: { projectId: v.id("projects"), deviceToken: v.optional(v.string()) },
   handler: async (ctx, args) => {
