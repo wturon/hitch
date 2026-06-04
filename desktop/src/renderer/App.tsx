@@ -24,6 +24,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import {
+  AlertCircleIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
   Code2Icon,
@@ -55,7 +56,10 @@ import { ChatLaunch } from "@/components/ChatLaunch";
 import { DeviceTokens } from "@/components/DeviceTokens";
 import { GlobalSettingsDialog } from "@/components/GlobalSettingsDialog";
 import { LocalSyncDialog } from "@/components/LocalSyncDialog";
-import { ProjectDetailsDialog } from "@/components/ProjectDetailsDialog";
+import {
+  ProjectDetailsDialog,
+  type DetailsTab as ProjectDetailsTab,
+} from "@/components/ProjectDetailsDialog";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { Button } from "@/components/ui/button";
 import {
@@ -579,14 +583,15 @@ function ProjectWorkspace() {
   const authorizeDevice = useMutation(api.deviceTokens.authorizeDevice);
   const [selectedProjectId, setSelectedProjectId] =
     useState<Id<"projects"> | null>(null);
-  const [, setLocalConfig] = useState<LocalHitchConfig>({
-    hitches: [],
-  });
+  const [localConfig, setLocalConfig] = useState<LocalHitchConfig | null>(null);
   const [deviceAuth, setDeviceAuth] = useState<DeviceAuthState | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
 
   useEffect(() => {
-    if (!bridge) return;
+    if (!bridge) {
+      setLocalConfig({ hitches: [] });
+      return;
+    }
     void bridge.getConfig().then((config) => {
       setLocalConfig(config);
     });
@@ -673,6 +678,7 @@ function ProjectWorkspace() {
       creatingProject={creatingProject}
       onSelectProject={selectProject}
       onCreateProject={createProject}
+      localConfig={localConfig}
       onLocalConfigChange={setLocalConfig}
     />
   );
@@ -1119,6 +1125,7 @@ function BoardContent({
   creatingProject,
   onSelectProject,
   onCreateProject,
+  localConfig,
   onLocalConfigChange,
 }: {
   projectId: Id<"projects">;
@@ -1126,6 +1133,7 @@ function BoardContent({
   creatingProject: boolean;
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
+  localConfig: LocalHitchConfig | null;
   onLocalConfigChange: (config: LocalHitchConfig) => void;
 }) {
   const { signOut } = useAuthActions();
@@ -1186,6 +1194,8 @@ function BoardContent({
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showLocalSync, setShowLocalSync] = useState(false);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
+  const [projectDetailsTab, setProjectDetailsTab] =
+    useState<ProjectDetailsTab>("general");
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
@@ -1197,6 +1207,17 @@ function BoardContent({
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
+  const localConfigReady = localConfig !== null;
+  const projectIsHitched = Boolean(
+    localConfig?.hitches.some(
+      (hitch) => hitch.projectId === projectId && hitch.enabled !== false,
+    ),
+  );
+
+  function openProjectDetails(tab: ProjectDetailsTab = "general") {
+    setProjectDetailsTab(tab);
+    setShowProjectDetails(true);
+  }
 
   // `C` arms the composer on the first column for keyboard-driven creation.
   // Ignored while typing in a field or with the editor open, and when chorded
@@ -1228,7 +1249,7 @@ function BoardContent({
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
-        onShowProjectDetails={() => setShowProjectDetails(true)}
+        onShowProjectDetails={() => openProjectDetails()}
         onShowLocalSync={() => setShowLocalSync(true)}
         onShowGlobalSettings={() => setShowGlobalSettings(true)}
         onShowDeviceTokens={() => setShowDeviceTokens(true)}
@@ -1255,6 +1276,7 @@ function BoardContent({
           open={showProjectDetails}
           onOpenChange={setShowProjectDetails}
           onLocalConfigChange={onLocalConfigChange}
+          initialTab={projectDetailsTab}
         />
       </AppShell>
     );
@@ -1441,7 +1463,7 @@ function BoardContent({
       creatingProject={creatingProject}
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
-      onShowProjectDetails={() => setShowProjectDetails(true)}
+      onShowProjectDetails={() => openProjectDetails()}
       onShowLocalSync={() => setShowLocalSync(true)}
       onShowGlobalSettings={() => setShowGlobalSettings(true)}
       onShowDeviceTokens={() => setShowDeviceTokens(true)}
@@ -1460,7 +1482,7 @@ function BoardContent({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setShowProjectDetails(true)}
+              onClick={() => openProjectDetails()}
             >
               <SettingsIcon />
               Project settings
@@ -1481,6 +1503,29 @@ function BoardContent({
             </Button>
           </div>
         </header>
+
+        {localConfigReady && !projectIsHitched && (
+          <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-amber-500/10 p-3 text-sm">
+            <div className="flex min-w-0 items-start gap-2">
+              <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
+              <div className="min-w-0">
+                <p className="font-medium">This project is not hitched locally.</p>
+                <p className="mt-0.5 text-muted-foreground">
+                  Link it to your repo folder before launching coding harnesses.
+                </p>
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => openProjectDetails("local")}
+            >
+              <FolderSyncIcon />
+              Open local setup
+            </Button>
+          </section>
+        )}
 
         <DndContext
           sensors={sensors}
@@ -1571,6 +1616,7 @@ function BoardContent({
           open={showProjectDetails}
           onOpenChange={setShowProjectDetails}
           onLocalConfigChange={onLocalConfigChange}
+          initialTab={projectDetailsTab}
         />
 
         <TaskDialog

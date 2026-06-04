@@ -8,6 +8,9 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+- Show a project-board warning when the selected project is not hitched to a
+  local folder, with a quick link into the project's Local setup tab.
+
 ## [0.1.7] - 2026-06-04
 
 - Fix a startup crash introduced in 0.1.6. The new cmux-config editing pulled in

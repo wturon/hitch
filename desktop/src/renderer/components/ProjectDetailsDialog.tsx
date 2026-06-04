@@ -52,7 +52,7 @@ type ProjectDetails = NonNullable<
   FunctionReturnType<typeof api.projects.details>
 >;
 
-type DetailsTab = "general" | "statuses" | "local" | "members";
+export type DetailsTab = "general" | "statuses" | "local" | "members";
 
 const TABS = [
   { id: "general", label: "General", icon: Settings2Icon },
@@ -245,11 +245,13 @@ export function ProjectDetailsDialog({
   open,
   onOpenChange,
   onLocalConfigChange,
+  initialTab = "general",
 }: {
   projectId: Id<"projects">;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onLocalConfigChange?: (config: LocalHitchConfig) => void;
+  initialTab?: DetailsTab;
 }) {
   const details = useQuery(api.projects.details, open ? { projectId } : "skip");
 
@@ -277,6 +279,7 @@ export function ProjectDetailsDialog({
             projectId={projectId}
             details={details}
             onLocalConfigChange={onLocalConfigChange}
+            initialTab={initialTab}
           />
         )}
       </DialogContent>
@@ -288,15 +291,17 @@ function ProjectDetailsForm({
   projectId,
   details,
   onLocalConfigChange,
+  initialTab,
 }: {
   projectId: Id<"projects">;
   details: ProjectDetails;
   onLocalConfigChange?: (config: LocalHitchConfig) => void;
+  initialTab: DetailsTab;
 }) {
   const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
   const updateDetails = useMutation(api.projects.updateDetails);
   const updateStatuses = useMutation(api.projects.updateStatuses);
-  const [tab, setTab] = useState<DetailsTab>("general");
+  const [tab, setTab] = useState<DetailsTab>(initialTab);
   const [name, setName] = useState(details.project.name);
   const [statuses, setStatuses] = useState<ProjectStatus[]>(
     statusesForProject(details.project.statuses),
@@ -327,6 +332,10 @@ function ProjectDetailsForm({
   useEffect(() => {
     setStatuses(statusesForProject(details.project.statuses));
   }, [details.project._id, details.project.statuses]);
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [details.project._id, initialTab]);
 
   async function refreshSetup() {
     if (!bridge) return;
@@ -624,8 +633,8 @@ function ProjectDetailsForm({
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium">Local setup</h3>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    Bind this project to a folder and keep its .hitch workspace
-                    private.
+                    Bind this project to the folder where you work on its repo.
+                    Hitch keeps that folder&apos;s .hitch workspace private.
                   </p>
                 </div>
                 <Button
@@ -700,6 +709,10 @@ function ProjectDetailsForm({
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
+                  <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                    Choose the local checkout for this project, usually the same
+                    directory where you cloned the repository.
+                  </p>
                   <div className="flex gap-2">
                     <input
                       value={localPath}
