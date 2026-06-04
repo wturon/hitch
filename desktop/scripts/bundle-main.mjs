@@ -16,6 +16,12 @@ await build({
   platform: "node",
   target: "node24",
   format: "esm",
+  // Prefer each package's ESM entry. esbuild's default for platform:"node" is
+  // ["main","module"], which pulls jsonc-parser's UMD build — its factory calls
+  // require("./impl/format") through a renamed binding esbuild can't follow, so
+  // the require survives into the bundle and throws "Cannot find module
+  // './impl/format'" at boot. The ESM build uses static imports esbuild inlines.
+  mainFields: ["module", "main"],
   external: ["electron"],
   banner: {
     js: 'import { createRequire as __hitchCreateRequire } from "node:module"; const require = __hitchCreateRequire(import.meta.url);',

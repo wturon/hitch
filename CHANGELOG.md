@@ -8,6 +8,19 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-04
+
+- Fix a startup crash introduced in 0.1.6. The new cmux-config editing pulled in
+  `jsonc-parser`, whose UMD build calls `require("./impl/format")` through a
+  binding the bundler couldn't follow — so the require leaked into the shipped
+  bundle and threw `Cannot find module './impl/format'` on every launch. The main
+  bundler now prefers each dependency's ESM entry, which inlines cleanly. **0.1.6
+  is bricked on launch; install this build instead.**
+- Fix a crash when clicking "Restart to update". During install the window is
+  torn down before the daemon's final state broadcast, and that broadcast wrote
+  to the destroyed window (`TypeError: Object has been destroyed`). State and
+  updater broadcasts now skip a destroyed window.
+
 ## [0.1.6] - 2026-06-04
 
 - Fix the cmux setup dialog. The 0.1.5 "open settings" / "reload" buttons

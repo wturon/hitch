@@ -659,7 +659,9 @@ let updaterStatus: UpdaterStatus = {
 
 function setUpdaterStatus(patch: Partial<UpdaterStatus>): void {
   updaterStatus = { ...updaterStatus, ...patch };
-  mainWindow?.webContents.send("updater:status", updaterStatus);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("updater:status", updaterStatus);
+  }
 }
 
 function state(): DaemonState {
@@ -673,7 +675,13 @@ function state(): DaemonState {
 }
 
 function broadcastState(): void {
-  mainWindow?.webContents.send("daemon:state", state());
+  // During quitAndInstall the window's webContents is destroyed before the
+  // daemon's exit handler fires its final setStatus, so guard against a
+  // destroyed window — `mainWindow?` alone stays truthy and would throw
+  // "Object has been destroyed".
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("daemon:state", state());
+  }
 }
 
 function addLog(stream: LogEntry["stream"], message: string): void {
