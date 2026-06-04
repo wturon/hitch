@@ -8,6 +8,8 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-04
+
 - Fix the cmux setup dialog. The 0.1.5 "open settings" / "reload" buttons
   couldn't actually work — they went through the very cmux socket that's blocking
   Hitch, so they failed with the same error. The dialog now offers
