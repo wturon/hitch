@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -25,13 +25,19 @@ export function DeviceTokens({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
-        {open && <DeviceTokensContent />}
+        <DialogHeader>
+          <DialogTitle>Device tokens</DialogTitle>
+          <DialogDescription>
+            Create and revoke tokens that let local daemons sync Hitch folders.
+          </DialogDescription>
+        </DialogHeader>
+        {open && <DeviceTokensPanel />}
       </DialogContent>
     </Dialog>
   );
 }
 
-function DeviceTokensContent() {
+export function DeviceTokensPanel() {
   const deviceNameId = "device-token-name";
   const newTokenId = "device-token-value";
   const tokens = useQuery(api.deviceTokens.list, {});
@@ -67,10 +73,6 @@ function DeviceTokensContent() {
 
   return (
     <>
-      <DialogHeader>
-        <DialogTitle>Device tokens</DialogTitle>
-      </DialogHeader>
-
       <section className="flex flex-col gap-2">
         <label
           htmlFor={deviceNameId}
@@ -125,7 +127,9 @@ function DeviceTokensContent() {
         {tokens === undefined ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : activeTokens.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No active device tokens.</p>
+          <p className="text-sm text-muted-foreground">
+            No active device tokens.
+          </p>
         ) : (
           activeTokens.map((token) => (
             <div
@@ -155,8 +159,6 @@ function DeviceTokensContent() {
           ))
         )}
       </section>
-
-      <DialogFooter />
     </>
   );
 }

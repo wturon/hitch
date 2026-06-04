@@ -6,7 +6,9 @@ import {
   CheckCircle2Icon,
   Code2Icon,
   DownloadIcon,
+  FolderSyncIcon,
   InfoIcon,
+  KeyRoundIcon,
   PowerIcon,
   RefreshCwIcon,
   RotateCwIcon,
@@ -16,6 +18,11 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { DeviceTokensPanel } from "@/components/DeviceTokens";
+import {
+  LocalSyncPanel,
+  type LocalHitchConfig,
+} from "@/components/LocalSyncDialog";
 import { useUpdater } from "@/components/UpdateBanner";
 import {
   Dialog,
@@ -24,10 +31,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 type Harness = "codex" | "claude-code";
 
-interface HarnessHookStatus {
+export interface HarnessHookStatus {
   harness: Harness;
   installed: boolean;
   configPath: string | null;
@@ -38,10 +46,27 @@ interface HarnessHookStatus {
   configWired: boolean;
 }
 
-interface GlobalHarnessSetupStatus {
+export interface GlobalHarnessSetupStatus {
   codex: HarnessHookStatus;
   claudeCode: HarnessHookStatus;
 }
+
+export type GlobalSettingsTab =
+  | "harnesses"
+  | "local-sync"
+  | "device-tokens"
+  | "updates";
+
+const TABS = [
+  { id: "harnesses", label: "Harness settings", icon: Code2Icon },
+  { id: "local-sync", label: "Local sync logs", icon: FolderSyncIcon },
+  { id: "device-tokens", label: "Device tokens", icon: KeyRoundIcon },
+  { id: "updates", label: "App updates", icon: RotateCwIcon },
+] as const satisfies ReadonlyArray<{
+  id: GlobalSettingsTab;
+  label: string;
+  icon: typeof Code2Icon;
+}>;
 
 interface HitchDaemonApi {
   getGlobalHarnessSetup: () => Promise<GlobalHarnessSetupStatus>;
@@ -55,24 +80,36 @@ interface HitchDaemonApi {
 export function GlobalSettingsDialog({
   open,
   onOpenChange,
+  initialTab = "harnesses",
+  onLocalConfigChange,
+  onHarnessSetupChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialTab?: GlobalSettingsTab;
+  onLocalConfigChange?: (config: LocalHitchConfig) => void;
+  onHarnessSetupChange?: (setup: GlobalHarnessSetupStatus) => void;
 }) {
   const bridge =
     typeof window !== "undefined"
       ? (window.hitchDaemon as unknown as HitchDaemonApi | undefined)
       : undefined;
+  const [tab, setTab] = useState<GlobalSettingsTab>(initialTab);
   const [setup, setSetup] = useState<GlobalHarnessSetupStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function receiveSetup(next: GlobalHarnessSetupStatus) {
+    setSetup(next);
+    onHarnessSetupChange?.(next);
+  }
 
   async function refresh() {
     if (!bridge) return;
     setRefreshing(true);
     setError(null);
     try {
-      setSetup(await bridge.getGlobalHarnessSetup());
+      receiveSetup(await bridge.getGlobalHarnessSetup());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -82,67 +119,124 @@ export function GlobalSettingsDialog({
 
   useEffect(() => {
     if (!open) return;
+    setTab(initialTab);
     void refresh();
-  }, [bridge, open]);
+  }, [bridge, initialTab, open]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="flex h-[660px] max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-4xl">
         <DialogHeader>
-          <DialogTitle>Harness settings</DialogTitle>
+          <DialogTitle>Global settings</DialogTitle>
           <DialogDescription>
-            Manage user-level lifecycle hooks for the coding harnesses Hitch can
-            launch.
+            Manage Hitch Desktop, local sync, and user-level harness setup.
           </DialogDescription>
         </DialogHeader>
 
-        {!bridge ? (
-          <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-            Global settings are only available inside Hitch Desktop.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            <div className="flex gap-3 rounded-lg border bg-muted/35 px-3 py-2.5 text-sm">
-              <InfoIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              <p className="leading-5 text-muted-foreground">
-                These hooks let Hitch track chat lifecycle events and show live
-                working or waiting states on task cards. They only update task
-                frontmatter inside enabled Hitch folders.
-              </p>
-            </div>
+        <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
+          <nav className="flex w-44 shrink-0 flex-col gap-1 overflow-y-auto">
+            {TABS.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors",
+                  tab === id
+                    ? "bg-muted font-medium text-foreground"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                )}
+              >
+                <Icon className="size-4 shrink-0" />
+                <span className="min-w-0 truncate">{label}</span>
+              </button>
+            ))}
+          </nav>
 
-            <HookSection
-              title="Codex chat status hooks"
-              harnessLabel="Codex"
-              description="User-level Codex hook script and config entries."
-              status={setup?.codex ?? null}
-              refreshing={refreshing}
-              onRefresh={() => void refresh()}
-              install={() => bridge.installGlobalCodexHooks()}
-              remove={() => bridge.removeGlobalCodexHooks()}
-              trust={() => bridge.openGlobalCodexHookTrust()}
-              onResult={setSetup}
-              onError={setError}
-            />
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+            {tab === "harnesses" && (
+              <div className="flex flex-col gap-3">
+                {!bridge ? (
+                  <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+                    Harness settings are only available inside Hitch Desktop.
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex gap-3 rounded-lg border bg-muted/35 px-3 py-2.5 text-sm">
+                      <InfoIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                      <p className="leading-5 text-muted-foreground">
+                        These hooks let Hitch track chat lifecycle events and
+                        show live working or waiting states on task cards. They
+                        only update task frontmatter inside enabled Hitch
+                        folders.
+                      </p>
+                    </div>
 
-            <HookSection
-              title="Claude Code chat status hooks"
-              harnessLabel="Claude Code"
-              description="User-level Claude Code hook script and config entries."
-              status={setup?.claudeCode ?? null}
-              refreshing={refreshing}
-              onRefresh={() => void refresh()}
-              install={() => bridge.installGlobalClaudeHooks()}
-              remove={() => bridge.removeGlobalClaudeHooks()}
-              onResult={setSetup}
-              onError={setError}
-            />
+                    <HookSection
+                      title="Codex chat status hooks"
+                      harnessLabel="Codex"
+                      description="User-level Codex hook script and config entries."
+                      status={setup?.codex ?? null}
+                      refreshing={refreshing}
+                      onRefresh={() => void refresh()}
+                      install={() => bridge.installGlobalCodexHooks()}
+                      remove={() => bridge.removeGlobalCodexHooks()}
+                      trust={() => bridge.openGlobalCodexHookTrust()}
+                      onResult={receiveSetup}
+                      onError={setError}
+                    />
 
-            <UpdatesSection />
+                    <HookSection
+                      title="Claude Code chat status hooks"
+                      harnessLabel="Claude Code"
+                      description="User-level Claude Code hook script and config entries."
+                      status={setup?.claudeCode ?? null}
+                      refreshing={refreshing}
+                      onRefresh={() => void refresh()}
+                      install={() => bridge.installGlobalClaudeHooks()}
+                      remove={() => bridge.removeGlobalClaudeHooks()}
+                      onResult={receiveSetup}
+                      onError={setError}
+                    />
 
-            {error && <p className="text-sm text-destructive">{error}</p>}
+                    {error && (
+                      <p className="text-sm text-destructive">{error}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {tab === "local-sync" && (
+              <div className="flex flex-col gap-3">
+                <div>
+                  <h3 className="text-sm font-medium">Local sync logs</h3>
+                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                    Monitor the daemon and the folders it is watching.
+                  </p>
+                </div>
+                <LocalSyncPanel
+                  active={open && tab === "local-sync"}
+                  onConfigChange={onLocalConfigChange}
+                />
+              </div>
+            )}
+
+            {tab === "device-tokens" && (
+              <div className="flex flex-col gap-3">
+                <div>
+                  <h3 className="text-sm font-medium">Device tokens</h3>
+                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                    Create and revoke tokens for local daemons.
+                  </p>
+                </div>
+                <DeviceTokensPanel />
+              </div>
+            )}
+
+            {tab === "updates" && <UpdatesSection />}
           </div>
-        )}
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -377,8 +471,12 @@ function HookSection({
         />
       )}
 
-      {status?.configPath && <PathLine label="Config" value={status.configPath} />}
-      {status?.scriptPath && <PathLine label="Script" value={status.scriptPath} />}
+      {status?.configPath && (
+        <PathLine label="Config" value={status.configPath} />
+      )}
+      {status?.scriptPath && (
+        <PathLine label="Script" value={status.scriptPath} />
+      )}
     </section>
   );
 }

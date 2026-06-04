@@ -27,11 +27,10 @@ import {
   AlertCircleIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
-  Code2Icon,
+  CheckCircle2Icon,
   CopyIcon,
   ExternalLinkIcon,
   FolderSyncIcon,
-  KeyRoundIcon,
   LayoutDashboardIcon,
   LogOutIcon,
   PlusIcon,
@@ -53,9 +52,12 @@ import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { ChatLaunch } from "@/components/ChatLaunch";
-import { DeviceTokens } from "@/components/DeviceTokens";
-import { GlobalSettingsDialog } from "@/components/GlobalSettingsDialog";
-import { LocalSyncDialog } from "@/components/LocalSyncDialog";
+import {
+  GlobalSettingsDialog,
+  type GlobalHarnessSetupStatus,
+  type GlobalSettingsTab,
+  type HarnessHookStatus,
+} from "@/components/GlobalSettingsDialog";
 import {
   ProjectDetailsDialog,
   type DetailsTab as ProjectDetailsTab,
@@ -164,6 +166,23 @@ interface DeviceAuthState {
   deviceName: string;
   hostname: string;
   hasToken: boolean;
+}
+
+interface HarnessSettingsApi {
+  getGlobalHarnessSetup: () => Promise<GlobalHarnessSetupStatus>;
+}
+
+function harnessSetupBridge(): HarnessSettingsApi | undefined {
+  return typeof window !== "undefined"
+    ? (window.hitchDaemon as unknown as HarnessSettingsApi | undefined)
+    : undefined;
+}
+
+function harnessStatusText(status: HarnessHookStatus | null): string {
+  if (status === null) return "Checking";
+  if (status.installed) return "Configured";
+  if (status.scriptExists || status.configHasHook) return "Needs repair";
+  return "Not configured";
 }
 
 // Shared card chrome, also reused by the drag overlay so the floating element
@@ -316,9 +335,8 @@ function AppSidebar({
   onSelectProject,
   onCreateProject,
   onShowProjectDetails,
-  onShowLocalSync,
+  harnessSetup,
   onShowGlobalSettings,
-  onShowDeviceTokens,
   onSignOut,
 }: {
   projects: ProjectNavEntry[];
@@ -327,9 +345,8 @@ function AppSidebar({
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
-  onShowLocalSync: () => void;
-  onShowGlobalSettings: () => void;
-  onShowDeviceTokens: () => void;
+  harnessSetup: GlobalHarnessSetupStatus | null;
+  onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onSignOut: () => void;
 }) {
   const [showCreateProject, setShowCreateProject] = useState(false);
@@ -423,35 +440,25 @@ function AppSidebar({
 
       <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-3">
         <UpdateBanner />
+        <HarnessStatusShortcut
+          label="Codex"
+          status={harnessSetup?.codex ?? null}
+          onClick={() => onShowGlobalSettings("harnesses")}
+        />
+        <HarnessStatusShortcut
+          label="Claude Code"
+          status={harnessSetup?.claudeCode ?? null}
+          onClick={() => onShowGlobalSettings("harnesses")}
+        />
         <Button
           variant="ghost"
           size="sm"
-          onClick={onShowLocalSync}
-          aria-label="Local sync"
+          onClick={() => onShowGlobalSettings()}
+          aria-label="Global settings"
           className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
         >
-          <FolderSyncIcon />
-          <span className="hidden md:inline">Local sync</span>
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onShowGlobalSettings}
-          aria-label="Harness settings"
-          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
-        >
-          <Code2Icon />
-          <span className="hidden md:inline">Harnesses</span>
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onShowDeviceTokens}
-          aria-label="Device tokens"
-          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
-        >
-          <KeyRoundIcon />
-          <span className="hidden md:inline">Device tokens</span>
+          <SettingsIcon />
+          <span className="hidden md:inline">Global settings</span>
         </Button>
         <Button
           variant="ghost"
@@ -468,6 +475,57 @@ function AppSidebar({
   );
 }
 
+function HarnessStatusShortcut({
+  label,
+  status,
+  onClick,
+}: {
+  label: string;
+  status: HarnessHookStatus | null;
+  onClick: () => void;
+}) {
+  const configured = status?.installed === true;
+  const checking = status === null;
+  const state = harnessStatusText(status);
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onClick}
+      aria-label={`${label} hooks ${state.toLowerCase()}`}
+      className={cn(
+        "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full",
+        !checking &&
+          !configured &&
+          "border-amber-500/25 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300",
+      )}
+    >
+      {configured ? (
+        <CheckCircle2Icon className="text-emerald-500" />
+      ) : (
+        <AlertCircleIcon
+          className={cn(
+            checking ? "text-sidebar-foreground/50" : "text-amber-500",
+          )}
+        />
+      )}
+      <span className="hidden min-w-0 flex-1 truncate text-left md:inline">
+        {label}
+      </span>
+      <span
+        className={cn(
+          "hidden shrink-0 text-xs md:inline",
+          configured && "text-emerald-600 dark:text-emerald-400",
+          checking && "text-sidebar-foreground/55",
+          !checking && !configured && "text-amber-700 dark:text-amber-300",
+        )}
+      >
+        {state}
+      </span>
+    </Button>
+  );
+}
+
 function AppShell({
   projects,
   selectedProjectId,
@@ -475,9 +533,8 @@ function AppShell({
   onSelectProject,
   onCreateProject,
   onShowProjectDetails,
-  onShowLocalSync,
+  harnessSetup,
   onShowGlobalSettings,
-  onShowDeviceTokens,
   onSignOut,
   children,
 }: {
@@ -487,9 +544,8 @@ function AppShell({
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
-  onShowLocalSync: () => void;
-  onShowGlobalSettings: () => void;
-  onShowDeviceTokens: () => void;
+  harnessSetup: GlobalHarnessSetupStatus | null;
+  onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
@@ -502,9 +558,8 @@ function AppShell({
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
         onShowProjectDetails={onShowProjectDetails}
-        onShowLocalSync={onShowLocalSync}
+        harnessSetup={harnessSetup}
         onShowGlobalSettings={onShowGlobalSettings}
-        onShowDeviceTokens={onShowDeviceTokens}
         onSignOut={onSignOut}
       />
       <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
@@ -1190,9 +1245,11 @@ function BoardContent({
   );
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  const [showDeviceTokens, setShowDeviceTokens] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
-  const [showLocalSync, setShowLocalSync] = useState(false);
+  const [globalSettingsTab, setGlobalSettingsTab] =
+    useState<GlobalSettingsTab>("harnesses");
+  const [globalHarnessSetup, setGlobalHarnessSetup] =
+    useState<GlobalHarnessSetupStatus | null>(null);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [projectDetailsTab, setProjectDetailsTab] =
     useState<ProjectDetailsTab>("general");
@@ -1218,6 +1275,22 @@ function BoardContent({
     setProjectDetailsTab(tab);
     setShowProjectDetails(true);
   }
+
+  function openGlobalSettings(tab: GlobalSettingsTab = "harnesses") {
+    setGlobalSettingsTab(tab);
+    setShowGlobalSettings(true);
+  }
+
+  useEffect(() => {
+    const bridge = harnessSetupBridge();
+    if (!bridge) return;
+    void bridge
+      .getGlobalHarnessSetup()
+      .then(setGlobalHarnessSetup)
+      .catch(() => {
+        setGlobalHarnessSetup(null);
+      });
+  }, []);
 
   // `C` arms the composer on the first column for keyboard-driven creation.
   // Ignored while typing in a field or with the editor open, and when chorded
@@ -1250,26 +1323,19 @@ function BoardContent({
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
         onShowProjectDetails={() => openProjectDetails()}
-        onShowLocalSync={() => setShowLocalSync(true)}
-        onShowGlobalSettings={() => setShowGlobalSettings(true)}
-        onShowDeviceTokens={() => setShowDeviceTokens(true)}
+        harnessSetup={globalHarnessSetup}
+        onShowGlobalSettings={openGlobalSettings}
         onSignOut={() => void signOut()}
       >
         <div className="flex min-h-[50vh] items-center justify-center text-muted-foreground">
           Connecting to Convex...
         </div>
-        <DeviceTokens
-          open={showDeviceTokens}
-          onOpenChange={setShowDeviceTokens}
-        />
         <GlobalSettingsDialog
           open={showGlobalSettings}
           onOpenChange={setShowGlobalSettings}
-        />
-        <LocalSyncDialog
-          open={showLocalSync}
-          onOpenChange={setShowLocalSync}
-          onConfigChange={onLocalConfigChange}
+          initialTab={globalSettingsTab}
+          onLocalConfigChange={onLocalConfigChange}
+          onHarnessSetupChange={setGlobalHarnessSetup}
         />
         <ProjectDetailsDialog
           projectId={projectId}
@@ -1464,9 +1530,8 @@ function BoardContent({
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
       onShowProjectDetails={() => openProjectDetails()}
-      onShowLocalSync={() => setShowLocalSync(true)}
-      onShowGlobalSettings={() => setShowGlobalSettings(true)}
-      onShowDeviceTokens={() => setShowDeviceTokens(true)}
+      harnessSetup={globalHarnessSetup}
+      onShowGlobalSettings={openGlobalSettings}
       onSignOut={() => void signOut()}
     >
       <div className="flex flex-col gap-6">
@@ -1509,7 +1574,9 @@ function BoardContent({
             <div className="flex min-w-0 items-start gap-2">
               <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
               <div className="min-w-0">
-                <p className="font-medium">This project is not hitched locally.</p>
+                <p className="font-medium">
+                  This project is not hitched locally.
+                </p>
                 <p className="mt-0.5 text-muted-foreground">
                   Link it to your repo folder before launching coding harnesses.
                 </p>
@@ -1596,19 +1663,12 @@ function BoardContent({
           onDeleteAll={() => void deleteAllArchived()}
         />
 
-        <DeviceTokens
-          open={showDeviceTokens}
-          onOpenChange={setShowDeviceTokens}
-        />
         <GlobalSettingsDialog
           open={showGlobalSettings}
           onOpenChange={setShowGlobalSettings}
-        />
-
-        <LocalSyncDialog
-          open={showLocalSync}
-          onOpenChange={setShowLocalSync}
-          onConfigChange={onLocalConfigChange}
+          initialTab={globalSettingsTab}
+          onLocalConfigChange={onLocalConfigChange}
+          onHarnessSetupChange={setGlobalHarnessSetup}
         />
 
         <ProjectDetailsDialog
