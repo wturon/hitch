@@ -8,8 +8,16 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-06-04
+
 - Show a project-board warning when the selected project is not hitched to a
   local folder, with a quick link into the project's Local setup tab.
+- Consolidate the sidebar quick links into a fixed-height Global settings
+  dialog with tabs for harness setup, local sync logs, device tokens, and app
+  updates.
+- Show Codex and Claude Code hook status in the sidebar as quiet shortcuts into
+  Harness settings, with green configured states and amber not-configured /
+  needs-repair states.
 
 ## [0.1.7] - 2026-06-04
 
