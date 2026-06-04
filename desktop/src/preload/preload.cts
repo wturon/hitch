@@ -105,6 +105,12 @@ export interface UpdaterStatus {
   error: string | null;
 }
 
+export interface EnableCmuxResult {
+  status: "created" | "updated" | "already-enabled";
+  configPath: string;
+  backupPath?: string;
+}
+
 export interface HitchDaemonApi {
   getState: () => Promise<DaemonState>;
   start: () => Promise<DaemonState>;
@@ -121,8 +127,8 @@ export interface HitchDaemonApi {
   installGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
   removeGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
   openGlobalCodexHookTrust: () => Promise<string>;
-  openCmuxSettings: () => Promise<string>;
-  reloadCmuxConfig: () => Promise<string>;
+  enableCmuxAutomation: () => Promise<EnableCmuxResult>;
+  openCmuxApp: () => Promise<string>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
   getDeviceAuth: () => Promise<DeviceAuthState>;
   setDeviceToken: (token: string) => Promise<DeviceAuthState>;
@@ -160,8 +166,8 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("config:remove-global-claude-hooks"),
   openGlobalCodexHookTrust: () =>
     ipcRenderer.invoke("config:open-global-codex-hook-trust"),
-  openCmuxSettings: () => ipcRenderer.invoke("cmux:open-settings"),
-  reloadCmuxConfig: () => ipcRenderer.invoke("cmux:reload-config"),
+  enableCmuxAutomation: () => ipcRenderer.invoke("cmux:enable-automation"),
+  openCmuxApp: () => ipcRenderer.invoke("cmux:open-app"),
   chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),
   getDeviceAuth: () => ipcRenderer.invoke("device-auth:get"),
   setDeviceToken: (token) => ipcRenderer.invoke("device-auth:set-token", token),

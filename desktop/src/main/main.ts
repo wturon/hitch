@@ -24,6 +24,11 @@ import {
   type UpdateDownloadedEvent,
   type UpdateInfo,
 } from "electron-updater";
+import {
+  applyEdits as applyJsoncEdits,
+  modify as modifyJsonc,
+  parse as parseJsonc,
+} from "jsonc-parser";
 
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
 type ProjectId = string;
@@ -1089,24 +1094,91 @@ function cmuxBin(): string {
   return "cmux";
 }
 
-// Open cmux's settings UI on the Automation pane — where the user flips Socket
-// control so Hitch (a Dock-launched, non-cmux-descendant app) is allowed to
-// drive cmux. Unlike the automation socket the daemon uses, `cmux settings
-// open` is dispatched via cmux's URL handler, so it works even when the socket
-// is in its default "cmux processes only" mode that's blocking us.
-async function openCmuxSettings(): Promise<string> {
-  await run(cmuxBin(), ["settings", "open", "automation"], { timeout: 5_000 });
-  addLog("system", "Opened cmux Automation settings");
-  return "opened";
+function cmuxConfigPath(): string {
+  return join(homedir(), ".config", "cmux", "cmux.json");
 }
 
-// Apply an edited cmux.json without an app restart (same as ⌘⇧, in cmux). Also
-// works from outside cmux's process tree, so we can offer it as a one-click
-// "reload and retry" after the user changes the socket mode.
-async function reloadCmuxConfig(): Promise<string> {
-  await run(cmuxBin(), ["reload-config"], { timeout: 5_000 });
-  addLog("system", "Reloaded cmux config");
-  return "reloaded";
+function cmuxAppPath(): string | null {
+  const bin = cmuxBin();
+  const marker = "/Contents/Resources/bin/";
+  const idx = bin.indexOf(marker);
+  return idx >= 0 ? bin.slice(0, idx) : null;
+}
+
+// The socket mode that lets a Dock-launched Hitch drive cmux. "automation" drops
+// cmux's ancestry check but keeps the socket owner-only, so it's the
+// least-permissive mode that unblocks us.
+const CMUX_SOCKET_MODE = "automation";
+
+type EnableCmuxStatus = "created" | "updated" | "already-enabled";
+
+export interface EnableCmuxResult {
+  status: EnableCmuxStatus;
+  configPath: string;
+  backupPath?: string;
+}
+
+// Set automation.socketControlMode in cmux's config so cmux stops refusing
+// Hitch. We can't go through cmux's CLI/socket here — that's the very channel
+// being blocked (its ancestry check rejects us, the same Broken pipe the daemon
+// hits) — so we edit ~/.config/cmux/cmux.json directly. jsonc-parser's modify()
+// preserves the file's comments/formatting and only rewrites the one key, and
+// we back up the original first (cmux's own docs recommend this). The new mode
+// binds when cmux next starts, so the UI tells the user to restart cmux.
+async function enableCmuxAutomation(): Promise<EnableCmuxResult> {
+  const configPath = cmuxConfigPath();
+
+  if (!existsSync(configPath)) {
+    mkdirSync(dirname(configPath), { recursive: true });
+    const fresh =
+      `{\n` +
+      `  "$schema": "https://raw.githubusercontent.com/manaflow-ai/cmux/main/web/data/cmux.schema.json",\n` +
+      `  "schemaVersion": 1,\n` +
+      `  "automation": {\n` +
+      `    "socketControlMode": "${CMUX_SOCKET_MODE}"\n` +
+      `  }\n` +
+      `}\n`;
+    writeFileSync(configPath, fresh, "utf8");
+    addLog("system", `Created ${configPath} with cmux socket mode "${CMUX_SOCKET_MODE}"`);
+    return { status: "created", configPath };
+  }
+
+  const raw = readFileSync(configPath, "utf8");
+  const current = parseJsonc(raw) as
+    | { automation?: { socketControlMode?: string } }
+    | undefined;
+  if (current?.automation?.socketControlMode === CMUX_SOCKET_MODE) {
+    addLog("system", `cmux socket mode already "${CMUX_SOCKET_MODE}" in ${configPath}`);
+    return { status: "already-enabled", configPath };
+  }
+
+  const backupPath = `${configPath}.hitchbak-${Date.now()}`;
+  writeFileSync(backupPath, raw, "utf8");
+
+  const edits = modifyJsonc(
+    raw,
+    ["automation", "socketControlMode"],
+    CMUX_SOCKET_MODE,
+    { formattingOptions: { insertSpaces: true, tabSize: 2 } },
+  );
+  writeFileSync(configPath, applyJsoncEdits(raw, edits), "utf8");
+  addLog(
+    "system",
+    `Set cmux socket mode to "${CMUX_SOCKET_MODE}" in ${configPath} (backup: ${backupPath})`,
+  );
+  return { status: "updated", configPath, backupPath };
+}
+
+// Bring cmux to the foreground / launch it if it isn't running. LaunchServices
+// (`open`), not the socket, so it works regardless of cmux's socket mode. Used
+// when cmux isn't reachable at all.
+async function openCmuxApp(): Promise<string> {
+  const appPath = cmuxAppPath();
+  await run("/usr/bin/open", appPath ? ["-a", appPath] : ["-a", "cmux"], {
+    timeout: 5_000,
+  });
+  addLog("system", "Opened cmux");
+  return "opened";
 }
 
 function shellQuote(value: string): string {
@@ -1936,8 +2008,8 @@ ipcMain.handle("config:remove-global-claude-hooks", () =>
 ipcMain.handle("config:open-global-codex-hook-trust", () =>
   openGlobalCodexHookTrust(),
 );
-ipcMain.handle("cmux:open-settings", () => openCmuxSettings());
-ipcMain.handle("cmux:reload-config", () => reloadCmuxConfig());
+ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
+ipcMain.handle("cmux:open-app", () => openCmuxApp());
 ipcMain.handle("dialog:choose-local-path", (_event, defaultPath?: string) =>
   chooseLocalPath(defaultPath),
 );

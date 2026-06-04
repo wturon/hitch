@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, ExternalLink, LoaderCircle, RotateCw } from "lucide-react";
+import { Check, Copy, ExternalLink, LoaderCircle, RotateCw, Zap } from "lucide-react";
 
 import {
   Dialog,
@@ -22,12 +22,18 @@ export type CmuxAccessReason = "cmux-access-denied" | "cmux-unavailable";
 // least-permissive mode that lets a Dock-launched Hitch drive cmux.
 const RECOMMENDED_MODE = "automation";
 
-// The bits of the preload bridge this dialog drives. `cmux settings open` and
-// `cmux reload-config` are dispatched via cmux's URL handler, not its automation
-// socket, so they work even while the socket is in the mode that's blocking us.
+interface EnableCmuxResult {
+  status: "created" | "updated" | "already-enabled";
+  configPath: string;
+  backupPath?: string;
+}
+
+// The preload bridge methods this dialog uses. We can't drive cmux's CLI/socket
+// to fix this (that's the blocked channel); enableCmuxAutomation edits cmux's
+// config file directly, and openCmuxApp uses LaunchServices — both socket-free.
 interface HitchDaemonApi {
-  openCmuxSettings: () => Promise<string>;
-  reloadCmuxConfig: () => Promise<string>;
+  enableCmuxAutomation: () => Promise<EnableCmuxResult>;
+  openCmuxApp: () => Promise<string>;
 }
 
 function useDaemonBridge(): HitchDaemonApi | undefined {
@@ -59,24 +65,23 @@ function CopyButton({ value }: { value: string }) {
 }
 
 function AccessDeniedBody({ bridge }: { bridge: HitchDaemonApi | undefined }) {
-  // Tracks the inline "Open cmux settings" action so we can show a spinner and
-  // surface the rare failure (e.g. cmux binary not found) without a dead button.
-  const [opening, setOpening] = useState(false);
-  const [openError, setOpenError] = useState<string | null>(null);
+  const [enabling, setEnabling] = useState(false);
+  const [result, setResult] = useState<EnableCmuxResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function openSettings() {
+  async function enable() {
     if (!bridge) return;
-    setOpening(true);
-    setOpenError(null);
+    setEnabling(true);
+    setError(null);
     try {
-      await bridge.openCmuxSettings();
+      setResult(await bridge.enableCmuxAutomation());
     } catch (err) {
-      setOpenError(
-        "Couldn't open cmux automatically — open it and go to Settings → Automation.",
+      setError(
+        "Couldn't update cmux's config automatically — set it manually below.",
       );
-      console.error("openCmuxSettings failed:", err);
+      console.error("enableCmuxAutomation failed:", err);
     } finally {
-      setOpening(false);
+      setEnabling(false);
     }
   }
 
@@ -86,62 +91,76 @@ function AccessDeniedBody({ bridge }: { bridge: HitchDaemonApi | undefined }) {
         cmux is blocking apps that weren&apos;t launched from a cmux terminal
         from controlling it — that&apos;s its default{" "}
         <span className="font-medium text-foreground">cmux processes only</span>{" "}
-        mode. To let Hitch open and resume chats in cmux, allow same-user
-        automation:
+        mode. Hitch can switch it to{" "}
+        <span className="font-medium text-foreground">Automation</span> (any
+        local process from the same user — the socket stays owner-only):
       </DialogDescription>
-      <ol className="ml-4 list-decimal space-y-1.5 text-sm text-muted-foreground">
-        <li>
-          Open{" "}
-          {bridge ? (
-            <button
-              type="button"
-              onClick={openSettings}
-              disabled={opening}
-              className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-2 disabled:opacity-60"
-            >
-              {opening ? (
-                <LoaderCircle className="size-3 animate-spin" />
-              ) : (
-                <ExternalLink className="size-3" />
-              )}
-              cmux&apos;s Automation settings
-            </button>
-          ) : (
-            <span className="font-medium text-foreground">
-              cmux → Settings → Automation
-            </span>
-          )}
-          .
-        </li>
-        <li>
-          Set <span className="font-medium text-foreground">Socket control</span>{" "}
-          to <span className="font-medium text-foreground">Automation</span> (any
-          local process from the same user — the socket stays owner-only).
-        </li>
-        <li>
-          Reload cmux with the button below (or press{" "}
-          <kbd className="rounded bg-muted px-1 font-mono">⌘⇧,</kbd> in cmux),
-          then reopen the chat.
-        </li>
-      </ol>
-      {openError && <p className="text-sm text-destructive">{openError}</p>}
-      <details className="text-xs text-muted-foreground">
-        <summary className="cursor-pointer select-none">
-          Prefer editing config directly?
-        </summary>
-        <div className="mt-2 rounded-md bg-muted/50 p-2.5">
-          <p className="mb-1.5">
-            Set this in{" "}
-            <span className="font-mono">~/.config/cmux/cmux.json</span>:
+
+      {result ? (
+        // Config written — the new mode only binds when cmux next starts, so the
+        // one thing left is a restart. This is the key step; make it loud.
+        <div className="rounded-md border border-foreground/10 bg-muted/50 p-3 text-sm">
+          <p className="flex items-center gap-1.5 font-medium text-foreground">
+            <Check className="size-4" />
+            {result.status === "already-enabled"
+              ? "cmux is already set to Automation."
+              : "Set cmux to Automation mode."}
           </p>
-          <div className="flex items-center justify-between gap-2">
-            <code className="truncate font-mono">
-              "automation": {"{"} "socketControlMode": "{RECOMMENDED_MODE}" {"}"}
-            </code>
-            <CopyButton value={`"socketControlMode": "${RECOMMENDED_MODE}"`} />
-          </div>
+          <p className="mt-1 text-muted-foreground">
+            Now <span className="font-medium text-foreground">quit cmux (⌘Q)
+            and reopen it</span> for the change to take effect, then click{" "}
+            <span className="font-medium text-foreground">Retry</span>.
+          </p>
+          {result.backupPath && (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Backed up your previous config alongside{" "}
+              <span className="font-mono">cmux.json</span>.
+            </p>
+          )}
         </div>
-      </details>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {bridge && (
+            <Button onClick={enable} disabled={enabling} className="self-start">
+              {enabling ? <LoaderCircle className="animate-spin" /> : <Zap />}
+              Enable Automation in cmux
+            </Button>
+          )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none">
+              {bridge ? "Prefer to do it manually?" : "How to enable it"}
+            </summary>
+            <div className="mt-2 space-y-2">
+              <p>
+                In cmux, open{" "}
+                <span className="font-medium text-foreground">
+                  Settings → Automation
+                </span>{" "}
+                and set{" "}
+                <span className="font-medium text-foreground">
+                  Socket control
+                </span>{" "}
+                to{" "}
+                <span className="font-medium text-foreground">Automation</span>{" "}
+                — or set this in{" "}
+                <span className="font-mono">~/.config/cmux/cmux.json</span>:
+              </p>
+              <div className="flex items-center justify-between gap-2 rounded-md bg-muted/50 p-2.5">
+                <code className="truncate font-mono">
+                  "automation": {"{"} "socketControlMode": "{RECOMMENDED_MODE}"{" "}
+                  {"}"}
+                </code>
+                <CopyButton
+                  value={`"socketControlMode": "${RECOMMENDED_MODE}"`}
+                />
+              </div>
+              <p>Then quit and reopen cmux for it to take effect.</p>
+            </div>
+          </details>
+        </div>
+      )}
+
       <p className="text-xs text-muted-foreground">
         On a shared machine, prefer cmux&apos;s{" "}
         <span className="font-medium">Password</span> mode instead.
@@ -150,18 +169,42 @@ function AccessDeniedBody({ bridge }: { bridge: HitchDaemonApi | undefined }) {
   );
 }
 
-function UnavailableBody() {
+function UnavailableBody({ bridge }: { bridge: HitchDaemonApi | undefined }) {
+  const [opening, setOpening] = useState(false);
   return (
-    <DialogDescription>
-      Hitch couldn&apos;t reach cmux — it doesn&apos;t look like cmux is running.
-      Open the cmux app, then reopen the chat.
-    </DialogDescription>
+    <>
+      <DialogDescription>
+        Hitch couldn&apos;t reach cmux — it doesn&apos;t look like cmux is
+        running. Open cmux, then click Retry.
+      </DialogDescription>
+      {bridge && (
+        <Button
+          variant="outline"
+          className="self-start"
+          disabled={opening}
+          onClick={async () => {
+            setOpening(true);
+            try {
+              await bridge.openCmuxApp();
+            } catch (err) {
+              console.error("openCmuxApp failed:", err);
+            } finally {
+              setOpening(false);
+            }
+          }}
+        >
+          {opening ? <LoaderCircle className="animate-spin" /> : <ExternalLink />}
+          Open cmux
+        </Button>
+      )}
+    </>
   );
 }
 
 // Shown when an "open/start chat in cmux" command comes back rejected. The two
 // reasons map to distinct guidance; the dialog is controlled by the launcher.
-// onRetry (when provided) re-issues the original launch after a config reload.
+// onRetry (when provided) re-issues the original launch — used after the user
+// has switched cmux's mode and restarted it.
 export function CmuxAccessDialog({
   open,
   onOpenChange,
@@ -174,25 +217,7 @@ export function CmuxAccessDialog({
   onRetry?: () => void;
 }) {
   const bridge = useDaemonBridge();
-  const [reloading, setReloading] = useState(false);
-
   const accessDenied = reason === "cmux-access-denied";
-
-  async function reloadAndRetry() {
-    if (bridge && accessDenied) {
-      setReloading(true);
-      try {
-        await bridge.reloadCmuxConfig();
-      } catch (err) {
-        // If reload fails the user can still ⌘⇧, themselves; retry anyway.
-        console.error("reloadCmuxConfig failed:", err);
-      } finally {
-        setReloading(false);
-      }
-    }
-    onOpenChange(false);
-    onRetry?.();
-  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -202,15 +227,20 @@ export function CmuxAccessDialog({
             {accessDenied ? "Let Hitch control cmux" : "cmux isn’t running"}
           </DialogTitle>
         </DialogHeader>
-        {accessDenied ? <AccessDeniedBody bridge={bridge} /> : <UnavailableBody />}
+        {accessDenied ? (
+          <AccessDeniedBody bridge={bridge} />
+        ) : (
+          <UnavailableBody bridge={bridge} />
+        )}
         <DialogFooter showCloseButton>
-          <Button onClick={reloadAndRetry} disabled={reloading}>
-            {reloading ? (
-              <LoaderCircle className="animate-spin" />
-            ) : (
-              <RotateCw />
-            )}
-            {accessDenied && bridge ? "Reload cmux & retry" : "Retry"}
+          <Button
+            onClick={() => {
+              onOpenChange(false);
+              onRetry?.();
+            }}
+          >
+            <RotateCw />
+            Retry
           </Button>
         </DialogFooter>
       </DialogContent>

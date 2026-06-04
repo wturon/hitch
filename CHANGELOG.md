@@ -8,6 +8,14 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+- Fix the cmux setup dialog. The 0.1.5 "open settings" / "reload" buttons
+  couldn't actually work — they went through the very cmux socket that's blocking
+  Hitch, so they failed with the same error. The dialog now offers
+  **Enable Automation in cmux**, which writes `socketControlMode` into cmux's
+  config directly (backing up your original first), then asks you to quit and
+  reopen cmux so the new mode takes effect. A Retry button reopens the chat once
+  cmux is back, and the "cmux isn't running" case gets an Open cmux button.
+
 ## [0.1.5] - 2026-06-03
 
 - Updates now surface in the app instead of interrupting you with a native
