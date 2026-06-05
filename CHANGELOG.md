@@ -8,6 +8,14 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+- Lay the rails for running each harness in different environments. Claude Code
+  and Codex launches now flow through an environment-aware launcher/adapter layer
+  in the daemon — behavior is unchanged (Claude Code in cmux, Codex in the Codex
+  app), but the daemon now dispatches on `(harness, environment)` instead of a
+  hardcoded per-harness switch. Harness settings shows a new "Run environment"
+  selector under each harness, ready for more environments (like the VS Code
+  extension) to plug in.
+
 ## [0.1.8] - 2026-06-04
 
 - Show a project-board warning when the selected project is not hitched to a

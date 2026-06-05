@@ -18,6 +18,20 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  ENVIRONMENTS_BY_HARNESS,
+  defaultEnvironment,
+  environmentLabel,
+  harnessLabel,
+  type Environment,
+} from "@/lib/chat";
 import { DeviceTokensPanel } from "@/components/DeviceTokens";
 import {
   LocalSyncPanel,
@@ -172,6 +186,8 @@ export function GlobalSettingsDialog({
                       </p>
                     </div>
 
+                    <EnvironmentRow harness="codex" />
+
                     <HookSection
                       title="Codex chat status hooks"
                       harnessLabel="Codex"
@@ -185,6 +201,8 @@ export function GlobalSettingsDialog({
                       onResult={receiveSetup}
                       onError={setError}
                     />
+
+                    <EnvironmentRow harness="claude-code" />
 
                     <HookSection
                       title="Claude Code chat status hooks"
@@ -333,6 +351,49 @@ function UpdatesSection() {
         )}
         <p className="text-sm text-muted-foreground">{detail()}</p>
       </div>
+    </section>
+  );
+}
+
+// Where Hitch opens this harness's sessions. Release 1 has a single environment
+// per harness (the daemon derives it), so the select is fixed — but surfacing it
+// here makes the environment axis visible and reserves the slot for future
+// environments (e.g. the VS Code extension).
+function EnvironmentRow({ harness }: { harness: Harness }) {
+  const options = ENVIRONMENTS_BY_HARNESS[harness];
+  const value = defaultEnvironment(harness);
+
+  return (
+    <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium">Run environment</h3>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            Where Hitch opens {harnessLabel(harness)} sessions.
+          </p>
+        </div>
+        <Select value={value} disabled>
+          <SelectTrigger
+            className="w-48"
+            aria-label={`${harnessLabel(harness)} run environment`}
+          >
+            <SelectValue>
+              {(env: Environment) => environmentLabel(env)}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <p className="text-xs text-muted-foreground/70">
+        More environments (like the VS Code extension) are coming. This is fixed
+        for now.
+      </p>
     </section>
   );
 }

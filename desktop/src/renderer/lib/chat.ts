@@ -27,6 +27,31 @@ export function harnessLabel(harness: Harness): string {
   return harness === "codex" ? "Codex" : "Claude Code";
 }
 
+// Where a harness runs and is presented to the user. Today there is one
+// environment per harness (the daemon derives it from the harness), but the
+// settings UI models this axis explicitly so future environments (e.g. the VS Code
+// extension) slot in without reshaping the mental model. Keep in sync with the
+// daemon's launcher registry.
+export type Environment = "cmux" | "codex-app";
+
+export interface EnvironmentOption {
+  id: Environment;
+  label: string;
+}
+
+export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
+  "claude-code": [{ id: "cmux", label: "cmux (TUI)" }],
+  codex: [{ id: "codex-app", label: "Codex app" }],
+};
+
+export function defaultEnvironment(harness: Harness): Environment {
+  return harness === "codex" ? "codex-app" : "cmux";
+}
+
+export function environmentLabel(env: Environment): string {
+  return env === "codex-app" ? "Codex app" : "cmux (TUI)";
+}
+
 // Live runtime state of the chat driving a task, written into frontmatter as
 // `chat-status` by the harness's lifecycle hooks (see .claude/hooks/chat-status.mjs):
 //   working — mid-turn, actively processing (no human action needed)

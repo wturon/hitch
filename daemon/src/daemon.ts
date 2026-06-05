@@ -4,7 +4,7 @@
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -14,12 +14,10 @@ import chokidar, { type FSWatcher } from "chokidar";
 import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { CmuxError, openChat, startChat } from "./cmux.js";
-import {
-  closeCodexAppServer,
-  latestCodexTurn,
-  startCodexChat,
-} from "./codex.js";
+import { CmuxError } from "./cmux.js";
+import { closeCodexAppServer, latestCodexTurn } from "./codex.js";
+import { resolveLauncher } from "./launchers/registry.js";
+import type { Environment, Harness } from "./launchers/types.js";
 
 if (!globalThis.WebSocket) {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
@@ -83,6 +81,7 @@ interface CommandDoc {
   host?: string;
   kind: string;
   harness: string;
+  environment?: string; // unset in release 1; daemon derives from harness default
   sessionId?: string;
   path?: string;
   initialPrompt?: string;
@@ -573,90 +572,98 @@ async function startHitchBinding({
 
   const handledCommands = new Set<string>();
 
+  async function complete(
+    cmd: CommandDoc,
+    status: "done" | "error",
+    result: string,
+    errorCode?: string,
+  ): Promise<void> {
+    await client.mutation(anyApi.commands.completeCommand, {
+      id: cmd._id,
+      status,
+      result,
+      errorCode,
+      projectId,
+      deviceToken,
+    });
+  }
+
+  // Orchestrate a launch command: resolve the (harness, environment) launcher and
+  // invoke the requested intent. The launchers wrap the same cmux.ts / codex.ts
+  // code the switch used to call inline, so behavior is unchanged; this just makes
+  // environment a first-class dispatch axis. Linking stays here (it writes the
+  // binding's task files) and is handed to startNew as harness-appropriate
+  // callbacks — codex only learns its thread id mid-launch, so it can't be hoisted.
   async function runCommand(cmd: CommandDoc): Promise<void> {
     try {
-      if (cmd.kind === "open-chat" && cmd.harness === "claude-code") {
+      const harness = cmd.harness as Harness;
+      const launcher = resolveLauncher(
+        harness,
+        cmd.environment as Environment | undefined,
+      );
+      if (!launcher) {
+        await complete(
+          cmd,
+          "error",
+          `unsupported harness/environment: ${cmd.harness}/${cmd.environment ?? "default"}`,
+        );
+        return;
+      }
+      const project = { projectId, projectName: projectLabel };
+
+      if (cmd.kind === "open-chat") {
+        if (!launcher.reopen) {
+          throw new Error(`reopen not supported for ${cmd.harness}`);
+        }
         const sessionId = cmd.sessionId ?? "";
-        const result = await openChat({
+        const { result } = await launcher.reopen({
           sessionId,
           cwd: cmd.cwd,
-          projectId,
-          projectName: projectLabel,
+          project,
         });
-        await client.mutation(anyApi.commands.completeCommand, {
-          id: cmd._id,
-          status: "done",
-          result,
-          projectId,
-          deviceToken,
-        });
+        await complete(cmd, "done", result);
         logger.info(`[hitch:${projectLabel}] ⮑ open-chat ${sessionId} → ${result}`);
-      } else if (cmd.kind === "start-chat" && cmd.harness === "claude-code") {
+      } else if (cmd.kind === "start-chat") {
+        if (!launcher.startNew) {
+          throw new Error(`start-chat not supported for ${cmd.harness}`);
+        }
         if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
-        // Pin the session id and link the task before we spawn, the same way we
-        // link codex threads via onThreadStarted. The agent never has to
-        // introspect its own session id; openChat() resumes by this id later.
-        const sessionId = randomUUID();
-        await linkClaudeSession(cmd.path, sessionId, root.localPath);
-        const result = await startChat({
-          taskKey: cmd.path,
-          prompt: cmd.initialPrompt,
-          sessionId,
-          cwd: root.localPath,
-          projectId,
-          projectName: projectLabel,
-        });
-        await client.mutation(anyApi.commands.completeCommand, {
-          id: cmd._id,
-          status: "done",
-          result,
-          projectId,
-          deviceToken,
-        });
-        logger.info(`[hitch:${projectLabel}] ⮑ start-chat ${cmd.path} → ${result}`);
-      } else if (cmd.kind === "start-chat" && cmd.harness === "codex") {
-        if (!cmd.path) throw new Error("start-chat requires path");
-        if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
-
-        const started = await startCodexChat({
-          taskKey: cmd.path,
+        const path = cmd.path;
+        const onLinked =
+          harness === "codex"
+            ? (threadId: string) => linkCodexThread(path, threadId)
+            : (sessionId: string) =>
+                linkClaudeSession(path, sessionId, root.localPath);
+        const onSettled =
+          harness === "codex"
+            ? (threadId: string) => settleCodexThread(path, threadId)
+            : undefined;
+        const { result } = await launcher.startNew({
+          taskKey: path,
           prompt: cmd.initialPrompt,
           cwd: root.localPath,
-          threadName: await taskTitle(cmd.path),
-          onThreadStarted: (threadId) => linkCodexThread(cmd.path as string, threadId),
-          onTurnCompleted: (threadId) => settleCodexThread(cmd.path as string, threadId),
+          title: await taskTitle(path),
+          project,
+          onLinked,
+          onSettled,
         });
-        const result = `${started.status}:${started.threadId}`;
-        await client.mutation(anyApi.commands.completeCommand, {
-          id: cmd._id,
-          status: "done",
-          result,
-          projectId,
-          deviceToken,
-        });
-        logger.info(`[hitch:${projectLabel}] ⮑ start-chat codex ${cmd.path} → ${result}`);
+        await complete(cmd, "done", result);
+        logger.info(
+          `[hitch:${projectLabel}] ⮑ start-chat ${harness} ${path} → ${result}`,
+        );
       } else {
-        await client.mutation(anyApi.commands.completeCommand, {
-          id: cmd._id,
-          status: "error",
-          result: `unsupported command: ${cmd.kind}/${cmd.harness}`,
-          projectId,
-          deviceToken,
-        });
+        await complete(
+          cmd,
+          "error",
+          `unsupported command: ${cmd.kind}/${cmd.harness}`,
+        );
       }
     } catch (err) {
       // Tag known cmux failures so the browser can guide the user (e.g. flip the
       // cmux socket mode) instead of surfacing a raw "Broken pipe".
       const errorCode = err instanceof CmuxError ? err.code : undefined;
-      await client.mutation(anyApi.commands.completeCommand, {
-        id: cmd._id,
-        status: "error",
-        result: String(err),
-        errorCode,
-        projectId,
-        deviceToken,
-      });
+      await complete(cmd, "error", String(err), errorCode);
       logger.info(`[hitch:${projectLabel}] ⚠ command ${cmd._id} failed: ${String(err)}`);
     }
   }
