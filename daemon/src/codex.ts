@@ -67,7 +67,6 @@ export interface CodexStartSpec {
   cwd: string;
   threadName?: string;
   onThreadStarted?: (threadId: string) => Promise<void>;
-  onTurnStarted?: (threadId: string) => Promise<void>;
   onTurnCompleted?: (threadId: string) => Promise<void>;
 }
 
@@ -327,7 +326,6 @@ async function doStartCodexChat(
       },
       45_000,
     );
-    if (spec.onTurnStarted) await spec.onTurnStarted(threadId);
   } catch (err) {
     unsubscribeTurnCompleted?.();
     throw err;

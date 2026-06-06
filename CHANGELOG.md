@@ -28,9 +28,9 @@ that section as the GitHub Release notes.
   editor extension chat via `vscode://openai.chatgpt/local/<thread-id>` or
   `cursor://openai.chatgpt/local/<thread-id>`, so newly started and already-linked
   Codex chats can be opened from the board using the same daemon `open-chat`
-  command path as other harnesses. New Codex editor chats now open after
-  `turn/start` succeeds, avoiding an empty-thread shell when the extension
-  resolves the deep link before the first turn exists.
+  command path as other harnesses. New Codex editor chats open after the first
+  turn completes so the extension loads durable transcript history instead of a
+  partially hydrated running turn.
 
 ## [0.1.8] - 2026-06-04
 

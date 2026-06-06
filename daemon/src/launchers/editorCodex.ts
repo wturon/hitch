@@ -90,15 +90,15 @@ function makeEditorCodexLauncher(config: EditorConfig): Launcher {
         onThreadStarted: async (threadId) => {
           await ctx.onLinked(threadId);
         },
-        onTurnStarted: async (threadId) => {
+        onTurnCompleted: async (threadId) => {
+          await ctx.onSettled?.(threadId);
           try {
             await focusExtensionThread(config, cli, threadId, ctx.cwd);
           } catch (err) {
-            const message = `[hitch] linked codex thread ${threadId}, but could not focus ${config.environment}: ${String(err)}`;
+            const message = `[hitch] completed codex thread ${threadId}, but could not focus ${config.environment}: ${String(err)}`;
             (ctx.logger?.error ?? ctx.logger?.info)?.(message);
           }
         },
-        onTurnCompleted: ctx.onSettled,
       });
       return { result: `${started.status}:${started.threadId}` };
     },
