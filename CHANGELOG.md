@@ -24,15 +24,13 @@ that section as the GitHub Release notes.
   exactly like cmux. Your per-harness environment choice persists in a local
   `preferences.json`; leaving it unset keeps today's behavior (cmux / Codex app).
 - Add **VS Code** and **Cursor** as run environments for Codex. Hitch still starts
-  and links Codex tasks through `codex app-server`, then focuses the corresponding
-  editor extension chat via `vscode://openai.chatgpt/local/<thread-id>` or
-  `cursor://openai.chatgpt/local/<thread-id>`, so newly started and already-linked
-  Codex chats can be opened from the board using the same daemon `open-chat`
-  command path as other harnesses. New Codex editor chats open after the first
-  turn completes so the extension loads durable transcript history instead of a
-  partially hydrated running turn; the open button stays disabled during that
-  first-turn handoff and explains that Hitch will focus the editor when the turn
-  finishes.
+  and links Codex tasks through `codex app-server`, then enables the open button
+  once the first turn finishes so the user can resume the durable transcript in
+  the corresponding editor extension via
+  `vscode://openai.chatgpt/local/<thread-id>` or
+  `cursor://openai.chatgpt/local/<thread-id>`. Existing linked Codex chats can
+  be opened from the board using the same daemon `open-chat` command path as
+  other harnesses.
 
 ## [0.1.8] - 2026-06-04
 

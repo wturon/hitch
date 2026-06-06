@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
-import { ExternalLink, Eye, LoaderCircle, Terminal } from "lucide-react";
+import { ExternalLink, Info, LoaderCircle, Terminal } from "lucide-react";
 
 import {
   harnessLabel,
@@ -111,12 +111,12 @@ export function ChatLaunch({
           >
             <LaunchIcon status={status} fallback={<ExternalLink />} />
             Opening Codex…
-            <Eye className="opacity-70" aria-hidden />
+            <Info className="opacity-70" aria-hidden />
           </Button>
         </TooltipTrigger>
         <TooltipContent className="max-w-64">
           Hitch is using Codex app-server to run the first turn. When it
-          finishes, Hitch will find and focus the chat in your selected editor.
+          finishes, you can open the chat in your selected editor.
         </TooltipContent>
       </Tooltip>
     );
