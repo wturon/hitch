@@ -1,23 +1,26 @@
-// codex running in the Codex app. Wraps startCodexChat — no behavior change from
-// when daemon.ts called it directly. There is intentionally no `reopen`: codex
-// resume is a `codex://threads/<id>` deep link the renderer fires straight at the
-// OS (see desktop lib/chat.ts launchFor), not a daemon command. Codex is the
-// "deep-link app" family — it can't be introspected, so it's intent-direct.
+// Codex running in the Codex app. The daemon owns both start and reopen now so
+// the renderer can issue a single open-chat command and let launcher preferences
+// decide whether Codex opens in the native app, VS Code, or Cursor.
 
-import { startCodexChat } from "../codex.js";
+import { openCodexThread, startCodexChat } from "../codex.js";
 import type { Launcher } from "./types.js";
 
 export const codexAppLauncher: Launcher = {
   harness: "codex",
   environment: "codex-app",
   traits: {
-    reopen: false, // owned by the renderer's codex:// link
+    reopen: true,
     startNew: true,
     pinsSessionId: true,
     autoSubmits: true,
     needsWorkspaceOpen: false,
     lifecycle: "appserver",
     tier: 3,
+  },
+
+  async reopen(ctx) {
+    await openCodexThread(ctx.sessionId);
+    return { result: "focused" };
   },
 
   async startNew(ctx) {

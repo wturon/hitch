@@ -45,7 +45,11 @@ export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
     { id: "vscode", label: "VS Code extension" },
     { id: "cursor", label: "Cursor extension" },
   ],
-  codex: [{ id: "codex-app", label: "Codex app" }],
+  codex: [
+    { id: "codex-app", label: "Codex app" },
+    { id: "vscode", label: "VS Code extension" },
+    { id: "cursor", label: "Cursor extension" },
+  ],
 };
 
 export function defaultEnvironment(harness: Harness): Environment {
@@ -182,29 +186,6 @@ export function clearChatFields(content: string): string {
   });
 }
 
-// How to reopen a given chat. Codex registers a `codex://` scheme, so we hand
-// the OS a deep link straight to the thread. Claude Code has no resume URL, so
-// the honest MVP move is to copy a `claude --resume` command for the terminal.
-export type Launch =
-  | { kind: "url"; label: string; url: string }
-  | { kind: "copy"; label: string; command: string };
-
-export function launchFor(ref: ChatRef): Launch {
-  if (ref.harness === "codex") {
-    return {
-      kind: "url",
-      label: "Open in Codex",
-      url: `codex://threads/${encodeURIComponent(ref.id)}`,
-    };
-  }
-  const cd = ref.cwd ? `cd ${shellQuote(ref.cwd)} && ` : "";
-  return {
-    kind: "copy",
-    label: "Copy resume command",
-    command: `${cd}claude --resume ${ref.id}`,
-  };
-}
-
 // The seed prompt for a brand-new coding-agent session launched from a task.
 // Both harnesses are linked by the daemon before the first model turn starts, so
 // the agent can focus on the task instead of introspecting its own session id.
@@ -227,10 +208,4 @@ export function defaultStartPrompt(
     ``,
     `Read the task, keep the task status/progress current as you work, and start implementing it.`,
   ].join("\n");
-}
-
-// Single-quote a path for sh if it contains anything outside a safe set.
-function shellQuote(path: string): string {
-  if (!/[^A-Za-z0-9_./-]/.test(path)) return path;
-  return `'${path.replace(/'/g, `'\\''`)}'`;
 }

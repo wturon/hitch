@@ -3,10 +3,10 @@
 // (harness, environment) pair is a Launcher that satisfies the two intents the rest
 // of Hitch asks for: reopen an existing chat, or start a new one.
 //
-// Release 1 keeps today's behavior exactly: the only launchers are claude-code:cmux
-// and codex:codex-app, and each wraps the existing cmux.ts / codex.ts code rather
-// than re-implementing it. The interface is intentionally forward-looking (traits,
-// probe) so new environments slot in without reshaping the daemon.
+// Each launcher wraps the harness-specific mechanics in cmux.ts / codex.ts or an
+// editor extension URI handler rather than making the daemon know those details.
+// The interface stays declarative (traits, probe) so new environments slot in
+// without reshaping the daemon.
 
 export type Harness = "claude-code" | "codex";
 export type Environment = "cmux" | "codex-app" | "vscode" | "cursor";

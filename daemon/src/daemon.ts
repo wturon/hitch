@@ -330,7 +330,12 @@ function readHarnessEnvironment(
     const raw = JSON.parse(readFileSync(prefsPath, "utf8")) as unknown;
     if (!isRecord(raw) || !isRecord(raw.harnessEnvironments)) return undefined;
     const value = raw.harnessEnvironments[harness];
-    return value === "cmux" || value === "codex-app" || value === "vscode"
+    return (
+      value === "cmux" ||
+      value === "codex-app" ||
+      value === "vscode" ||
+      value === "cursor"
+    )
       ? value
       : undefined;
   } catch {
