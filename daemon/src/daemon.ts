@@ -17,6 +17,7 @@ import { anyApi } from "convex/server";
 import { CmuxError } from "./cmux.js";
 import { closeCodexAppServer, latestCodexTurn } from "./codex.js";
 import { resolveLauncher } from "./launchers/registry.js";
+import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
 import type { Environment, Harness } from "./launchers/types.js";
 
 if (!globalThis.WebSocket) {
@@ -312,6 +313,29 @@ interface HitchBindingRuntimeOptions {
   hitch: ResolvedHitch;
   logger: HitchDaemonLogger;
   host: string;
+  configPath: string;
+}
+
+// Per-harness environment preference, written by the desktop app into a sibling
+// preferences.json (kept out of config.json so the hitches normalizer can't wipe
+// it). Read fresh per command so a change in Harness settings takes effect without
+// restarting the daemon. Absent/invalid → undefined, so the registry falls back to
+// the harness default and behavior is unchanged.
+function readHarnessEnvironment(
+  configPath: string,
+  harness: Harness,
+): Environment | undefined {
+  try {
+    const prefsPath = join(dirname(configPath), "preferences.json");
+    const raw = JSON.parse(readFileSync(prefsPath, "utf8")) as unknown;
+    if (!isRecord(raw) || !isRecord(raw.harnessEnvironments)) return undefined;
+    const value = raw.harnessEnvironments[harness];
+    return value === "cmux" || value === "codex-app" || value === "vscode"
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 interface HitchBindingHandle {
@@ -325,6 +349,7 @@ async function startHitchBinding({
   hitch: root,
   logger,
   host,
+  configPath,
 }: HitchBindingRuntimeOptions): Promise<HitchBindingHandle> {
   const projectId = root.projectId;
   const projectLabel = root.projectName || projectId;
@@ -376,17 +401,24 @@ async function startHitchBinding({
     logger.info(`[hitch:${projectLabel}] codex thread ${threadId} is waiting → ${path}`);
   }
 
-  async function linkClaudeSession(path: string, sessionId: string, cwd: string) {
+  async function linkClaudeSession(
+    path: string,
+    sessionId: string,
+    cwd: string,
+    environment: Environment,
+  ) {
     const absPath = toAbs(path);
     const current = await readFile(absPath, "utf8");
-    // Pin the session id (we pass it to `claude --session-id`), so the task is
-    // linked before the agent boots — no introspecting the newest *.jsonl. Stamp
-    // chat-status: working in the same write, since the agent is about to take
-    // its first turn; the Stop hook settles it to waiting later.
+    // Pin the session id (cmux passes it to `claude --session-id`) or bind a
+    // discovered id (vscode/cursor) — either way link before/at first turn. Stamp
+    // chat-status: working in the same write; the Stop hook settles it to waiting
+    // later. chat-env records which environment owns the session so the daemon's
+    // pid-healing knows whether to apply (only for process-lifecycle envs).
     const next = setFrontmatterKeys(current, {
       "chat-harness": "claude-code",
       "chat-id": sessionId,
       "chat-cwd": cwd,
+      "chat-env": environment,
       "chat-status": "working",
     });
     await writeFile(absPath, next, "utf8");
@@ -510,6 +542,15 @@ async function startHitchBinding({
       const harness = frontmatterValue(content, "chat-harness") ?? "";
 
       if (harness === "claude-code") {
+        // pid-healing only applies to process-lifecycle environments (cmux): a dead
+        // claude pid means the chat is over. Hook-lifecycle envs (vscode/cursor) run
+        // the agent under the editor's process — chat-pid isn't a `claude` process,
+        // so healing on it would wrongly clear a live session. Those envs settle via
+        // the Stop/SessionEnd hooks instead, so skip them here.
+        const env = frontmatterValue(content, "chat-env") as Environment | undefined;
+        const launcher = resolveLauncher("claude-code", env);
+        if (launcher && launcher.traits.lifecycle !== "process") continue;
+
         const pidRaw = frontmatterValue(content, "chat-pid");
         const pid = pidRaw ? Number(pidRaw) : NaN;
         // No usable pid yet (freshly linked, before the first hook) → leave it
@@ -597,10 +638,10 @@ async function startHitchBinding({
   async function runCommand(cmd: CommandDoc): Promise<void> {
     try {
       const harness = cmd.harness as Harness;
-      const launcher = resolveLauncher(
-        harness,
-        cmd.environment as Environment | undefined,
-      );
+      const environment =
+        (cmd.environment as Environment | undefined) ??
+        readHarnessEnvironment(configPath, harness);
+      const launcher = resolveLauncher(harness, environment);
       if (!launcher) {
         await complete(
           cmd,
@@ -634,7 +675,7 @@ async function startHitchBinding({
           harness === "codex"
             ? (threadId: string) => linkCodexThread(path, threadId)
             : (sessionId: string) =>
-                linkClaudeSession(path, sessionId, root.localPath);
+                linkClaudeSession(path, sessionId, root.localPath, launcher.environment);
         const onSettled =
           harness === "codex"
             ? (threadId: string) => settleCodexThread(path, threadId)
@@ -647,6 +688,7 @@ async function startHitchBinding({
           project,
           onLinked,
           onSettled,
+          logger,
         });
         await complete(cmd, "done", result);
         logger.info(
@@ -769,6 +811,7 @@ export async function startHitchDaemon(
         hitch,
         logger,
         host,
+        configPath,
       }),
     ),
   );
@@ -780,6 +823,7 @@ export async function startHitchDaemon(
     stopped = true;
     await Promise.all(bindingHandles.map((binding) => binding.stop()));
     await closeCodexAppServer();
+    await stopClaudeSessionLinker();
     await client.close();
   }
 

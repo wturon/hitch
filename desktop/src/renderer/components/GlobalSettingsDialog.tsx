@@ -30,6 +30,7 @@ import {
   defaultEnvironment,
   environmentLabel,
   harnessLabel,
+  isEnvironment,
   type Environment,
 } from "@/lib/chat";
 import { DeviceTokensPanel } from "@/components/DeviceTokens";
@@ -89,6 +90,11 @@ interface HitchDaemonApi {
   installGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
   removeGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
   openGlobalCodexHookTrust: () => Promise<string>;
+  getHarnessEnvironments: () => Promise<Record<string, string>>;
+  setHarnessEnvironment: (
+    harness: string,
+    environment: string,
+  ) => Promise<Record<string, string>>;
 }
 
 export function GlobalSettingsDialog({
@@ -186,7 +192,7 @@ export function GlobalSettingsDialog({
                       </p>
                     </div>
 
-                    <EnvironmentRow harness="codex" />
+                    <EnvironmentRow harness="codex" bridge={bridge} />
 
                     <HookSection
                       title="Codex chat status hooks"
@@ -202,7 +208,7 @@ export function GlobalSettingsDialog({
                       onError={setError}
                     />
 
-                    <EnvironmentRow harness="claude-code" />
+                    <EnvironmentRow harness="claude-code" bridge={bridge} />
 
                     <HookSection
                       title="Claude Code chat status hooks"
@@ -355,13 +361,44 @@ function UpdatesSection() {
   );
 }
 
-// Where Hitch opens this harness's sessions. Release 1 has a single environment
-// per harness (the daemon derives it), so the select is fixed — but surfacing it
-// here makes the environment axis visible and reserves the slot for future
-// environments (e.g. the VS Code extension).
-function EnvironmentRow({ harness }: { harness: Harness }) {
+// Where Hitch opens this harness's sessions. The choice persists to a local
+// preferences file the daemon reads to pick the launcher; an unset preference
+// falls back to the harness default, so existing behavior is unchanged.
+function EnvironmentRow({
+  harness,
+  bridge,
+}: {
+  harness: Harness;
+  bridge: HitchDaemonApi | undefined;
+}) {
   const options = ENVIRONMENTS_BY_HARNESS[harness];
-  const value = defaultEnvironment(harness);
+  const [value, setValue] = useState<Environment>(defaultEnvironment(harness));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!bridge) return;
+    void bridge
+      .getHarnessEnvironments()
+      .then((map) => {
+        const stored = map[harness];
+        if (stored && isEnvironment(stored)) setValue(stored);
+      })
+      .catch(() => {});
+  }, [bridge, harness]);
+
+  async function change(next: Environment) {
+    setValue(next);
+    if (!bridge) return;
+    setSaving(true);
+    try {
+      await bridge.setHarnessEnvironment(harness, next);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Only the single-option harnesses lock the select; otherwise it's a real choice.
+  const locked = options.length < 2 || !bridge;
 
   return (
     <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
@@ -372,7 +409,11 @@ function EnvironmentRow({ harness }: { harness: Harness }) {
             Where Hitch opens {harnessLabel(harness)} sessions.
           </p>
         </div>
-        <Select value={value} disabled>
+        <Select
+          value={value}
+          onValueChange={(next) => void change(next as Environment)}
+          disabled={locked || saving}
+        >
           <SelectTrigger
             className="w-48"
             aria-label={`${harnessLabel(harness)} run environment`}
@@ -390,10 +431,17 @@ function EnvironmentRow({ harness }: { harness: Harness }) {
           </SelectContent>
         </Select>
       </div>
-      <p className="text-xs text-muted-foreground/70">
-        More environments (like the VS Code extension) are coming. This is fixed
-        for now.
-      </p>
+      {value === "vscode" || value === "cursor" ? (
+        <p className="text-xs text-amber-600 dark:text-amber-400/90">
+          Experimental: opens the {environmentLabel(value)} with your prompt
+          pre-filled — press Enter to start. The card links once you send the
+          first message, then tracks status normally.
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground/70">
+          More environments are coming.
+        </p>
+      )}
     </section>
   );
 }

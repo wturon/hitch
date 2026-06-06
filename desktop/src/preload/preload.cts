@@ -127,6 +127,11 @@ export interface HitchDaemonApi {
   installGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
   removeGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
   openGlobalCodexHookTrust: () => Promise<string>;
+  getHarnessEnvironments: () => Promise<Record<string, string>>;
+  setHarnessEnvironment: (
+    harness: string,
+    environment: string,
+  ) => Promise<Record<string, string>>;
   enableCmuxAutomation: () => Promise<EnableCmuxResult>;
   openCmuxApp: () => Promise<string>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
@@ -166,6 +171,10 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("config:remove-global-claude-hooks"),
   openGlobalCodexHookTrust: () =>
     ipcRenderer.invoke("config:open-global-codex-hook-trust"),
+  getHarnessEnvironments: () =>
+    ipcRenderer.invoke("config:get-harness-environments"),
+  setHarnessEnvironment: (harness, environment) =>
+    ipcRenderer.invoke("config:set-harness-environment", harness, environment),
   enableCmuxAutomation: () => ipcRenderer.invoke("cmux:enable-automation"),
   openCmuxApp: () => ipcRenderer.invoke("cmux:open-app"),
   chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),

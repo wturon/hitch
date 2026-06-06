@@ -15,6 +15,14 @@ that section as the GitHub Release notes.
   hardcoded per-harness switch. Harness settings shows a new "Run environment"
   selector under each harness, ready for more environments (like the VS Code
   extension) to plug in.
+- Add **VS Code** and **Cursor** as run environments for Claude Code (experimental).
+  Starting or resuming a task opens the editor's Claude Code extension via its URI
+  handler. Because the extension owns the session id, the daemon links the task by
+  watching Claude's session store (`~/.claude/projects`) and binding the new session
+  to the task that launched it — so the card links the moment you send the first
+  message and then tracks working/waiting status through the normal Claude hooks,
+  exactly like cmux. Your per-harness environment choice persists in a local
+  `preferences.json`; leaving it unset keeps today's behavior (cmux / Codex app).
 
 ## [0.1.8] - 2026-06-04
 

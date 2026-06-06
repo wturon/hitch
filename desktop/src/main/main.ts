@@ -155,6 +155,11 @@ const localConfigPath =
   process.env.HITCH_CONFIG_PATH ?? join(appSupportDir, "config.json");
 const localSecretsPath =
   process.env.HITCH_SECRETS_PATH ?? join(appSupportDir, "secrets.json");
+// Per-harness run-environment preference (e.g. claude-code → cmux | vscode). Kept
+// in its own file beside config.json so the hitches normalizer can't drop it; the
+// daemon reads the same file to resolve which launcher to use.
+const localPreferencesPath =
+  process.env.HITCH_PREFERENCES_PATH ?? join(appSupportDir, "preferences.json");
 const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
 // GitHub OAuth runs in the system browser (RFC 8252); Convex Auth's SITE_URL is
@@ -879,6 +884,38 @@ function writeLocalSecrets(secrets: LocalSecrets): LocalSecrets {
   mkdirSync(dirname(localSecretsPath), { recursive: true });
   writeFileSync(localSecretsPath, `${JSON.stringify(secrets, null, 2)}\n`, "utf8");
   return readLocalSecrets();
+}
+
+// { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is
+// just "no preference set", which the daemon treats as the harness default.
+function readHarnessEnvironments(): Record<string, string> {
+  if (!existsSync(localPreferencesPath)) return {};
+  try {
+    const raw = JSON.parse(readFileSync(localPreferencesPath, "utf8")) as unknown;
+    if (!isRecord(raw) || !isRecord(raw.harnessEnvironments)) return {};
+    return Object.fromEntries(
+      Object.entries(raw.harnessEnvironments).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[0] === "string" && typeof entry[1] === "string",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function setHarnessEnvironment(
+  harness: string,
+  environment: string,
+): Record<string, string> {
+  const next = { ...readHarnessEnvironments(), [harness]: environment };
+  mkdirSync(dirname(localPreferencesPath), { recursive: true });
+  writeFileSync(
+    localPreferencesPath,
+    `${JSON.stringify({ harnessEnvironments: next }, null, 2)}\n`,
+    "utf8",
+  );
+  return next;
 }
 
 function ensureDeviceId(): string {
@@ -2015,6 +2052,14 @@ ipcMain.handle("config:remove-global-claude-hooks", () =>
 );
 ipcMain.handle("config:open-global-codex-hook-trust", () =>
   openGlobalCodexHookTrust(),
+);
+ipcMain.handle("config:get-harness-environments", () =>
+  readHarnessEnvironments(),
+);
+ipcMain.handle(
+  "config:set-harness-environment",
+  (_event, harness: string, environment: string) =>
+    setHarnessEnvironment(harness, environment),
 );
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());

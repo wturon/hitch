@@ -9,7 +9,13 @@
 // probe) so new environments slot in without reshaping the daemon.
 
 export type Harness = "claude-code" | "codex";
-export type Environment = "cmux" | "codex-app";
+export type Environment = "cmux" | "codex-app" | "vscode" | "cursor";
+
+// Minimal logger shape the launcher modules use, so they don't depend on daemon.ts.
+export interface LauncherLogger {
+  info: (message: string) => void;
+  error?: (message: string) => void;
+}
 
 export interface ProjectRef {
   projectId: string;
@@ -35,6 +41,9 @@ export interface StartCtx {
   project: ProjectRef;
   onLinked: (sessionId: string) => Promise<void>;
   onSettled?: (sessionId: string) => Promise<void>;
+  // Provided so fire-and-forget launchers (vscode/cursor) can register a claim
+  // with the harness-level session linker, which links the session out-of-band.
+  logger?: LauncherLogger;
 }
 
 export interface LaunchOutcome {

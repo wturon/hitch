@@ -32,7 +32,7 @@ export function harnessLabel(harness: Harness): string {
 // settings UI models this axis explicitly so future environments (e.g. the VS Code
 // extension) slot in without reshaping the mental model. Keep in sync with the
 // daemon's launcher registry.
-export type Environment = "cmux" | "codex-app";
+export type Environment = "cmux" | "codex-app" | "vscode" | "cursor";
 
 export interface EnvironmentOption {
   id: Environment;
@@ -40,7 +40,11 @@ export interface EnvironmentOption {
 }
 
 export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
-  "claude-code": [{ id: "cmux", label: "cmux (TUI)" }],
+  "claude-code": [
+    { id: "cmux", label: "cmux (TUI)" },
+    { id: "vscode", label: "VS Code extension" },
+    { id: "cursor", label: "Cursor extension" },
+  ],
   codex: [{ id: "codex-app", label: "Codex app" }],
 };
 
@@ -49,7 +53,25 @@ export function defaultEnvironment(harness: Harness): Environment {
 }
 
 export function environmentLabel(env: Environment): string {
-  return env === "codex-app" ? "Codex app" : "cmux (TUI)";
+  switch (env) {
+    case "codex-app":
+      return "Codex app";
+    case "vscode":
+      return "VS Code extension";
+    case "cursor":
+      return "Cursor extension";
+    default:
+      return "cmux (TUI)";
+  }
+}
+
+export function isEnvironment(value: string): value is Environment {
+  return (
+    value === "cmux" ||
+    value === "codex-app" ||
+    value === "vscode" ||
+    value === "cursor"
+  );
 }
 
 // Live runtime state of the chat driving a task, written into frontmatter as
