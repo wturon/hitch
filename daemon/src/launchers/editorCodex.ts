@@ -89,6 +89,8 @@ function makeEditorCodexLauncher(config: EditorConfig): Launcher {
         threadName: ctx.title,
         onThreadStarted: async (threadId) => {
           await ctx.onLinked(threadId);
+        },
+        onTurnStarted: async (threadId) => {
           try {
             await focusExtensionThread(config, cli, threadId, ctx.cwd);
           } catch (err) {
