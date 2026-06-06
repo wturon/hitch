@@ -404,9 +404,11 @@ function EnvironmentRow({
     <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium">Run environment</h3>
+          <h3 className="text-sm font-medium">
+            Where do you like to use {harnessLabel(harness)}?
+          </h3>
           <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            Where Hitch opens {harnessLabel(harness)} sessions.
+            Hitch opens and resumes its sessions here.
           </p>
         </div>
         <Select
