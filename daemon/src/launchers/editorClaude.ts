@@ -3,6 +3,11 @@
 // we can't enumerate its tabs or pin the session id — we open the folder, fire the
 // URI, and let the editor do find/open/focus opaquely.
 //
+// Delivery mirrors the Codex editor launcher: we hand the URI to the editor's own
+// CLI (`code --open-url <uri>`) rather than macOS `open -b <bundleId>`. The CLI
+// routes to its own app, so it deterministically targets VS Code vs Cursor without
+// fighting over the shared `vscode://` scheme, and uses each editor's own scheme.
+//
 // Because the extension owns the new session id (fire-and-forget start), startNew
 // registers a CLAIM with the harness-level Claude session linker
 // (claudeSessionLinker), which binds the id once the session's transcript appears.
@@ -10,12 +15,11 @@
 //
 // LIMITATIONS (intentional): startNew pre-fills the prompt but the extension does
 // NOT auto-submit it (user presses Enter); the session only links once they do. No
-// per-launch dedup. VS Code and Cursor both fork the editor, so they're distinct
-// environments with their own URI scheme + app, but share the Claude linker.
+// per-launch dedup. Whether Claude opens in a tab vs the sidebar is governed by the
+// extension's own `claudeCode.preferredLocation` setting, not by us.
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { platform } from "node:os";
 import { promisify } from "node:util";
 
 import { registerClaudeClaim } from "./claudeSessionLinker.js";
@@ -26,11 +30,8 @@ const run = promisify(execFile);
 interface EditorConfig {
   environment: Environment;
   // The extension's URI scheme host. VS Code → "vscode", Cursor → "cursor".
-  uriScheme: string;
-  // macOS bundle id to target explicitly (both editors register "vscode:", so we
-  // must disambiguate by bundle when opening a vscode:// URI).
-  bundleId: string;
-  // Candidate paths for the editor's `code`-style CLI (to open the folder first).
+  uriScheme: "vscode" | "cursor";
+  // Candidate paths for the editor's `code`-style CLI (opens the folder + the URI).
   cliCandidates: string[];
 }
 
@@ -51,14 +52,9 @@ async function openFolder(cli: string | null, cwd?: string): Promise<void> {
   }
 }
 
-// Route the URI to the specific editor by bundle id, since vscode:// is ambiguous
-// when both VS Code and Cursor are installed. macOS only.
-async function openUri(bundleId: string, uri: string): Promise<void> {
-  if (platform() === "darwin") {
-    await run("/usr/bin/open", ["-b", bundleId, uri], { timeout: 10_000 });
-    return;
-  }
-  await run("xdg-open", [uri], { timeout: 10_000 }).catch(() => {});
+// Hand the URI to the editor's own CLI so it routes to that editor instance.
+async function openUrl(cli: string, uri: string): Promise<void> {
+  await run(cli, ["--open-url", uri], { timeout: 10_000 });
 }
 
 function makeEditorClaudeLauncher(config: EditorConfig): Launcher {
@@ -82,15 +78,15 @@ function makeEditorClaudeLauncher(config: EditorConfig): Launcher {
 
     async reopen(ctx) {
       const cli = firstExisting(config.cliCandidates);
+      if (!cli) throw new Error(`${config.environment} CLI not found`);
       await openFolder(cli, ctx.cwd);
-      await openUri(
-        config.bundleId,
-        `${uriBase}?session=${encodeURIComponent(ctx.sessionId)}`,
-      );
+      await openUrl(cli, `${uriBase}?session=${encodeURIComponent(ctx.sessionId)}`);
       return { result: "focused" };
     },
 
     async startNew(ctx) {
+      const cli = firstExisting(config.cliCandidates);
+      if (!cli) throw new Error(`${config.environment} CLI not found`);
       // Record the claim BEFORE firing the URI so the new session can never slip
       // past the linker. The claim is patient (no poll window), so it survives the
       // user leaving the pre-filled prompt sitting before they press Enter.
@@ -105,12 +101,8 @@ function makeEditorClaudeLauncher(config: EditorConfig): Launcher {
           ctx.logger,
         );
       }
-      const cli = firstExisting(config.cliCandidates);
       await openFolder(cli, ctx.cwd);
-      await openUri(
-        config.bundleId,
-        `${uriBase}?prompt=${encodeURIComponent(ctx.prompt)}`,
-      );
+      await openUrl(cli, `${uriBase}?prompt=${encodeURIComponent(ctx.prompt)}`);
       return { result: "opened-unsubmitted" };
     },
   };
@@ -119,7 +111,6 @@ function makeEditorClaudeLauncher(config: EditorConfig): Launcher {
 export const vscodeClaudeLauncher = makeEditorClaudeLauncher({
   environment: "vscode",
   uriScheme: "vscode",
-  bundleId: "com.microsoft.VSCode",
   cliCandidates: [
     process.env.VSCODE_BIN ?? "",
     "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
@@ -129,12 +120,11 @@ export const vscodeClaudeLauncher = makeEditorClaudeLauncher({
 });
 
 // Cursor is a VS Code fork; the same anthropic.claude-code extension installs into
-// it and (best-effort) registers a cursor:// URI handler. Unverified end-to-end —
-// shipped as an option; discovery/status are identical to VS Code regardless.
+// it and registers a cursor:// URI handler. Discovery/status are identical to VS
+// Code regardless of which editor launched the session.
 export const cursorClaudeLauncher = makeEditorClaudeLauncher({
   environment: "cursor",
   uriScheme: "cursor",
-  bundleId: "com.todesktop.230313mzl4w4u92",
   cliCandidates: [
     process.env.CURSOR_BIN ?? "",
     "/Applications/Cursor.app/Contents/Resources/app/bin/code",

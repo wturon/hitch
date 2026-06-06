@@ -23,6 +23,10 @@ that section as the GitHub Release notes.
   message and then tracks working/waiting status through the normal Claude hooks,
   exactly like cmux. Your per-harness environment choice persists in a local
   `preferences.json`; leaving it unset keeps today's behavior (cmux / Codex app).
+  The URI is delivered through the editor's own CLI (`code --open-url`) so it
+  targets VS Code vs Cursor deterministically. The session opens as an editor tab:
+  the extension's `/open` deep link always uses the editor surface regardless of
+  its sidebar/panel preference, so we can't route it to the sidebar.
 - Add **VS Code** and **Cursor** as run environments for Codex. Hitch still starts
   and links Codex tasks through `codex app-server`, then enables the open button
   once the first turn finishes so the user can resume the durable transcript in
