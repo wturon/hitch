@@ -8,6 +8,8 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-06-06
+
 - Lay the rails for running each harness in different environments. Claude Code
   and Codex launches now flow through an environment-aware launcher/adapter layer
   in the daemon — behavior is unchanged (Claude Code in cmux, Codex in the Codex
@@ -35,6 +37,10 @@ that section as the GitHub Release notes.
   `cursor://openai.chatgpt/local/<thread-id>`. Existing linked Codex chats can
   be opened from the board using the same daemon `open-chat` command path as
   other harnesses.
+- Fix the info (ⓘ) popover not appearing in the task details modal. The tooltip
+  was painting behind the dialog; the `z-index` now sits on the tooltip positioner
+  (the fixed-position element that creates the stacking context) so tooltips layer
+  above dialogs.
 
 ## [0.1.8] - 2026-06-04
 
