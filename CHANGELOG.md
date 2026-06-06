@@ -30,7 +30,9 @@ that section as the GitHub Release notes.
   Codex chats can be opened from the board using the same daemon `open-chat`
   command path as other harnesses. New Codex editor chats open after the first
   turn completes so the extension loads durable transcript history instead of a
-  partially hydrated running turn.
+  partially hydrated running turn; the open button stays disabled during that
+  first-turn handoff and explains that Hitch will focus the editor when the turn
+  finishes.
 
 ## [0.1.8] - 2026-06-04
 

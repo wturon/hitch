@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
-import { ExternalLink, LoaderCircle, Terminal } from "lucide-react";
+import { ExternalLink, Eye, LoaderCircle, Terminal } from "lucide-react";
 
 import {
   harnessLabel,
@@ -17,6 +17,12 @@ import {
   CmuxAccessDialog,
   type CmuxAccessReason,
 } from "@/components/CmuxAccessDialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 // Leading glyph for the launch button: the chat's live state when we have one
 // (spinner while working, a steady dot once it's your turn — the "blue dot"),
@@ -41,6 +47,7 @@ function LaunchIcon({
 export function ChatLaunch({
   chat,
   status,
+  openState,
   projectId,
   size = "sm",
   stopPropagation = false,
@@ -83,6 +90,37 @@ export function ChatLaunch({
   const stop = (e: React.MouseEvent) => {
     if (stopPropagation) e.stopPropagation();
   };
+
+  if (chat.harness === "codex" && openState === "pending") {
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              tabIndex={0}
+              className={cn("inline-flex", className)}
+              aria-label="Why Codex cannot open yet"
+            />
+          }
+        >
+          <Button
+            variant="secondary"
+            size={size}
+            disabled
+            aria-label="Codex first turn is running"
+          >
+            <LaunchIcon status={status} fallback={<ExternalLink />} />
+            Opening Codex…
+            <Eye className="opacity-70" aria-hidden />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-64">
+          Hitch is using Codex app-server to run the first turn. When it
+          finishes, Hitch will find and focus the chat in your selected editor.
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
 
   async function launchOpen() {
     setOpening(true);
