@@ -389,6 +389,8 @@ export interface StartSpec {
   prompt: string;
   sessionId: string; // pinned via `claude --session-id`, so we know it up front
   cwd?: string;
+  model?: string; // `claude --model` (e.g. "claude-opus-4-8"); omit for the default
+  effort?: string; // `claude --effort` (low|medium|high|xhigh|max); omit for the default
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
@@ -424,7 +426,13 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
 
   spawning.add(spec.taskKey);
   try {
-    const command = `claude --session-id ${spec.sessionId} ${shellQuote(spec.prompt)}`;
+    // Optional kickoff flags. Values come from a fixed allowlist in the UI
+    // (model ids / effort levels), so they need no shell-quoting.
+    const flags: string[] = [];
+    if (spec.model) flags.push("--model", spec.model);
+    if (spec.effort) flags.push("--effort", spec.effort);
+    const flagStr = flags.length ? `${flags.join(" ")} ` : "";
+    const command = `claude --session-id ${spec.sessionId} ${flagStr}${shellQuote(spec.prompt)}`;
     const workspace = await placeChat({
       projectId: spec.projectId,
       projectName: spec.projectName,

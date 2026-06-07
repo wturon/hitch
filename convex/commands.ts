@@ -17,6 +17,10 @@ export const enqueueCommand = mutation({
     path: v.optional(v.string()),
     initialPrompt: v.optional(v.string()),
     cwd: v.optional(v.string()),
+    // start-chat kickoff parameters. Passed to the harness at launch only;
+    // never persisted to the task.
+    model: v.optional(v.string()),
+    effort: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const access = await requireProjectMemberById(ctx, args.projectId);

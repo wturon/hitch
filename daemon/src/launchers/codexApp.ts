@@ -29,6 +29,8 @@ export const codexAppLauncher: Launcher = {
       prompt: ctx.prompt,
       cwd: ctx.cwd ?? "",
       threadName: ctx.title,
+      model: ctx.model,
+      effort: ctx.effort,
       onThreadStarted: ctx.onLinked,
       onTurnCompleted: ctx.onSettled,
     });

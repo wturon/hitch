@@ -79,6 +79,8 @@ export default defineSchema({
     path: v.optional(v.string()), // start-chat: the task's rel path (dedup)
     initialPrompt: v.optional(v.string()), // start-chat: seed prompt for the new session
     cwd: v.optional(v.string()),
+    model: v.optional(v.string()), // start-chat: model to launch (kickoff only)
+    effort: v.optional(v.string()), // start-chat: reasoning/effort level (kickoff only)
     status: v.string(), // "pending" | "done" | "error"
     result: v.optional(v.string()), // "focused"/"spawned" or an error message
     errorCode: v.optional(v.string()), // machine-readable failure kind, e.g. "cmux-access-denied"

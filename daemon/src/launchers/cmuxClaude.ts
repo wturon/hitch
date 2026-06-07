@@ -42,6 +42,8 @@ export const cmuxClaudeLauncher: Launcher = {
       prompt: ctx.prompt,
       sessionId,
       cwd: ctx.cwd,
+      model: ctx.model,
+      effort: ctx.effort,
       projectId: ctx.project.projectId,
       projectName: ctx.project.projectName,
     });

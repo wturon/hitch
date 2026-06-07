@@ -112,8 +112,19 @@ function TaskEditor({
 
   // Save the current edits, then ask the daemon to spawn the session. We keep
   // the modal open: the daemon links the session into the file, the live task
-  // flows back, and the band swaps to its linked state on its own.
-  async function startChat(harness: Harness, prompt: string) {
+  // flows back, and the band swaps to its linked state on its own. model/effort
+  // ride the command for the kickoff only — they're never written to the task.
+  async function startChat({
+    harness,
+    model,
+    effort,
+    prompt,
+  }: {
+    harness: Harness;
+    model: string;
+    effort: string;
+    prompt: string;
+  }) {
     await persist(draft);
     await enqueue({
       projectId: task.projectId,
@@ -121,6 +132,8 @@ function TaskEditor({
       harness,
       path: task.path,
       initialPrompt: prompt,
+      model,
+      effort,
     });
   }
 

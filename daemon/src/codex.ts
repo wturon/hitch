@@ -66,6 +66,10 @@ export interface CodexStartSpec {
   prompt: string;
   cwd: string;
   threadName?: string;
+  // Kickoff parameters passed on `turn/start` (the app-server's TurnStartParams
+  // accepts both): the model id and the reasoning effort (ReasoningEffort).
+  model?: string;
+  effort?: string;
   onThreadStarted?: (threadId: string) => Promise<void>;
   onTurnCompleted?: (threadId: string) => Promise<void>;
 }
@@ -317,15 +321,15 @@ async function doStartCodexChat(
   }
 
   try {
-    await server.request(
-      "turn/start",
-      {
-        threadId,
-        cwd: spec.cwd,
-        input: [{ type: "text", text: spec.prompt, text_elements: [] }],
-      },
-      45_000,
-    );
+    const turnParams: Record<string, unknown> = {
+      threadId,
+      cwd: spec.cwd,
+      input: [{ type: "text", text: spec.prompt, text_elements: [] }],
+    };
+    // Override the model/effort for this turn (and subsequent ones) when set.
+    if (spec.model) turnParams.model = spec.model;
+    if (spec.effort) turnParams.effort = spec.effort;
+    await server.request("turn/start", turnParams, 45_000);
   } catch (err) {
     unsubscribeTurnCompleted?.();
     throw err;

@@ -78,6 +78,82 @@ export function isEnvironment(value: string): value is Environment {
   );
 }
 
+// Additional launch parameters the user can set before kicking off a harness:
+// which model to run and how much reasoning/effort to spend. Both are start-time
+// only — we pass them on the spawn command and let the harness own them after
+// that, so they are never persisted to the task's frontmatter. The available
+// values differ per harness (Claude's effort ladder has `max`; Codex's has
+// `none`/`minimal`), so callers scope the option lists by harness and reset to
+// the harness default when the harness changes. Keep ids in sync with the flags
+// the daemon passes (`claude --model/--effort`, codex `turn/start`).
+export interface LaunchOption {
+  id: string;
+  label: string;
+}
+
+// Model ids are handed to the harness verbatim (e.g. `claude --model
+// claude-opus-4-8`). Codex is a placeholder pending a real model list.
+export const MODELS_BY_HARNESS: Record<Harness, LaunchOption[]> = {
+  "claude-code": [
+    { id: "claude-opus-4-8", label: "Opus 4.8" },
+    { id: "claude-opus-4-7", label: "Opus 4.7" },
+    { id: "claude-opus-4-6", label: "Opus 4.6" },
+    { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+    { id: "claude-haiku-4-5", label: "Haiku 4.5" },
+  ],
+  // Placeholder — the real Codex model list lands in a later pass.
+  codex: [{ id: "gpt-5.5", label: "GPT-5.5" }],
+};
+
+// Reasoning/effort ladders. Claude maps to `claude --effort`; Codex maps to the
+// app-server `turn/start` effort (ReasoningEffort) field.
+export const REASONING_BY_HARNESS: Record<Harness, LaunchOption[]> = {
+  "claude-code": [
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "xHigh" },
+    { id: "max", label: "Max" },
+  ],
+  codex: [
+    { id: "none", label: "None" },
+    { id: "minimal", label: "Minimal" },
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "xHigh" },
+  ],
+};
+
+export function defaultModel(harness: Harness): string {
+  return MODELS_BY_HARNESS[harness][0].id;
+}
+
+export function defaultReasoning(harness: Harness): string {
+  return harness === "codex" ? "medium" : "high";
+}
+
+export function modelLabel(harness: Harness, id: string): string {
+  return MODELS_BY_HARNESS[harness].find((m) => m.id === id)?.label ?? id;
+}
+
+export function reasoningLabel(harness: Harness, id: string): string {
+  return REASONING_BY_HARNESS[harness].find((r) => r.id === id)?.label ?? id;
+}
+
+// Claude run inside an editor extension can't accept model/effort at launch —
+// the extension owns them — so the compose UI disables those controls for that
+// (harness, environment) pair and points the user at the editor instead.
+export function honorsLaunchParams(
+  harness: Harness,
+  environment: Environment | undefined,
+): boolean {
+  return !(
+    harness === "claude-code" &&
+    (environment === "vscode" || environment === "cursor")
+  );
+}
+
 // Live runtime state of the chat driving a task, written into frontmatter as
 // `chat-status` by the harness's lifecycle hooks (see .claude/hooks/chat-status.mjs):
 //   working — mid-turn, actively processing (no human action needed)

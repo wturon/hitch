@@ -38,6 +38,11 @@ export interface StartCtx {
   prompt: string;
   cwd?: string;
   title?: string;
+  // Kickoff-only launch parameters chosen in the compose UI. Applied when the
+  // launcher spawns the harness and then owned by the harness; not all launchers
+  // honor them (the Claude editor launchers can't pass them through the URI).
+  model?: string;
+  effort?: string;
   project: ProjectRef;
   onLinked: (sessionId: string) => Promise<void>;
   onSettled?: (sessionId: string) => Promise<void>;

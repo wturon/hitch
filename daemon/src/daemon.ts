@@ -87,6 +87,8 @@ interface CommandDoc {
   path?: string;
   initialPrompt?: string;
   cwd?: string;
+  model?: string; // start-chat kickoff: model to launch
+  effort?: string; // start-chat kickoff: reasoning/effort level
   status: string;
 }
 
@@ -690,6 +692,8 @@ async function startHitchBinding({
           prompt: cmd.initialPrompt,
           cwd: root.localPath,
           title: await taskTitle(path),
+          model: cmd.model,
+          effort: cmd.effort,
           project,
           onLinked,
           onSettled,

@@ -1,20 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Settings2Icon } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
+import { SendHorizontalIcon, Settings2Icon } from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
 
 import {
   DEFAULT_STARTING_PROMPTS,
   HARNESSES,
+  MODELS_BY_HARNESS,
+  REASONING_BY_HARNESS,
   buildStartPrompt,
   chatActivity,
+  defaultEnvironment,
+  defaultModel,
+  defaultReasoning,
+  environmentLabel,
   harnessLabel,
+  honorsLaunchParams,
+  isEnvironment,
   loadStartingPrompts,
+  modelLabel,
+  reasoningLabel,
   type ChatActivity,
   type ChatOpenState,
   type ChatRef,
   type ChatStatus,
+  type Environment,
   type Harness,
   type StartingPrompt,
 } from "@/lib/chat";
@@ -81,11 +92,22 @@ export function DelegationBand({
   chatOpenState: ChatOpenState | null;
   title: string;
   path: string;
-  onStart: (harness: Harness, prompt: string) => Promise<void> | void;
+  onStart: (params: {
+    harness: Harness;
+    model: string;
+    effort: string;
+    prompt: string;
+  }) => Promise<void> | void;
   onClear: () => void;
   onManagePrompts?: () => void;
 }) {
   const [harness, setHarness] = useState<Harness>("codex");
+  const [model, setModel] = useState(() => defaultModel("codex"));
+  const [effort, setEffort] = useState(() => defaultReasoning("codex"));
+  // Per-harness run environment, read from the local daemon bridge. Claude in an
+  // editor extension can't take model/effort at launch, so we disable those
+  // controls for that case and point the user at the editor.
+  const [harnessEnvs, setHarnessEnvs] = useState<Record<string, string>>({});
   const [prompts, setPrompts] =
     useState<StartingPrompt[]>(DEFAULT_STARTING_PROMPTS);
   const [promptId, setPromptId] = useState(DEFAULT_STARTING_PROMPTS[0].id);
@@ -109,6 +131,40 @@ export function DelegationBand({
     };
   }, [title, path]);
 
+  // Read the per-harness environment preference once, so we know whether the
+  // selected harness honors launch params (Claude in vscode/cursor does not).
+  useEffect(() => {
+    const bridge =
+      typeof window !== "undefined"
+        ? (
+            window as unknown as {
+              hitchDaemon?: {
+                getHarnessEnvironments?: () => Promise<Record<string, string>>;
+              };
+            }
+          ).hitchDaemon
+        : undefined;
+    if (!bridge?.getHarnessEnvironments) return;
+    void bridge
+      .getHarnessEnvironments()
+      .then((map) => setHarnessEnvs(map ?? {}))
+      .catch(() => {});
+  }, []);
+
+  // The combined agent dropdown picks a (harness, model) pair at once. Switching
+  // harness resets the reasoning level to that harness's default, since the
+  // effort ladders differ between harnesses.
+  function chooseAgent(value: string) {
+    const sep = value.indexOf("|");
+    const nextHarness = value.slice(0, sep) as Harness;
+    const nextModel = value.slice(sep + 1);
+    setModel(nextModel);
+    if (nextHarness !== harness) {
+      setHarness(nextHarness);
+      setEffort(defaultReasoning(nextHarness));
+    }
+  }
+
   // Picking a preset refills the textarea, which stays freely editable for
   // one-off tweaks — edits never write back to the saved preset. The sentinel
   // value is a footer action (jump to settings), not a real preset.
@@ -126,13 +182,21 @@ export function DelegationBand({
   async function start() {
     setStarting(true);
     try {
-      await onStart(harness, prompt);
+      await onStart({ harness, model, effort, prompt });
     } finally {
       // The daemon spawn is async; the band only flips to "linked" once the
       // agent writes its id back, so keep the button busy briefly.
       setTimeout(() => setStarting(false), 1500);
     }
   }
+
+  // Whether the current (harness, environment) pair accepts model/effort at
+  // launch. Unset env falls back to the harness default.
+  const storedEnv = harnessEnvs[harness];
+  const currentEnv: Environment = isEnvironment(storedEnv ?? "")
+    ? (storedEnv as Environment)
+    : defaultEnvironment(harness);
+  const paramsHonored = honorsLaunchParams(harness, currentEnv);
 
   if (chat) {
     return (
@@ -169,7 +233,6 @@ export function DelegationBand({
     );
   }
 
-  const label = harnessLabel(harness);
   return (
     <section className="flex flex-col gap-2 rounded-md border bg-muted/40 p-3">
       <div className="flex items-center justify-between gap-2">
@@ -177,34 +240,73 @@ export function DelegationBand({
           Delegate to an agent
         </span>
         <div className="flex items-center gap-2">
+          {/* Combined harness + model picker: models are grouped under their
+              harness, so choosing a model also fixes the harness. */}
           <Select
-            value={harness}
-            onValueChange={(value) => setHarness(value as Harness)}
+            value={`${harness}|${model}`}
+            onValueChange={(value) => chooseAgent(value as string)}
           >
-            <SelectTrigger aria-label="Harness" className="w-44">
+            <SelectTrigger aria-label="Agent and model" className="w-60">
               <SelectValue>
-                {(value: Harness) => (
-                  <span className="flex items-center gap-2">
-                    <HarnessIcon harness={value} className="size-4" />
-                    {harnessLabel(value)}
-                  </span>
-                )}
+                {(value: string) => {
+                  const sep = value.indexOf("|");
+                  const h = value.slice(0, sep) as Harness;
+                  const m = value.slice(sep + 1);
+                  return (
+                    <span className="flex items-center gap-2">
+                      <HarnessIcon harness={h} className="size-4" />
+                      <span className="font-medium">{harnessLabel(h)}</span>
+                      <span className="text-muted-foreground">
+                        · {modelLabel(h, m)}
+                      </span>
+                    </span>
+                  );
+                }}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {HARNESSES.map((h) => (
-                <SelectItem key={h} value={h}>
-                  <HarnessIcon harness={h} className="size-4" />
-                  {harnessLabel(h)}
+                <Fragment key={h}>
+                  <div className="flex items-center gap-2 px-2 pt-1.5 pb-1 text-xs font-medium text-muted-foreground">
+                    <HarnessIcon harness={h} className="size-3.5" />
+                    {harnessLabel(h)}
+                  </div>
+                  {MODELS_BY_HARNESS[h].map((m) => (
+                    <SelectItem
+                      key={`${h}|${m.id}`}
+                      value={`${h}|${m.id}`}
+                      className="pl-7"
+                    >
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </Fragment>
+              ))}
+            </SelectContent>
+          </Select>
+          {/* Reasoning/effort. Options are harness-specific; disabled when the
+              chosen harness/environment can't accept it at launch. */}
+          <Select
+            value={effort}
+            onValueChange={(value) => setEffort(value as string)}
+            disabled={!paramsHonored}
+          >
+            <SelectTrigger aria-label="Reasoning effort" className="w-32">
+              <SelectValue>
+                {(value: string) => reasoningLabel(harness, value)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {REASONING_BY_HARNESS[harness].map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {r.label}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <Button onClick={start} disabled={starting}>
-            {starting ? "Starting…" : `Save & start with ${label}`}
-          </Button>
         </div>
       </div>
+
       <div className="flex items-center gap-2">
         <span className="text-xs text-muted-foreground">Starting prompt</span>
         <Select
@@ -239,6 +341,7 @@ export function DelegationBand({
           </SelectContent>
         </Select>
       </div>
+
       <textarea
         aria-label="Delegation instructions"
         value={prompt}
@@ -247,10 +350,23 @@ export function DelegationBand({
         rows={6}
         className="w-full resize-none rounded-md border bg-transparent p-2 font-mono text-xs leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
-      <p className="text-xs text-muted-foreground/70">
-        Sent to the agent when it starts. Edit for one-off tweaks, or manage
-        presets in Settings → Starting prompts.
-      </p>
+
+      <div className="flex items-center justify-between gap-3">
+        {paramsHonored ? (
+          <span className="text-xs text-muted-foreground/70">
+            Sent to the agent when it starts. Edit for one-off tweaks.
+          </span>
+        ) : (
+          <span className="text-xs text-amber-600 dark:text-amber-400/90">
+            For Claude Code in {environmentLabel(currentEnv)}, model and
+            reasoning are set in the editor window.
+          </span>
+        )}
+        <Button onClick={start} disabled={starting} className="shrink-0">
+          <SendHorizontalIcon className="size-4" />
+          {starting ? "Sending…" : "Send"}
+        </Button>
+      </div>
     </section>
   );
 }
