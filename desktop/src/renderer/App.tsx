@@ -1778,6 +1778,7 @@ function BoardContent({
           onOpenChange={(open) => {
             if (!open) setSelectedPath(null);
           }}
+          onManagePrompts={() => openGlobalSettings("starting-prompts")}
         />
       </div>
     </AppShell>

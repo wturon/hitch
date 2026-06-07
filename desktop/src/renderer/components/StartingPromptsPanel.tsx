@@ -231,7 +231,7 @@ function PromptEditor({
           </span>
           <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
             Prepend the task name and file path so the agent knows what it's
-            picking up. Turn off to keep the context lean.
+            picking up.
           </span>
         </span>
         <Switch checked={draft.includeTaskRef} />

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Settings2Icon } from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
 
 import {
@@ -28,6 +29,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+
+// Sentinel value for the dropdown's footer action. It's not a real preset id —
+// selecting it jumps to the Settings prompt manager instead of picking a prompt.
+const MANAGE_PROMPTS_VALUE = "__manage_prompts__";
 
 // The live activity badge on a linked chat. "none" (no signal) renders nothing —
 // common for Codex, which has no status hooks.
@@ -68,6 +73,7 @@ export function DelegationBand({
   path,
   onStart,
   onClear,
+  onManagePrompts,
 }: {
   projectId: Id<"projects">;
   chat: ChatRef | null;
@@ -77,6 +83,7 @@ export function DelegationBand({
   path: string;
   onStart: (harness: Harness, prompt: string) => Promise<void> | void;
   onClear: () => void;
+  onManagePrompts?: () => void;
 }) {
   const [harness, setHarness] = useState<Harness>("codex");
   const [prompts, setPrompts] =
@@ -103,8 +110,13 @@ export function DelegationBand({
   }, [title, path]);
 
   // Picking a preset refills the textarea, which stays freely editable for
-  // one-off tweaks — edits never write back to the saved preset.
+  // one-off tweaks — edits never write back to the saved preset. The sentinel
+  // value is a footer action (jump to settings), not a real preset.
   function choosePreset(id: string) {
+    if (id === MANAGE_PROMPTS_VALUE) {
+      onManagePrompts?.();
+      return;
+    }
     const preset = prompts.find((p) => p.id === id);
     if (!preset) return;
     setPromptId(id);
@@ -212,6 +224,18 @@ export function DelegationBand({
                 {p.name}
               </SelectItem>
             ))}
+            {onManagePrompts && (
+              <>
+                <div className="my-1 h-px bg-border" />
+                <SelectItem
+                  value={MANAGE_PROMPTS_VALUE}
+                  className="text-muted-foreground"
+                >
+                  <Settings2Icon className="size-3.5 shrink-0" />
+                  Manage prompts in settings…
+                </SelectItem>
+              </>
+            )}
           </SelectContent>
         </Select>
       </div>
