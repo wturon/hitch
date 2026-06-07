@@ -8,6 +8,42 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-06-07
+
+- Add **starting prompts**: pick a reusable kickoff prompt when delegating a
+  task, and manage your prompt library on a new "Starting prompts" settings tab.
+  The picker seeds the (still freely editable) instructions — your edits are
+  one-off and never write back to the saved preset. Each prompt has an optional
+  "Point the agent at the Hitch task" toggle that prepends a task-reference
+  preamble at launch (interpolated live, never persisted, so prompts stay lean
+  and portable). Hitch seeds two defaults (Default execute, Investigate), and a
+  "Manage prompts in settings…" shortcut jumps straight to the tab.
+- Add **model and reasoning controls** to task kickoff. Pick the harness's model
+  and reasoning/effort level before delegating, alongside the harness and
+  starting-prompt pickers. Options are per-harness (Claude effort low–max; Codex
+  none–xhigh) and switching harness resets reasoning to that harness's default.
+  These params ride the start-chat command only and are never written to task
+  frontmatter — kickoff hands them to the harness, which owns them after (cmux
+  Claude via `--model`/`--effort`, Codex via `turn/start`). Claude in a VS Code /
+  Cursor extension can't accept them at launch, so the controls disable there
+  with a note linking to where the preference lives.
+- Redesign the compose view as a single prompt-builder surface: one bordered
+  composer with a focus ring on the whole box, the starting-prompt picker in the
+  header, a borderless instructions textarea in the body, and the agent (harness
+  + model) and reasoning chips with the Send button in the footer.
+- Redesign **harness settings** as one card per harness — a branded header
+  (icon + name + overall status pill) with the run-environment and status-hook
+  rows nested inside, instead of a flat stack of equal-weight boxes.
+- Add a per-column **⋯ menu** to each board column (shown when the column is
+  non-empty) to **Archive all** or **Delete all** tasks in that column. Archive
+  remembers each card's original column so Unarchive restores it; Delete all
+  arms on the first click and fires on the second.
+- Scope the experimental "press Enter to send" editor notice to Claude Code only
+  (Codex in VS Code/Cursor auto-submits through its app server, so the notice was
+  wrong there), and link the VS Code/Cursor notice to the Harnesses tab in global
+  settings where the run-environment preference lives.
+- Lower the board's drag activation threshold so cards pick up more readily.
+
 ## [0.1.9] - 2026-06-06
 
 - Lay the rails for running each harness in different environments. Claude Code
