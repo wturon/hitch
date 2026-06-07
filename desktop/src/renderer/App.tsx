@@ -29,6 +29,7 @@ import {
   ArchiveRestoreIcon,
   CheckCircle2Icon,
   CopyIcon,
+  EllipsisIcon,
   ExternalLinkIcon,
   FolderSyncIcon,
   LayoutDashboardIcon,
@@ -84,6 +85,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import {
   Sheet,
   SheetContent,
@@ -1113,14 +1115,23 @@ function DroppableColumn({
   status,
   count,
   onAdd,
+  onArchiveAll,
+  onDeleteAll,
   children,
 }: {
   status: ProjectStatus;
   count: number;
   onAdd: () => void;
+  onArchiveAll: () => void;
+  onDeleteAll: () => void;
   children: ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status.id });
+  // "Delete all" arms on first click (the menu item swaps to a confirm label)
+  // and fires on the second — mirroring the per-card archive shortcut and the
+  // archived sheet's delete-all. Reset whenever the menu closes so a half-armed
+  // column never lingers.
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
 
   return (
     <section
@@ -1134,21 +1145,64 @@ function DroppableColumn({
         <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {status.name} · {count}
         </h2>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                onClick={onAdd}
-                aria-label="Add task"
-              />
-            }
-          >
-            <PlusIcon />
-          </TooltipTrigger>
-          <TooltipContent>add task… (C)</TooltipContent>
-        </Tooltip>
+        <div className="flex items-center gap-0.5">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={onAdd}
+                  aria-label="Add task"
+                />
+              }
+            >
+              <PlusIcon />
+            </TooltipTrigger>
+            <TooltipContent>add task… (C)</TooltipContent>
+          </Tooltip>
+          {count > 0 && (
+            <Menu
+              onOpenChange={(open) => {
+                if (!open) setConfirmingDeleteAll(false);
+              }}
+            >
+              <MenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="Column actions"
+                  />
+                }
+              >
+                <EllipsisIcon />
+              </MenuTrigger>
+              <MenuContent align="end">
+                <MenuItem onClick={onArchiveAll}>
+                  <ArchiveIcon />
+                  Archive all · {count}
+                </MenuItem>
+                <MenuItem
+                  closeOnClick={confirmingDeleteAll}
+                  onClick={() => {
+                    if (!confirmingDeleteAll) {
+                      setConfirmingDeleteAll(true);
+                      return;
+                    }
+                    onDeleteAll();
+                  }}
+                  className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
+                >
+                  <Trash2Icon />
+                  {confirmingDeleteAll
+                    ? `Click again to delete ${count}`
+                    : `Delete all · ${count}`}
+                </MenuItem>
+              </MenuContent>
+            </Menu>
+          )}
+        </div>
       </div>
       {children}
       {count === 0 && (
@@ -1485,6 +1539,44 @@ function BoardContent({
     );
   }
 
+  // Archive every card in one column at once. Same frontmatter rewrite as the
+  // archive branch of `setArchived` (status → "archived", remembering the source
+  // column in `archivedFrom` so Unarchive restores it), fired concurrently so
+  // the column empties immediately via the optimistic update.
+  async function archiveAllInColumn(columnCards: Card[]) {
+    await Promise.all(
+      columnCards.map(async (card) => {
+        const nextContent = setFrontmatterKeys(card.content, {
+          status: "archived",
+          archivedFrom: card.column,
+        });
+        await upsertFile({
+          projectId,
+          path: card.path,
+          content: nextContent,
+          hash: await sha256(nextContent),
+          deleted: false,
+        });
+      }),
+    );
+  }
+
+  // Permanently delete every card in one column. Mirrors `deleteAllArchived`,
+  // sliced to a single column — the tombstone path each card already uses.
+  async function deleteAllInColumn(columnCards: Card[]) {
+    await Promise.all(
+      columnCards.map((card) =>
+        upsertFile({
+          projectId,
+          path: card.path,
+          content: "",
+          hash: "",
+          deleted: true,
+        }),
+      ),
+    );
+  }
+
   // Move a card to another column by rewriting just its `status` frontmatter.
   // Chat lifecycle fields are owned by the harness hooks, so a board move
   // should never reset or replay them from this card snapshot.
@@ -1609,6 +1701,8 @@ function BoardContent({
                 status={col}
                 count={byColumn[col.id].length}
                 onAdd={() => setComposingCol(col.id)}
+                onArchiveAll={() => void archiveAllInColumn(byColumn[col.id])}
+                onDeleteAll={() => void deleteAllInColumn(byColumn[col.id])}
               >
                 {composingCol === col.id && (
                   <TaskComposer
