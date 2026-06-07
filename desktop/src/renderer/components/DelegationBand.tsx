@@ -13,7 +13,6 @@ import {
   DEFAULT_STARTING_PROMPTS,
   HARNESSES,
   MODELS_BY_HARNESS,
-  REASONING_BY_HARNESS,
   buildStartPrompt,
   chatActivity,
   defaultEnvironment,
@@ -26,6 +25,7 @@ import {
   loadStartingPrompts,
   modelLabel,
   reasoningLabel,
+  reasoningOptions,
   type ChatActivity,
   type ChatOpenState,
   type ChatRef,
@@ -110,7 +110,9 @@ export function DelegationBand({
 }) {
   const [harness, setHarness] = useState<Harness>("codex");
   const [model, setModel] = useState(() => defaultModel("codex"));
-  const [effort, setEffort] = useState(() => defaultReasoning("codex"));
+  const [effort, setEffort] = useState(() =>
+    defaultReasoning("codex", defaultModel("codex")),
+  );
   // Per-harness run environment, read from the local daemon bridge. Claude in an
   // editor extension can't take model/effort at launch, so we disable those
   // controls for that case and point the user at the editor.
@@ -159,8 +161,8 @@ export function DelegationBand({
   }, []);
 
   // The combined agent dropdown picks a (harness, model) pair at once. Switching
-  // harness resets the reasoning level to that harness's default, since the
-  // effort ladders differ between harnesses.
+  // either resets reasoning to that model's default, since Codex exposes effort
+  // as model capability metadata.
   function chooseAgent(value: string) {
     const sep = value.indexOf("|");
     const nextHarness = value.slice(0, sep) as Harness;
@@ -168,7 +170,9 @@ export function DelegationBand({
     setModel(nextModel);
     if (nextHarness !== harness) {
       setHarness(nextHarness);
-      setEffort(defaultReasoning(nextHarness));
+    }
+    if (nextHarness !== harness || nextModel !== model) {
+      setEffort(defaultReasoning(nextHarness, nextModel));
     }
   }
 
@@ -367,11 +371,11 @@ export function DelegationBand({
               >
                 <GaugeIcon className="size-3.5 shrink-0 text-muted-foreground" />
                 <SelectValue>
-                  {(value: string) => reasoningLabel(harness, value)}
+                  {(value: string) => reasoningLabel(harness, value, model)}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {REASONING_BY_HARNESS[harness].map((r) => (
+                {reasoningOptions(harness, model).map((r) => (
                   <SelectItem key={r.id} value={r.id}>
                     {r.label}
                   </SelectItem>

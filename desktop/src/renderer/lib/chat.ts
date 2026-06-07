@@ -81,19 +81,38 @@ export function isEnvironment(value: string): value is Environment {
 // Additional launch parameters the user can set before kicking off a harness:
 // which model to run and how much reasoning/effort to spend. Both are start-time
 // only — we pass them on the spawn command and let the harness own them after
-// that, so they are never persisted to the task's frontmatter. The available
-// values differ per harness (Claude's effort ladder has `max`; Codex's has
-// `none`/`minimal`), so callers scope the option lists by harness and reset to
-// the harness default when the harness changes. Keep ids in sync with the flags
-// the daemon passes (`claude --model/--effort`, codex `turn/start`).
+// that, so they are never persisted to the task's frontmatter. Keep ids in sync
+// with the flags the daemon passes (`claude --model/--effort`, codex
+// `turn/start`).
 export interface LaunchOption {
   id: string;
   label: string;
 }
 
+interface ModelOption extends LaunchOption {
+  defaultReasoning?: string;
+  reasoning?: LaunchOption[];
+}
+
+const CLAUDE_REASONING: LaunchOption[] = [
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "xHigh" },
+  { id: "max", label: "Max" },
+];
+
+const CODEX_REASONING: LaunchOption[] = [
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "xHigh" },
+];
+
 // Model ids are handed to the harness verbatim (e.g. `claude --model
-// claude-opus-4-8`). Codex is a placeholder pending a real model list.
-export const MODELS_BY_HARNESS: Record<Harness, LaunchOption[]> = {
+// claude-opus-4-8`). Codex mirrors the visible app-server `model/list` catalog
+// from codex-cli 0.137.0; hidden models are intentionally excluded.
+export const MODELS_BY_HARNESS: Record<Harness, ModelOption[]> = {
   "claude-code": [
     { id: "claude-opus-4-8", label: "Opus 4.8" },
     { id: "claude-opus-4-7", label: "Opus 4.7" },
@@ -101,44 +120,60 @@ export const MODELS_BY_HARNESS: Record<Harness, LaunchOption[]> = {
     { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
     { id: "claude-haiku-4-5", label: "Haiku 4.5" },
   ],
-  // Placeholder — the real Codex model list lands in a later pass.
-  codex: [{ id: "gpt-5.5", label: "GPT-5.5" }],
+  codex: [
+    { id: "gpt-5.5", label: "GPT-5.5", defaultReasoning: "medium" },
+    { id: "gpt-5.4", label: "GPT-5.4", defaultReasoning: "medium" },
+    {
+      id: "gpt-5.4-mini",
+      label: "GPT-5.4 Mini",
+      defaultReasoning: "medium",
+    },
+    {
+      id: "gpt-5.3-codex-spark",
+      label: "GPT-5.3 Codex Spark",
+      defaultReasoning: "high",
+    },
+  ].map((model) => ({ ...model, reasoning: CODEX_REASONING })),
 };
 
 // Reasoning/effort ladders. Claude maps to `claude --effort`; Codex maps to the
 // app-server `turn/start` effort (ReasoningEffort) field.
 export const REASONING_BY_HARNESS: Record<Harness, LaunchOption[]> = {
-  "claude-code": [
-    { id: "low", label: "Low" },
-    { id: "medium", label: "Medium" },
-    { id: "high", label: "High" },
-    { id: "xhigh", label: "xHigh" },
-    { id: "max", label: "Max" },
-  ],
-  codex: [
-    { id: "none", label: "None" },
-    { id: "minimal", label: "Minimal" },
-    { id: "low", label: "Low" },
-    { id: "medium", label: "Medium" },
-    { id: "high", label: "High" },
-    { id: "xhigh", label: "xHigh" },
-  ],
+  "claude-code": CLAUDE_REASONING,
+  codex: CODEX_REASONING,
 };
 
 export function defaultModel(harness: Harness): string {
   return MODELS_BY_HARNESS[harness][0].id;
 }
 
-export function defaultReasoning(harness: Harness): string {
-  return harness === "codex" ? "medium" : "high";
+export function reasoningOptions(
+  harness: Harness,
+  modelId?: string,
+): LaunchOption[] {
+  return (
+    MODELS_BY_HARNESS[harness].find((m) => m.id === modelId)?.reasoning ??
+    REASONING_BY_HARNESS[harness]
+  );
+}
+
+export function defaultReasoning(harness: Harness, modelId?: string): string {
+  return (
+    MODELS_BY_HARNESS[harness].find((m) => m.id === modelId)?.defaultReasoning ??
+    (harness === "codex" ? "medium" : "high")
+  );
 }
 
 export function modelLabel(harness: Harness, id: string): string {
   return MODELS_BY_HARNESS[harness].find((m) => m.id === id)?.label ?? id;
 }
 
-export function reasoningLabel(harness: Harness, id: string): string {
-  return REASONING_BY_HARNESS[harness].find((r) => r.id === id)?.label ?? id;
+export function reasoningLabel(
+  harness: Harness,
+  id: string,
+  modelId?: string,
+): string {
+  return reasoningOptions(harness, modelId).find((r) => r.id === id)?.label ?? id;
 }
 
 // Claude run inside an editor extension can't accept model/effort at launch —
