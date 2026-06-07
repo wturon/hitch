@@ -886,22 +886,41 @@ function writeLocalSecrets(secrets: LocalSecrets): LocalSecrets {
   return readLocalSecrets();
 }
 
-// { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is
-// just "no preference set", which the daemon treats as the harness default.
-function readHarnessEnvironments(): Record<string, string> {
+// preferences.json holds several independent settings (harness environments,
+// starting prompts, …). Read/write through these helpers so a write to one key
+// never clobbers another — a naive `writeFile({ thatKey })` would silently drop
+// every sibling setting.
+function readPreferences(): Record<string, unknown> {
   if (!existsSync(localPreferencesPath)) return {};
   try {
     const raw = JSON.parse(readFileSync(localPreferencesPath, "utf8")) as unknown;
-    if (!isRecord(raw) || !isRecord(raw.harnessEnvironments)) return {};
-    return Object.fromEntries(
-      Object.entries(raw.harnessEnvironments).filter(
-        (entry): entry is [string, string] =>
-          typeof entry[0] === "string" && typeof entry[1] === "string",
-      ),
-    );
+    return isRecord(raw) ? raw : {};
   } catch {
     return {};
   }
+}
+
+function writePreferences(patch: Record<string, unknown>): void {
+  const next = { ...readPreferences(), ...patch };
+  mkdirSync(dirname(localPreferencesPath), { recursive: true });
+  writeFileSync(
+    localPreferencesPath,
+    `${JSON.stringify(next, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+// { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is
+// just "no preference set", which the daemon treats as the harness default.
+function readHarnessEnvironments(): Record<string, string> {
+  const stored = readPreferences().harnessEnvironments;
+  if (!isRecord(stored)) return {};
+  return Object.fromEntries(
+    Object.entries(stored).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[0] === "string" && typeof entry[1] === "string",
+    ),
+  );
 }
 
 function setHarnessEnvironment(
@@ -909,13 +928,67 @@ function setHarnessEnvironment(
   environment: string,
 ): Record<string, string> {
   const next = { ...readHarnessEnvironments(), [harness]: environment };
-  mkdirSync(dirname(localPreferencesPath), { recursive: true });
-  writeFileSync(
-    localPreferencesPath,
-    `${JSON.stringify({ harnessEnvironments: next }, null, 2)}\n`,
-    "utf8",
-  );
+  writePreferences({ harnessEnvironments: next });
   return next;
+}
+
+// Reusable kickoff prompts the user picks from the delegation dropdown. Consumed
+// only by the renderer; the daemon never reads these. Keep the shape and seed in
+// sync with desktop/src/renderer/lib/chat.ts (StartingPrompt / DEFAULT_STARTING_PROMPTS).
+interface StoredStartingPrompt {
+  id: string;
+  name: string;
+  body: string;
+  includeTaskRef: boolean;
+}
+
+const DEFAULT_STARTING_PROMPTS: StoredStartingPrompt[] = [
+  {
+    id: "default-execute",
+    name: "Default execute",
+    body: "Read the task, keep the task status/progress current as you work, and start implementing it.",
+    includeTaskRef: true,
+  },
+  {
+    id: "investigate",
+    name: "Investigate",
+    body: "Don't write any code. Investigate the task and come back with your thoughts on how hard it would be to solve, plus any open questions.",
+    includeTaskRef: true,
+  },
+];
+
+function sanitizeStartingPrompt(value: unknown): StoredStartingPrompt | null {
+  if (!isRecord(value)) return null;
+  const { id, name, body, includeTaskRef } = value;
+  if (typeof id !== "string" || typeof name !== "string") return null;
+  return {
+    id,
+    name,
+    body: typeof body === "string" ? body : "",
+    includeTaskRef: includeTaskRef !== false,
+  };
+}
+
+// Returns the stored library, or the seeded defaults when nothing valid is saved
+// yet. Seeding happens lazily here (read) rather than on first launch, so a fresh
+// install shows the defaults without us having to write the file eagerly.
+function readStartingPrompts(): StoredStartingPrompt[] {
+  const stored = readPreferences().startingPrompts;
+  if (!Array.isArray(stored)) return DEFAULT_STARTING_PROMPTS;
+  const prompts = stored
+    .map(sanitizeStartingPrompt)
+    .filter((p): p is StoredStartingPrompt => p !== null);
+  return prompts.length ? prompts : DEFAULT_STARTING_PROMPTS;
+}
+
+function setStartingPrompts(prompts: unknown): StoredStartingPrompt[] {
+  const sanitized = Array.isArray(prompts)
+    ? prompts
+        .map(sanitizeStartingPrompt)
+        .filter((p): p is StoredStartingPrompt => p !== null)
+    : [];
+  writePreferences({ startingPrompts: sanitized });
+  return readStartingPrompts();
 }
 
 function ensureDeviceId(): string {
@@ -2060,6 +2133,10 @@ ipcMain.handle(
   "config:set-harness-environment",
   (_event, harness: string, environment: string) =>
     setHarnessEnvironment(harness, environment),
+);
+ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
+ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>
+  setStartingPrompts(prompts),
 );
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());

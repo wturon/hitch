@@ -9,6 +9,7 @@ import {
   FolderSyncIcon,
   InfoIcon,
   KeyRoundIcon,
+  MessageSquareIcon,
   PowerIcon,
   RefreshCwIcon,
   RotateCwIcon,
@@ -35,6 +36,7 @@ import {
 } from "@/lib/chat";
 import { DeviceTokensPanel } from "@/components/DeviceTokens";
 import { HarnessIcon } from "@/components/HarnessIcon";
+import { StartingPromptsPanel } from "@/components/StartingPromptsPanel";
 import {
   LocalSyncPanel,
   type LocalHitchConfig,
@@ -69,12 +71,14 @@ export interface GlobalHarnessSetupStatus {
 
 export type GlobalSettingsTab =
   | "harnesses"
+  | "starting-prompts"
   | "local-sync"
   | "device-tokens"
   | "updates";
 
 const TABS = [
   { id: "harnesses", label: "Harness settings", icon: Code2Icon },
+  { id: "starting-prompts", label: "Starting prompts", icon: MessageSquareIcon },
   { id: "local-sync", label: "Local sync logs", icon: FolderSyncIcon },
   { id: "device-tokens", label: "Device tokens", icon: KeyRoundIcon },
   { id: "updates", label: "App updates", icon: RotateCwIcon },
@@ -247,6 +251,8 @@ export function GlobalSettingsDialog({
                 )}
               </div>
             )}
+
+            {tab === "starting-prompts" && <StartingPromptsPanel />}
 
             {tab === "local-sync" && (
               <div className="flex flex-col gap-3">

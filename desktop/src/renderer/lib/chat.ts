@@ -186,26 +186,88 @@ export function clearChatFields(content: string): string {
   });
 }
 
-// The seed prompt for a brand-new coding-agent session launched from a task.
-// Both harnesses are linked by the daemon before the first model turn starts, so
-// the agent can focus on the task instead of introspecting its own session id.
-export function defaultStartPrompt(
-  task: { title: string; path: string },
-  harness: Harness,
-): string {
-  if (harness === "codex") {
-    return [
-      `You're picking up the Hitch task "${task.title}".`,
-      `Its file is at .hitch/${task.path}, relative to your current directory (the repo root).`,
-      ``,
-      `Read the task, keep the task status/progress current as you work, and start implementing it.`,
-    ].join("\n");
-  }
+// A reusable kickoff instruction the user picks from the delegation dropdown.
+// `body` is the user-authored instruction; `includeTaskRef` controls whether the
+// dynamic task-reference preamble (task name + file path) is prepended at launch.
+// The preamble is never stored — it's interpolated against the live task here in
+// the renderer, so prompts stay portable and the context can be kept lean.
+export interface StartingPrompt {
+  id: string;
+  name: string;
+  body: string;
+  includeTaskRef: boolean;
+}
 
+// The dynamic preamble that orients the agent to the task it's picking up. The
+// daemon links the session before the first model turn, so the agent can focus on
+// the task instead of introspecting its own session id.
+export function taskRefPreamble(task: { title: string; path: string }): string {
   return [
     `You're picking up the Hitch task "${task.title}".`,
     `Its file is at .hitch/${task.path}, relative to your current directory (the repo root).`,
-    ``,
-    `Read the task, keep the task status/progress current as you work, and start implementing it.`,
   ].join("\n");
+}
+
+// Assemble the full seed prompt a preset produces for a given task: the optional
+// task-reference preamble followed by the preset body.
+export function buildStartPrompt(
+  prompt: Pick<StartingPrompt, "body" | "includeTaskRef">,
+  task: { title: string; path: string },
+): string {
+  const body = prompt.body.trim();
+  if (!prompt.includeTaskRef) return body;
+  const preamble = taskRefPreamble(task);
+  return body ? `${preamble}\n\n${body}` : preamble;
+}
+
+// Seeded when the user has none stored, and the fallback outside Hitch Desktop
+// (no bridge). The "Default execute" body + preamble reproduces the prompt Hitch
+// has always sent. Mirror any edits in the main process seed (see main.ts).
+export const DEFAULT_STARTING_PROMPTS: StartingPrompt[] = [
+  {
+    id: "default-execute",
+    name: "Default execute",
+    body: "Read the task, keep the task status/progress current as you work, and start implementing it.",
+    includeTaskRef: true,
+  },
+  {
+    id: "investigate",
+    name: "Investigate",
+    body: "Don't write any code. Investigate the task and come back with your thoughts on how hard it would be to solve, plus any open questions.",
+    includeTaskRef: true,
+  },
+];
+
+interface StartingPromptsBridge {
+  getStartingPrompts?: () => Promise<StartingPrompt[]>;
+  setStartingPrompts?: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
+}
+
+function startingPromptsBridge(): StartingPromptsBridge | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as unknown as { hitchDaemon?: StartingPromptsBridge })
+    .hitchDaemon;
+}
+
+// Read the prompt library from the desktop bridge, falling back to the built-in
+// defaults when running without it (web) or before the user has saved any.
+export async function loadStartingPrompts(): Promise<StartingPrompt[]> {
+  const bridge = startingPromptsBridge();
+  if (!bridge?.getStartingPrompts) return DEFAULT_STARTING_PROMPTS;
+  try {
+    const prompts = await bridge.getStartingPrompts();
+    return prompts.length ? prompts : DEFAULT_STARTING_PROMPTS;
+  } catch {
+    return DEFAULT_STARTING_PROMPTS;
+  }
+}
+
+// Persist the whole prompt library. Returns the canonical list the bridge stored
+// (or the input unchanged when there's no bridge to write to).
+export async function saveStartingPrompts(
+  prompts: StartingPrompt[],
+): Promise<StartingPrompt[]> {
+  const bridge = startingPromptsBridge();
+  if (!bridge?.setStartingPrompts) return prompts;
+  return bridge.setStartingPrompts(prompts);
 }

@@ -1,18 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Id } from "@convex/_generated/dataModel";
 
 import {
+  DEFAULT_STARTING_PROMPTS,
   HARNESSES,
+  buildStartPrompt,
   chatActivity,
-  defaultStartPrompt,
   harnessLabel,
+  loadStartingPrompts,
   type ChatActivity,
   type ChatOpenState,
   type ChatRef,
   type ChatStatus,
   type Harness,
+  type StartingPrompt,
 } from "@/lib/chat";
 import { HarnessIcon } from "@/components/HarnessIcon";
 import { ChatLaunch } from "@/components/ChatLaunch";
@@ -76,14 +79,36 @@ export function DelegationBand({
   onClear: () => void;
 }) {
   const [harness, setHarness] = useState<Harness>("codex");
+  const [prompts, setPrompts] =
+    useState<StartingPrompt[]>(DEFAULT_STARTING_PROMPTS);
+  const [promptId, setPromptId] = useState(DEFAULT_STARTING_PROMPTS[0].id);
   const [prompt, setPrompt] = useState(() =>
-    defaultStartPrompt({ title, path }, "codex"),
+    buildStartPrompt(DEFAULT_STARTING_PROMPTS[0], { title, path }),
   );
   const [starting, setStarting] = useState(false);
 
-  function changeHarness(next: Harness) {
-    setHarness(next);
-    setPrompt(defaultStartPrompt({ title, path }, next));
+  // Load the saved prompt library once and seed the textarea from the first
+  // preset. The harness no longer changes the prompt — prompts are decoupled.
+  useEffect(() => {
+    let active = true;
+    void loadStartingPrompts().then((loaded) => {
+      if (!active || loaded.length === 0) return;
+      setPrompts(loaded);
+      setPromptId(loaded[0].id);
+      setPrompt(buildStartPrompt(loaded[0], { title, path }));
+    });
+    return () => {
+      active = false;
+    };
+  }, [title, path]);
+
+  // Picking a preset refills the textarea, which stays freely editable for
+  // one-off tweaks — edits never write back to the saved preset.
+  function choosePreset(id: string) {
+    const preset = prompts.find((p) => p.id === id);
+    if (!preset) return;
+    setPromptId(id);
+    setPrompt(buildStartPrompt(preset, { title, path }));
   }
 
   async function start() {
@@ -142,7 +167,7 @@ export function DelegationBand({
         <div className="flex items-center gap-2">
           <Select
             value={harness}
-            onValueChange={(value) => changeHarness(value as Harness)}
+            onValueChange={(value) => setHarness(value as Harness)}
           >
             <SelectTrigger aria-label="Harness" className="w-44">
               <SelectValue>
@@ -168,6 +193,28 @@ export function DelegationBand({
           </Button>
         </div>
       </div>
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-muted-foreground">Starting prompt</span>
+        <Select
+          value={promptId}
+          onValueChange={(value) => choosePreset(value as string)}
+        >
+          <SelectTrigger aria-label="Starting prompt" className="w-56">
+            <SelectValue>
+              {(value: string) =>
+                prompts.find((p) => p.id === value)?.name ?? "Select a prompt"
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {prompts.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
       <textarea
         aria-label="Delegation instructions"
         value={prompt}
@@ -177,8 +224,8 @@ export function DelegationBand({
         className="w-full resize-none rounded-md border bg-transparent p-2 font-mono text-xs leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
       <p className="text-xs text-muted-foreground/70">
-        Sent to the agent when it starts. Edit to add special delegation
-        instructions.
+        Sent to the agent when it starts. Edit for one-off tweaks, or manage
+        presets in Settings → Starting prompts.
       </p>
     </section>
   );

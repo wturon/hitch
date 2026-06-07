@@ -75,6 +75,13 @@ export interface HarnessHookStatus {
   configWired: boolean;
 }
 
+export interface StartingPrompt {
+  id: string;
+  name: string;
+  body: string;
+  includeTaskRef: boolean;
+}
+
 export interface GlobalHarnessSetupStatus {
   codex: HarnessHookStatus;
   claudeCode: HarnessHookStatus;
@@ -132,6 +139,8 @@ export interface HitchDaemonApi {
     harness: string,
     environment: string,
   ) => Promise<Record<string, string>>;
+  getStartingPrompts: () => Promise<StartingPrompt[]>;
+  setStartingPrompts: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
   enableCmuxAutomation: () => Promise<EnableCmuxResult>;
   openCmuxApp: () => Promise<string>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
@@ -175,6 +184,9 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("config:get-harness-environments"),
   setHarnessEnvironment: (harness, environment) =>
     ipcRenderer.invoke("config:set-harness-environment", harness, environment),
+  getStartingPrompts: () => ipcRenderer.invoke("config:get-starting-prompts"),
+  setStartingPrompts: (prompts) =>
+    ipcRenderer.invoke("config:set-starting-prompts", prompts),
   enableCmuxAutomation: () => ipcRenderer.invoke("cmux:enable-automation"),
   openCmuxApp: () => ipcRenderer.invoke("cmux:open-app"),
   chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),
