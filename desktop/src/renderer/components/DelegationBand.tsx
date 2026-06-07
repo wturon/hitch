@@ -1,7 +1,12 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
-import { SendHorizontalIcon, Settings2Icon } from "lucide-react";
+import {
+  GaugeIcon,
+  SendHorizontalIcon,
+  Settings2Icon,
+  TextIcon,
+} from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
 
 import {
@@ -233,140 +238,159 @@ export function DelegationBand({
     );
   }
 
+  // Ghost-styled trigger for the controls that live inside the composer chrome —
+  // borderless so the header/footer read as one surface, not boxed sub-inputs.
+  const chipTrigger =
+    "h-7 gap-1.5 border-0 px-2 font-normal hover:bg-muted";
+
   return (
     <section className="flex flex-col gap-2 rounded-md border bg-muted/40 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Delegate to an agent
-        </span>
-        <div className="flex items-center gap-2">
-          {/* Combined harness + model picker: models are grouped under their
-              harness, so choosing a model also fixes the harness. */}
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Delegate to an agent
+      </span>
+
+      {/* The prompt builder: one surface with the starting-prompt picker in its
+          header, the editable instructions in the body, and the agent + reasoning
+          controls plus the launch button in the footer. */}
+      <div className="flex flex-col overflow-hidden rounded-lg border bg-background focus-within:ring-2 focus-within:ring-ring">
+        {/* Header — starting prompt. Decoupled from the agent: it seeds the text
+            below and doesn't reset when the harness changes. */}
+        <div className="flex items-center gap-1.5 border-b bg-muted/40 px-2.5 py-1">
+          <TextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">Starting prompt</span>
           <Select
-            value={`${harness}|${model}`}
-            onValueChange={(value) => chooseAgent(value as string)}
+            value={promptId}
+            onValueChange={(value) => choosePreset(value as string)}
           >
-            <SelectTrigger aria-label="Agent and model" className="w-60">
+            <SelectTrigger aria-label="Starting prompt" className={chipTrigger}>
               <SelectValue>
-                {(value: string) => {
-                  const sep = value.indexOf("|");
-                  const h = value.slice(0, sep) as Harness;
-                  const m = value.slice(sep + 1);
-                  return (
-                    <span className="flex items-center gap-2">
-                      <HarnessIcon harness={h} className="size-4" />
-                      <span className="font-medium">{harnessLabel(h)}</span>
-                      <span className="text-muted-foreground">
-                        · {modelLabel(h, m)}
-                      </span>
-                    </span>
-                  );
-                }}
+                {(value: string) =>
+                  prompts.find((p) => p.id === value)?.name ?? "Select a prompt"
+                }
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {HARNESSES.map((h) => (
-                <Fragment key={h}>
-                  <div className="flex items-center gap-2 px-2 pt-1.5 pb-1 text-xs font-medium text-muted-foreground">
-                    <HarnessIcon harness={h} className="size-3.5" />
-                    {harnessLabel(h)}
-                  </div>
-                  {MODELS_BY_HARNESS[h].map((m) => (
-                    <SelectItem
-                      key={`${h}|${m.id}`}
-                      value={`${h}|${m.id}`}
-                      className="pl-7"
-                    >
-                      {m.label}
-                    </SelectItem>
-                  ))}
-                </Fragment>
-              ))}
-            </SelectContent>
-          </Select>
-          {/* Reasoning/effort. Options are harness-specific; disabled when the
-              chosen harness/environment can't accept it at launch. */}
-          <Select
-            value={effort}
-            onValueChange={(value) => setEffort(value as string)}
-            disabled={!paramsHonored}
-          >
-            <SelectTrigger aria-label="Reasoning effort" className="w-32">
-              <SelectValue>
-                {(value: string) => reasoningLabel(harness, value)}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {REASONING_BY_HARNESS[harness].map((r) => (
-                <SelectItem key={r.id} value={r.id}>
-                  {r.label}
+              {prompts.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
                 </SelectItem>
               ))}
+              {onManagePrompts && (
+                <>
+                  <div className="my-1 h-px bg-border" />
+                  <SelectItem
+                    value={MANAGE_PROMPTS_VALUE}
+                    className="text-muted-foreground"
+                  >
+                    <Settings2Icon className="size-3.5 shrink-0" />
+                    Manage prompts in settings…
+                  </SelectItem>
+                </>
+              )}
             </SelectContent>
           </Select>
         </div>
+
+        {/* Body — the instructions, freely editable for one-off tweaks. */}
+        <textarea
+          aria-label="Delegation instructions"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          spellCheck={false}
+          rows={6}
+          className="w-full resize-none border-0 bg-transparent p-3 font-mono text-xs leading-relaxed outline-none"
+        />
+
+        {/* Footer — agent (harness + model) and reasoning on the left, launch on
+            the right. */}
+        <div className="flex items-center justify-between gap-2 border-t bg-muted/40 px-2 py-1.5">
+          <div className="flex min-w-0 items-center gap-0.5">
+            {/* Combined harness + model picker: models are grouped under their
+                harness, so choosing a model also fixes the harness. */}
+            <Select
+              value={`${harness}|${model}`}
+              onValueChange={(value) => chooseAgent(value as string)}
+            >
+              <SelectTrigger aria-label="Agent and model" className={chipTrigger}>
+                <SelectValue>
+                  {(value: string) => {
+                    const sep = value.indexOf("|");
+                    const h = value.slice(0, sep) as Harness;
+                    const m = value.slice(sep + 1);
+                    return (
+                      <span className="flex items-center gap-1.5">
+                        <HarnessIcon harness={h} className="size-4" />
+                        <span className="font-medium">{harnessLabel(h)}</span>
+                        <span className="text-muted-foreground">
+                          {modelLabel(h, m)}
+                        </span>
+                      </span>
+                    );
+                  }}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {HARNESSES.map((h) => (
+                  <Fragment key={h}>
+                    <div className="flex items-center gap-2 px-2 pt-1.5 pb-1 text-xs font-medium text-muted-foreground">
+                      <HarnessIcon harness={h} className="size-3.5" />
+                      {harnessLabel(h)}
+                    </div>
+                    {MODELS_BY_HARNESS[h].map((m) => (
+                      <SelectItem
+                        key={`${h}|${m.id}`}
+                        value={`${h}|${m.id}`}
+                        className="pl-7"
+                      >
+                        {m.label}
+                      </SelectItem>
+                    ))}
+                  </Fragment>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <span className="h-4 w-px shrink-0 bg-border" aria-hidden />
+
+            {/* Reasoning/effort — harness-specific; disabled when the chosen
+                harness/environment can't accept it at launch. */}
+            <Select
+              value={effort}
+              onValueChange={(value) => setEffort(value as string)}
+              disabled={!paramsHonored}
+            >
+              <SelectTrigger
+                aria-label="Reasoning effort"
+                className={chipTrigger}
+              >
+                <GaugeIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <SelectValue>
+                  {(value: string) => reasoningLabel(harness, value)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {REASONING_BY_HARNESS[harness].map((r) => (
+                  <SelectItem key={r.id} value={r.id}>
+                    {r.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Button onClick={start} disabled={starting} className="shrink-0">
+            <SendHorizontalIcon className="size-4" />
+            {starting ? "Sending…" : "Send"}
+          </Button>
+        </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-muted-foreground">Starting prompt</span>
-        <Select
-          value={promptId}
-          onValueChange={(value) => choosePreset(value as string)}
-        >
-          <SelectTrigger aria-label="Starting prompt" className="w-56">
-            <SelectValue>
-              {(value: string) =>
-                prompts.find((p) => p.id === value)?.name ?? "Select a prompt"
-              }
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {prompts.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-            {onManagePrompts && (
-              <>
-                <div className="my-1 h-px bg-border" />
-                <SelectItem
-                  value={MANAGE_PROMPTS_VALUE}
-                  className="text-muted-foreground"
-                >
-                  <Settings2Icon className="size-3.5 shrink-0" />
-                  Manage prompts in settings…
-                </SelectItem>
-              </>
-            )}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <textarea
-        aria-label="Delegation instructions"
-        value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
-        spellCheck={false}
-        rows={6}
-        className="w-full resize-none rounded-md border bg-transparent p-2 font-mono text-xs leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      />
-
-      <div className="flex items-center justify-between gap-3">
-        {paramsHonored ? (
-          <span className="text-xs text-muted-foreground/70">
-            Sent to the agent when it starts. Edit for one-off tweaks.
-          </span>
-        ) : (
-          <span className="text-xs text-amber-600 dark:text-amber-400/90">
-            For Claude Code in {environmentLabel(currentEnv)}, model and
-            reasoning are set in the editor window.
-          </span>
-        )}
-        <Button onClick={start} disabled={starting} className="shrink-0">
-          <SendHorizontalIcon className="size-4" />
-          {starting ? "Sending…" : "Send"}
-        </Button>
-      </div>
+      {!paramsHonored && (
+        <p className="text-xs text-amber-600 dark:text-amber-400/90">
+          For Claude Code in {environmentLabel(currentEnv)}, model and reasoning
+          are set in the editor window.
+        </p>
+      )}
     </section>
   );
 }
