@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertCircleIcon,
   CheckCircle2Icon,
@@ -34,6 +34,7 @@ import {
   type Environment,
 } from "@/lib/chat";
 import { DeviceTokensPanel } from "@/components/DeviceTokens";
+import { HarnessIcon } from "@/components/HarnessIcon";
 import {
   LocalSyncPanel,
   type LocalHitchConfig,
@@ -96,6 +97,34 @@ interface HitchDaemonApi {
     environment: string,
   ) => Promise<Record<string, string>>;
 }
+
+// Each harness Hitch can drive renders as one card: a branded header plus its
+// environment and status-hook rows. New harnesses drop in by adding an entry
+// here — the bridge methods are the only per-harness wiring.
+const HARNESS_CARDS: ReadonlyArray<{
+  harness: Harness;
+  subtitle: string;
+  statusKey: keyof GlobalHarnessSetupStatus;
+  install: (bridge: HitchDaemonApi) => Promise<GlobalHarnessSetupStatus>;
+  remove: (bridge: HitchDaemonApi) => Promise<GlobalHarnessSetupStatus>;
+  trust?: (bridge: HitchDaemonApi) => Promise<string>;
+}> = [
+  {
+    harness: "claude-code",
+    subtitle: "Anthropic coding agent",
+    statusKey: "claudeCode",
+    install: (bridge) => bridge.installGlobalClaudeHooks(),
+    remove: (bridge) => bridge.removeGlobalClaudeHooks(),
+  },
+  {
+    harness: "codex",
+    subtitle: "OpenAI coding agent",
+    statusKey: "codex",
+    install: (bridge) => bridge.installGlobalCodexHooks(),
+    remove: (bridge) => bridge.removeGlobalCodexHooks(),
+    trust: (bridge) => bridge.openGlobalCodexHookTrust(),
+  },
+];
 
 export function GlobalSettingsDialog({
   open,
@@ -182,46 +211,34 @@ export function GlobalSettingsDialog({
                   </p>
                 ) : (
                   <>
-                    <div className="flex gap-3 rounded-lg border bg-muted/35 px-3 py-2.5 text-sm">
-                      <InfoIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                      <p className="leading-5 text-muted-foreground">
-                        These hooks let Hitch track chat lifecycle events and
-                        show live working or waiting states on task cards. They
-                        only update task frontmatter inside enabled Hitch
-                        folders.
+                    <div className="flex items-start gap-2">
+                      <InfoIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+                      <p className="text-xs leading-5 text-muted-foreground">
+                        Choose where Hitch runs each agent and let it install the
+                        status hooks that surface live working / waiting states on
+                        task cards. Hooks only update task frontmatter inside
+                        enabled Hitch folders.
                       </p>
                     </div>
 
-                    <EnvironmentRow harness="codex" bridge={bridge} />
-
-                    <HookSection
-                      title="Codex chat status hooks"
-                      harnessLabel="Codex"
-                      description="User-level Codex hook script and config entries."
-                      status={setup?.codex ?? null}
-                      refreshing={refreshing}
-                      onRefresh={() => void refresh()}
-                      install={() => bridge.installGlobalCodexHooks()}
-                      remove={() => bridge.removeGlobalCodexHooks()}
-                      trust={() => bridge.openGlobalCodexHookTrust()}
-                      onResult={receiveSetup}
-                      onError={setError}
-                    />
-
-                    <EnvironmentRow harness="claude-code" bridge={bridge} />
-
-                    <HookSection
-                      title="Claude Code chat status hooks"
-                      harnessLabel="Claude Code"
-                      description="User-level Claude Code hook script and config entries."
-                      status={setup?.claudeCode ?? null}
-                      refreshing={refreshing}
-                      onRefresh={() => void refresh()}
-                      install={() => bridge.installGlobalClaudeHooks()}
-                      remove={() => bridge.removeGlobalClaudeHooks()}
-                      onResult={receiveSetup}
-                      onError={setError}
-                    />
+                    {HARNESS_CARDS.map((card) => (
+                      <HarnessCard
+                        key={card.harness}
+                        harness={card.harness}
+                        subtitle={card.subtitle}
+                        bridge={bridge}
+                        status={setup?.[card.statusKey] ?? null}
+                        refreshing={refreshing}
+                        onRefresh={() => void refresh()}
+                        install={() => card.install(bridge)}
+                        remove={() => card.remove(bridge)}
+                        trust={
+                          card.trust ? () => card.trust!(bridge) : undefined
+                        }
+                        onResult={receiveSetup}
+                        onError={setError}
+                      />
+                    ))}
 
                     {error && (
                       <p className="text-sm text-destructive">{error}</p>
@@ -361,6 +378,104 @@ function UpdatesSection() {
   );
 }
 
+// One card per harness: a branded header that owns the harness identity, with
+// the environment and status-hook rows nested inside so they clearly roll up to
+// their parent. All behavior lives in the child rows — this is layout only.
+function HarnessCard({
+  harness,
+  subtitle,
+  bridge,
+  status,
+  refreshing,
+  onRefresh,
+  install,
+  remove,
+  trust,
+  onResult,
+  onError,
+}: {
+  harness: Harness;
+  subtitle: string;
+  bridge: HitchDaemonApi | undefined;
+  status: HarnessHookStatus | null;
+  refreshing: boolean;
+  onRefresh: () => void;
+  install: () => Promise<GlobalHarnessSetupStatus>;
+  remove: () => Promise<GlobalHarnessSetupStatus>;
+  trust?: () => Promise<string>;
+  onResult: (setup: GlobalHarnessSetupStatus) => void;
+  onError: (message: string) => void;
+}) {
+  return (
+    <section className="flex flex-col overflow-hidden rounded-xl border bg-card">
+      <div className="flex items-center gap-3 border-b bg-muted/30 px-3.5 py-3">
+        <HarnessIcon harness={harness} className="size-5 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold leading-tight">
+            {harnessLabel(harness)}
+          </h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
+        </div>
+        <OverallStatusPill status={status} />
+      </div>
+      <EnvironmentRow harness={harness} bridge={bridge} />
+      <HookSection
+        harnessLabel={harnessLabel(harness)}
+        status={status}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        install={install}
+        remove={remove}
+        trust={trust}
+        onResult={onResult}
+        onError={onError}
+      />
+    </section>
+  );
+}
+
+// At-a-glance harness health, shown in the card header. Driven by hook state
+// today; the harness-level framing leaves room for other signals later.
+function OverallStatusPill({ status }: { status: HarnessHookStatus | null }) {
+  const tone = !status
+    ? "checking"
+    : status.installed
+      ? "active"
+      : status.scriptExists || status.configHasHook
+        ? "repair"
+        : "off";
+  const label = {
+    checking: "Checking…",
+    active: "Active",
+    repair: "Needs repair",
+    off: "Not set up",
+  }[tone];
+  return (
+    <span
+      className={cn(
+        "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
+        tone === "active"
+          ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+          : tone === "repair"
+            ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+            : "bg-muted text-muted-foreground",
+      )}
+    >
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          tone === "active"
+            ? "bg-emerald-500"
+            : tone === "repair"
+              ? "bg-amber-500"
+              : "bg-muted-foreground/50",
+        )}
+      />
+      {label}
+    </span>
+  );
+}
+
 // Where Hitch opens this harness's sessions. The choice persists to a local
 // preferences file the daemon reads to pick the launcher; an unset preference
 // falls back to the harness default, so existing behavior is unchanged.
@@ -401,14 +516,12 @@ function EnvironmentRow({
   const locked = options.length < 2 || !bridge;
 
   return (
-    <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
+    <div className="flex flex-col gap-2 px-3.5 py-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium">
-            Where do you like to use {harnessLabel(harness)}?
-          </h3>
+          <p className="text-[0.8rem] font-medium">Environment</p>
           <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            Hitch opens and resumes its sessions here.
+            Where Hitch opens and resumes sessions.
           </p>
         </div>
         <Select
@@ -444,14 +557,15 @@ function EnvironmentRow({
           More environments are coming.
         </p>
       )}
-    </section>
+    </div>
   );
 }
 
+// The status-hook row of a harness card. Owns install / repair / heal / remove
+// / trust / refresh — all unchanged from before; only the surrounding layout
+// moved from a standalone section into a nested card row.
 function HookSection({
-  title,
   harnessLabel,
-  description,
   status,
   refreshing,
   onRefresh,
@@ -461,9 +575,7 @@ function HookSection({
   onResult,
   onError,
 }: {
-  title: string;
   harnessLabel: string;
-  description: string;
   status: HarnessHookStatus | null;
   refreshing: boolean;
   onRefresh: () => void;
@@ -513,136 +625,125 @@ function HookSection({
     }
   }
 
-  return (
-    <section className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3">
-      <div className="flex items-center justify-between gap-2">
+  const refreshButton = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      disabled={disabled}
+      onClick={onRefresh}
+      aria-label="Refresh global settings"
+    >
+      <RefreshCwIcon />
+    </Button>
+  );
+
+  if (status === null) {
+    return (
+      <div className="flex items-center justify-between gap-2 border-t px-3.5 py-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium">{title}</h3>
+          <p className="text-[0.8rem] font-medium">Status hooks</p>
           <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            {description}
+            Checking {harnessLabel} hook setup…
           </p>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          disabled={disabled}
-          onClick={onRefresh}
-          aria-label="Refresh global settings"
-        >
-          <RefreshCwIcon />
-        </Button>
+        {refreshButton}
       </div>
+    );
+  }
 
-      {status === null ? (
-        <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-          Checking {harnessLabel} hook setup...
-        </p>
-      ) : (
-        <HookStatusRow
-          status={status}
-          title={harnessLabel}
-          detail={hookDetail(status)}
-          action={
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-              <Button
-                type="button"
-                variant={status.installed ? "outline" : "default"}
-                size="sm"
-                disabled={disabled}
-                onClick={() => void runSetup("install", install)}
-              >
-                {status.installed ? <WrenchIcon /> : <PowerIcon />}
-                {busy === "install" ? "Working..." : installLabel}
-              </Button>
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                disabled={!hasFootprint || disabled}
-                onClick={() => void runSetup("remove", remove)}
-              >
-                {status.installed ? <PowerIcon /> : <Trash2Icon />}
-                {busy === "remove" ? "Removing..." : removeLabel}
-              </Button>
-              {trust && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={!status.installed || disabled}
-                  onClick={() => void runTrust()}
-                >
-                  <ShieldCheckIcon />
-                  {busy === "trust" ? "Opening..." : "Trust"}
-                </Button>
-              )}
-            </div>
-          }
-        />
-      )}
+  const pillTone = status.installed
+    ? "on"
+    : hasFootprint
+      ? "repair"
+      : "off";
 
-      {status?.configPath && (
-        <PathLine label="Config" value={status.configPath} />
-      )}
-      {status?.scriptPath && (
-        <PathLine label="Script" value={status.scriptPath} />
-      )}
-    </section>
-  );
-}
-
-function HookStatusRow({
-  status,
-  title,
-  detail,
-  action,
-}: {
-  status: HarnessHookStatus;
-  title: string;
-  detail: string;
-  action?: ReactNode;
-}) {
   return (
-    <div className="flex min-h-12 items-center gap-3 rounded-md border bg-background px-3 py-2">
-      {status.installed ? (
-        <CheckCircle2Icon className="size-4 shrink-0 text-emerald-500" />
-      ) : (
-        <AlertCircleIcon className="size-4 shrink-0 text-amber-500" />
-      )}
-      <Code2Icon className="size-4 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="text-sm font-medium">{title}</p>
-          <span
-            className={[
-              "rounded-full px-2 py-0.5 text-[0.7rem] font-medium",
-              status.installed
-                ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                : status.scriptExists || status.configHasHook
-                  ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                  : "bg-muted text-muted-foreground",
-            ].join(" ")}
-          >
-            {status.installed
-              ? "On"
-              : status.scriptExists || status.configHasHook
-                ? "Needs repair"
-                : "Off"}
-          </span>
+    <div className="flex flex-col gap-2.5 border-t px-3.5 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[0.8rem] font-medium">Status hooks</p>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[0.7rem] font-medium",
+                pillTone === "on"
+                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : pillTone === "repair"
+                    ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                    : "bg-muted text-muted-foreground",
+              )}
+            >
+              {pillTone === "on"
+                ? "Installed"
+                : pillTone === "repair"
+                  ? "Needs repair"
+                  : "Off"}
+            </span>
+          </div>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            {hookDetail(status)}
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground">{detail}</p>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          <Button
+            type="button"
+            variant={status.installed ? "outline" : "default"}
+            size="sm"
+            disabled={disabled}
+            onClick={() => void runSetup("install", install)}
+          >
+            {status.installed ? <WrenchIcon /> : <PowerIcon />}
+            {busy === "install" ? "Working..." : installLabel}
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            disabled={!hasFootprint || disabled}
+            onClick={() => void runSetup("remove", remove)}
+          >
+            {status.installed ? <PowerIcon /> : <Trash2Icon />}
+            {busy === "remove" ? "Removing..." : removeLabel}
+          </Button>
+          {trust && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!status.installed || disabled}
+              onClick={() => void runTrust()}
+            >
+              <ShieldCheckIcon />
+              {busy === "trust" ? "Opening..." : "Trust"}
+            </Button>
+          )}
+          {refreshButton}
+        </div>
       </div>
-      {action}
+
+      {(status.configPath || status.scriptPath) && (
+        <div className="flex flex-col gap-1 rounded-md bg-muted/40 px-3 py-2">
+          {status.configPath && (
+            <PathLine label="Config" value={status.configPath} />
+          )}
+          {status.scriptPath && (
+            <PathLine label="Script" value={status.scriptPath} />
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 function PathLine({ label, value }: { label: string; value: string }) {
   return (
-    <div className="grid gap-1 rounded-md border bg-background px-3 py-2 sm:grid-cols-[4rem_minmax(0,1fr)]">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <span className="truncate text-xs text-muted-foreground" title={value}>
+    <div className="flex gap-2 text-xs">
+      <span className="w-12 shrink-0 text-muted-foreground/70">{label}</span>
+      <span
+        className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
+        title={value}
+      >
         {value}
       </span>
     </div>
