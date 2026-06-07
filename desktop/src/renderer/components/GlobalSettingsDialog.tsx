@@ -552,13 +552,16 @@ function EnvironmentRow({
           </SelectContent>
         </Select>
       </div>
-      {value === "vscode" || value === "cursor" ? (
+      {harness === "claude-code" && (value === "vscode" || value === "cursor") ? (
+        // Claude in an editor extension is fire-and-forget: we pre-fill the
+        // prompt via the URI and the user submits it. Codex editors don't apply —
+        // there Hitch drives the run through the app server and auto-submits.
         <p className="text-xs text-amber-600 dark:text-amber-400/90">
           Experimental: opens the {environmentLabel(value)} with your prompt
           pre-filled — press Enter to start. The card links once you send the
           first message, then tracks status normally.
         </p>
-      ) : (
+      ) : value === "vscode" || value === "cursor" ? null : (
         <p className="text-xs text-muted-foreground/70">
           More environments are coming.
         </p>
