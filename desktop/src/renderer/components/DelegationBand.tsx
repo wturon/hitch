@@ -90,6 +90,7 @@ export function DelegationBand({
   onStart,
   onClear,
   onManagePrompts,
+  onManageHarnesses,
 }: {
   projectId: Id<"projects">;
   chat: ChatRef | null;
@@ -105,6 +106,7 @@ export function DelegationBand({
   }) => Promise<void> | void;
   onClear: () => void;
   onManagePrompts?: () => void;
+  onManageHarnesses?: () => void;
 }) {
   const [harness, setHarness] = useState<Harness>("codex");
   const [model, setModel] = useState(() => defaultModel("codex"));
@@ -388,7 +390,16 @@ export function DelegationBand({
       {!paramsHonored && (
         <p className="text-xs text-amber-600 dark:text-amber-400/90">
           For Claude Code in {environmentLabel(currentEnv)}, model and reasoning
-          are set in the editor window.
+          are set in the editor window.{" "}
+          {onManageHarnesses && (
+            <button
+              type="button"
+              onClick={onManageHarnesses}
+              className="font-medium underline underline-offset-2 hover:text-amber-700 dark:hover:text-amber-300"
+            >
+              Manage your preferred harness environments here
+            </button>
+          )}
         </p>
       )}
     </section>

@@ -1779,6 +1779,7 @@ function BoardContent({
             if (!open) setSelectedPath(null);
           }}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
+          onManageHarnesses={() => openGlobalSettings("harnesses")}
         />
       </div>
     </AppShell>

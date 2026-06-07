@@ -38,10 +38,12 @@ export function TaskDialog({
   task,
   onOpenChange,
   onManagePrompts,
+  onManageHarnesses,
 }: {
   task: TaskTarget | null;
   onOpenChange: (open: boolean) => void;
   onManagePrompts?: () => void;
+  onManageHarnesses?: () => void;
 }) {
   return (
     <Dialog open={task !== null} onOpenChange={onOpenChange}>
@@ -54,6 +56,7 @@ export function TaskDialog({
             task={task}
             onClose={() => onOpenChange(false)}
             onManagePrompts={onManagePrompts}
+            onManageHarnesses={onManageHarnesses}
           />
         )}
       </DialogContent>
@@ -65,10 +68,12 @@ function TaskEditor({
   task,
   onClose,
   onManagePrompts,
+  onManageHarnesses,
 }: {
   task: TaskTarget;
   onClose: () => void;
   onManagePrompts?: () => void;
+  onManageHarnesses?: () => void;
 }) {
   const upsertFile = useMutation(api.files.upsertFile);
   const enqueue = useMutation(api.commands.enqueueCommand);
@@ -160,6 +165,7 @@ function TaskEditor({
         onStart={startChat}
         onClear={() => void clearChat()}
         onManagePrompts={onManagePrompts}
+        onManageHarnesses={onManageHarnesses}
       />
 
       <textarea
