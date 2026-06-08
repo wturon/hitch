@@ -815,7 +815,7 @@ interface DraggableCardProps {
   onDelete: (card: Card) => void;
 }
 
-// A board card that can be picked up (left-drag, 0px threshold so a plain click
+// A board card that can be picked up (left-drag, 1px threshold so a plain click
 // still opens it) and dropped on another column. Right-click keeps the existing
 // archive/delete menu — PointerSensor ignores non-primary buttons, so the menu
 // and dragging don't fight. Defined at module scope (not inside Board) so it
@@ -1316,7 +1316,7 @@ function BoardContent({
     [currentProject?.statuses],
   );
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 0 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 1 } }),
   );
   const localConfigReady = localConfig !== null;
   const projectIsHitched = Boolean(
