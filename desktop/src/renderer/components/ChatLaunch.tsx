@@ -25,8 +25,9 @@ import {
 import { cn } from "@/lib/utils";
 
 // Leading glyph for the launch button: the chat's live state when we have one
-// (spinner while working, a steady dot once it's your turn — the "blue dot"),
-// otherwise the harness's own icon. Keeps status visually grouped with the chat.
+// (spinner while working, a pulsing amber dot when it's blocked on you, a steady
+// dot once it's your turn — the "blue dot"), otherwise the harness's own icon.
+// Keeps status visually grouped with the chat.
 function LaunchIcon({
   status,
   fallback,
@@ -36,6 +37,13 @@ function LaunchIcon({
 }) {
   if (status === "working")
     return <LoaderCircle className="animate-spin" aria-label="Working" />;
+  if (status === "needs-input")
+    return (
+      <span
+        className="size-2 animate-pulse rounded-full bg-amber-500"
+        aria-label="Needs input"
+      />
+    );
   if (status === "waiting")
     return <span className="size-2 rounded-full bg-current" aria-hidden />;
   return fallback;

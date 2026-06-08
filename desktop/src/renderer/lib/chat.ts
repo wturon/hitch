@@ -192,11 +192,13 @@ export function honorsLaunchParams(
 // Live runtime state of the chat driving a task, written into frontmatter as
 // `chat-status` by the harness's lifecycle hooks (see .claude/hooks/chat-status.mjs):
 //   working — mid-turn, actively processing (no human action needed)
+//   needs-input — mid-turn but blocked on the human (e.g. a tool-permission
+//     prompt); the agent can't proceed until you respond
 //   waiting — finished a turn, your turn to act
 // Absent means we have no live signal (chat closed, never linked, or pre-hooks).
-export type ChatStatus = "working" | "waiting";
+export type ChatStatus = "working" | "needs-input" | "waiting";
 
-const CHAT_STATUSES = new Set<string>(["working", "waiting"]);
+const CHAT_STATUSES = new Set<string>(["working", "needs-input", "waiting"]);
 
 const CHAT_STATUS_ALIASES: Record<string, ChatStatus> = {
   active: "working",
@@ -204,8 +206,8 @@ const CHAT_STATUS_ALIASES: Record<string, ChatStatus> = {
   running: "working",
   ready: "waiting",
   idle: "waiting",
-  "needs-input": "waiting",
-  needs_input: "waiting",
+  needs_input: "needs-input",
+  "needs-help": "needs-input",
 };
 
 function normalizeStatusValue(value: string): string {
@@ -233,14 +235,16 @@ export function parseChatOpenState(fm: Frontmatter): ChatOpenState | null {
     : null;
 }
 
-// The three states the delegation UI distinguishes: the agent is mid-turn
-// ("working"), it has a live signal but isn't mid-turn ("not-working"), or we
-// have no live signal at all ("none" — closed, never linked, or a harness like
-// Codex with no status hooks). "waiting" collapses into "not-working".
-export type ChatActivity = "working" | "not-working" | "none";
+// The states the delegation UI distinguishes: the agent is mid-turn
+// ("working"), mid-turn but blocked on the human ("needs-input"), it has a live
+// signal but isn't mid-turn ("not-working"), or we have no live signal at all
+// ("none" — closed, never linked, or a harness like Codex with no status
+// hooks). "waiting" collapses into "not-working".
+export type ChatActivity = "working" | "needs-input" | "not-working" | "none";
 
 export function chatActivity(status: ChatStatus | null): ChatActivity {
   if (status === "working") return "working";
+  if (status === "needs-input") return "needs-input";
   return status ? "not-working" : "none";
 }
 

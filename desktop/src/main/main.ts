@@ -185,6 +185,10 @@ const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
 const STATUS_FOR_EVENT = {
   UserPromptSubmit: "working",
   userPromptSubmit: "working",
+  PermissionRequest: "needs-input",
+  permissionRequest: "needs-input",
+  PreToolUse: "working",
+  preToolUse: "working",
   Stop: "waiting",
   stop: "waiting",
 };
@@ -380,10 +384,11 @@ function globalClaudeChatStatusHook(): string {
 // so it must scope itself: it only touches task files inside enabled Hitch
 // roots and only for tasks whose chat-harness is claude-code.
 //
-// It stamps chat-status (working↔waiting) on the happy path AND records the
-// agent's process id as chat-pid. The daemon uses chat-pid to heal cards whose
-// session ended without a clean Stop/SessionEnd (terminal closed, killed,
-// crashed): a dead pid means the chat is over. See daemon reconcileChatStatus.
+// It stamps chat-status (working→needs-input→waiting) on the happy path AND
+// records the agent's process id as chat-pid. The daemon uses chat-pid to heal
+// cards whose session ended without a clean Stop/SessionEnd (terminal closed,
+// killed, crashed): a dead pid means the chat is over. See daemon
+// reconcileChatStatus.
 //
 // Contract: never break the session. Parse stdin, do a best-effort frontmatter
 // edit, and exit 0 without output for unrelated sessions or failures.
@@ -397,8 +402,18 @@ const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
 // Per event: which chat-status to write (if any) and whether to (re)stamp the
 // agent pid. SessionStart only refreshes the pid — a resumed session is a new
 // process — without forcing a status. SessionEnd clears both.
+//
+// Notification fires when the agent is blocked on the human; we register it
+// scoped to permission_prompt matchers, but also guard on notification_type
+// below so a config that fires it broadly can't mislabel idle/auth pings.
+// PreToolUse is the only signal that the user answered and the agent resumed —
+// it flips needs-input back to working. It fires on every tool call, so it skips
+// the pid walk (the pid is stable mid-turn, already stamped by UserPromptSubmit)
+// and short-circuits via willChange once the card is already working.
 const EVENT_PLAN = {
   UserPromptSubmit: { status: "working", touchPid: true },
+  PreToolUse: { status: "working" },
+  Notification: { status: "needs-input", touchPid: true, requirePermissionPrompt: true },
   Stop: { status: "waiting", touchPid: true },
   SessionStart: { touchPid: true },
   SessionEnd: { clear: true },
@@ -533,6 +548,13 @@ function main() {
   const plan = EVENT_PLAN[event];
   if (!plan) return;
 
+  // Notification covers several types (permission, idle, auth); only a
+  // permission prompt means "blocked on the human". Matcher scoping should
+  // already narrow this, but double-check the payload to be safe.
+  if (plan.requirePermissionPrompt && payload.notification_type !== "permission_prompt") {
+    return;
+  }
+
   const sessionId = payload.session_id;
   if (!sessionId) return;
 
@@ -585,9 +607,10 @@ function main() {
         if (pid) updates["chat-pid"] = String(pid);
       }
       if (plan.status) {
-        // A done/archived task should settle (clear), not light up as waiting.
+        // A done/archived task should settle (clear), not light up as waiting
+        // or needs-input from a late hook. A live "working" stamp is harmless.
         const settle =
-          plan.status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm));
+          plan.status !== "working" && TERMINAL_TASK_STATUSES.has(taskStatus(fm));
         if (settle) {
           updates["chat-status"] = undefined;
           updates["chat-pid"] = undefined;
@@ -1137,10 +1160,31 @@ function ensureProjectGitignore(projectId: ProjectId): ProjectSetupStatus {
   return projectSetupStatus(projectId);
 }
 
-function hookEvents(harness: Harness): string[] {
-  return harness === "codex"
-    ? ["UserPromptSubmit", "Stop"]
-    : ["UserPromptSubmit", "Stop", "SessionStart", "SessionEnd"];
+// The lifecycle events each harness wires to the chat-status hook. `matcher`
+// (Claude only) scopes a hook to a notification subtype — Notification fires for
+// permission/idle/auth pings, but we only care about permission prompts.
+interface HookEvent {
+  event: string;
+  matcher?: string;
+}
+
+function hookEvents(harness: Harness): HookEvent[] {
+  if (harness === "codex") {
+    return [
+      { event: "UserPromptSubmit" },
+      { event: "PermissionRequest" },
+      { event: "PreToolUse" },
+      { event: "Stop" },
+    ];
+  }
+  return [
+    { event: "UserPromptSubmit" },
+    { event: "PreToolUse" },
+    { event: "Notification", matcher: "permission_prompt" },
+    { event: "Stop" },
+    { event: "SessionStart" },
+    { event: "SessionEnd" },
+  ];
 }
 
 function readJsonObject(path: string): Record<string, unknown> {
@@ -1150,15 +1194,23 @@ function readJsonObject(path: string): Record<string, unknown> {
   return parsed;
 }
 
+function blockMatches(block: Record<string, unknown>, matcher?: string): boolean {
+  const blockMatcher =
+    typeof block.matcher === "string" && block.matcher ? block.matcher : undefined;
+  return blockMatcher === matcher;
+}
+
 function hookCommandExists(
   config: Record<string, unknown>,
   event: string,
   command: string,
+  matcher?: string,
 ): boolean {
   const hooks = isRecord(config.hooks) ? config.hooks : {};
   const blocks = Array.isArray(hooks[event]) ? hooks[event] : [];
   return blocks.some((block) => {
     if (!isRecord(block) || !Array.isArray(block.hooks)) return false;
+    if (!blockMatches(block, matcher)) return false;
     return block.hooks.some(
       (hook) =>
         isRecord(hook) &&
@@ -1172,6 +1224,7 @@ function ensureHookCommand(
   config: Record<string, unknown>,
   event: string,
   command: string,
+  matcher?: string,
 ): void {
   if (!isRecord(config.hooks)) config.hooks = {};
   const hooks = config.hooks;
@@ -1179,8 +1232,9 @@ function ensureHookCommand(
   if (!Array.isArray(hooks[event])) hooks[event] = [];
   const blocks = hooks[event];
   if (!Array.isArray(blocks)) throw new Error(`hooks.${event} must be an array`);
-  if (hookCommandExists(config, event, command)) return;
+  if (hookCommandExists(config, event, command, matcher)) return;
   blocks.push({
+    ...(matcher ? { matcher } : {}),
     hooks: [{ type: "command", command }],
   });
 }
@@ -1360,6 +1414,22 @@ function hitchCodexTomlBlock(command: string): string {
     "timeout = 30",
     'statusMessage = "Updating Hitch chat status"',
     "",
+    "[[hooks.PermissionRequest]]",
+    "",
+    "[[hooks.PermissionRequest.hooks]]",
+    'type = "command"',
+    `command = ${quotedCommand}`,
+    "timeout = 30",
+    'statusMessage = "Updating Hitch chat status"',
+    "",
+    "[[hooks.PreToolUse]]",
+    "",
+    "[[hooks.PreToolUse.hooks]]",
+    'type = "command"',
+    `command = ${quotedCommand}`,
+    "timeout = 30",
+    'statusMessage = "Updating Hitch chat status"',
+    "",
     "[[hooks.Stop]]",
     "",
     "[[hooks.Stop.hooks]]",
@@ -1434,11 +1504,11 @@ function globalCodexHookStatus(): HarnessHookStatus {
   if (jsonExists) {
     try {
       const config = readJsonObject(hooksJsonPath);
-      jsonHasHook = hookEvents("codex").some((event) =>
-        hookCommandExists(config, event, command),
+      jsonHasHook = hookEvents("codex").some(({ event, matcher }) =>
+        hookCommandExists(config, event, command, matcher),
       );
-      jsonWired = hookEvents("codex").every((event) =>
-        hookCommandExists(config, event, command),
+      jsonWired = hookEvents("codex").every(({ event, matcher }) =>
+        hookCommandExists(config, event, command, matcher),
       );
     } catch {
       jsonWired = false;
@@ -1452,6 +1522,8 @@ function globalCodexHookStatus(): HarnessHookStatus {
       tomlWired =
         content.includes(command) &&
         content.includes("[[hooks.UserPromptSubmit]]") &&
+        content.includes("[[hooks.PermissionRequest]]") &&
+        content.includes("[[hooks.PreToolUse]]") &&
         content.includes("[[hooks.Stop]]");
     } catch {
       tomlWired = false;
@@ -1498,8 +1570,8 @@ function installGlobalCodexHooks(): GlobalHarnessSetupStatus {
     const configPath = globalCodexHooksJsonPath();
     mkdirSync(dirname(configPath), { recursive: true });
     const config = readJsonObject(configPath);
-    for (const event of hookEvents("codex")) {
-      ensureHookCommand(config, event, command);
+    for (const { event, matcher } of hookEvents("codex")) {
+      ensureHookCommand(config, event, command, matcher);
     }
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   } else {
@@ -1519,7 +1591,7 @@ function removeGlobalCodexHooks(): GlobalHarnessSetupStatus {
     try {
       const config = readJsonObject(hooksJsonPath);
       let changed = false;
-      for (const event of hookEvents("codex")) {
+      for (const { event } of hookEvents("codex")) {
         changed = removeHookCommand(config, event, command) || changed;
       }
       if (changed) {
@@ -1582,11 +1654,11 @@ function globalClaudeHookStatus(): HarnessHookStatus {
   if (configExists) {
     try {
       const config = readJsonObject(configPath);
-      configHasHook = hookEvents("claude-code").some((event) =>
-        hookCommandExists(config, event, command),
+      configHasHook = hookEvents("claude-code").some(({ event, matcher }) =>
+        hookCommandExists(config, event, command, matcher),
       );
-      configWired = hookEvents("claude-code").every((event) =>
-        hookCommandExists(config, event, command),
+      configWired = hookEvents("claude-code").every(({ event, matcher }) =>
+        hookCommandExists(config, event, command, matcher),
       );
     } catch {
       configWired = false;
@@ -1614,8 +1686,8 @@ function installGlobalClaudeHooks(): GlobalHarnessSetupStatus {
   const configPath = globalClaudeSettingsPath();
   mkdirSync(dirname(configPath), { recursive: true });
   const config = readJsonObject(configPath);
-  for (const event of hookEvents("claude-code")) {
-    ensureHookCommand(config, event, command);
+  for (const { event, matcher } of hookEvents("claude-code")) {
+    ensureHookCommand(config, event, command, matcher);
   }
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1631,7 +1703,7 @@ function removeGlobalClaudeHooks(): GlobalHarnessSetupStatus {
     try {
       const config = readJsonObject(configPath);
       let changed = false;
-      for (const event of hookEvents("claude-code")) {
+      for (const { event } of hookEvents("claude-code")) {
         changed = removeHookCommand(config, event, command) || changed;
       }
       if (changed) {

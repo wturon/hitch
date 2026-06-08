@@ -8,6 +8,14 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+- Make Codex chat status hook-driven after the first turn. The daemon no longer
+  polls Codex turn history to "heal" working cards, which could see the previous
+  completed turn during a live resumed turn and flip the card back to waiting.
+  Hitch-launched first turns still settle through the app-server completion
+  callback, while resumed turns use Codex lifecycle hooks. Codex hooks now also
+  report `needs-input` from `PermissionRequest` and return to `working` on
+  `PreToolUse`, matching the third status state already shown in the board UI.
+
 ## [0.1.10] - 2026-06-07
 
 - Add **starting prompts**: pick a reusable kickoff prompt when delegating a

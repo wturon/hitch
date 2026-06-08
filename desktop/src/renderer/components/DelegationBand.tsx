@@ -51,27 +51,30 @@ import { cn } from "@/lib/utils";
 const MANAGE_PROMPTS_VALUE = "__manage_prompts__";
 
 // The live activity badge on a linked chat. "none" (no signal) renders nothing —
-// common for Codex, which has no status hooks.
+// common for Codex, which has no status hooks. "needs-input" (the agent is
+// blocked on you, e.g. a permission prompt) gets a subtle amber treatment to
+// draw the eye without shouting; "working" is blue, everything else muted.
 function StatusPill({ activity }: { activity: ChatActivity }) {
   if (activity === "none") return null;
   const working = activity === "working";
+  const needsInput = activity === "needs-input";
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        working
-          ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-          : "bg-muted text-muted-foreground",
+        working && "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+        needsInput && "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+        !working && !needsInput && "bg-muted text-muted-foreground",
       )}
     >
       <span
         className={cn(
           "size-1.5 rounded-full bg-current",
-          working && "animate-pulse",
+          (working || needsInput) && "animate-pulse",
         )}
         aria-hidden
       />
-      {working ? "working" : "not working"}
+      {working ? "working" : needsInput ? "needs input" : "not working"}
     </span>
   );
 }

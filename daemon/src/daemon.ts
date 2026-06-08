@@ -15,7 +15,7 @@ import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { CmuxError } from "./cmux.js";
-import { closeCodexAppServer, latestCodexTurn } from "./codex.js";
+import { closeCodexAppServer } from "./codex.js";
 import { resolveLauncher } from "./launchers/registry.js";
 import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
 import type { Environment, Harness } from "./launchers/types.js";
@@ -246,12 +246,6 @@ function frontmatterValue(content: string, key: string): string | undefined {
 
 const execFileP = promisify(execFile);
 const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
-const FINISHED_CODEX_TURN_STATUSES = new Set([
-  "completed",
-  "failed",
-  "interrupted",
-]);
-
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -524,9 +518,9 @@ async function startHitchBinding({
   const heartbeatTimer = setInterval(() => void sendHeartbeat(), 15_000);
 
   // Heal stale chat-status without fighting the hooks. Claude Code gets a
-  // per-session pid, so pid death clears stale working/waiting. Codex has no
-  // per-chat process; global hooks are the live signal, and this loop only
-  // settles stale working cards once durable turn history says the turn ended.
+  // per-session pid, so pid death clears stale working/waiting. Codex status is
+  // hook/app-server driven; polling durable turn history can see the previous
+  // completed turn during a live resumed turn, so don't reconcile Codex here.
   async function reconcileChatStatus(): Promise<void> {
     const tasksDir = join(root.hitchPath, "tasks");
     let entries;
@@ -545,7 +539,15 @@ async function startHitchBinding({
         continue;
       }
       const status = frontmatterValue(content, "chat-status");
-      if (status !== "working" && status !== "waiting") continue;
+      // "needs-input" is a live, mid-turn state too: a card stuck on a
+      // permission prompt whose terminal then closed must still get pid-healed.
+      if (
+        status !== "working" &&
+        status !== "waiting" &&
+        status !== "needs-input"
+      ) {
+        continue;
+      }
       const harness = frontmatterValue(content, "chat-harness") ?? "";
 
       if (harness === "claude-code") {
@@ -579,35 +581,6 @@ async function startHitchBinding({
           // best-effort; the next tick retries
         }
         continue;
-      }
-
-      if (harness === "codex" && status === "working") {
-        const threadId = frontmatterValue(content, "chat-id") ?? "";
-        if (!threadId) continue;
-
-        let latestTurn;
-        try {
-          latestTurn = await latestCodexTurn(threadId);
-        } catch {
-          continue; // transient app-server/read issue; retry next tick
-        }
-        if (!latestTurn || !FINISHED_CODEX_TURN_STATUSES.has(latestTurn.status)) {
-          continue;
-        }
-
-        const next = setFrontmatterKeys(content, {
-          "chat-status": settledChatStatus(content),
-          "chat-open-state": undefined,
-        });
-        if (next === content) continue;
-        try {
-          await writeFile(absPath, next, "utf8");
-          logger.info(
-            `[hitch:${projectLabel}] healed stale codex chat-status (latest turn ${latestTurn.id} ${latestTurn.status}) → tasks/${entry.name}/task.md`,
-          );
-        } catch {
-          // best-effort; the next tick retries
-        }
       }
     }
   }
