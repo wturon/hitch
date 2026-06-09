@@ -18,6 +18,16 @@ that section as the GitHub Release notes.
   callback, while resumed turns use Codex lifecycle hooks. Codex hooks now also
   report `needs-input` from `PermissionRequest` and return to `working` on
   `PreToolUse`, matching the third status state already shown in the board UI.
+- Show **per-project chat activity** in the sidebar. Each project lists how many
+  of its tasks have a chat mid-turn (a grey spinner + count) and how many are
+  blocked waiting on you (an amber dot + count), so a project that needs your
+  attention stands out at a glance; a fully idle project shows a dash. The
+  tallies are aggregated server-side and returned as small per-project counts
+  (the sidebar never subscribes to other projects' file contents), and stay live
+  as task chat status changes.
+- Remove the hover **Archive** shortcut from board cards. Archiving stays
+  available from the card's right-click menu and the per-column ⋯ menu, so the
+  card surface stays quiet on hover.
 
 ## [0.1.10] - 2026-06-07
 

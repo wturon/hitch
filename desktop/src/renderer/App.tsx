@@ -34,6 +34,7 @@ import {
   ExternalLinkIcon,
   FolderSyncIcon,
   LayoutDashboardIcon,
+  LoaderCircleIcon,
   LogOutIcon,
   PlusIcon,
   SettingsIcon,
@@ -351,6 +352,51 @@ function CreateProjectDialog({
   );
 }
 
+// At-a-glance chat activity for one project in the sidebar: a grey spinner +
+// count for tasks whose chat is mid-turn ("working"), and an amber dot + count
+// for tasks blocked on the human ("needs-input") — so a noisy project that needs
+// you stands out without leaving the rail. A fully idle project shows a faint
+// dash so the trailing lane stays consistent; while counts are still loading we
+// render nothing (the dash would otherwise flash on every project). The amber
+// treatment mirrors the "Needs repair" harness shortcut below.
+function ProjectStatusChips({
+  counts,
+}: {
+  counts: { working: number; needsInput: number } | undefined;
+}) {
+  if (!counts) return null;
+  const { working, needsInput } = counts;
+  if (working === 0 && needsInput === 0) {
+    return (
+      <span className="text-xs text-sidebar-foreground/35" aria-hidden>
+        —
+      </span>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      {working > 0 && (
+        <span
+          className="inline-flex items-center gap-1 rounded-md border border-sidebar-border bg-sidebar-accent px-1.5 py-0.5 text-xs font-semibold text-sidebar-foreground/70"
+          title={`${working} chat${working === 1 ? "" : "s"} working`}
+        >
+          <LoaderCircleIcon className="size-3 animate-spin" />
+          {working}
+        </span>
+      )}
+      {needsInput > 0 && (
+        <span
+          className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300"
+          title={`${needsInput} task${needsInput === 1 ? "" : "s"} need${needsInput === 1 ? "s" : ""} input`}
+        >
+          <span className="size-1.5 rounded-full bg-amber-500" />
+          {needsInput}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AppSidebar({
   projects,
   selectedProjectId,
@@ -377,6 +423,10 @@ function AppSidebar({
   onSignOut: () => void;
 }) {
   const [showCreateProject, setShowCreateProject] = useState(false);
+  // Reactive per-project working / needs-input tallies. Aggregated server-side
+  // (see api.files.chatStatusCounts) so we never subscribe to other projects'
+  // full file contents. Convex dedups this subscription across renders.
+  const statusCounts = useQuery(api.files.chatStatusCounts);
 
   return (
     <aside className="flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 py-2 text-sidebar-foreground md:sticky md:top-0 md:h-screen md:w-64 md:flex-col md:items-stretch md:border-b-0 md:border-r md:border-sidebar-border md:px-3 md:py-4">
@@ -429,6 +479,9 @@ function AppSidebar({
                     {project.name}
                   </span>
                 </button>
+                <div className="flex shrink-0 items-center">
+                  <ProjectStatusChips counts={statusCounts?.[project._id]} />
+                </div>
                 {/* Fixed trailing slot: the project-details gear, revealed on
                     hover so it doesn't crowd the project name. */}
                 <div className="flex w-6 shrink-0 items-center justify-center">
@@ -817,70 +870,6 @@ function ProjectWorkspace() {
   );
 }
 
-// The hover-revealed archive shortcut in a card's top-right corner. Clicking it
-// once arms a confirmation (the icon becomes an "Archive" pill); clicking the
-// pill archives. `onPointerDown`/`onClick` stop propagation so the button drives
-// neither the card's drag (PointerSensor listeners live on the summary) nor its
-// open-on-click. Only rendered for unarchived cards — restoring stays in the
-// context menu.
-function stopCardPropagation(e: React.PointerEvent | React.MouseEvent) {
-  e.stopPropagation();
-}
-
-function ArchiveShortcut({
-  confirming,
-  pending,
-  onArm,
-  onConfirm,
-}: {
-  confirming: boolean;
-  pending: boolean;
-  onArm: () => void;
-  onConfirm: () => void;
-}) {
-  if (confirming) {
-    return (
-      <button
-        type="button"
-        disabled={pending}
-        aria-label="Confirm archive"
-        onPointerDown={stopCardPropagation}
-        onClick={(e) => {
-          stopCardPropagation(e);
-          onConfirm();
-        }}
-        className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs font-medium text-accent-foreground shadow-sm ring-1 ring-border hover:bg-foreground hover:text-background"
-      >
-        <ArchiveIcon className="size-3" />
-        Confirm
-      </button>
-    );
-  }
-
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            disabled={pending}
-            aria-label="Archive"
-            onPointerDown={stopCardPropagation}
-            onClick={(e) => {
-              stopCardPropagation(e);
-              onArm();
-            }}
-            className="absolute right-2 top-2 hidden rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground group-hover:block focus-visible:block focus-visible:outline-none"
-          />
-        }
-      >
-        <ArchiveIcon className="size-3.5" />
-      </TooltipTrigger>
-      <TooltipContent>Archive</TooltipContent>
-    </Tooltip>
-  );
-}
-
 interface DraggableCardProps {
   card: Card;
   projectId: Id<"projects">;
@@ -908,17 +897,12 @@ function DraggableCard({
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: card.id,
   });
-  // Whether the hover archive shortcut has been clicked once and is now showing
-  // its "Archive" confirmation pill. Reset when the pointer leaves the card so a
-  // half-armed card doesn't stay armed.
-  const [confirmingArchive, setConfirmingArchive] = useState(false);
 
   return (
     <ContextMenu>
       <ContextMenuTrigger className="block">
         <div
           ref={setNodeRef}
-          onMouseLeave={() => setConfirmingArchive(false)}
           className={cn(
             CARD_CLASS,
             "group relative cursor-pointer transition-shadow hover:ring-foreground/20",
@@ -940,17 +924,6 @@ function DraggableCard({
             <CardSummary card={card} />
           </button>
           <CardChat card={card} projectId={projectId} />
-          {!card.archived && (
-            <ArchiveShortcut
-              confirming={confirmingArchive}
-              pending={pending}
-              onArm={() => setConfirmingArchive(true)}
-              onConfirm={() => {
-                setConfirmingArchive(false);
-                onArchiveToggle(card, true);
-              }}
-            />
-          )}
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
