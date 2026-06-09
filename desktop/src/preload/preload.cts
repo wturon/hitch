@@ -51,6 +51,12 @@ export interface AddHitchResult {
   restarted: boolean;
 }
 
+export interface RemoveHitchResult {
+  config: LocalHitchConfig;
+  removed: boolean;
+  restarted: boolean;
+}
+
 export interface ProjectSetupStatus {
   projectId: ProjectId;
   hitch: HitchBinding | null;
@@ -132,6 +138,7 @@ export interface HitchDaemonApi {
   clearLogs: () => Promise<DaemonState>;
   getConfig: () => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
+  removeHitch: (projectId: ProjectId) => Promise<RemoveHitchResult>;
   getProjectSetup: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   ensureHitchDirectory: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   ensureGitignore: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
@@ -177,6 +184,7 @@ const api: HitchDaemonApi = {
   clearLogs: () => ipcRenderer.invoke("daemon:clear-logs"),
   getConfig: () => ipcRenderer.invoke("config:get"),
   addHitch: (input) => ipcRenderer.invoke("config:add-hitch", input),
+  removeHitch: (projectId) => ipcRenderer.invoke("config:remove-hitch", projectId),
   getProjectSetup: (projectId) => ipcRenderer.invoke("config:get-project-setup", projectId),
   ensureHitchDirectory: (projectId) => ipcRenderer.invoke("config:ensure-hitch-directory", projectId),
   ensureGitignore: (projectId) => ipcRenderer.invoke("config:ensure-gitignore", projectId),

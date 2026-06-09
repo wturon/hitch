@@ -79,6 +79,12 @@ interface AddHitchResult {
   restarted: boolean;
 }
 
+interface RemoveHitchResult {
+  config: LocalHitchConfig;
+  removed: boolean;
+  restarted: boolean;
+}
+
 interface ProjectSetupStatus {
   projectId: ProjectId;
   hitch: HitchBinding | null;
@@ -1918,6 +1924,25 @@ async function addHitch(input: AddHitchInput): Promise<AddHitchResult> {
   return { config: savedConfig, gitignoreUpdated, restarted };
 }
 
+async function removeHitch(projectId: ProjectId): Promise<RemoveHitchResult> {
+  const trimmed = projectId.trim();
+  if (!trimmed) throw new Error("Project ID is required");
+
+  const config = readLocalConfig();
+  const nextHitches = config.hitches.filter(
+    (hitch) => hitch.projectId !== trimmed,
+  );
+  const removed = nextHitches.length !== config.hitches.length;
+  if (!removed) {
+    return { config, removed: false, restarted: false };
+  }
+
+  const savedConfig = writeLocalConfig({ hitches: nextHitches });
+  addLog("system", `Unhitched project ${trimmed}`);
+  const restarted = daemon ? await restartDaemon() : false;
+  return { config: savedConfig, removed: true, restarted };
+}
+
 function handleRunnerMessage(message: RunnerMessage): void {
   if (!isRecord(message)) return;
 
@@ -2254,6 +2279,9 @@ ipcMain.handle("daemon:clear-logs", () => clearLogs());
 ipcMain.handle("config:get", () => readLocalConfig());
 ipcMain.handle("config:add-hitch", (_event, input: AddHitchInput) =>
   addHitch(input),
+);
+ipcMain.handle("config:remove-hitch", (_event, projectId: ProjectId) =>
+  removeHitch(projectId),
 );
 ipcMain.handle("config:get-project-setup", (_event, projectId: ProjectId) =>
   projectSetupStatus(projectId),

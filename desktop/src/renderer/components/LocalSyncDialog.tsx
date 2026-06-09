@@ -55,6 +55,12 @@ interface AddHitchResult {
   restarted: boolean;
 }
 
+interface RemoveHitchResult {
+  config: LocalHitchConfig;
+  removed: boolean;
+  restarted: boolean;
+}
+
 interface ProjectSetupStatus {
   projectId: Id<"projects">;
   hitch: HitchBinding | null;
@@ -73,6 +79,7 @@ interface HitchDaemonApi {
   clearLogs: () => Promise<DaemonState>;
   getConfig: () => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
+  removeHitch: (projectId: Id<"projects">) => Promise<RemoveHitchResult>;
   getProjectSetup: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
   ensureHitchDirectory: (
     projectId: Id<"projects">,
@@ -169,6 +176,9 @@ export function LocalSyncPanel({
   const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
   const [daemon, setDaemon] = useState<DaemonState>(emptyState);
   const [config, setConfig] = useState<LocalHitchConfig>(emptyConfig);
+  const [removingProjectId, setRemovingProjectId] =
+    useState<Id<"projects"> | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -188,6 +198,28 @@ export function LocalSyncPanel({
   const isBusy = daemon.status === "starting" || daemon.status === "stopping";
   const isRunning = daemon.status === "running";
   const hitches = config.hitches;
+
+  async function unhitchProject(hitch: HitchBinding) {
+    if (!bridge) return;
+    const label = hitch.projectName || hitch.projectId;
+    const confirmed = window.confirm(
+      `Unhitch ${label} from this machine? Local .hitch files and .gitignore will be left unchanged.`,
+    );
+    if (!confirmed) return;
+
+    setRemovingProjectId(hitch.projectId);
+    setConfigError(null);
+    try {
+      const result = await bridge.removeHitch(hitch.projectId);
+      setConfig(result.config);
+      onConfigChange?.(result.config);
+      void bridge.getState().then(setDaemon);
+    } catch (err) {
+      setConfigError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRemovingProjectId(null);
+    }
+  }
 
   return !bridge ? (
     <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
@@ -309,6 +341,17 @@ export function LocalSyncPanel({
                         Disabled
                       </span>
                     )}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled={removingProjectId === hitch.projectId}
+                      onClick={() => void unhitchProject(hitch)}
+                      aria-label={`Unhitch ${hitch.projectName || hitch.projectId}`}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <Trash2Icon />
+                    </Button>
                   </div>
                   <p
                     className="truncate text-muted-foreground"
@@ -325,6 +368,9 @@ export function LocalSyncPanel({
                 </li>
               ))}
             </ul>
+          )}
+          {configError && (
+            <p className="mt-2 text-sm text-destructive">{configError}</p>
           )}
         </div>
       </section>

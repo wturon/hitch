@@ -88,6 +88,12 @@ interface LocalHitchConfig {
   hitches: HitchBinding[];
 }
 
+interface RemoveHitchResult {
+  config: LocalHitchConfig;
+  removed: boolean;
+  restarted: boolean;
+}
+
 interface ProjectSetupStatus {
   projectId: Id<"projects">;
   hitch: HitchBinding | null;
@@ -97,6 +103,26 @@ interface ProjectSetupStatus {
   gitignorePath: string | null;
   gitignoreExists: boolean;
   gitignoreHasHitch: boolean;
+}
+
+interface HitchDaemonApi {
+  addHitch: (input: {
+    projectId: Id<"projects">;
+    projectName?: string;
+    localPath: string;
+    updateGitignore?: boolean;
+  }) => Promise<{
+    config: LocalHitchConfig;
+    gitignoreUpdated: boolean;
+    restarted: boolean;
+  }>;
+  removeHitch: (projectId: Id<"projects">) => Promise<RemoveHitchResult>;
+  getProjectSetup: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
+  ensureHitchDirectory: (
+    projectId: Id<"projects">,
+  ) => Promise<ProjectSetupStatus>;
+  ensureGitignore: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
+  chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
 }
 
 function formatDate(timestamp: number) {
@@ -298,7 +324,10 @@ function ProjectDetailsForm({
   onLocalConfigChange?: (config: LocalHitchConfig) => void;
   initialTab: DetailsTab;
 }) {
-  const bridge = typeof window !== "undefined" ? window.hitchDaemon : undefined;
+  const bridge =
+    typeof window !== "undefined"
+      ? (window as unknown as { hitchDaemon?: HitchDaemonApi }).hitchDaemon
+      : undefined;
   const updateDetails = useMutation(api.projects.updateDetails);
   const updateStatuses = useMutation(api.projects.updateStatuses);
   const [tab, setTab] = useState<DetailsTab>(initialTab);
@@ -435,6 +464,27 @@ function ProjectDetailsForm({
         localPath,
         updateGitignore: true,
       });
+      onLocalConfigChange?.(result.config);
+      await refreshSetup();
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSetupBusy(null);
+    }
+  }
+
+  async function unhitchProject() {
+    if (!bridge || !setup?.hitch) return;
+    const label = details.project.name || projectId;
+    const confirmed = window.confirm(
+      `Unhitch ${label} from this machine? Local .hitch files and .gitignore will be left unchanged.`,
+    );
+    if (!confirmed) return;
+
+    setSetupBusy("unhitch");
+    setSetupError(null);
+    try {
+      const result = await bridge.removeHitch(projectId);
       onLocalConfigChange?.(result.config);
       await refreshSetup();
     } catch (err) {
@@ -706,6 +756,27 @@ function ProjectDetailsForm({
                       ) : null
                     }
                   />
+                  <div className="mt-1 rounded-md border bg-background p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <h4 className="text-sm font-medium">Unhitch locally</h4>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Stop syncing this project on this machine. The local
+                          .hitch folder and .gitignore stay unchanged.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        disabled={setupBusy !== null}
+                        onClick={() => void unhitchProject()}
+                      >
+                        <Trash2Icon />
+                        {setupBusy === "unhitch" ? "Unhitching..." : "Unhitch"}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
