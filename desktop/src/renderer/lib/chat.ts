@@ -92,6 +92,10 @@ export interface LaunchOption {
 interface ModelOption extends LaunchOption {
   defaultReasoning?: string;
   reasoning?: LaunchOption[];
+  // Marks the harness's default model. When absent, the first entry wins, so
+  // list order and default are decoupled (e.g. Fable 5 sits atop the Claude
+  // list but Opus 4.8 stays the default).
+  default?: boolean;
 }
 
 const CLAUDE_REASONING: LaunchOption[] = [
@@ -114,7 +118,8 @@ const CODEX_REASONING: LaunchOption[] = [
 // from codex-cli 0.137.0; hidden models are intentionally excluded.
 export const MODELS_BY_HARNESS: Record<Harness, ModelOption[]> = {
   "claude-code": [
-    { id: "claude-opus-4-8", label: "Opus 4.8" },
+    { id: "claude-fable-5", label: "Fable 5" },
+    { id: "claude-opus-4-8", label: "Opus 4.8", default: true },
     { id: "claude-opus-4-7", label: "Opus 4.7" },
     { id: "claude-opus-4-6", label: "Opus 4.6" },
     { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
@@ -144,7 +149,8 @@ export const REASONING_BY_HARNESS: Record<Harness, LaunchOption[]> = {
 };
 
 export function defaultModel(harness: Harness): string {
-  return MODELS_BY_HARNESS[harness][0].id;
+  const models = MODELS_BY_HARNESS[harness];
+  return (models.find((m) => m.default) ?? models[0]).id;
 }
 
 export function reasoningOptions(
