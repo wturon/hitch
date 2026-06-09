@@ -28,6 +28,7 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   CheckCircle2Icon,
+  CoffeeIcon,
   CopyIcon,
   EllipsisIcon,
   ExternalLinkIcon,
@@ -170,13 +171,33 @@ interface DeviceAuthState {
   hasToken: boolean;
 }
 
+interface KeepAwakeState {
+  enabled: boolean;
+  running: boolean;
+  pid: number | null;
+  error: string | null;
+}
+
 interface HarnessSettingsApi {
   getGlobalHarnessSetup: () => Promise<GlobalHarnessSetupStatus>;
+}
+
+interface KeepAwakeApi {
+  getKeepAwakeState: () => Promise<KeepAwakeState>;
+  startKeepAwake: () => Promise<KeepAwakeState>;
+  stopKeepAwake: () => Promise<KeepAwakeState>;
+  onKeepAwakeState: (callback: (state: KeepAwakeState) => void) => () => void;
 }
 
 function harnessSetupBridge(): HarnessSettingsApi | undefined {
   return typeof window !== "undefined"
     ? (window.hitchDaemon as unknown as HarnessSettingsApi | undefined)
+    : undefined;
+}
+
+function keepAwakeBridge(): KeepAwakeApi | undefined {
+  return typeof window !== "undefined"
+    ? (window.hitchDaemon as unknown as KeepAwakeApi | undefined)
     : undefined;
 }
 
@@ -338,6 +359,8 @@ function AppSidebar({
   onCreateProject,
   onShowProjectDetails,
   harnessSetup,
+  keepAwake,
+  onToggleKeepAwake,
   onShowGlobalSettings,
   onSignOut,
 }: {
@@ -348,6 +371,8 @@ function AppSidebar({
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
   harnessSetup: GlobalHarnessSetupStatus | null;
+  keepAwake: KeepAwakeState | null;
+  onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onSignOut: () => void;
 }) {
@@ -452,6 +477,7 @@ function AppSidebar({
           status={harnessSetup?.claudeCode ?? null}
           onClick={() => onShowGlobalSettings("harnesses")}
         />
+        <KeepAwakeShortcut state={keepAwake} onToggle={onToggleKeepAwake} />
         <Button
           variant="ghost"
           size="sm"
@@ -474,6 +500,50 @@ function AppSidebar({
         </Button>
       </div>
     </aside>
+  );
+}
+
+function KeepAwakeShortcut({
+  state,
+  onToggle,
+}: {
+  state: KeepAwakeState | null;
+  onToggle: () => void;
+}) {
+  const enabled = state?.enabled === true;
+  const unavailable = state === null;
+  const label = enabled ? "Keep machine awake on" : "Keep machine awake off";
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onToggle}
+      disabled={unavailable}
+      aria-pressed={enabled}
+      aria-label={label}
+      title={state?.error ?? label}
+      className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
+    >
+      <CoffeeIcon />
+      <span className="hidden min-w-0 flex-1 truncate text-left md:inline">
+        Keep machine awake
+      </span>
+      <span
+        aria-hidden
+        className={cn(
+          "hidden h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors md:flex",
+          enabled ? "bg-sidebar-foreground" : "bg-sidebar-foreground/25",
+        )}
+      >
+        <span
+          className={cn(
+            "size-3 rounded-full bg-background shadow-sm transition-transform",
+            enabled && "translate-x-3",
+          )}
+        />
+      </span>
+    </Button>
   );
 }
 
@@ -536,6 +606,8 @@ function AppShell({
   onCreateProject,
   onShowProjectDetails,
   harnessSetup,
+  keepAwake,
+  onToggleKeepAwake,
   onShowGlobalSettings,
   onSignOut,
   children,
@@ -547,6 +619,8 @@ function AppShell({
   onCreateProject: (name: string) => Promise<void>;
   onShowProjectDetails: () => void;
   harnessSetup: GlobalHarnessSetupStatus | null;
+  keepAwake: KeepAwakeState | null;
+  onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onSignOut: () => void;
   children: ReactNode;
@@ -561,6 +635,8 @@ function AppShell({
         onCreateProject={onCreateProject}
         onShowProjectDetails={onShowProjectDetails}
         harnessSetup={harnessSetup}
+        keepAwake={keepAwake}
+        onToggleKeepAwake={onToggleKeepAwake}
         onShowGlobalSettings={onShowGlobalSettings}
         onSignOut={onSignOut}
       />
@@ -1304,6 +1380,7 @@ function BoardContent({
     useState<GlobalSettingsTab>("harnesses");
   const [globalHarnessSetup, setGlobalHarnessSetup] =
     useState<GlobalHarnessSetupStatus | null>(null);
+  const [keepAwake, setKeepAwake] = useState<KeepAwakeState | null>(null);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [projectDetailsTab, setProjectDetailsTab] =
     useState<ProjectDetailsTab>("general");
@@ -1346,6 +1423,42 @@ function BoardContent({
       });
   }, []);
 
+  useEffect(() => {
+    const bridge = keepAwakeBridge();
+    if (!bridge) {
+      setKeepAwake(null);
+      return;
+    }
+
+    let alive = true;
+    void bridge
+      .getKeepAwakeState()
+      .then((state) => {
+        if (alive) setKeepAwake(state);
+      })
+      .catch(() => {
+        if (alive) setKeepAwake(null);
+      });
+
+    const unsubscribe = bridge.onKeepAwakeState((state) => {
+      setKeepAwake(state);
+    });
+
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+
+  async function toggleKeepAwake() {
+    const bridge = keepAwakeBridge();
+    if (!bridge) return;
+    const next = keepAwake?.enabled
+      ? await bridge.stopKeepAwake()
+      : await bridge.startKeepAwake();
+    setKeepAwake(next);
+  }
+
   // `C` arms the composer on the first column for keyboard-driven creation.
   // Ignored while typing in a field or with the editor open, and when chorded
   // with a modifier (so browser shortcuts like ⌘C still work).
@@ -1378,6 +1491,8 @@ function BoardContent({
         onCreateProject={onCreateProject}
         onShowProjectDetails={() => openProjectDetails()}
         harnessSetup={globalHarnessSetup}
+        keepAwake={keepAwake}
+        onToggleKeepAwake={() => void toggleKeepAwake()}
         onShowGlobalSettings={openGlobalSettings}
         onSignOut={() => void signOut()}
       >
@@ -1623,6 +1738,8 @@ function BoardContent({
       onCreateProject={onCreateProject}
       onShowProjectDetails={() => openProjectDetails()}
       harnessSetup={globalHarnessSetup}
+      keepAwake={keepAwake}
+      onToggleKeepAwake={() => void toggleKeepAwake()}
       onShowGlobalSettings={openGlobalSettings}
       onSignOut={() => void signOut()}
     >

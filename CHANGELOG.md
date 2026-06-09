@@ -8,6 +8,9 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+- Add a persisted **Keep machine awake** sidebar toggle in Hitch Desktop. When
+  enabled, Hitch runs `caffeinate -d -i`, restores the setting on app restart,
+  and stops the helper process cleanly when the app quits.
 - Make Codex chat status hook-driven after the first turn. The daemon no longer
   polls Codex turn history to "heal" working cards, which could see the previous
   completed turn during a live resumed turn and flip the card back to waiting.

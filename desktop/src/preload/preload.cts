@@ -94,6 +94,13 @@ export interface DeviceAuthState {
   hasToken: boolean;
 }
 
+export interface KeepAwakeState {
+  enabled: boolean;
+  running: boolean;
+  pid: number | null;
+  error: string | null;
+}
+
 export type UpdaterPhase =
   | "idle"
   | "checking"
@@ -154,9 +161,13 @@ export interface HitchDaemonApi {
   checkForUpdates: () => Promise<UpdaterStatus>;
   downloadUpdate: () => Promise<void>;
   installUpdate: () => Promise<void>;
+  getKeepAwakeState: () => Promise<KeepAwakeState>;
+  startKeepAwake: () => Promise<KeepAwakeState>;
+  stopKeepAwake: () => Promise<KeepAwakeState>;
   onState: (callback: (state: DaemonState) => void) => () => void;
   onAuthCallback: (callback: (payload: AuthCallback) => void) => () => void;
   onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => () => void;
+  onKeepAwakeState: (callback: (state: KeepAwakeState) => void) => () => void;
 }
 
 const api: HitchDaemonApi = {
@@ -202,6 +213,9 @@ const api: HitchDaemonApi = {
   checkForUpdates: () => ipcRenderer.invoke("updater:check"),
   downloadUpdate: () => ipcRenderer.invoke("updater:download"),
   installUpdate: () => ipcRenderer.invoke("updater:install"),
+  getKeepAwakeState: () => ipcRenderer.invoke("keep-awake:get-state"),
+  startKeepAwake: () => ipcRenderer.invoke("keep-awake:start"),
+  stopKeepAwake: () => ipcRenderer.invoke("keep-awake:stop"),
   onState: (callback) => {
     const listener = (_event: IpcRendererEvent, state: DaemonState) => {
       callback(state);
@@ -222,6 +236,13 @@ const api: HitchDaemonApi = {
     };
     ipcRenderer.on("auth:callback", listener);
     return () => ipcRenderer.removeListener("auth:callback", listener);
+  },
+  onKeepAwakeState: (callback) => {
+    const listener = (_event: IpcRendererEvent, state: KeepAwakeState) => {
+      callback(state);
+    };
+    ipcRenderer.on("keep-awake:state", listener);
+    return () => ipcRenderer.removeListener("keep-awake:state", listener);
   },
 };
 

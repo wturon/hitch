@@ -33,6 +33,13 @@ import {
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
 type ProjectId = string;
 
+interface KeepAwakeState {
+  enabled: boolean;
+  running: boolean;
+  pid: number | null;
+  error: string | null;
+}
+
 interface LogEntry {
   id: number;
   at: string;
@@ -650,6 +657,9 @@ let quitAfterDaemonStops = false;
 let updaterConfigured = false;
 let lastUpdateProgressBucket = -1;
 let updateCheckInterval: NodeJS.Timeout | null = null;
+let keepAwakeProcess: ChildProcess | null = null;
+let keepAwakeError: string | null = null;
+let stoppingKeepAwake = false;
 
 // How often to re-check for updates after the initial startup check, so a
 // long-running session surfaces new versions without needing a restart.
@@ -953,6 +963,80 @@ function setHarnessEnvironment(
   const next = { ...readHarnessEnvironments(), [harness]: environment };
   writePreferences({ harnessEnvironments: next });
   return next;
+}
+
+function readKeepAwakeEnabled(): boolean {
+  return readPreferences().keepAwakeEnabled === true;
+}
+
+function writeKeepAwakeEnabled(enabled: boolean): void {
+  writePreferences({ keepAwakeEnabled: enabled });
+}
+
+function keepAwakeState(): KeepAwakeState {
+  return {
+    enabled: readKeepAwakeEnabled(),
+    running: keepAwakeProcess !== null,
+    pid: keepAwakeProcess?.pid ?? null,
+    error: keepAwakeError,
+  };
+}
+
+function broadcastKeepAwakeState(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("keep-awake:state", keepAwakeState());
+  }
+}
+
+function startKeepAwake(persist = true): KeepAwakeState {
+  if (persist) writeKeepAwakeEnabled(true);
+  keepAwakeError = null;
+
+  if (keepAwakeProcess) {
+    broadcastKeepAwakeState();
+    return keepAwakeState();
+  }
+
+  const child = spawn("/usr/bin/caffeinate", ["-d", "-i"], {
+    stdio: "ignore",
+  });
+  keepAwakeProcess = child;
+  stoppingKeepAwake = false;
+
+  child.once("spawn", () => {
+    broadcastKeepAwakeState();
+  });
+  child.once("error", (error) => {
+    if (keepAwakeProcess === child) keepAwakeProcess = null;
+    keepAwakeError = error.message;
+    broadcastKeepAwakeState();
+  });
+  child.once("exit", (code, signal) => {
+    if (keepAwakeProcess === child) keepAwakeProcess = null;
+    if (!stoppingKeepAwake && readKeepAwakeEnabled()) {
+      keepAwakeError = `caffeinate exited${signal ? ` with signal ${signal}` : ` with code ${code}`}`;
+    }
+    stoppingKeepAwake = false;
+    broadcastKeepAwakeState();
+  });
+
+  broadcastKeepAwakeState();
+  return keepAwakeState();
+}
+
+function stopKeepAwake(persist = true): KeepAwakeState {
+  if (persist) writeKeepAwakeEnabled(false);
+  keepAwakeError = null;
+
+  if (!keepAwakeProcess) {
+    broadcastKeepAwakeState();
+    return keepAwakeState();
+  }
+
+  stoppingKeepAwake = true;
+  keepAwakeProcess.kill("SIGTERM");
+  broadcastKeepAwakeState();
+  return keepAwakeState();
 }
 
 // Reusable kickoff prompts the user picks from the delegation dropdown. Consumed
@@ -2228,6 +2312,10 @@ ipcMain.handle("auth-storage:remove", (_event, key: string) =>
   authStorageRemove(key),
 );
 
+ipcMain.handle("keep-awake:get-state", () => keepAwakeState());
+ipcMain.handle("keep-awake:start", () => startKeepAwake());
+ipcMain.handle("keep-awake:stop", () => stopKeepAwake());
+
 ipcMain.handle("updater:get-status", () => updaterStatus);
 ipcMain.handle("updater:check", async () => {
   // No-op in dev / unconfigured builds: the autoUpdater isn't wired, so there's
@@ -2270,6 +2358,7 @@ app.whenReady().then(async () => {
 
   await createWindow();
   startAuthLoopback();
+  if (readKeepAwakeEnabled()) startKeepAwake(false);
   startDaemon();
   configureAutoUpdates();
 
@@ -2281,6 +2370,7 @@ app.whenReady().then(async () => {
 app.on("before-quit", (event) => {
   stopAuthLoopback();
   if (updateCheckInterval) clearInterval(updateCheckInterval);
+  stopKeepAwake(false);
   if (!daemon || quitAfterDaemonStops) return;
   event.preventDefault();
   quitAfterDaemonStops = true;
