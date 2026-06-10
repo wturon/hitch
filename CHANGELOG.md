@@ -8,6 +8,8 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-06-10
+
 - Add a persisted **Keep machine awake** sidebar toggle in Hitch Desktop. When
   enabled, Hitch runs `caffeinate -d -i`, restores the setting on app restart,
   and stops the helper process cleanly when the app quits.
