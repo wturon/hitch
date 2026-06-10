@@ -1063,6 +1063,17 @@ const DEFAULT_STARTING_PROMPTS: StoredStartingPrompt[] = [
     includeTaskRef: true,
   },
   {
+    id: "refine-task",
+    name: "Refine task",
+    body: [
+      "Don't write any application code or start the work yet. Your job is to turn this task into a spec that a fresh agent, with no memory of this conversation, could execute on its own.",
+      "First, investigate. Read the task body and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
+      'Then interview me. Ask your most important clarifying questions, and keep going until we share an unambiguous understanding of the goal, what "done" looks like, the scope boundaries, and any constraints.',
+      "When we agree it's fully specified, rewrite the body of the task file referenced above so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Leave the frontmatter untouched, and confirm when you've written it.",
+    ].join("\n\n"),
+    includeTaskRef: true,
+  },
+  {
     id: "investigate",
     name: "Investigate",
     body: "Don't write any code. Investigate the task and come back with your thoughts on how hard it would be to solve, plus any open questions.",
