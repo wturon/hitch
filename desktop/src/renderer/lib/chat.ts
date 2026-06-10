@@ -342,12 +342,12 @@ export function buildStartPrompt(
 }
 
 // Seeded when the user has none stored, and the fallback outside Hitch Desktop
-// (no bridge). The "Default execute" body + preamble reproduces the prompt Hitch
+// (no bridge). The "Ship it" body + preamble reproduces the prompt Hitch
 // has always sent. Mirror any edits in the main process seed (see main.ts).
 export const DEFAULT_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
-    name: "Default execute",
+    name: "Ship it",
     body: "Read the task, keep the task status/progress current as you work, and start implementing it.",
     includeTaskRef: true,
   },

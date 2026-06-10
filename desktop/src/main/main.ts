@@ -1058,7 +1058,7 @@ interface StoredStartingPrompt {
 const DEFAULT_STARTING_PROMPTS: StoredStartingPrompt[] = [
   {
     id: "default-execute",
-    name: "Default execute",
+    name: "Ship it",
     body: "Read the task, keep the task status/progress current as you work, and start implementing it.",
     includeTaskRef: true,
   },
@@ -1085,9 +1085,11 @@ function sanitizeStartingPrompt(value: unknown): StoredStartingPrompt | null {
   if (!isRecord(value)) return null;
   const { id, name, body, includeTaskRef } = value;
   if (typeof id !== "string" || typeof name !== "string") return null;
+  const normalizedName =
+    id === "default-execute" && name === "Default execute" ? "Ship it" : name;
   return {
     id,
-    name,
+    name: normalizedName,
     body: typeof body === "string" ? body : "",
     includeTaskRef: includeTaskRef !== false,
   };
