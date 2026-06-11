@@ -33,6 +33,7 @@ import {
   environmentOptions,
   harnessLabel,
   isEnvironment,
+  T3CODE_BLOCKED_REASON,
   type Environment,
 } from "@/lib/chat";
 import { DeviceTokensPanel } from "@/components/DeviceTokens";
@@ -157,25 +158,25 @@ export function GlobalSettingsDialog({
   const [setup, setSetup] = useState<GlobalHarnessSetupStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Experimental T3Code env flag — lifted here so the per-harness Environment
-  // dropdown (which only shows T3Code when on) and the toggle stay in sync.
+  // T3Code remains visibly listed below, but is hard-locked off until the
+  // upstream app exposes a supported way to focus a specific chat.
   const [t3codeEnabled, setT3codeEnabled] = useState(false);
 
   useEffect(() => {
     if (!open || !bridge?.getExperimentalFlags) return;
     void bridge
       .getExperimentalFlags()
-      .then((flags) => setT3codeEnabled(flags.t3code === true))
+      .then(() => setT3codeEnabled(false))
       .catch(() => {});
   }, [open, bridge]);
 
-  async function toggleT3code(enabled: boolean) {
-    setT3codeEnabled(enabled);
+  async function toggleT3code(_enabled: boolean) {
+    setT3codeEnabled(false);
     if (!bridge?.setExperimentalFlag) return;
     try {
-      await bridge.setExperimentalFlag("t3code", enabled);
+      await bridge.setExperimentalFlag("t3code", false);
     } catch {
-      setT3codeEnabled(!enabled);
+      setT3codeEnabled(false);
     }
   }
 
@@ -543,7 +544,11 @@ function EnvironmentRow({
       .getHarnessEnvironments()
       .then((map) => {
         const stored = map[harness];
-        if (stored && isEnvironment(stored)) setValue(stored);
+        if (stored === "t3code") {
+          setValue(defaultEnvironment(harness));
+        } else if (stored && isEnvironment(stored)) {
+          setValue(stored);
+        }
       })
       .catch(() => {});
   }, [bridge, harness]);
@@ -649,20 +654,18 @@ function ExperimentalSection({
         <div className="min-w-0">
           <p className="text-[0.8rem] font-medium">T3Code environment</p>
           <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            Adds “T3Code (experimental)” to the Environment dropdown for Claude
-            Code and Codex. Hitch creates chats over T3Code's local API and
-            focuses a thread when it launched T3Code; otherwise it reveals the
-            window. A stopgap until T3Code ships a supported focus API.
+            {T3CODE_BLOCKED_REASON}
           </p>
         </div>
         <Button
-          variant={t3codeEnabled ? "default" : "secondary"}
+          variant="secondary"
           size="sm"
           className="shrink-0"
-          aria-pressed={t3codeEnabled}
+          disabled
+          aria-pressed={false}
           onClick={() => onToggleT3code(!t3codeEnabled)}
         >
-          {t3codeEnabled ? "On" : "Off"}
+          Off
         </Button>
       </div>
     </section>

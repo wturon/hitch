@@ -956,10 +956,12 @@ function readHarnessEnvironments(): Record<string, string> {
   const stored = readPreferences().harnessEnvironments;
   if (!isRecord(stored)) return {};
   return Object.fromEntries(
-    Object.entries(stored).filter(
-      (entry): entry is [string, string] =>
-        typeof entry[0] === "string" && typeof entry[1] === "string",
-    ),
+    Object.entries(stored)
+      .filter(
+        (entry): entry is [string, string] =>
+          typeof entry[0] === "string" && typeof entry[1] === "string",
+      )
+      .filter(([, environment]) => environment !== "t3code"),
   );
 }
 
@@ -967,28 +969,39 @@ function setHarnessEnvironment(
   harness: string,
   environment: string,
 ): Record<string, string> {
+  if (environment === "t3code") {
+    return readHarnessEnvironments();
+  }
   const next = { ...readHarnessEnvironments(), [harness]: environment };
   writePreferences({ harnessEnvironments: next });
   return next;
 }
 
-// Opt-in experimental feature flags, e.g. { "t3code": true }. Read defensively —
-// a missing/garbled file is just "nothing enabled".
+// Opt-in experimental feature flags. T3Code is currently hard-blocked, so reads
+// and writes always normalize it to false.
 function readExperimentalFlags(): Record<string, boolean> {
   const stored = readPreferences().experimental;
-  if (!isRecord(stored)) return {};
-  return Object.fromEntries(
-    Object.entries(stored).filter(
-      (entry): entry is [string, boolean] =>
-        typeof entry[0] === "string" && typeof entry[1] === "boolean",
+  if (!isRecord(stored)) return { t3code: false };
+  return {
+    ...Object.fromEntries(
+      Object.entries(stored).filter(
+        (entry): entry is [string, boolean] =>
+          typeof entry[0] === "string" && typeof entry[1] === "boolean",
+      ),
     ),
-  );
+    t3code: false,
+  };
 }
 
 function setExperimentalFlag(
   key: string,
   enabled: boolean,
 ): Record<string, boolean> {
+  if (key === "t3code") {
+    const next = { ...readExperimentalFlags(), t3code: false };
+    writePreferences({ experimental: next });
+    return next;
+  }
   const next = { ...readExperimentalFlags(), [key]: enabled };
   writePreferences({ experimental: next });
   return next;

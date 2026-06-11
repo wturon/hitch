@@ -44,6 +44,9 @@ export interface EnvironmentOption {
   label: string;
 }
 
+export const T3CODE_BLOCKED_REASON =
+  "blocked until programmatic chat focusing is enabled by the maintainers";
+
 export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
   "claude-code": [
     { id: "cmux", label: "cmux (TUI)" },
@@ -57,18 +60,14 @@ export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
   ],
 };
 
-// T3Code is gated behind a global experimental flag, so it isn't in the static
-// map above (which would surface it everywhere). Callers that know the flag's
-// value resolve the visible options through this helper, which appends the
-// T3Code option for both harnesses only when the flag is on. Keep the option in
-// sync with the daemon's t3codeClaude/t3codeCodex launchers.
+// T3Code remains in the Environment type so old task metadata can be read, but
+// it is intentionally absent from selectable options until upstream supports
+// programmatic chat focusing.
 export function environmentOptions(
   harness: Harness,
-  opts?: { experimentalT3Code?: boolean },
+  _opts?: { experimentalT3Code?: boolean },
 ): EnvironmentOption[] {
-  const base = ENVIRONMENTS_BY_HARNESS[harness];
-  if (!opts?.experimentalT3Code) return base;
-  return [...base, { id: "t3code", label: "T3Code (experimental)" }];
+  return ENVIRONMENTS_BY_HARNESS[harness];
 }
 
 export function defaultEnvironment(harness: Harness): Environment {

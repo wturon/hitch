@@ -16,12 +16,7 @@ import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { CmuxError } from "./cmux.js";
 import { closeCodexAppServer } from "./codex.js";
-import {
-  closeT3Code,
-  latestT3Status,
-  readT3EnvironmentId,
-  setT3Logger,
-} from "./t3code.js";
+import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
 import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
 import type { Environment, Harness } from "./launchers/types.js";
@@ -336,8 +331,7 @@ function readHarnessEnvironment(
       value === "cmux" ||
       value === "codex-app" ||
       value === "vscode" ||
-      value === "cursor" ||
-      value === "t3code"
+      value === "cursor"
     )
       ? value
       : undefined;
@@ -432,29 +426,6 @@ async function startHitchBinding({
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${projectLabel}] linked claude session ${sessionId} → ${path}`);
-  }
-
-  // T3Code's handle for a chat is its threadId (held in chat-id, the id Hitch acts
-  // on). chat-t3-thread-id mirrors it explicitly and chat-t3-environment-id stores
-  // the (global) environment id needed to build the focus URL. chat-pid/chat-cwd are
-  // meaningless here — the agent runs inside T3Code's server process — so they're
-  // cleared; status is driven from T3Code's snapshot by the reconcile loop, not hooks.
-  async function linkT3Thread(path: string, threadId: string, harness: Harness) {
-    const absPath = toAbs(path);
-    const current = await readFile(absPath, "utf8");
-    const environmentId = readT3EnvironmentId() ?? undefined;
-    const next = setFrontmatterKeys(current, {
-      "chat-harness": harness,
-      "chat-id": threadId,
-      "chat-cwd": undefined,
-      "chat-pid": undefined,
-      "chat-env": "t3code",
-      "chat-t3-thread-id": threadId,
-      "chat-t3-environment-id": environmentId,
-      "chat-status": "working",
-    });
-    await writeFile(absPath, next, "utf8");
-    logger.info(`[hitch:${projectLabel}] linked T3Code thread ${threadId} → ${path}`);
   }
 
   async function taskTitle(path: string): Promise<string | undefined> {
@@ -581,30 +552,9 @@ async function startHitchBinding({
       }
       const harness = frontmatterValue(content, "chat-harness") ?? "";
 
-      // T3Code drives the agent inside its own server process, so chat-pid is
-      // meaningless and hooks don't fire. Drive status from T3Code's read model
-      // instead — but only when Hitch owns a live instance to read from;
-      // otherwise leave the last-known value untouched (latestT3Status → null).
+      // T3Code is hard-blocked; leave old task metadata untouched and do not
+      // poll T3Code's local API / CDP path in the background.
       if (frontmatterValue(content, "chat-env") === "t3code") {
-        const threadId = frontmatterValue(content, "chat-id") ?? "";
-        if (!threadId) continue;
-        let mapped: "working" | "waiting" | null = null;
-        try {
-          mapped = await latestT3Status(threadId);
-        } catch {
-          mapped = null;
-        }
-        if (!mapped || mapped === status) continue;
-        const next = setFrontmatterKeys(content, { "chat-status": mapped });
-        if (next === content) continue;
-        try {
-          await writeFile(absPath, next, "utf8");
-          logger.info(
-            `[hitch:${projectLabel}] T3Code thread ${threadId} → ${mapped} → tasks/${entry.name}/task.md`,
-          );
-        } catch {
-          // best-effort; the next tick retries
-        }
         continue;
       }
 
@@ -676,9 +626,25 @@ async function startHitchBinding({
   async function runCommand(cmd: CommandDoc): Promise<void> {
     try {
       const harness = cmd.harness as Harness;
+      if (cmd.environment === "t3code") {
+        await complete(
+          cmd,
+          "error",
+          "T3Code integration is blocked until programmatic chat focusing is enabled by the maintainers",
+        );
+        return;
+      }
       const environment =
         (cmd.environment as Environment | undefined) ??
         readHarnessEnvironment(configPath, harness);
+      if (environment === "t3code") {
+        await complete(
+          cmd,
+          "error",
+          "T3Code integration is blocked until programmatic chat focusing is enabled by the maintainers",
+        );
+        return;
+      }
       const launcher = resolveLauncher(harness, environment);
       if (!launcher) {
         await complete(
@@ -709,19 +675,13 @@ async function startHitchBinding({
         if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
         const path = cmd.path;
-        // T3Code links the same way for either harness (chat-id = T3 threadId);
-        // status comes from its snapshot, so there's no settle callback.
         const onLinked =
-          launcher.environment === "t3code"
-            ? (threadId: string) => linkT3Thread(path, threadId, harness)
-            : harness === "codex"
+          harness === "codex"
               ? (threadId: string) => linkCodexThread(path, threadId)
               : (sessionId: string) =>
                   linkClaudeSession(path, sessionId, root.localPath, launcher.environment);
         const onSettled =
-          launcher.environment === "t3code"
-            ? undefined
-            : harness === "codex"
+          harness === "codex"
               ? (threadId: string) => settleCodexThread(path, threadId)
               : undefined;
         const { result } = await launcher.startNew({
