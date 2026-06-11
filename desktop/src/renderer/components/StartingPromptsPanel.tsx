@@ -1,12 +1,19 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { PencilIcon, PlusIcon, SparklesIcon, Trash2Icon } from "lucide-react";
+import {
+  LockIcon,
+  PencilIcon,
+  PlusIcon,
+  SparklesIcon,
+  Trash2Icon,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
-  loadStartingPrompts,
-  saveStartingPrompts,
+  BUILTIN_STARTING_PROMPTS,
+  loadCustomPrompts,
+  saveCustomPrompts,
   type StartingPrompt,
 } from "@/lib/chat";
 import { cn } from "@/lib/utils";
@@ -29,10 +36,12 @@ function newDraft(): EditorDraft {
   };
 }
 
-// Manage the reusable kickoff prompts shown in the task delegation dropdown.
-// The list order is the dropdown order; the first prompt is the one a fresh
-// dialog selects. Edits here are the only ones that persist — tweaks made in the
-// delegation dialog are one-off and never write back.
+// Manage the kickoff prompts shown in the task delegation dropdown. Two groups:
+// the curated built-ins (shipped with the app, locked, shown read-only) and the
+// user's own prompts (the editable list persisted here). In the dropdown the
+// built-ins come first and "Ship it" is the default selection. Edits here are the
+// only ones that persist — tweaks made in the delegation dialog are one-off and
+// never write back.
 export function StartingPromptsPanel() {
   const [prompts, setPrompts] = useState<StartingPrompt[]>([]);
   const [editor, setEditor] = useState<EditorDraft | null>(null);
@@ -40,7 +49,7 @@ export function StartingPromptsPanel() {
 
   useEffect(() => {
     let active = true;
-    void loadStartingPrompts().then((list) => {
+    void loadCustomPrompts().then((list) => {
       if (active) {
         setPrompts(list);
         setLoaded(true);
@@ -53,7 +62,7 @@ export function StartingPromptsPanel() {
 
   async function persist(next: StartingPrompt[]) {
     setPrompts(next);
-    const saved = await saveStartingPrompts(next);
+    const saved = await saveCustomPrompts(next);
     setPrompts(saved);
   }
 
@@ -81,74 +90,97 @@ export function StartingPromptsPanel() {
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
+    <div className="flex flex-col gap-5">
+      {/* Built-in prompts — curated, shipped with the app, not editable. */}
+      <div className="flex flex-col gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium">Starting prompts</h3>
+          <h3 className="text-sm font-medium">Built-in prompts</h3>
           <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            Reusable kickoff instructions. Pick one from the dropdown when you
-            delegate a task.
+            Curated kickoff prompts that ship with Hitch and improve with each
+            update. They can't be edited or removed.
           </p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          disabled={editor?.isNew}
-          onClick={() => setEditor(newDraft())}
-        >
-          <PlusIcon />
-          New prompt
-        </Button>
+        <div className="flex flex-col gap-2">
+          {BUILTIN_STARTING_PROMPTS.map((prompt) => (
+            <PromptRow key={prompt.id} prompt={prompt} locked />
+          ))}
+        </div>
       </div>
 
-      {loaded && prompts.length === 0 && !editor && (
-        <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-          No prompts yet. Create one to pick it when delegating a task.
-        </p>
-      )}
+      {/* The user's own prompts — the editable, persisted library. */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-sm font-medium">Your prompts</h3>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              Reusable kickoff instructions you write. They appear in the
+              dropdown after the built-ins.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={editor?.isNew}
+            onClick={() => setEditor(newDraft())}
+          >
+            <PlusIcon />
+            New prompt
+          </Button>
+        </div>
 
-      <div className="flex flex-col gap-2">
-        {prompts.map((prompt) =>
-          editor && !editor.isNew && editor.id === prompt.id ? (
+        {loaded && prompts.length === 0 && !editor && (
+          <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+            No prompts yet. Create one to pick it when delegating a task.
+          </p>
+        )}
+
+        <div className="flex flex-col gap-2">
+          {prompts.map((prompt) =>
+            editor && !editor.isNew && editor.id === prompt.id ? (
+              <PromptEditor
+                key={prompt.id}
+                draft={editor}
+                onChange={setEditor}
+                onSave={saveDraft}
+                onCancel={() => setEditor(null)}
+                onDelete={() => deletePrompt(prompt.id)}
+              />
+            ) : (
+              <PromptRow
+                key={prompt.id}
+                prompt={prompt}
+                onEdit={() => startEdit(prompt)}
+                onDelete={() => deletePrompt(prompt.id)}
+              />
+            ),
+          )}
+
+          {editor?.isNew && (
             <PromptEditor
-              key={prompt.id}
               draft={editor}
               onChange={setEditor}
               onSave={saveDraft}
               onCancel={() => setEditor(null)}
-              onDelete={() => deletePrompt(prompt.id)}
             />
-          ) : (
-            <PromptRow
-              key={prompt.id}
-              prompt={prompt}
-              onEdit={() => startEdit(prompt)}
-              onDelete={() => deletePrompt(prompt.id)}
-            />
-          ),
-        )}
-
-        {editor?.isNew && (
-          <PromptEditor
-            draft={editor}
-            onChange={setEditor}
-            onSave={saveDraft}
-            onCancel={() => setEditor(null)}
-          />
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
+// One row in either list. Built-in rows pass `locked`, which swaps the edit/
+// delete actions for a static badge.
 function PromptRow({
   prompt,
   onEdit,
   onDelete,
+  locked = false,
 }: {
   prompt: StartingPrompt;
-  onEdit: () => void;
-  onDelete: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+  locked?: boolean;
 }) {
   return (
     <div className="flex items-center gap-3 rounded-lg border bg-card px-3.5 py-3">
@@ -158,26 +190,33 @@ function PromptRow({
           {prompt.body || "No instructions"}
         </p>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={`Edit ${prompt.name}`}
-          onClick={onEdit}
-        >
-          <PencilIcon />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={`Delete ${prompt.name}`}
-          onClick={onDelete}
-        >
-          <Trash2Icon />
-        </Button>
-      </div>
+      {locked ? (
+        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+          <LockIcon className="size-3" />
+          Built-in
+        </span>
+      ) : (
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Edit ${prompt.name}`}
+            onClick={onEdit}
+          >
+            <PencilIcon />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Delete ${prompt.name}`}
+            onClick={onDelete}
+          >
+            <Trash2Icon />
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -212,7 +251,7 @@ function PromptEditor({
           id={nameId}
           value={draft.name}
           autoFocus
-          placeholder="e.g. Investigate"
+          placeholder="e.g. Write tests"
           onChange={(e) => onChange({ ...draft, name: e.target.value })}
           className="h-9 rounded-md border bg-background px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />

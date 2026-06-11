@@ -1045,9 +1045,12 @@ function stopKeepAwake(persist = true): KeepAwakeState {
   return keepAwakeState();
 }
 
-// Reusable kickoff prompts the user picks from the delegation dropdown. Consumed
-// only by the renderer; the daemon never reads these. Keep the shape and seed in
-// sync with desktop/src/renderer/lib/chat.ts (StartingPrompt / DEFAULT_STARTING_PROMPTS).
+// The user's CUSTOM kickoff prompts, picked from the delegation dropdown.
+// Consumed only by the renderer; the daemon never reads these. The curated
+// built-in prompts live in the app binary (BUILTIN_STARTING_PROMPTS in
+// desktop/src/renderer/lib/chat.ts) and are never stored here — only the user's
+// own prompts are. Keep StoredStartingPrompt in sync with that file's
+// StartingPrompt shape.
 interface StoredStartingPrompt {
   id: string;
   name: string;
@@ -1055,62 +1058,39 @@ interface StoredStartingPrompt {
   includeTaskRef: boolean;
 }
 
-const DEFAULT_STARTING_PROMPTS: StoredStartingPrompt[] = [
-  {
-    id: "default-execute",
-    name: "Ship it",
-    body: "Read the task, keep the task status/progress current as you work, and start implementing it.",
-    includeTaskRef: true,
-  },
-  {
-    id: "think-through",
-    name: "Help me think this through",
-    body: "Don't write any code yet. Help me think through the problem laid out in this task and reach a confident, well-reasoned understanding of how to solve it. Read the task and explore anything relevant in the repo, then push on it with me: ask clarifying questions, point out inconsistencies or risks I've missed, and propose alternatives with your honest recommendation. The goal is to sharpen my own understanding of the right solution — not to produce a step-by-step plan or write code.",
-    includeTaskRef: true,
-  },
-  {
-    id: "refine-task",
-    name: "Refine task",
-    body: [
-      "Don't write any application code or start the work yet. Your job is to turn this task into a spec that a fresh agent, with no memory of this conversation, could execute on its own.",
-      "First, investigate. Read the task body and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
-      'Then interview me. Ask your most important clarifying questions, and keep going until we share an unambiguous understanding of the goal, what "done" looks like, the scope boundaries, and any constraints.',
-      "When we agree it's fully specified, rewrite the body of the task file referenced above so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Leave the frontmatter untouched, and confirm when you've written it.",
-    ].join("\n\n"),
-    includeTaskRef: true,
-  },
-  {
-    id: "investigate",
-    name: "How hard would this be",
-    body: "Don't write any code. Read the task, explore the parts of the repo it would touch, and come back with a candid read on how hard it'd be to solve — the rough shape of the work, what's risky or uncertain, and any open questions.",
-    includeTaskRef: true,
-  },
-];
+// Ids reserved for the built-in prompts. Custom prompts may never use them, so
+// any built-in copy a user had seeded into their library before the split is
+// stripped on read and rejected on write — the binary's built-ins always win.
+// Mirror of BUILTIN_PROMPT_IDS in desktop/src/renderer/lib/chat.ts.
+const BUILTIN_PROMPT_IDS = new Set([
+  "default-execute",
+  "think-through",
+  "refine-task",
+  "investigate",
+]);
 
 function sanitizeStartingPrompt(value: unknown): StoredStartingPrompt | null {
   if (!isRecord(value)) return null;
   const { id, name, body, includeTaskRef } = value;
   if (typeof id !== "string" || typeof name !== "string") return null;
-  const normalizedName =
-    id === "default-execute" && name === "Default execute" ? "Ship it" : name;
+  if (BUILTIN_PROMPT_IDS.has(id)) return null;
   return {
     id,
-    name: normalizedName,
+    name,
     body: typeof body === "string" ? body : "",
     includeTaskRef: includeTaskRef !== false,
   };
 }
 
-// Returns the stored library, or the seeded defaults when nothing valid is saved
-// yet. Seeding happens lazily here (read) rather than on first launch, so a fresh
-// install shows the defaults without us having to write the file eagerly.
+// Returns the user's stored custom prompts. Built-in ids are stripped so a
+// pre-split library that had the seeded built-ins baked in collapses to just the
+// custom entries (usually none). The renderer prepends the binary's built-ins.
 function readStartingPrompts(): StoredStartingPrompt[] {
   const stored = readPreferences().startingPrompts;
-  if (!Array.isArray(stored)) return DEFAULT_STARTING_PROMPTS;
-  const prompts = stored
+  if (!Array.isArray(stored)) return [];
+  return stored
     .map(sanitizeStartingPrompt)
     .filter((p): p is StoredStartingPrompt => p !== null);
-  return prompts.length ? prompts : DEFAULT_STARTING_PROMPTS;
 }
 
 function setStartingPrompts(prompts: unknown): StoredStartingPrompt[] {

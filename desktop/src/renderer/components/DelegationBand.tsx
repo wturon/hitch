@@ -10,7 +10,8 @@ import {
 import type { Id } from "@convex/_generated/dataModel";
 
 import {
-  DEFAULT_STARTING_PROMPTS,
+  BUILTIN_PROMPT_IDS,
+  BUILTIN_STARTING_PROMPTS,
   HARNESSES,
   MODELS_BY_HARNESS,
   buildStartPrompt,
@@ -22,7 +23,7 @@ import {
   harnessLabel,
   honorsLaunchParams,
   isEnvironment,
-  loadStartingPrompts,
+  loadCustomPrompts,
   modelLabel,
   reasoningLabel,
   reasoningOptions,
@@ -120,23 +121,28 @@ export function DelegationBand({
   // editor extension can't take model/effort at launch, so we disable those
   // controls for that case and point the user at the editor.
   const [harnessEnvs, setHarnessEnvs] = useState<Record<string, string>>({});
-  const [prompts, setPrompts] =
-    useState<StartingPrompt[]>(DEFAULT_STARTING_PROMPTS);
-  const [promptId, setPromptId] = useState(DEFAULT_STARTING_PROMPTS[0].id);
+  const [prompts, setPrompts] = useState<StartingPrompt[]>(
+    BUILTIN_STARTING_PROMPTS,
+  );
+  const [promptId, setPromptId] = useState(BUILTIN_STARTING_PROMPTS[0].id);
   const [prompt, setPrompt] = useState(() =>
-    buildStartPrompt(DEFAULT_STARTING_PROMPTS[0], { title, path }),
+    buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }),
   );
   const [starting, setStarting] = useState(false);
 
-  // Load the saved prompt library once and seed the textarea from the first
-  // preset. The harness no longer changes the prompt — prompts are decoupled.
+  // (Re)load the custom prompts and reset the selection to the first built-in
+  // ("Ship it") whenever the dialog switches to a different task — the band isn't
+  // remounted per task, so title/path change underneath us, and re-running here
+  // also picks up prompts edited in settings. The dropdown shows the built-ins
+  // first, then the customs. The harness no longer changes the prompt — prompts
+  // are decoupled.
   useEffect(() => {
     let active = true;
-    void loadStartingPrompts().then((loaded) => {
-      if (!active || loaded.length === 0) return;
-      setPrompts(loaded);
-      setPromptId(loaded[0].id);
-      setPrompt(buildStartPrompt(loaded[0], { title, path }));
+    setPromptId(BUILTIN_STARTING_PROMPTS[0].id);
+    setPrompt(buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }));
+    void loadCustomPrompts().then((custom) => {
+      if (!active) return;
+      setPrompts([...BUILTIN_STARTING_PROMPTS, ...custom]);
     });
     return () => {
       active = false;
@@ -279,11 +285,26 @@ export function DelegationBand({
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {prompts.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
-                </SelectItem>
-              ))}
+              {prompts
+                .filter((p) => BUILTIN_PROMPT_IDS.has(p.id))
+                .map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              {/* User's custom prompts, set apart from the built-ins above. */}
+              {prompts.some((p) => !BUILTIN_PROMPT_IDS.has(p.id)) && (
+                <>
+                  <div className="my-1 h-px bg-border" />
+                  {prompts
+                    .filter((p) => !BUILTIN_PROMPT_IDS.has(p.id))
+                    .map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                </>
+              )}
               {onManagePrompts && (
                 <>
                   <div className="my-1 h-px bg-border" />

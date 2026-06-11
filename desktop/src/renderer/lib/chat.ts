@@ -341,10 +341,13 @@ export function buildStartPrompt(
   return body ? `${preamble}\n\n${body}` : preamble;
 }
 
-// Seeded when the user has none stored, and the fallback outside Hitch Desktop
-// (no bridge). The "Ship it" body + preamble reproduces the prompt Hitch
-// has always sent. Mirror any edits in the main process seed (see main.ts).
-export const DEFAULT_STARTING_PROMPTS: StartingPrompt[] = [
+// Curated built-in kickoff prompts. These ship in the app binary and are the
+// same for everyone: they're never persisted, can't be edited or removed, and
+// refresh with every app update. The delegation dropdown is composed as these
+// followed by the user's custom prompts. The bodies live only here now — the
+// main process knows the ids (BUILTIN_PROMPT_IDS, mirrored in main.ts) so it can
+// strip any built-in a user previously had seeded into their stored library.
+export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
     name: "Ship it",
@@ -376,6 +379,13 @@ export const DEFAULT_STARTING_PROMPTS: StartingPrompt[] = [
   },
 ];
 
+// Ids of the built-in prompts. Custom prompts are kept disjoint from these (a
+// custom prompt can never reuse a built-in id), so the two lists never collide
+// in the dropdown. Keep in sync with the mirror in main.ts.
+export const BUILTIN_PROMPT_IDS: ReadonlySet<string> = new Set(
+  BUILTIN_STARTING_PROMPTS.map((p) => p.id),
+);
+
 interface StartingPromptsBridge {
   getStartingPrompts?: () => Promise<StartingPrompt[]>;
   setStartingPrompts?: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
@@ -387,22 +397,23 @@ function startingPromptsBridge(): StartingPromptsBridge | undefined {
     .hitchDaemon;
 }
 
-// Read the prompt library from the desktop bridge, falling back to the built-in
-// defaults when running without it (web) or before the user has saved any.
-export async function loadStartingPrompts(): Promise<StartingPrompt[]> {
+// Read the user's custom prompts from the desktop bridge. Built-ins are not
+// included — they live in BUILTIN_STARTING_PROMPTS and the dropdown concatenates
+// the two. Outside Hitch Desktop (web, no bridge) there are no customs.
+export async function loadCustomPrompts(): Promise<StartingPrompt[]> {
   const bridge = startingPromptsBridge();
-  if (!bridge?.getStartingPrompts) return DEFAULT_STARTING_PROMPTS;
+  if (!bridge?.getStartingPrompts) return [];
   try {
-    const prompts = await bridge.getStartingPrompts();
-    return prompts.length ? prompts : DEFAULT_STARTING_PROMPTS;
+    return await bridge.getStartingPrompts();
   } catch {
-    return DEFAULT_STARTING_PROMPTS;
+    return [];
   }
 }
 
-// Persist the whole prompt library. Returns the canonical list the bridge stored
-// (or the input unchanged when there's no bridge to write to).
-export async function saveStartingPrompts(
+// Persist the user's custom prompts. The main process rejects any built-in id,
+// so callers don't have to filter them out here. Returns the canonical stored
+// list (or the input unchanged when there's no bridge to write to).
+export async function saveCustomPrompts(
   prompts: StartingPrompt[],
 ): Promise<StartingPrompt[]> {
   const bridge = startingPromptsBridge();
