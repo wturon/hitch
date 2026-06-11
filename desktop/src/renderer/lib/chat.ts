@@ -9,6 +9,11 @@
 // MVP scope is single-machine: the launch action assumes the board is open on
 // the same Mac that owns the session. See README / the daemon command-bus idea
 // for cross-machine routing later.
+//
+// T3Code (experimental) note: for the `t3code` environment, `chat-id` holds the
+// T3Code *threadId* (the id Hitch acts on for focus/status), not the Claude
+// session UUID. The daemon also writes `chat-t3-thread-id` (mirror) and
+// `chat-t3-environment-id` (the global env id needed to build the focus URL).
 
 import type { Frontmatter } from "./frontmatter";
 import { setFrontmatterKeys } from "./frontmatter";
@@ -32,7 +37,7 @@ export function harnessLabel(harness: Harness): string {
 // settings UI models this axis explicitly so future environments (e.g. the VS Code
 // extension) slot in without reshaping the mental model. Keep in sync with the
 // daemon's launcher registry.
-export type Environment = "cmux" | "codex-app" | "vscode" | "cursor";
+export type Environment = "cmux" | "codex-app" | "vscode" | "cursor" | "t3code";
 
 export interface EnvironmentOption {
   id: Environment;
@@ -52,6 +57,20 @@ export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
   ],
 };
 
+// T3Code is gated behind a global experimental flag, so it isn't in the static
+// map above (which would surface it everywhere). Callers that know the flag's
+// value resolve the visible options through this helper, which appends the
+// T3Code option for both harnesses only when the flag is on. Keep the option in
+// sync with the daemon's t3codeClaude/t3codeCodex launchers.
+export function environmentOptions(
+  harness: Harness,
+  opts?: { experimentalT3Code?: boolean },
+): EnvironmentOption[] {
+  const base = ENVIRONMENTS_BY_HARNESS[harness];
+  if (!opts?.experimentalT3Code) return base;
+  return [...base, { id: "t3code", label: "T3Code (experimental)" }];
+}
+
 export function defaultEnvironment(harness: Harness): Environment {
   return harness === "codex" ? "codex-app" : "cmux";
 }
@@ -64,6 +83,8 @@ export function environmentLabel(env: Environment): string {
       return "VS Code extension";
     case "cursor":
       return "Cursor extension";
+    case "t3code":
+      return "T3Code (experimental)";
     default:
       return "cmux (TUI)";
   }
@@ -74,7 +95,8 @@ export function isEnvironment(value: string): value is Environment {
     value === "cmux" ||
     value === "codex-app" ||
     value === "vscode" ||
-    value === "cursor"
+    value === "cursor" ||
+    value === "t3code"
   );
 }
 
@@ -304,6 +326,9 @@ export function clearChatFields(content: string): string {
     "chat-cwd": undefined,
     "chat-status": undefined,
     "chat-open-state": undefined,
+    "chat-env": undefined,
+    "chat-t3-thread-id": undefined,
+    "chat-t3-environment-id": undefined,
   });
 }
 

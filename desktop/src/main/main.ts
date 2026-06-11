@@ -972,6 +972,28 @@ function setHarnessEnvironment(
   return next;
 }
 
+// Opt-in experimental feature flags, e.g. { "t3code": true }. Read defensively —
+// a missing/garbled file is just "nothing enabled".
+function readExperimentalFlags(): Record<string, boolean> {
+  const stored = readPreferences().experimental;
+  if (!isRecord(stored)) return {};
+  return Object.fromEntries(
+    Object.entries(stored).filter(
+      (entry): entry is [string, boolean] =>
+        typeof entry[0] === "string" && typeof entry[1] === "boolean",
+    ),
+  );
+}
+
+function setExperimentalFlag(
+  key: string,
+  enabled: boolean,
+): Record<string, boolean> {
+  const next = { ...readExperimentalFlags(), [key]: enabled };
+  writePreferences({ experimental: next });
+  return next;
+}
+
 function readKeepAwakeEnabled(): boolean {
   return readPreferences().keepAwakeEnabled === true;
 }
@@ -2345,6 +2367,11 @@ ipcMain.handle(
   "config:set-harness-environment",
   (_event, harness: string, environment: string) =>
     setHarnessEnvironment(harness, environment),
+);
+ipcMain.handle("config:get-experimental", () => readExperimentalFlags());
+ipcMain.handle(
+  "config:set-experimental",
+  (_event, key: string, enabled: boolean) => setExperimentalFlag(key, enabled),
 );
 ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>

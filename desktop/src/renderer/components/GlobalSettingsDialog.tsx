@@ -6,6 +6,7 @@ import {
   CheckCircle2Icon,
   Code2Icon,
   DownloadIcon,
+  FlaskConicalIcon,
   FolderSyncIcon,
   InfoIcon,
   KeyRoundIcon,
@@ -27,9 +28,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  ENVIRONMENTS_BY_HARNESS,
   defaultEnvironment,
   environmentLabel,
+  environmentOptions,
   harnessLabel,
   isEnvironment,
   type Environment,
@@ -100,6 +101,11 @@ interface HitchDaemonApi {
     harness: string,
     environment: string,
   ) => Promise<Record<string, string>>;
+  getExperimentalFlags: () => Promise<Record<string, boolean>>;
+  setExperimentalFlag: (
+    key: string,
+    enabled: boolean,
+  ) => Promise<Record<string, boolean>>;
 }
 
 // Each harness Hitch can drive renders as one card: a branded header plus its
@@ -151,6 +157,27 @@ export function GlobalSettingsDialog({
   const [setup, setSetup] = useState<GlobalHarnessSetupStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Experimental T3Code env flag — lifted here so the per-harness Environment
+  // dropdown (which only shows T3Code when on) and the toggle stay in sync.
+  const [t3codeEnabled, setT3codeEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!open || !bridge?.getExperimentalFlags) return;
+    void bridge
+      .getExperimentalFlags()
+      .then((flags) => setT3codeEnabled(flags.t3code === true))
+      .catch(() => {});
+  }, [open, bridge]);
+
+  async function toggleT3code(enabled: boolean) {
+    setT3codeEnabled(enabled);
+    if (!bridge?.setExperimentalFlag) return;
+    try {
+      await bridge.setExperimentalFlag("t3code", enabled);
+    } catch {
+      setT3codeEnabled(!enabled);
+    }
+  }
 
   function receiveSetup(next: GlobalHarnessSetupStatus) {
     setSetup(next);
@@ -231,6 +258,7 @@ export function GlobalSettingsDialog({
                         harness={card.harness}
                         subtitle={card.subtitle}
                         bridge={bridge}
+                        experimentalT3Code={t3codeEnabled}
                         status={setup?.[card.statusKey] ?? null}
                         refreshing={refreshing}
                         onRefresh={() => void refresh()}
@@ -243,6 +271,11 @@ export function GlobalSettingsDialog({
                         onError={setError}
                       />
                     ))}
+
+                    <ExperimentalSection
+                      t3codeEnabled={t3codeEnabled}
+                      onToggleT3code={(next) => void toggleT3code(next)}
+                    />
 
                     {error && (
                       <p className="text-sm text-destructive">{error}</p>
@@ -391,6 +424,7 @@ function HarnessCard({
   harness,
   subtitle,
   bridge,
+  experimentalT3Code,
   status,
   refreshing,
   onRefresh,
@@ -403,6 +437,7 @@ function HarnessCard({
   harness: Harness;
   subtitle: string;
   bridge: HitchDaemonApi | undefined;
+  experimentalT3Code: boolean;
   status: HarnessHookStatus | null;
   refreshing: boolean;
   onRefresh: () => void;
@@ -424,7 +459,11 @@ function HarnessCard({
         </div>
         <OverallStatusPill status={status} />
       </div>
-      <EnvironmentRow harness={harness} bridge={bridge} />
+      <EnvironmentRow
+        harness={harness}
+        bridge={bridge}
+        experimentalT3Code={experimentalT3Code}
+      />
       <HookSection
         harnessLabel={harnessLabel(harness)}
         status={status}
@@ -488,11 +527,13 @@ function OverallStatusPill({ status }: { status: HarnessHookStatus | null }) {
 function EnvironmentRow({
   harness,
   bridge,
+  experimentalT3Code,
 }: {
   harness: Harness;
   bridge: HitchDaemonApi | undefined;
+  experimentalT3Code: boolean;
 }) {
-  const options = ENVIRONMENTS_BY_HARNESS[harness];
+  const options = environmentOptions(harness, { experimentalT3Code });
   const [value, setValue] = useState<Environment>(defaultEnvironment(harness));
   const [saving, setSaving] = useState(false);
 
@@ -552,7 +593,20 @@ function EnvironmentRow({
           </SelectContent>
         </Select>
       </div>
-      {harness === "claude-code" && (value === "vscode" || value === "cursor") ? (
+      {value === "t3code" ? (
+        // Focus depends on launch ownership — be explicit so degraded focus
+        // doesn't read as a bug (see the daemon's t3code.ts).
+        <p className="text-xs text-amber-600 dark:text-amber-400/90">
+          Experimental: Hitch creates chats in T3Code over its local API and can
+          bring a specific thread to the front. Automatic thread focus works only
+          when <span className="font-medium">Hitch launched T3Code</span> (we
+          attach over a local debug pipe — no network port is opened, and only
+          Hitch can use it). If you opened T3Code yourself, Hitch brings the
+          window forward but can't jump to the thread; you'll get a hint to click
+          it. A stopgap until T3Code ships a supported focus API.
+        </p>
+      ) : harness === "claude-code" &&
+        (value === "vscode" || value === "cursor") ? (
         // Claude in an editor extension is fire-and-forget: we pre-fill the
         // prompt via the URI and the user submits it. Codex editors don't apply —
         // there Hitch drives the run through the app server and auto-submits.
@@ -567,6 +621,51 @@ function EnvironmentRow({
         </p>
       )}
     </div>
+  );
+}
+
+// Opt-in experimental features. Today just the T3Code environment; the toggle
+// adds T3Code to every harness's Environment dropdown above. Kept visually quiet
+// (amber, "experimental") so it reads as opt-in, not a finished feature.
+function ExperimentalSection({
+  t3codeEnabled,
+  onToggleT3code,
+}: {
+  t3codeEnabled: boolean;
+  onToggleT3code: (enabled: boolean) => void;
+}) {
+  return (
+    <section className="flex flex-col overflow-hidden rounded-xl border bg-card">
+      <div className="flex items-center gap-3 border-b bg-muted/30 px-3.5 py-3">
+        <FlaskConicalIcon className="size-5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold leading-tight">Experimental</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Opt-in features that may change or break.
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-3 px-3.5 py-3">
+        <div className="min-w-0">
+          <p className="text-[0.8rem] font-medium">T3Code environment</p>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            Adds “T3Code (experimental)” to the Environment dropdown for Claude
+            Code and Codex. Hitch creates chats over T3Code's local API and
+            focuses a thread when it launched T3Code; otherwise it reveals the
+            window. A stopgap until T3Code ships a supported focus API.
+          </p>
+        </div>
+        <Button
+          variant={t3codeEnabled ? "default" : "secondary"}
+          size="sm"
+          className="shrink-0"
+          aria-pressed={t3codeEnabled}
+          onClick={() => onToggleT3code(!t3codeEnabled)}
+        >
+          {t3codeEnabled ? "On" : "Off"}
+        </Button>
+      </div>
+    </section>
   );
 }
 

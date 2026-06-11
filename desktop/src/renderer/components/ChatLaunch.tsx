@@ -76,6 +76,10 @@ export function ChatLaunch({
   const [pendingCommandId, setPendingCommandId] =
     useState<Id<"commands"> | null>(null);
   const [cmuxReason, setCmuxReason] = useState<CmuxAccessReason | null>(null);
+  // T3Code focus degrades when Hitch didn't launch the app (it can only reveal
+  // the window). The daemon's t3code reopen reports this via the command result
+  // ("revealed"/"unavailable"); no other launcher returns those values.
+  const [focusHint, setFocusHint] = useState<string | null>(null);
   const command = useQuery(
     api.commands.getCommand,
     pendingCommandId ? { id: pendingCommandId, projectId } : "skip",
@@ -92,6 +96,15 @@ export function ChatLaunch({
         command.errorCode === "cmux-unavailable")
     ) {
       setCmuxReason(command.errorCode);
+    }
+    if (command.status === "done" && command.result === "revealed") {
+      setFocusHint(
+        "T3Code is open but wasn't launched by Hitch, so we can't jump to this thread automatically. Click the thread in T3Code's sidebar, or relaunch T3Code from Hitch to enable one-click focus.",
+      );
+    } else if (command.status === "done" && command.result === "unavailable") {
+      setFocusHint(
+        "Couldn't reach T3Code. Make sure it's installed and its environment is initialized, then try again.",
+      );
     }
   }, [command]);
 
@@ -132,6 +145,7 @@ export function ChatLaunch({
 
   async function launchOpen() {
     setOpening(true);
+    setFocusHint(null);
     try {
       const id = await enqueue({
         projectId,
@@ -172,6 +186,22 @@ export function ChatLaunch({
           </>
         )}
       </Button>
+      {focusHint && (
+        <div className="mt-1.5 flex items-start gap-1.5 rounded-md bg-amber-500/10 p-2 text-xs leading-4 text-amber-700 dark:text-amber-400/90">
+          <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0">{focusHint}</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              stop(e);
+              setFocusHint(null);
+            }}
+            className="ml-auto shrink-0 font-medium underline hover:no-underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {cmuxReason && (
         <CmuxAccessDialog
           open

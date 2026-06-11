@@ -9,7 +9,12 @@
 // without reshaping the daemon.
 
 export type Harness = "claude-code" | "codex";
-export type Environment = "cmux" | "codex-app" | "vscode" | "cursor";
+export type Environment =
+  | "cmux"
+  | "codex-app"
+  | "vscode"
+  | "cursor"
+  | "t3code";
 
 // Minimal logger shape the launcher modules use, so they don't depend on daemon.ts.
 export interface LauncherLogger {

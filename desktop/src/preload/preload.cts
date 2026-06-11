@@ -153,6 +153,11 @@ export interface HitchDaemonApi {
     harness: string,
     environment: string,
   ) => Promise<Record<string, string>>;
+  getExperimentalFlags: () => Promise<Record<string, boolean>>;
+  setExperimentalFlag: (
+    key: string,
+    enabled: boolean,
+  ) => Promise<Record<string, boolean>>;
   getStartingPrompts: () => Promise<StartingPrompt[]>;
   setStartingPrompts: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
   enableCmuxAutomation: () => Promise<EnableCmuxResult>;
@@ -203,6 +208,9 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("config:get-harness-environments"),
   setHarnessEnvironment: (harness, environment) =>
     ipcRenderer.invoke("config:set-harness-environment", harness, environment),
+  getExperimentalFlags: () => ipcRenderer.invoke("config:get-experimental"),
+  setExperimentalFlag: (key, enabled) =>
+    ipcRenderer.invoke("config:set-experimental", key, enabled),
   getStartingPrompts: () => ipcRenderer.invoke("config:get-starting-prompts"),
   setStartingPrompts: (prompts) =>
     ipcRenderer.invoke("config:set-starting-prompts", prompts),
