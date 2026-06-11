@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@convex/_generated/api";
@@ -40,6 +46,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  parseProjectConfig,
+  PROJECT_CONFIG_PATH,
+  type ProjectStatus,
+} from "@/lib/projectConfig";
 import { cn } from "@/lib/utils";
 
 const projectDateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -71,11 +82,6 @@ const DEFAULT_STATUSES = [
   { id: "review", name: "Review" },
   { id: "done", name: "Done" },
 ] as const satisfies ProjectStatus[];
-
-interface ProjectStatus {
-  id: string;
-  name: string;
-}
 
 interface HitchBinding {
   projectId: Id<"projects">;
@@ -330,10 +336,26 @@ function ProjectDetailsForm({
       : undefined;
   const updateDetails = useMutation(api.projects.updateDetails);
   const updateStatuses = useMutation(api.projects.updateStatuses);
+  const ensureProjectConfig = useMutation(api.projects.ensureProjectConfig);
+  const projectConfigFile = useQuery(api.files.getFile, {
+    projectId,
+    path: PROJECT_CONFIG_PATH,
+  });
+  const projectConfig = useMemo(
+    () => parseProjectConfig(projectConfigFile?.content, projectId),
+    [projectConfigFile?.content, projectId],
+  );
+  const configuredStatuses = useMemo(
+    () =>
+      projectConfig?.tasks?.statuses?.length
+        ? projectConfig.tasks.statuses
+        : details.project.statuses,
+    [details.project.statuses, projectConfig?.tasks?.statuses],
+  );
   const [tab, setTab] = useState<DetailsTab>(initialTab);
   const [name, setName] = useState(details.project.name);
   const [statuses, setStatuses] = useState<ProjectStatus[]>(
-    statusesForProject(details.project.statuses),
+    statusesForProject(configuredStatuses),
   );
   const [setup, setSetup] = useState<ProjectSetupStatus | null>(null);
   const [localPath, setLocalPath] = useState("");
@@ -347,7 +369,7 @@ function ProjectDetailsForm({
   const canEdit = details.membership?.role === "owner";
   const trimmedName = name.trim();
   const hasNameChange = trimmedName !== details.project.name;
-  const savedStatuses = statusesForProject(details.project.statuses);
+  const savedStatuses = statusesForProject(configuredStatuses);
   const hasStatusChange =
     statusFingerprint(statuses) !== statusFingerprint(savedStatuses);
   const hasInvalidStatus = statuses.some((status) => !status.name.trim());
@@ -359,8 +381,16 @@ function ProjectDetailsForm({
     : null;
 
   useEffect(() => {
-    setStatuses(statusesForProject(details.project.statuses));
-  }, [details.project._id, details.project.statuses]);
+    setStatuses(statusesForProject(configuredStatuses));
+  }, [configuredStatuses, details.project._id]);
+
+  useEffect(() => {
+    if (projectConfigFile === undefined) return;
+    if (projectConfigFile && !projectConfigFile.deleted && projectConfig) return;
+    void ensureProjectConfig({ projectId }).catch(() => {
+      // Existing projects can keep using project-row statuses until backfill works.
+    });
+  }, [ensureProjectConfig, projectConfig, projectConfigFile, projectId]);
 
   useEffect(() => {
     setTab(initialTab);
@@ -458,6 +488,7 @@ function ProjectDetailsForm({
     setSetupBusy("hitch");
     setSetupError(null);
     try {
+      await ensureProjectConfig({ projectId });
       const result = await bridge.addHitch({
         projectId,
         projectName: details.project.name,

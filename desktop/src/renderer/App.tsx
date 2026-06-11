@@ -51,6 +51,11 @@ import {
   type ChatStatus,
 } from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
+import {
+  parseProjectConfig,
+  PROJECT_CONFIG_PATH,
+  type ProjectStatus,
+} from "@/lib/projectConfig";
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
@@ -105,11 +110,6 @@ const DEFAULT_STATUSES = [
   { id: "review", name: "Review" },
   { id: "done", name: "Done" },
 ] as const satisfies ProjectStatus[];
-
-interface ProjectStatus {
-  id: string;
-  name: string;
-}
 
 function statusesForProject(
   statuses: ProjectStatus[] | undefined,
@@ -1299,6 +1299,7 @@ function BoardContent({
     ({ project }) => project._id === projectId,
   )?.project;
   const files = useQuery(api.files.listFiles, { projectId });
+  const ensureProjectConfig = useMutation(api.projects.ensureProjectConfig);
   // Optimistically patch the cached file so a drag/archive/delete — and a brand
   // new task — reflects instantly instead of waiting on the frontmatter →
   // daemon → Convex round trip. Bumping updatedAt lands the card at the top of
@@ -1361,9 +1362,21 @@ function BoardContent({
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
   const [composingCol, setComposingCol] = useState<string | null>(null);
+  const projectConfigFile = files?.find(
+    (file) => file.path === PROJECT_CONFIG_PATH && !file.deleted,
+  );
+  const projectConfig = useMemo(
+    () => parseProjectConfig(projectConfigFile?.content, projectId),
+    [projectConfigFile?.content, projectId],
+  );
   const boardStatuses = useMemo(
-    () => statusesForProject(currentProject?.statuses),
-    [currentProject?.statuses],
+    () =>
+      statusesForProject(
+        projectConfig?.tasks?.statuses?.length
+          ? projectConfig.tasks.statuses
+          : currentProject?.statuses,
+      ),
+    [currentProject?.statuses, projectConfig?.tasks?.statuses],
   );
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 1 } }),
@@ -1422,6 +1435,22 @@ function BoardContent({
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!currentProject || files === undefined) return;
+    if (projectConfig) return;
+    void ensureProjectConfig({ projectId }).catch(() => {
+      // The board can still render from project-row status metadata during
+      // migration, so a backfill failure should not block the workspace.
+    });
+  }, [
+    currentProject,
+    ensureProjectConfig,
+    files,
+    projectConfig,
+    projectConfigFile,
+    projectId,
+  ]);
 
   async function toggleKeepAwake() {
     const bridge = keepAwakeBridge();

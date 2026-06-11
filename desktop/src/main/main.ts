@@ -173,6 +173,7 @@ const localSecretsPath =
 // daemon reads the same file to resolve which launcher to use.
 const localPreferencesPath =
   process.env.HITCH_PREFERENCES_PATH ?? join(appSupportDir, "preferences.json");
+const PROJECT_CONFIG_FILENAME = "project.json";
 const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
 // GitHub OAuth runs in the system browser (RFC 8252); Convex Auth's SITE_URL is
@@ -1194,6 +1195,27 @@ function gitignoreHasHitch(localPath: string): boolean {
     .some((line) => line === ".hitch/" || line === ".hitch");
 }
 
+function readExistingHitchProjectId(localPath: string): string | null {
+  const configPath = join(localPath, ".hitch", PROJECT_CONFIG_FILENAME);
+  if (!existsSync(configPath)) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+  } catch (err) {
+    throw new Error(`Could not read existing .hitch/${PROJECT_CONFIG_FILENAME}: ${String(err)}`);
+  }
+  if (!isRecord(parsed)) {
+    throw new Error(`Existing .hitch/${PROJECT_CONFIG_FILENAME} must be a JSON object`);
+  }
+  const existingProjectId =
+    typeof parsed.projectId === "string" ? parsed.projectId.trim() : "";
+  if (!existingProjectId) {
+    throw new Error(`Existing .hitch/${PROJECT_CONFIG_FILENAME} is missing projectId`);
+  }
+  return existingProjectId;
+}
+
 function projectSetupStatus(projectId: ProjectId): ProjectSetupStatus {
   const trimmed = projectId.trim();
   if (!trimmed) throw new Error("Project ID is required");
@@ -1895,6 +1917,13 @@ async function addHitch(input: AddHitchInput): Promise<AddHitchResult> {
   if (!projectId) throw new Error("Project ID is required");
   if (!localPath) throw new Error("Local path is required");
   if (!existsSync(localPath)) throw new Error(`Local path does not exist: ${localPath}`);
+
+  const existingProjectId = readExistingHitchProjectId(localPath);
+  if (existingProjectId && existingProjectId !== projectId) {
+    throw new Error(
+      `This folder is already hitched to project ${existingProjectId}. Open that project or choose a different folder.`,
+    );
+  }
 
   const hitchPath = join(localPath, ".hitch");
   mkdirSync(hitchPath, { recursive: true });

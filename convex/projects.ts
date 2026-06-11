@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type MutationCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
   requireProjectMemberById,
@@ -12,6 +13,15 @@ const DEFAULT_STATUSES = [
   { id: "review", name: "Review" },
   { id: "done", name: "Done" },
 ] as const;
+
+const PROJECT_CONFIG_PATH = "project.json";
+
+type ProjectStatus = {
+  id: string;
+  name: string;
+};
+
+type ProjectDoc = Pick<Doc<"projects">, "_id" | "name" | "statuses">;
 
 function slugify(input: string): string {
   return input
@@ -46,6 +56,56 @@ function normalizeStatuses(
   }
 
   return normalized.length > 0 ? normalized : [...DEFAULT_STATUSES];
+}
+
+function projectConfigContent(project: ProjectDoc, statuses?: ProjectStatus[]) {
+  const config = {
+    version: 1,
+    projectId: project._id,
+    name: project.name,
+    tasks: {
+      statuses: normalizeStatuses(statuses ?? project.statuses),
+      defaultStatus: "todo",
+      archiveStatus: "archived",
+    },
+  };
+  return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+async function upsertProjectConfigFile(
+  ctx: MutationCtx,
+  project: ProjectDoc,
+  statuses?: ProjectStatus[],
+) {
+  const content = projectConfigContent(project, statuses);
+  const existing = await ctx.db
+    .query("files")
+    .withIndex("by_key", (q) =>
+      q.eq("projectId", project._id).eq("path", PROJECT_CONFIG_PATH),
+    )
+    .unique();
+  const doc = {
+    projectId: project._id,
+    path: PROJECT_CONFIG_PATH,
+    content,
+    hash: content,
+    deleted: false,
+    updatedAt: Date.now(),
+  };
+
+  if (!existing) {
+    await ctx.db.insert("files", doc);
+    return;
+  }
+
+  if (
+    existing.content === content &&
+    existing.deleted === false &&
+    existing.hash === content
+  ) {
+    return;
+  }
+  await ctx.db.patch(existing._id, doc);
 }
 
 export const current = query({
@@ -134,7 +194,70 @@ export const updateDetails = mutation({
     if (name.length > 120) throw new Error("Project name is too long");
 
     await ctx.db.patch(access.project._id, { name });
-    return await ctx.db.get(access.project._id);
+    const project = await ctx.db.get(access.project._id);
+    if (project) await upsertProjectConfigFile(ctx, project);
+    return project;
+  },
+});
+
+export const ensureProjectConfig = mutation({
+  args: {
+    projectId: v.id("projects"),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectMemberById(ctx, args.projectId);
+    const existing = await ctx.db
+      .query("files")
+      .withIndex("by_key", (q) =>
+        q.eq("projectId", access.project._id).eq("path", PROJECT_CONFIG_PATH),
+      )
+      .unique();
+
+    if (existing && !existing.deleted) {
+      let shouldBackfill = false;
+      try {
+        const parsed = JSON.parse(existing.content) as unknown;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "projectId" in parsed &&
+          (parsed as { projectId?: unknown }).projectId !== access.project._id
+        ) {
+          throw new Error("Project config belongs to a different project");
+        }
+        if (
+          !parsed ||
+          typeof parsed !== "object" ||
+          !("projectId" in parsed) ||
+          (parsed as { projectId?: unknown }).projectId !== access.project._id
+        ) {
+          shouldBackfill = true;
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("different project")) {
+          throw err;
+        }
+        shouldBackfill = true;
+      }
+      if (shouldBackfill) {
+        await upsertProjectConfigFile(ctx, access.project);
+        return await ctx.db
+          .query("files")
+          .withIndex("by_key", (q) =>
+            q.eq("projectId", access.project._id).eq("path", PROJECT_CONFIG_PATH),
+          )
+          .unique();
+      }
+      return existing;
+    }
+
+    await upsertProjectConfigFile(ctx, access.project);
+    return await ctx.db
+      .query("files")
+      .withIndex("by_key", (q) =>
+        q.eq("projectId", access.project._id).eq("path", PROJECT_CONFIG_PATH),
+      )
+      .unique();
   },
 });
 
@@ -153,7 +276,9 @@ export const updateStatuses = mutation({
     const statuses = normalizeStatuses(args.statuses);
 
     await ctx.db.patch(access.project._id, { statuses });
-    return await ctx.db.get(access.project._id);
+    const project = await ctx.db.get(access.project._id);
+    if (project) await upsertProjectConfigFile(ctx, project, statuses);
+    return project;
   },
 });
 
@@ -177,6 +302,8 @@ export const create = mutation({
       role: "owner",
       createdAt: now,
     });
+    const project = await ctx.db.get(projectId);
+    if (project) await upsertProjectConfigFile(ctx, project);
     return await ctx.db.get(projectId);
   },
 });
