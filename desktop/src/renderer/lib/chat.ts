@@ -352,6 +352,12 @@ export const DEFAULT_STARTING_PROMPTS: StartingPrompt[] = [
     includeTaskRef: true,
   },
   {
+    id: "think-through",
+    name: "Help me think this through",
+    body: "Don't write any code yet. Help me think through the problem laid out in this task and reach a confident, well-reasoned understanding of how to solve it. Read the task and explore anything relevant in the repo, then push on it with me: ask clarifying questions, point out inconsistencies or risks I've missed, and propose alternatives with your honest recommendation. The goal is to sharpen my own understanding of the right solution — not to produce a step-by-step plan or write code.",
+    includeTaskRef: true,
+  },
+  {
     id: "refine-task",
     name: "Refine task",
     body: [
@@ -364,8 +370,8 @@ export const DEFAULT_STARTING_PROMPTS: StartingPrompt[] = [
   },
   {
     id: "investigate",
-    name: "Investigate",
-    body: "Don't write any code. Investigate the task and come back with your thoughts on how hard it would be to solve, plus any open questions.",
+    name: "How hard would this be",
+    body: "Don't write any code. Read the task, explore the parts of the repo it would touch, and come back with a candid read on how hard it'd be to solve — the rough shape of the work, what's risky or uncertain, and any open questions.",
     includeTaskRef: true,
   },
 ];
