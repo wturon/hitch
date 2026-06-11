@@ -11,10 +11,14 @@ import {
   InfoIcon,
   KeyRoundIcon,
   MessageSquareIcon,
+  MonitorIcon,
+  MoonIcon,
   PowerIcon,
   RefreshCwIcon,
   RotateCwIcon,
   ShieldCheckIcon,
+  SunIcon,
+  SunMoonIcon,
   Trash2Icon,
   WrenchIcon,
 } from "lucide-react";
@@ -52,6 +56,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { getStoredTheme, setTheme, type ThemeMode } from "@/lib/theme";
 
 type Harness = "codex" | "claude-code";
 
@@ -73,6 +78,7 @@ export interface GlobalHarnessSetupStatus {
 
 export type GlobalSettingsTab =
   | "harnesses"
+  | "appearance"
   | "starting-prompts"
   | "local-sync"
   | "device-tokens"
@@ -80,6 +86,7 @@ export type GlobalSettingsTab =
 
 const TABS = [
   { id: "harnesses", label: "Harness settings", icon: Code2Icon },
+  { id: "appearance", label: "Appearance", icon: SunMoonIcon },
   { id: "starting-prompts", label: "Starting prompts", icon: MessageSquareIcon },
   { id: "local-sync", label: "Local sync logs", icon: FolderSyncIcon },
   { id: "device-tokens", label: "Device tokens", icon: KeyRoundIcon },
@@ -286,6 +293,8 @@ export function GlobalSettingsDialog({
               </div>
             )}
 
+            {tab === "appearance" && <AppearanceSection />}
+
             {tab === "starting-prompts" && <StartingPromptsPanel />}
 
             {tab === "local-sync" && (
@@ -320,6 +329,75 @@ export function GlobalSettingsDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const THEME_OPTIONS: ReadonlyArray<{
+  mode: ThemeMode;
+  label: string;
+  description: string;
+  icon: typeof SunIcon;
+}> = [
+  { mode: "light", label: "Light", description: "Always light", icon: SunIcon },
+  { mode: "dark", label: "Dark", description: "Always dark", icon: MoonIcon },
+  {
+    mode: "system",
+    label: "System",
+    description: "Match the OS",
+    icon: MonitorIcon,
+  },
+];
+
+function AppearanceSection() {
+  const [mode, setMode] = useState<ThemeMode>(() => getStoredTheme());
+
+  function choose(next: ThemeMode) {
+    setMode(next);
+    setTheme(next);
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <h3 className="text-sm font-medium">Appearance</h3>
+        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+          Choose how Hitch looks. “System” follows your operating system’s light
+          or dark setting.
+        </p>
+      </div>
+      <div
+        role="radiogroup"
+        aria-label="Theme"
+        className="grid grid-cols-3 gap-2"
+      >
+        {THEME_OPTIONS.map(({ mode: value, label, description, icon: Icon }) => {
+          const active = mode === value;
+          return (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => choose(value)}
+              className={cn(
+                "flex flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-colors",
+                active
+                  ? "border-ring bg-muted"
+                  : "border-border text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+              )}
+            >
+              <Icon className="size-5" />
+              <span className="text-sm font-medium text-foreground">
+                {label}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {description}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

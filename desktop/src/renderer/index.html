@@ -6,6 +6,22 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="alternate icon" href="/favicon.ico" sizes="16x16 32x32" />
     <title>Hitch</title>
+    <script>
+      // Apply the saved theme before first paint so there's no light/dark flash
+      // while React mounts. Keep in sync with src/renderer/lib/theme.ts.
+      (function () {
+        try {
+          var mode = localStorage.getItem("hitch.theme");
+          var dark =
+            mode === "dark" ||
+            ((mode === "system" || !mode) &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var root = document.documentElement;
+          root.classList.toggle("dark", dark);
+          root.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -176,6 +176,7 @@ export interface HitchDaemonApi {
   getKeepAwakeState: () => Promise<KeepAwakeState>;
   startKeepAwake: () => Promise<KeepAwakeState>;
   stopKeepAwake: () => Promise<KeepAwakeState>;
+  setNativeTheme: (mode: "light" | "dark" | "system") => Promise<void>;
   onState: (callback: (state: DaemonState) => void) => () => void;
   onAuthCallback: (callback: (payload: AuthCallback) => void) => () => void;
   onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => () => void;
@@ -232,6 +233,7 @@ const api: HitchDaemonApi = {
   getKeepAwakeState: () => ipcRenderer.invoke("keep-awake:get-state"),
   startKeepAwake: () => ipcRenderer.invoke("keep-awake:start"),
   stopKeepAwake: () => ipcRenderer.invoke("keep-awake:stop"),
+  setNativeTheme: (mode) => ipcRenderer.invoke("theme:set-source", mode),
   onState: (callback) => {
     const listener = (_event: IpcRendererEvent, state: DaemonState) => {
       callback(state);

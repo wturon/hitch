@@ -17,7 +17,15 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:http";
 import { promisify } from "node:util";
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  nativeTheme,
+  shell,
+} from "electron";
 import {
   autoUpdater,
   type ProgressInfo,
@@ -2296,6 +2304,22 @@ function authLoopbackPage(ok: boolean): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:-apple-system,system-ui,sans-serif;background:#101316;color:#e6e8ea;display:flex;min-height:100vh;margin:0;align-items:center;justify-content:center}main{text-align:center;max-width:28rem;padding:2rem}h1{font-size:1.25rem;margin:0 0 .5rem}p{color:#9aa3ab;margin:0}</style></head><body><main><h1>${title}</h1><p>${detail}</p></main></body></html>`;
 }
 
+// Window chrome / launch-flash background per resolved theme. Light is the
+// app's --background (white); dark mirrors the renderer's dark --background.
+function themeBackground(dark: boolean): string {
+  return dark ? "#101316" : "#ffffff";
+}
+
+// Drive Electron's nativeTheme from the renderer's Light/Dark/System choice and
+// repaint the window background to match, so the native frame and any pre-paint
+// background track the chosen theme rather than just the OS.
+function setWindowThemeBackground(mode: "light" | "dark" | "system"): void {
+  nativeTheme.themeSource = mode;
+  const dark =
+    mode === "dark" || (mode === "system" && nativeTheme.shouldUseDarkColors);
+  mainWindow?.setBackgroundColor(themeBackground(dark));
+}
+
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 980,
@@ -2303,7 +2327,10 @@ async function createWindow(): Promise<void> {
     minWidth: 760,
     minHeight: 560,
     title: "Hitch",
-    backgroundColor: "#101316",
+    // Match the first frame to the resolved OS theme to avoid a light/dark
+    // flash on launch. The renderer pushes the user's stored preference via
+    // "theme:set-source" once it loads (see setWindowThemeBackground).
+    backgroundColor: themeBackground(nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
@@ -2411,6 +2438,12 @@ ipcMain.handle("auth-storage:remove", (_event, key: string) =>
 ipcMain.handle("keep-awake:get-state", () => keepAwakeState());
 ipcMain.handle("keep-awake:start", () => startKeepAwake());
 ipcMain.handle("keep-awake:stop", () => stopKeepAwake());
+
+ipcMain.handle("theme:set-source", (_event, mode: unknown) => {
+  const source =
+    mode === "light" || mode === "dark" || mode === "system" ? mode : "system";
+  setWindowThemeBackground(source);
+});
 
 ipcMain.handle("updater:get-status", () => updaterStatus);
 ipcMain.handle("updater:check", async () => {
