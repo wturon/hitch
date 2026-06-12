@@ -134,6 +134,55 @@
   }
 }
 
+/* Harness chip working spinner. A status ring that traces any rounded-full
+   shape — a faint full ring with a brighter arc that travels around it — so the
+   same element reads as a spinner at rest (a 28px circle) and, expanded, as the
+   pill's animated outline (the spinner "stretches" into the pill). Drawn as a
+   conic gradient masked to a thin band so it follows border-radius at any
+   width, which a rotated SVG arc can't do. */
+@property --hitch-spin {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes hitch-spin {
+  to {
+    --hitch-spin: 360deg;
+  }
+}
+
+.hitch-spin-ring {
+  box-sizing: border-box;
+  padding: 1.5px; /* ring thickness */
+  /* A hard-edged spinner: one solid arc over a faint track, no gradient fade —
+     reads like a classic loading ring. */
+  background: conic-gradient(
+    from var(--hitch-spin),
+    var(--color-muted-foreground) 0deg 25%,
+    color-mix(in oklab, var(--color-muted-foreground) 16%, transparent) 25% 100%
+  );
+  /* keep only the padding band, punching out the interior → a ring */
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: hitch-spin 0.9s linear infinite;
+}
+
+/* Reduced motion: freeze to a calm, even ring rather than a rotating arc. */
+@media (prefers-reduced-motion: reduce) {
+  .hitch-spin-ring {
+    animation: none;
+    background: color-mix(
+      in oklab,
+      var(--color-muted-foreground) 35%,
+      transparent
+    );
+  }
+}
+
 .window-drag-region {
   -webkit-app-region: drag;
   height: 38px;

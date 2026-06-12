@@ -59,7 +59,7 @@ import {
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
-import { ChatLaunch } from "@/components/ChatLaunch";
+import { HarnessChip } from "@/components/HarnessChip";
 import {
   GlobalSettingsDialog,
   type GlobalHarnessSetupStatus,
@@ -231,13 +231,11 @@ function CardChat({
 
   return (
     <div className="mt-2">
-      <ChatLaunch
+      <HarnessChip
         chat={card.chat}
         status={card.chatStatus}
         openState={card.chatOpenState}
         projectId={projectId}
-        size="xs"
-        stopPropagation
       />
     </div>
   );
