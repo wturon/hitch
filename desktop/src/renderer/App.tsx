@@ -1767,15 +1767,17 @@ function BoardContent({
       onSignOut={() => void signOut()}
     >
       <div className="flex flex-col gap-6">
-        <header className="window-titlebar-row sticky top-0 z-40 -mx-4 flex min-h-11 flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-4 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
-          <div className="flex items-baseline gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight">Board</h1>
+        <header className="window-titlebar-row sticky top-0 z-40 -mx-4 flex h-12 shrink-0 flex-nowrap items-center justify-between gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+          <div className="flex min-w-0 items-baseline gap-3">
+            <h1 className="shrink-0 text-2xl font-semibold tracking-tight">
+              Board
+            </h1>
             <span className="text-sm text-muted-foreground">
               {activeCards.length} task
               {activeCards.length === 1 ? "" : "s"} · live
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <Button
               variant="outline"
               size="sm"
