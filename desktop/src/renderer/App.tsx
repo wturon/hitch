@@ -408,7 +408,6 @@ function AppSidebar({
   creatingProject,
   onSelectProject,
   onCreateProject,
-  onShowProjectDetails,
   harnessSetup,
   keepAwake,
   onToggleKeepAwake,
@@ -420,7 +419,6 @@ function AppSidebar({
   creatingProject: boolean;
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
-  onShowProjectDetails: () => void;
   harnessSetup: GlobalHarnessSetupStatus | null;
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
@@ -468,7 +466,7 @@ function AppSidebar({
               <div
                 key={project._id}
                 className={cn(
-                  "group flex min-h-9 items-center rounded-lg pr-1 transition-colors",
+                  "flex min-h-9 items-center rounded-lg pr-2 transition-colors",
                   selected
                     ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                     : "text-sidebar-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
@@ -486,29 +484,6 @@ function AppSidebar({
                 </button>
                 <div className="flex shrink-0 items-center">
                   <ProjectStatusChips counts={statusCounts?.[project._id]} />
-                </div>
-                {/* Fixed trailing slot: the project-details gear, revealed on
-                    hover so it doesn't crowd the project name. */}
-                <div className="flex w-6 shrink-0 items-center justify-center">
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={() => {
-                            onSelectProject(project._id);
-                            onShowProjectDetails();
-                          }}
-                          aria-label="Project details"
-                          className="hidden text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover:inline-flex"
-                        />
-                      }
-                    >
-                      <SettingsIcon />
-                    </TooltipTrigger>
-                    <TooltipContent>Project details</TooltipContent>
-                  </Tooltip>
                 </div>
               </div>
             );
@@ -662,7 +637,6 @@ function AppShell({
   creatingProject,
   onSelectProject,
   onCreateProject,
-  onShowProjectDetails,
   harnessSetup,
   keepAwake,
   onToggleKeepAwake,
@@ -675,7 +649,6 @@ function AppShell({
   creatingProject: boolean;
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
-  onShowProjectDetails: () => void;
   harnessSetup: GlobalHarnessSetupStatus | null;
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
@@ -691,7 +664,6 @@ function AppShell({
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
-        onShowProjectDetails={onShowProjectDetails}
         harnessSetup={harnessSetup}
         keepAwake={keepAwake}
         onToggleKeepAwake={onToggleKeepAwake}
@@ -1510,7 +1482,6 @@ function BoardContent({
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
-        onShowProjectDetails={() => openProjectDetails()}
         harnessSetup={globalHarnessSetup}
         keepAwake={keepAwake}
         onToggleKeepAwake={() => void toggleKeepAwake()}
@@ -1757,7 +1728,6 @@ function BoardContent({
       creatingProject={creatingProject}
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
-      onShowProjectDetails={() => openProjectDetails()}
       harnessSetup={globalHarnessSetup}
       keepAwake={keepAwake}
       onToggleKeepAwake={() => void toggleKeepAwake()}
