@@ -349,7 +349,7 @@ export interface StartingPrompt {
 export function taskRefPreamble(task: { title: string; path: string }): string {
   return [
     `You're picking up the Hitch task "${task.title}".`,
-    `Its file is at .hitch/${task.path}, relative to your current directory (the repo root).`,
+    `Its file is at .hitch/${task.path}, relative to your current project folder.`,
   ].join("\n");
 }
 
@@ -374,21 +374,21 @@ export function buildStartPrompt(
 export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
-    name: "Ship it",
+    name: "Ship it.",
     body: "Read the task, keep the task status/progress current as you work, and start implementing it.",
     includeTaskRef: true,
   },
   {
     id: "think-through",
-    name: "Help me think this through",
-    body: "Don't write any code yet. Help me think through the problem laid out in this task and reach a confident, well-reasoned understanding of how to solve it. Read the task and explore anything relevant in the repo, then push on it with me: ask clarifying questions, point out inconsistencies or risks I've missed, and propose alternatives with your honest recommendation. The goal is to sharpen my own understanding of the right solution — not to produce a step-by-step plan or write code.",
+    name: "Help me think this through.",
+    body: "Don't write any code yet. Help me reason through the task, question, or idea described here and organize my own thinking. Read the task and explore any relevant context, then push on it with me: ask clarifying questions, point out inconsistencies or risks I may have missed, and compare plausible approaches with your honest recommendation. The goal is to help me sharpen my judgment, not to produce a step-by-step plan or start implementation.",
     includeTaskRef: true,
   },
   {
     id: "refine-task",
-    name: "Refine task",
+    name: "Turn this into an agent-ready task.",
     body: [
-      "Don't write any application code or start the work yet. Your job is to turn this task into a spec that a fresh agent, with no memory of this conversation, could execute on its own.",
+      "Don't start implementation yet. Help me turn this task into a clear, self-contained brief that a fresh agent with no context can execute confidently.",
       "First, investigate. Read the task body and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
       'Then interview me. Ask your most important clarifying questions, and keep going until we share an unambiguous understanding of the goal, what "done" looks like, the scope boundaries, and any constraints.',
       "When we agree it's fully specified, rewrite the body of the task file referenced above so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Leave the frontmatter untouched, and confirm when you've written it.",
@@ -397,7 +397,7 @@ export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   },
   {
     id: "investigate",
-    name: "How hard would this be",
+    name: "How hard would this be?",
     body: "Don't write any code. Read the task, explore the parts of the repo it would touch, and come back with a candid read on how hard it'd be to solve — the rough shape of the work, what's risky or uncertain, and any open questions.",
     includeTaskRef: true,
   },
