@@ -142,6 +142,11 @@
   z-index: 50;
 }
 
+.window-sidebar,
+.window-titlebar-row {
+  -webkit-app-region: drag;
+}
+
 button,
 a,
 input,

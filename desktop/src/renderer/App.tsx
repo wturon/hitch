@@ -436,7 +436,7 @@ function AppSidebar({
   const statusCounts = useQuery(api.files.chatStatusCounts);
 
   return (
-    <aside className="flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 pb-2 pt-10 text-sidebar-foreground md:sticky md:top-0 md:h-screen md:w-64 md:flex-col md:items-stretch md:border-b-0 md:border-r md:border-sidebar-border md:px-3 md:pb-4 md:pt-12">
+    <aside className="window-sidebar flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 pb-2 pt-10 text-sidebar-foreground md:sticky md:top-0 md:h-screen md:w-64 md:flex-col md:items-stretch md:border-b-0 md:border-r md:border-sidebar-border md:px-3 md:pb-4 md:pt-12">
       <nav className="hidden flex-1 flex-col gap-1 overflow-auto md:flex">
         <div className="flex items-center justify-between px-2 pb-1">
           <span className="text-xs font-medium uppercase tracking-wide text-sidebar-foreground/50">
@@ -687,7 +687,6 @@ function AppShell({
 }) {
   return (
     <div className="app-shell relative flex min-h-screen flex-col bg-background md:flex-row">
-      <WindowDragRegion />
       <AppSidebar
         projects={projects}
         selectedProjectId={selectedProjectId}
@@ -701,7 +700,7 @@ function AppShell({
         onShowGlobalSettings={onShowGlobalSettings}
         onSignOut={onSignOut}
       />
-      <main className="min-w-0 flex-1 p-4 pt-11 sm:p-6 sm:pt-11 lg:p-8 lg:pt-11">
+      <main className="min-w-0 flex-1 p-4 pt-3 sm:p-6 sm:pt-3 lg:p-8 lg:pt-3">
         {children}
       </main>
     </div>
@@ -1768,7 +1767,7 @@ function BoardContent({
       onSignOut={() => void signOut()}
     >
       <div className="flex flex-col gap-6">
-        <header className="flex flex-wrap items-center justify-between gap-3">
+        <header className="window-titlebar-row flex min-h-9 flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-3">
             <h1 className="text-2xl font-semibold tracking-tight">Board</h1>
             <span className="text-sm text-muted-foreground">
