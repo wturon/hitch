@@ -1767,7 +1767,7 @@ function BoardContent({
       onSignOut={() => void signOut()}
     >
       <div className="flex flex-col gap-6">
-        <header className="window-titlebar-row flex min-h-9 flex-wrap items-center justify-between gap-3">
+        <header className="window-titlebar-row sticky top-0 z-40 -mx-4 flex min-h-11 flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-4 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
           <div className="flex items-baseline gap-3">
             <h1 className="text-2xl font-semibold tracking-tight">Board</h1>
             <span className="text-sm text-muted-foreground">
