@@ -238,6 +238,7 @@ function CardChat({
         projectId={projectId}
         size="xs"
         stopPropagation
+        className="cursor-pointer"
       />
     </div>
   );
@@ -924,27 +925,21 @@ function DraggableCard({
       <ContextMenuTrigger className="block">
         <div
           ref={setNodeRef}
+          {...attributes}
+          {...listeners}
+          onClick={() => onOpen(card)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            onOpen(card);
+          }}
           className={cn(
             CARD_CLASS,
-            "group relative cursor-pointer transition-shadow hover:ring-foreground/20",
+            "group relative cursor-pointer outline-none transition-shadow hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring",
             isDragging && "opacity-40",
           )}
         >
-          <button
-            type="button"
-            {...attributes}
-            {...listeners}
-            onClick={() => onOpen(card)}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter" && e.key !== " ") return;
-              e.preventDefault();
-              onOpen(card);
-            }}
-            className="block w-full rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <CardSummary card={card} />
-          </button>
-          <CardChat card={card} projectId={projectId} />
+          <CardContents card={card} projectId={projectId} />
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
