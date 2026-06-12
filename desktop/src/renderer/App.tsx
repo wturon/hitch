@@ -258,6 +258,10 @@ function CardContents({
   );
 }
 
+function WindowDragRegion() {
+  return <div className="window-drag-region" aria-hidden />;
+}
+
 function SignInScreen() {
   const { signIn } = useAuthActions();
   const [signingIn, setSigningIn] = useState(false);
@@ -275,23 +279,26 @@ function SignInScreen() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-8">
-      <section className="flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-card p-5 shadow-sm">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">
-            Sign in to Hitch
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Use GitHub to open your live project board.
-          </p>
-        </div>
-        <Button onClick={startGitHubSignIn} disabled={signingIn}>
-          <ExternalLinkIcon />
-          {signingIn ? "Opening GitHub..." : "Continue with GitHub"}
-        </Button>
-        {error && <p className="text-sm text-destructive">{error}</p>}
-      </section>
-    </main>
+    <>
+      <WindowDragRegion />
+      <main className="flex min-h-screen items-center justify-center p-8 pt-14">
+        <section className="flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-card p-5 shadow-sm">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">
+              Sign in to Hitch
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Use GitHub to open your live project board.
+            </p>
+          </div>
+          <Button onClick={startGitHubSignIn} disabled={signingIn}>
+            <ExternalLinkIcon />
+            {signingIn ? "Opening GitHub..." : "Continue with GitHub"}
+          </Button>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </section>
+      </main>
+    </>
   );
 }
 
@@ -429,7 +436,7 @@ function AppSidebar({
   const statusCounts = useQuery(api.files.chatStatusCounts);
 
   return (
-    <aside className="flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 py-2 text-sidebar-foreground md:sticky md:top-0 md:h-screen md:w-64 md:flex-col md:items-stretch md:border-b-0 md:border-r md:border-sidebar-border md:px-3 md:py-4">
+    <aside className="flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 pb-2 pt-10 text-sidebar-foreground md:sticky md:top-0 md:h-screen md:w-64 md:flex-col md:items-stretch md:border-b-0 md:border-r md:border-sidebar-border md:px-3 md:pb-4 md:pt-12">
       <nav className="hidden flex-1 flex-col gap-1 overflow-auto md:flex">
         <div className="flex items-center justify-between px-2 pb-1">
           <span className="text-xs font-medium uppercase tracking-wide text-sidebar-foreground/50">
@@ -679,7 +686,8 @@ function AppShell({
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-h-screen flex-col bg-background md:flex-row">
+    <div className="app-shell relative flex min-h-screen flex-col bg-background md:flex-row">
+      <WindowDragRegion />
       <AppSidebar
         projects={projects}
         selectedProjectId={selectedProjectId}
@@ -693,7 +701,9 @@ function AppShell({
         onShowGlobalSettings={onShowGlobalSettings}
         onSignOut={onSignOut}
       />
-      <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
+      <main className="min-w-0 flex-1 p-4 pt-11 sm:p-6 sm:pt-11 lg:p-8 lg:pt-11">
+        {children}
+      </main>
     </div>
   );
 }
@@ -710,38 +720,41 @@ function NoProjectWelcome({
   const [showCreateProject, setShowCreateProject] = useState(false);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background p-6">
-      <section className="flex w-full max-w-md flex-col gap-5 rounded-lg border bg-card p-6 shadow-sm">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Welcome to Hitch
-          </p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-            Create your first project
-          </h1>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Projects are now driven by your Hitch account. Create one, then bind
-            it to a local folder when you are ready to sync task files.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={() => setShowCreateProject(true)}>
-            <PlusIcon />
-            Create project
-          </Button>
-          <Button variant="ghost" onClick={onSignOut}>
-            <LogOutIcon />
-            Sign out
-          </Button>
-        </div>
-      </section>
-      <CreateProjectDialog
-        open={showCreateProject}
-        onOpenChange={setShowCreateProject}
-        creating={creatingProject}
-        onCreate={onCreateProject}
-      />
-    </main>
+    <>
+      <WindowDragRegion />
+      <main className="flex min-h-screen items-center justify-center bg-background p-6 pt-14">
+        <section className="flex w-full max-w-md flex-col gap-5 rounded-lg border bg-card p-6 shadow-sm">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Welcome to Hitch
+            </p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">
+              Create your first project
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Projects are now driven by your Hitch account. Create one, then
+              bind it to a local folder when you are ready to sync task files.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => setShowCreateProject(true)}>
+              <PlusIcon />
+              Create project
+            </Button>
+            <Button variant="ghost" onClick={onSignOut}>
+              <LogOutIcon />
+              Sign out
+            </Button>
+          </div>
+        </section>
+        <CreateProjectDialog
+          open={showCreateProject}
+          onOpenChange={setShowCreateProject}
+          creating={creatingProject}
+          onCreate={onCreateProject}
+        />
+      </main>
+    </>
   );
 }
 
@@ -750,9 +763,12 @@ function AuthenticatedBoard() {
 
   if (isLoading) {
     return (
-      <main className="flex flex-1 items-center justify-center text-muted-foreground">
-        Checking session…
-      </main>
+      <>
+        <WindowDragRegion />
+        <main className="flex min-h-screen items-center justify-center bg-background p-6 pt-14 text-muted-foreground">
+          Checking session…
+        </main>
+      </>
     );
   }
 
@@ -829,9 +845,12 @@ function ProjectWorkspace() {
 
   if (projects === undefined) {
     return (
-      <main className="flex min-h-screen items-center justify-center text-muted-foreground">
-        Loading projects…
-      </main>
+      <>
+        <WindowDragRegion />
+        <main className="flex min-h-screen items-center justify-center bg-background p-6 pt-14 text-muted-foreground">
+          Loading projects…
+        </main>
+      </>
     );
   }
 
@@ -851,9 +870,12 @@ function ProjectWorkspace() {
 
   if (!selectedProject) {
     return (
-      <main className="flex min-h-screen items-center justify-center text-muted-foreground">
-        Opening project…
-      </main>
+      <>
+        <WindowDragRegion />
+        <main className="flex min-h-screen items-center justify-center bg-background p-6 pt-14 text-muted-foreground">
+          Opening project…
+        </main>
+      </>
     );
   }
 

@@ -2327,6 +2327,8 @@ async function createWindow(): Promise<void> {
     minWidth: 760,
     minHeight: 560,
     title: "Hitch",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 14, y: 14 },
     // Match the first frame to the resolved OS theme to avoid a light/dark
     // flash on launch. The renderer pushes the user's stored preference via
     // "theme:set-source" once it loads (see setWindowThemeBackground).

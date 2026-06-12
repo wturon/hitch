@@ -133,3 +133,21 @@
     @apply font-sans;
   }
 }
+
+.window-drag-region {
+  -webkit-app-region: drag;
+  height: 38px;
+  inset: 0 0 auto;
+  position: fixed;
+  z-index: 50;
+}
+
+button,
+a,
+input,
+textarea,
+select,
+[role="button"],
+[data-radix-popper-content-wrapper] {
+  -webkit-app-region: no-drag;
+}
