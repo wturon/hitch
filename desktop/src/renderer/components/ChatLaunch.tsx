@@ -1,7 +1,13 @@
 "use client";
 
 import type { Id } from "@convex/_generated/dataModel";
-import { ExternalLink, Info, LoaderCircle, Terminal } from "lucide-react";
+import {
+  ArrowUpRight,
+  ExternalLink,
+  Info,
+  LoaderCircle,
+  Terminal,
+} from "lucide-react";
 
 import {
   harnessLabel,
@@ -55,6 +61,8 @@ export function ChatLaunch({
   size = "sm",
   stopPropagation = false,
   className,
+  label,
+  primary = false,
 }: {
   chat: ChatRef;
   status?: ChatStatus | null;
@@ -63,6 +71,12 @@ export function ChatLaunch({
   size?: "xs" | "sm" | "default";
   stopPropagation?: boolean;
   className?: string;
+  // Override the button text. Defaults to the environment-specific
+  // "Open in {harness}"; pass a generic label (e.g. "Open") to drop it.
+  label?: string;
+  // Black, emphasized treatment: drops the leading status/harness glyph (the
+  // caller shows status separately) and trails a lucide ArrowUpRight.
+  primary?: boolean;
 }) {
   const {
     opening,
@@ -116,23 +130,22 @@ export function ChatLaunch({
   return (
     <>
       <Button
-        variant="secondary"
+        variant={primary ? "default" : "secondary"}
         size={size}
         onClick={open}
         disabled={opening}
         className={className}
       >
-        <LaunchIcon
-          status={status}
-          fallback={chat.harness === "codex" ? <ExternalLink /> : <Terminal />}
-        />
-        {opening ? (
-          "Opening…"
-        ) : (
-          <>
-            Open in {harnessLabel(chat.harness)}
-          </>
+        {!primary && (
+          <LaunchIcon
+            status={status}
+            fallback={
+              chat.harness === "codex" ? <ExternalLink /> : <Terminal />
+            }
+          />
         )}
+        {opening ? "Opening…" : (label ?? `Open in ${harnessLabel(chat.harness)}`)}
+        {primary && !opening && <ArrowUpRight data-icon="inline-end" />}
       </Button>
       {focusHint && (
         <div className="mt-1.5 flex items-start gap-1.5 rounded-md bg-amber-500/10 p-2 text-xs leading-4 text-amber-700 dark:text-amber-400/90">

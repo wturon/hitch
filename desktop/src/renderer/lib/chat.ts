@@ -341,6 +341,20 @@ export interface StartingPrompt {
   name: string;
   body: string;
   includeTaskRef: boolean;
+  // Short, plain-English summary shown beside the preset name in the minimized
+  // delegate bar (the `body` is too long to show inline). Optional: built-ins
+  // always set it; custom prompts may omit it and fall back to a truncated body
+  // via `promptDescription`. Letting users author this is a follow-up — see the
+  // prompt-manager settings UI.
+  description?: string;
+}
+
+// The secondary line shown under a preset's name. Falls back to a one-line
+// squashed/truncated `body` when a (custom) prompt has no authored description.
+export function promptDescription(prompt: StartingPrompt): string {
+  if (prompt.description?.trim()) return prompt.description.trim();
+  const body = prompt.body.trim().replace(/\s+/g, " ");
+  return body.length > 72 ? `${body.slice(0, 71)}…` : body;
 }
 
 // The dynamic preamble that orients the agent to the task it's picking up. The
@@ -375,18 +389,21 @@ export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
     name: "Ship it.",
+    description: "Reads the task and starts implementing it",
     body: "Read the task, keep the task status/progress current as you work, and start implementing it.",
     includeTaskRef: true,
   },
   {
     id: "think-through",
     name: "Help me think this through.",
+    description: "Talks through the problem with you, no code yet",
     body: "Don't write any code yet. Help me reason through the task, question, or idea described here and organize my own thinking. Read the task and explore any relevant context, then push on it with me: ask clarifying questions, point out inconsistencies or risks I may have missed, and compare plausible approaches with your honest recommendation. The goal is to help me sharpen my judgment, not to produce a step-by-step plan or start implementation.",
     includeTaskRef: true,
   },
   {
     id: "refine-task",
     name: "Turn this into an agent-ready task.",
+    description: "Interviews you, then rewrites the task as a spec",
     body: [
       "Don't start implementation yet. Help me turn this task into a clear, self-contained brief that a fresh agent with no context can execute confidently.",
       "First, investigate. Read the task body and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
@@ -398,6 +415,7 @@ export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "investigate",
     name: "How hard would this be?",
+    description: "Scopes the work and flags risks, no code",
     body: "Don't write any code. Read the task, explore the parts of the repo it would touch, and come back with a candid read on how hard it'd be to solve — the rough shape of the work, what's risky or uncertain, and any open questions.",
     includeTaskRef: true,
   },

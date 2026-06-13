@@ -107,10 +107,19 @@ function ChipBody({
   label: string;
   disabledReason?: boolean;
 }) {
+  const expandedContentWidth = disabledReason
+    ? "group-hover:max-w-[144px] group-focus-within:max-w-[144px]"
+    : "group-hover:max-w-[120px] group-focus-within:max-w-[120px]";
+
   return (
     <span className="relative flex h-[22px] items-center rounded-full bg-muted pr-0 transition-[padding] duration-200 ease-out group-hover:pr-2 group-focus-within:pr-2 motion-reduce:transition-none">
       <ChipAvatar harness={harness} state={state} />
-      <span className="flex max-w-0 items-center gap-1 overflow-hidden whitespace-nowrap pl-0 opacity-0 transition-all duration-200 ease-out group-hover:max-w-[120px] group-hover:pl-1.5 group-hover:opacity-100 group-focus-within:max-w-[120px] group-focus-within:pl-1.5 group-focus-within:opacity-100 motion-reduce:transition-none">
+      <span
+        className={cn(
+          "flex max-w-0 items-center gap-1 overflow-hidden whitespace-nowrap pl-0 opacity-0 transition-all duration-200 ease-out group-hover:pl-1.5 group-hover:opacity-100 group-focus-within:pl-1.5 group-focus-within:opacity-100 motion-reduce:transition-none",
+          expandedContentWidth,
+        )}
+      >
         <span className="text-[12.5px] font-semibold leading-4 text-foreground/80">
           {label}
         </span>
