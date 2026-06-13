@@ -1267,7 +1267,7 @@ function DroppableColumn({
           )}
         </div>
       </div>
-      <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1">
+      <div className="-m-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-1">
         {children}
         {count === 0 && (
           <p className="px-1 text-xs text-muted-foreground/70">No tasks</p>
