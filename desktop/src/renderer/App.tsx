@@ -7,6 +7,7 @@ import {
   useState,
   type FormEvent,
   type ReactNode,
+  type SyntheticEvent,
 } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
@@ -212,11 +213,11 @@ function harnessStatusText(status: HarnessHookStatus | null): string {
 // Shared card chrome, also reused by the drag overlay so the floating element
 // matches the one in the column.
 const CARD_CLASS =
-  "rounded-lg bg-card p-3 text-left shadow-sm ring-1 ring-border";
+  "rounded-sm bg-card p-3 text-left shadow-[0_1px_1px_rgba(0,0,0,0.03)] ring-[0.75px] ring-border/70";
 
 function CardSummary({ card }: { card: Card }) {
   return (
-    <p className="text-sm font-medium text-card-foreground">{card.title}</p>
+    <p className="text-[13px] font-normal text-card-foreground">{card.title}</p>
   );
 }
 
@@ -230,7 +231,7 @@ function CardChat({
   if (!card.chat) return null;
 
   return (
-    <div className="mt-2">
+    <div className="mt-3">
       <HarnessChip
         chat={card.chat}
         status={card.chatStatus}
@@ -254,6 +255,17 @@ function CardContents({
       {card.chat && <CardChat card={card} projectId={projectId} />}
     </>
   );
+}
+
+function isInteractiveTarget(
+  target: EventTarget | null,
+  currentTarget: EventTarget | null,
+): boolean {
+  if (!(target instanceof Element)) return false;
+  const interactiveTarget = target.closest(
+    'button, a, input, select, textarea, [role="button"], [role="link"], [data-card-drag-ignore]',
+  );
+  return interactiveTarget !== null && interactiveTarget !== currentTarget;
 }
 
 function WindowDragRegion() {
@@ -657,7 +669,7 @@ function AppShell({
   children: ReactNode;
 }) {
   return (
-    <div className="app-shell relative flex min-h-screen flex-col bg-background md:flex-row">
+    <div className="app-shell relative flex h-screen flex-col overflow-hidden bg-background md:flex-row">
       <AppSidebar
         projects={projects}
         selectedProjectId={selectedProjectId}
@@ -670,7 +682,7 @@ function AppShell({
         onShowGlobalSettings={onShowGlobalSettings}
         onSignOut={onSignOut}
       />
-      <main className="min-w-0 flex-1 p-4 pt-3 sm:p-6 sm:pt-3 lg:p-8 lg:pt-3">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col p-4 pt-3 sm:p-6 sm:pt-3 lg:p-8 lg:pt-3">
         {children}
       </main>
     </div>
@@ -871,11 +883,12 @@ interface DraggableCardProps {
   onDelete: (card: Card) => void;
 }
 
-// A board card that can be picked up (left-drag, 1px threshold so a plain click
-// still opens it) and dropped on another column. Right-click keeps the existing
-// archive/delete menu — PointerSensor ignores non-primary buttons, so the menu
-// and dragging don't fight. Defined at module scope (not inside Board) so it
-// isn't a fresh component type each render, which would remount mid-drag.
+// A board card that can be picked up from any non-interactive surface (left-drag,
+// 1px threshold so a plain click still opens it) and dropped on another column.
+// Right-click keeps the existing archive/delete menu — PointerSensor ignores
+// non-primary buttons, so the menu and dragging don't fight. Defined at module
+// scope (not inside Board) so it isn't a fresh component type each render, which
+// would remount mid-drag.
 function DraggableCard({
   card,
   projectId,
@@ -888,32 +901,44 @@ function DraggableCard({
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: card.id,
   });
+  const dragListeners = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(listeners ?? {}).map(([eventName, listener]) => [
+        eventName,
+        (event: SyntheticEvent) => {
+          if (isInteractiveTarget(event.target, event.currentTarget)) return;
+          listener(event);
+        },
+      ]),
+    );
+  }, [listeners]);
 
   return (
     <ContextMenu>
       <ContextMenuTrigger className="block">
         <div
           ref={setNodeRef}
+          {...attributes}
+          {...dragListeners}
+          role="button"
+          tabIndex={0}
+          onClick={(event) => {
+            if (isInteractiveTarget(event.target, event.currentTarget)) return;
+            onOpen(card);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            if (isInteractiveTarget(event.target, event.currentTarget)) return;
+            event.preventDefault();
+            onOpen(card);
+          }}
           className={cn(
             CARD_CLASS,
-            "group relative cursor-pointer transition-shadow hover:ring-foreground/20",
+            "group relative cursor-default transition-shadow hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring",
             isDragging && "opacity-40",
           )}
         >
-          <button
-            type="button"
-            {...attributes}
-            {...listeners}
-            onClick={() => onOpen(card)}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter" && e.key !== " ") return;
-              e.preventDefault();
-              onOpen(card);
-            }}
-            className="block w-full rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <CardSummary card={card} />
-          </button>
+          <CardSummary card={card} />
           <CardChat card={card} projectId={projectId} />
         </div>
       </ContextMenuTrigger>
@@ -1143,7 +1168,7 @@ function TaskComposer({
         }}
         placeholder="Task title…"
         spellCheck={false}
-        className="w-full bg-transparent text-sm font-medium text-card-foreground outline-none placeholder:font-normal placeholder:text-muted-foreground"
+        className="w-full bg-transparent text-[13px] font-normal text-card-foreground outline-none placeholder:text-muted-foreground"
       />
     </div>
   );
@@ -1176,14 +1201,12 @@ function DroppableColumn({
   return (
     <section
       ref={setNodeRef}
-      className={cn(
-        "relative flex min-h-[24rem] w-[17rem] shrink-0 flex-col gap-3 rounded-xl bg-muted p-3 transition-colors",
-        isOver && "ring-2 ring-ring",
-      )}
+      className="relative flex w-[18rem] shrink-0 flex-col gap-3 rounded-[12px] bg-muted/60 p-3 transition-colors dark:bg-muted"
     >
       <div className="relative z-20 flex items-center justify-between px-1">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {status.name} · {count}
+        <h2 className="flex items-center gap-2 text-[13px] font-medium text-foreground/80">
+          {status.name}
+          <span className="font-normal text-muted-foreground">{count}</span>
         </h2>
         <div className="flex items-center gap-0.5">
           <Tooltip>
@@ -1244,10 +1267,12 @@ function DroppableColumn({
           )}
         </div>
       </div>
-      {children}
-      {count === 0 && (
-        <p className="px-1 text-xs text-muted-foreground/70">No tasks</p>
-      )}
+      <div className="-mr-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+        {children}
+        {count === 0 && (
+          <p className="px-1 text-xs text-muted-foreground/70">No tasks</p>
+        )}
+      </div>
 
       {/* While a card is hovering this column, fade its cards and explain that
           drop position isn't user-controlled — the board sorts by last update,
@@ -1734,8 +1759,8 @@ function BoardContent({
       onShowGlobalSettings={openGlobalSettings}
       onSignOut={() => void signOut()}
     >
-      <div className="flex flex-col gap-6">
-        <header className="window-titlebar-row sticky top-0 z-40 -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-end gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      <div className="flex min-h-0 flex-1 flex-col gap-6">
+        <header className="window-titlebar-row -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-end gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
           <div className="flex shrink-0 items-center gap-2">
             <Button
               variant="outline"
@@ -1795,7 +1820,7 @@ function BoardContent({
           onDragEnd={onDragEnd}
           onDragCancel={() => setActiveId(null)}
         >
-          <div className="-mx-4 flex flex-1 gap-4 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+          <div className="-mx-4 flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
             {boardStatuses.map((col) => (
               <DroppableColumn
                 key={col.id}

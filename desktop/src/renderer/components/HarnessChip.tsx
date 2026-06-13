@@ -1,7 +1,7 @@
 "use client";
 
 import type { Id } from "@convex/_generated/dataModel";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Info } from "lucide-react";
 
 import {
   harnessLabel,
@@ -100,10 +100,12 @@ function ChipBody({
   harness,
   state,
   label,
+  disabledReason = false,
 }: {
   harness: ChatRef["harness"];
   state: ChipState;
   label: string;
+  disabledReason?: boolean;
 }) {
   return (
     <span className="relative flex h-[22px] items-center rounded-full bg-muted pr-0 transition-[padding] duration-200 ease-out group-hover:pr-2 group-focus-within:pr-2 motion-reduce:transition-none">
@@ -112,7 +114,11 @@ function ChipBody({
         <span className="text-[12.5px] font-semibold leading-4 text-foreground/80">
           {label}
         </span>
-        <ArrowUpRight className="size-3 shrink-0 text-muted-foreground" />
+        {disabledReason ? (
+          <Info className="size-3 shrink-0 text-muted-foreground/80" />
+        ) : (
+          <ArrowUpRight className="size-3 shrink-0 text-muted-foreground" />
+        )}
       </span>
     </span>
   );
@@ -161,11 +167,12 @@ export function HarnessChip({
             }
             aria-label="Why Codex cannot open yet"
           >
-            <ChipRing state="idle" />
+            <ChipRing state="working" />
             <ChipBody
               harness={chat.harness}
-              state="idle"
+              state="working"
               label="Opening Codex…"
+              disabledReason
             />
           </TooltipTrigger>
           <TooltipContent className="max-w-64">
