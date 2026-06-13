@@ -24,6 +24,11 @@ export default defineSchema({
     userId: v.id("users"),
     role: v.union(v.literal("owner"), v.literal("member")),
     createdAt: v.number(),
+    // Per-user sidebar pinning (synced across the user's devices). `pinned`
+    // surfaces the project in the PINNED group; `pinnedOrder` is the manual
+    // drag-ordered position within it (lower = higher in the list).
+    pinned: v.optional(v.boolean()),
+    pinnedOrder: v.optional(v.number()),
   })
     .index("by_project", ["projectId"])
     .index("by_user", ["userId"])

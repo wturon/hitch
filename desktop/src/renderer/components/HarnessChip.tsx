@@ -180,7 +180,7 @@ export function HarnessChip({
             <ChipBody
               harness={chat.harness}
               state="working"
-              label="Opening Codex…"
+              label="Working…"
               disabledReason
             />
           </TooltipTrigger>

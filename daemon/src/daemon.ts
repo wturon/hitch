@@ -3,7 +3,7 @@
 // tests; it does not install signal handlers or call process.exit().
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
@@ -472,6 +472,23 @@ async function startHitchBinding({
       deleted: true,
     });
     logger.info(`[hitch:${projectLabel}] ✗ ${loc.rel}`);
+    await pruneEmptyTaskDir(loc.rel, absPath);
+  }
+
+  async function pruneEmptyTaskDir(relPath: string, absPath: string): Promise<void> {
+    if (!/^tasks\/[^/]+\/task\.md$/.test(relPath)) return;
+
+    try {
+      await rmdir(dirname(absPath));
+      logger.info(`[hitch:${projectLabel}] ↓✗ ${dirname(relPath)}/`);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTEMPTY" || code === "EEXIST") return;
+      logError(
+        logger,
+        `[hitch:${projectLabel}] task directory cleanup failed for ${dirname(relPath)}: ${String(err)}`,
+      );
+    }
   }
 
   subscriptions.push(
@@ -488,6 +505,7 @@ async function startHitchBinding({
               await rm(absPath, { force: true });
               logger.info(`[hitch:${projectLabel}] ↓✗ ${f.path}`);
             }
+            await pruneEmptyTaskDir(f.path, absPath);
             continue;
           }
 

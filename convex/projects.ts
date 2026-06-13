@@ -2,6 +2,8 @@ import { mutation, query, type MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
+  projectMembershipForUser,
+  requireProjectMember,
   requireProjectMemberById,
   requireProjectOwnerById,
   requireUser,
@@ -173,12 +175,81 @@ export const listMine = query({
     const projects = await Promise.all(
       memberships.map(async (membership) => {
         const project = await ctx.db.get(membership.projectId);
-        return project ? { project, membership } : null;
+        return project
+          ? {
+              project,
+              membership,
+              pinned: membership.pinned === true,
+              pinnedOrder: membership.pinnedOrder ?? null,
+            }
+          : null;
       }),
     );
     return projects
       .filter((entry): entry is NonNullable<(typeof projects)[number]> => entry !== null)
       .sort((a, b) => a.project.name.localeCompare(b.project.name));
+  },
+});
+
+// Pin or unpin a project for the signed-in user. Pinning appends to the end of
+// the current pinned order (max + 1) so a freshly pinned project lands at the
+// bottom of PINNED; unpinning clears both fields so it falls back into MORE.
+export const setPinned = mutation({
+  args: {
+    projectId: v.id("projects"),
+    pinned: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const { user, membership } = await requireProjectMember(
+      ctx,
+      args.projectId,
+    );
+
+    if (!args.pinned) {
+      await ctx.db.patch(membership._id, {
+        pinned: false,
+        pinnedOrder: undefined,
+      });
+      return;
+    }
+
+    const memberships = await ctx.db
+      .query("projectMembers")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    const maxOrder = memberships.reduce(
+      (max, m) => (m.pinned && m.pinnedOrder != null ? Math.max(max, m.pinnedOrder) : max),
+      -1,
+    );
+    await ctx.db.patch(membership._id, {
+      pinned: true,
+      pinnedOrder: maxOrder + 1,
+    });
+  },
+});
+
+// Persist a manual drag-reorder of the PINNED group. Takes the full ordered
+// list of pinned project ids and rewrites each membership's `pinnedOrder` to
+// its index. Ignores ids the user can't access or that aren't currently
+// pinned, so a stale client list can't pin or leak projects.
+export const reorderPinned = mutation({
+  args: {
+    projectIds: v.array(v.id("projects")),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireUser(ctx);
+    await Promise.all(
+      args.projectIds.map(async (projectId, index) => {
+        const membership = await projectMembershipForUser(
+          ctx,
+          projectId,
+          user._id,
+        );
+        if (!membership || membership.pinned !== true) return;
+        if (membership.pinnedOrder === index) return;
+        await ctx.db.patch(membership._id, { pinnedOrder: index });
+      }),
+    );
   },
 });
 

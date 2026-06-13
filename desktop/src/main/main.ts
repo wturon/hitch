@@ -1900,11 +1900,9 @@ async function openGlobalCodexHookTrust(): Promise<string> {
   }
 
   const cwd = firstEnabledHitchPath();
-  const prompt =
-    "Review Hitch's user-level Codex hook for chat status updates. If Codex asks about hooks, approve the Hitch user hook. If needed, run /hooks.";
   const command = [
     `cd ${shellQuote(cwd)}`,
-    `${shellQuote(codexBin())} -C ${shellQuote(cwd)} ${shellQuote(prompt)}`,
+    `${shellQuote(codexBin())} -C ${shellQuote(cwd)}`,
   ].join(" && ");
   const script = [
     'tell application "Terminal"',

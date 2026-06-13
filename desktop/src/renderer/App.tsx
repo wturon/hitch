@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
   type ReactNode,
   type SyntheticEvent,
@@ -25,25 +26,37 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   AlertCircleIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
   CheckCircle2Icon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
   CoffeeIcon,
   CopyIcon,
   EllipsisIcon,
   ExternalLinkIcon,
   FolderSyncIcon,
-  LayoutDashboardIcon,
   LoaderCircleIcon,
   LogOutIcon,
+  PinIcon,
   PlusIcon,
   SettingsIcon,
+  StarIcon,
   Trash2Icon,
 } from "lucide-react";
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
 import {
   clearChatFields,
+  harnessLabel,
   parseChatOpenState,
   parseChatRef,
   parseChatStatus,
@@ -153,6 +166,14 @@ interface ProjectNavEntry {
   membership: {
     role: "owner" | "member";
   } | null;
+  pinned: boolean;
+  pinnedOrder: number | null;
+}
+
+interface Viewer {
+  name: string | null;
+  email: string | null;
+  image: string | null;
 }
 
 interface HitchBinding {
@@ -414,12 +435,206 @@ function ProjectStatusChips({
   );
 }
 
+// Harnesses that are mid-repair (a hook script/config exists but isn't fully
+// installed) — the only state that earns the amber attention treatment.
+// Never-configured harnesses stay quiet (no nag), per the design.
+function harnessesNeedingRepair(
+  setup: GlobalHarnessSetupStatus | null,
+): HarnessHookStatus[] {
+  if (!setup) return [];
+  return [setup.codex, setup.claudeCode].filter(
+    (status) => harnessStatusText(status) === "Needs repair",
+  );
+}
+
+// A round avatar for the signed-in user: their GitHub image when present, else
+// a monogram from the first letter of their name/email. Optionally carries an
+// amber attention dot (used on the resting account row when a harness needs
+// repair). Monochrome grey gradient keeps it in the rail's neutral palette.
+function UserAvatar({
+  viewer,
+  sizeClass,
+  dot = false,
+}: {
+  viewer: Viewer | null | undefined;
+  sizeClass: string;
+  dot?: boolean;
+}) {
+  const letter = (viewer?.name || viewer?.email || "?").trim().charAt(0) || "?";
+  return (
+    <span
+      className={cn(
+        "relative flex shrink-0 items-center justify-center overflow-hidden rounded-full text-xs font-semibold text-white",
+        sizeClass,
+      )}
+      style={{ backgroundImage: "linear-gradient(140deg, #595959, #8a8a8a)" }}
+    >
+      {viewer?.image ? (
+        <img src={viewer.image} alt="" className="size-full object-cover" />
+      ) : (
+        letter.toUpperCase()
+      )}
+      {dot && (
+        <span className="absolute -bottom-px -right-px size-2.5 rounded-full border-2 border-sidebar-accent bg-amber-500" />
+      )}
+    </span>
+  );
+}
+
+// One project in the rail: a muted `#` glyph in a fixed slot, the project name
+// at card-title weight, and a trailing slot that shows the at-a-glance status
+// chip at rest and swaps to a pin toggle on hover (Codex-style). Right-clicking
+// opens a context menu (Pin/Unpin + Project settings). `drag` carries the
+// dnd-kit sortable wiring for pinned rows; it's absent for MORE/flat rows.
+function ProjectRow({
+  entry,
+  selected,
+  counts,
+  onSelect,
+  onTogglePin,
+  onOpenProjectSettings,
+  drag,
+}: {
+  entry: ProjectNavEntry;
+  selected: boolean;
+  counts: { working: number; needsInput: number } | undefined;
+  onSelect: (projectId: Id<"projects">) => void;
+  onTogglePin: (entry: ProjectNavEntry) => void;
+  onOpenProjectSettings: (projectId: Id<"projects">) => void;
+  drag?: {
+    setNodeRef: (node: HTMLElement | null) => void;
+    style: CSSProperties;
+    attributes: Record<string, unknown>;
+    listeners: Record<string, unknown> | undefined;
+    dragging: boolean;
+  };
+}) {
+  const pinned = entry.pinned;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger
+        ref={drag?.setNodeRef}
+        style={drag?.style}
+        {...drag?.attributes}
+        {...drag?.listeners}
+        className={cn(
+          "group/row flex min-h-9 items-center gap-2 rounded-lg pr-1.5 pl-2 transition-colors",
+          selected
+            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+            : "text-sidebar-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+          drag?.dragging && "opacity-50",
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => onSelect(entry.project._id)}
+          className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+        >
+          <span
+            className={cn(
+              "w-4 shrink-0 text-center font-mono text-[15px] leading-none",
+              selected
+                ? "text-sidebar-foreground/70"
+                : "text-sidebar-foreground/40",
+            )}
+            aria-hidden
+          >
+            #
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-normal">
+            {entry.project.name}
+          </span>
+        </button>
+        {/* Fixed-width trailing slot: the status chip fades out (opacity, no
+            layout shift) and the pin fades in as an absolutely-positioned
+            overlay covering the slot. Keeping the footprint constant — rather
+            than display-swapping chip↔pin at different widths — means the
+            cursor never falls into a reflow gap (which flickered hover on/off)
+            and gives the pin a generous, stable hit area on the row's right. */}
+        <div className="relative flex h-7 min-w-9 shrink-0 items-center justify-end">
+          <div className="flex items-center group-hover/row:opacity-0">
+            <ProjectStatusChips counts={counts} />
+          </div>
+          <button
+            type="button"
+            aria-label={pinned ? "Unpin project" : "Pin project"}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTogglePin(entry);
+            }}
+            className="pointer-events-none absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-md text-sidebar-foreground/55 opacity-0 hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/row:pointer-events-auto group-hover/row:opacity-100"
+          >
+            <PinIcon className={cn("size-3.5", pinned && "fill-current")} />
+          </button>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={() => onTogglePin(entry)}>
+          <PinIcon className={cn(pinned && "fill-current")} />
+          {pinned ? "Unpin" : "Pin to top"}
+        </ContextMenuItem>
+        <ContextMenuItem
+          onClick={() => onOpenProjectSettings(entry.project._id)}
+        >
+          <SettingsIcon />
+          Project settings
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+// A pinned row wrapped in dnd-kit sortable wiring so the PINNED group can be
+// manually drag-reordered. MORE/flat rows render <ProjectRow> directly.
+function SortablePinnedRow({
+  entry,
+  selected,
+  counts,
+  onSelect,
+  onTogglePin,
+  onOpenProjectSettings,
+}: {
+  entry: ProjectNavEntry;
+  selected: boolean;
+  counts: { working: number; needsInput: number } | undefined;
+  onSelect: (projectId: Id<"projects">) => void;
+  onTogglePin: (entry: ProjectNavEntry) => void;
+  onOpenProjectSettings: (projectId: Id<"projects">) => void;
+}) {
+  const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
+    useSortable({ id: entry.project._id });
+  return (
+    <ProjectRow
+      entry={entry}
+      selected={selected}
+      counts={counts}
+      onSelect={onSelect}
+      onTogglePin={onTogglePin}
+      onOpenProjectSettings={onOpenProjectSettings}
+      drag={{
+        setNodeRef,
+        style: {
+          transform: CSS.Transform.toString(transform),
+          transition,
+        },
+        attributes: attributes as unknown as Record<string, unknown>,
+        listeners: listeners as unknown as Record<string, unknown> | undefined,
+        dragging: isDragging,
+      }}
+    />
+  );
+}
+
+const MORE_COLLAPSED_KEY = "hitch:sidebar:more-collapsed";
+
 function AppSidebar({
   projects,
   selectedProjectId,
   creatingProject,
   onSelectProject,
   onCreateProject,
+  onOpenProjectSettings,
   harnessSetup,
   keepAwake,
   onToggleKeepAwake,
@@ -431,6 +646,7 @@ function AppSidebar({
   creatingProject: boolean;
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
+  onOpenProjectSettings: (projectId: Id<"projects">) => void;
   harnessSetup: GlobalHarnessSetupStatus | null;
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
@@ -443,11 +659,127 @@ function AppSidebar({
   // full file contents. Convex dedups this subscription across renders.
   const statusCounts = useQuery(api.files.chatStatusCounts);
 
+  // Pin state is per-user and server-side (projectMembers), synced across
+  // devices. Optimistic updates keep the rail snappy: a pin/unpin/reorder
+  // reflects instantly by patching the cached listMine before the round trip.
+  const setPinned = useMutation(api.projects.setPinned).withOptimisticUpdate(
+    (store, args) => {
+      const list = store.getQuery(api.projects.listMine, {});
+      if (!list) return;
+      const maxOrder = list.reduce(
+        (max, entry) =>
+          entry.pinned && entry.pinnedOrder != null
+            ? Math.max(max, entry.pinnedOrder)
+            : max,
+        -1,
+      );
+      store.setQuery(
+        api.projects.listMine,
+        {},
+        list.map((entry) =>
+          entry.project._id === args.projectId
+            ? {
+                ...entry,
+                pinned: args.pinned,
+                pinnedOrder: args.pinned ? maxOrder + 1 : null,
+              }
+            : entry,
+        ),
+      );
+    },
+  );
+  const reorderPinned = useMutation(
+    api.projects.reorderPinned,
+  ).withOptimisticUpdate((store, args) => {
+    const list = store.getQuery(api.projects.listMine, {});
+    if (!list) return;
+    const orderIndex = new Map(args.projectIds.map((id, index) => [id, index]));
+    store.setQuery(
+      api.projects.listMine,
+      {},
+      list.map((entry) =>
+        orderIndex.has(entry.project._id)
+          ? { ...entry, pinnedOrder: orderIndex.get(entry.project._id)! }
+          : entry,
+      ),
+    );
+  });
+
+  function togglePin(entry: ProjectNavEntry) {
+    void setPinned({ projectId: entry.project._id, pinned: !entry.pinned });
+  }
+
+  const pinned = useMemo(
+    () =>
+      projects
+        .filter((entry) => entry.pinned)
+        .sort(
+          (a, b) =>
+            (a.pinnedOrder ?? 0) - (b.pinnedOrder ?? 0) ||
+            a.project.name.localeCompare(b.project.name),
+        ),
+    [projects],
+  );
+  // listMine already returns entries alphabetically, so MORE stays A–Z.
+  const more = useMemo(
+    () => projects.filter((entry) => !entry.pinned),
+    [projects],
+  );
+  const hasPins = pinned.length > 0;
+  const pinnedIds = useMemo(
+    () => pinned.map((entry) => entry.project._id),
+    [pinned],
+  );
+
+  // MORE collapse persists per-device and defaults collapsed. The active
+  // project is always kept visible: if it lives in a collapsed MORE we surface
+  // just its row beneath the header, so collapsing never hides where you are.
+  const [moreCollapsed, setMoreCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(MORE_COLLAPSED_KEY) !== "false";
+  });
+  useEffect(() => {
+    window.localStorage.setItem(
+      MORE_COLLAPSED_KEY,
+      moreCollapsed ? "true" : "false",
+    );
+  }, [moreCollapsed]);
+  const activeInMore =
+    more.find((entry) => entry.project._id === selectedProjectId) ?? null;
+
+  const sidebarSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
+
+  function onPinnedDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = pinnedIds.indexOf(active.id as Id<"projects">);
+    const newIndex = pinnedIds.indexOf(over.id as Id<"projects">);
+    if (oldIndex === -1 || newIndex === -1) return;
+    const next = arrayMove(pinnedIds, oldIndex, newIndex);
+    void reorderPinned({ projectIds: next });
+  }
+
+  function renderRow(entry: ProjectNavEntry) {
+    return (
+      <ProjectRow
+        key={entry.project._id}
+        entry={entry}
+        selected={entry.project._id === selectedProjectId}
+        counts={statusCounts?.[entry.project._id]}
+        onSelect={onSelectProject}
+        onTogglePin={togglePin}
+        onOpenProjectSettings={onOpenProjectSettings}
+      />
+    );
+  }
+
   return (
     <aside className="window-sidebar flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 pb-2 pt-10 text-sidebar-foreground md:sticky md:top-0 md:h-screen md:w-64 md:flex-col md:items-stretch md:border-b-0 md:border-r md:border-sidebar-border md:px-3 md:pb-4 md:pt-12">
-      <nav className="hidden flex-1 flex-col gap-1 overflow-auto md:flex">
-        <div className="flex items-center justify-between px-2 pb-1">
-          <span className="text-xs font-medium uppercase tracking-wide text-sidebar-foreground/50">
+      <nav className="hidden flex-1 flex-col gap-0.5 overflow-auto md:flex">
+        <div className="flex items-center justify-between px-2 pb-1 pt-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-sidebar-foreground/50">
             Projects
           </span>
           <Tooltip>
@@ -467,39 +799,69 @@ function AppSidebar({
             <TooltipContent>New project</TooltipContent>
           </Tooltip>
         </div>
+
         {projects.length === 0 ? (
           <p className="px-2 py-1 text-xs text-sidebar-foreground/55">
             No projects yet.
           </p>
+        ) : !hasPins ? (
+          // Zero pinned → a plain flat list, no PINNED/MORE headers.
+          projects.map(renderRow)
         ) : (
-          projects.map(({ project }) => {
-            const selected = project._id === selectedProjectId;
-            return (
-              <div
-                key={project._id}
-                className={cn(
-                  "flex min-h-9 items-center rounded-lg pr-2 transition-colors",
-                  selected
-                    ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
-                )}
+          <>
+            <div className="flex items-center gap-1.5 px-2 pb-1 pt-0.5">
+              <StarIcon className="size-3 shrink-0 fill-sidebar-foreground/30 text-sidebar-foreground/30" />
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-sidebar-foreground/50">
+                Pinned
+              </span>
+            </div>
+            <DndContext
+              sensors={sidebarSensors}
+              onDragEnd={onPinnedDragEnd}
+            >
+              <SortableContext
+                items={pinnedIds}
+                strategy={verticalListSortingStrategy}
               >
+                {pinned.map((entry) => (
+                  <SortablePinnedRow
+                    key={entry.project._id}
+                    entry={entry}
+                    selected={entry.project._id === selectedProjectId}
+                    counts={statusCounts?.[entry.project._id]}
+                    onSelect={onSelectProject}
+                    onTogglePin={togglePin}
+                    onOpenProjectSettings={onOpenProjectSettings}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+
+            {more.length > 0 && (
+              <>
                 <button
                   type="button"
-                  onClick={() => onSelectProject(project._id)}
-                  className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pl-2 text-left text-sm"
+                  onClick={() => setMoreCollapsed((value) => !value)}
+                  className="mt-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-left transition-colors hover:bg-sidebar-accent/50"
                 >
-                  <LayoutDashboardIcon className="size-4 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">
-                    {project.name}
+                  {moreCollapsed ? (
+                    <ChevronRightIcon className="size-3 shrink-0 text-sidebar-foreground/55" />
+                  ) : (
+                    <ChevronDownIcon className="size-3 shrink-0 text-sidebar-foreground/55" />
+                  )}
+                  <span className="flex-1 text-[11px] font-semibold uppercase tracking-wide text-sidebar-foreground/50">
+                    More
+                  </span>
+                  <span className="text-[11px] font-medium text-sidebar-foreground/35">
+                    {more.length}
                   </span>
                 </button>
-                <div className="flex shrink-0 items-center">
-                  <ProjectStatusChips counts={statusCounts?.[project._id]} />
-                </div>
-              </div>
-            );
-          })
+                {moreCollapsed
+                  ? activeInMore && renderRow(activeInMore)
+                  : more.map(renderRow)}
+              </>
+            )}
+          </>
         )}
       </nav>
 
@@ -510,136 +872,155 @@ function AppSidebar({
         onCreate={onCreateProject}
       />
 
-      <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-3">
+      <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-2">
         <UpdateBanner />
-        <HarnessStatusShortcut
-          label="Codex"
-          status={harnessSetup?.codex ?? null}
-          onClick={() => onShowGlobalSettings("harnesses")}
+        <AccountFooter
+          harnessSetup={harnessSetup}
+          keepAwake={keepAwake}
+          onToggleKeepAwake={onToggleKeepAwake}
+          onShowGlobalSettings={onShowGlobalSettings}
+          onSignOut={onSignOut}
         />
-        <HarnessStatusShortcut
-          label="Claude Code"
-          status={harnessSetup?.claudeCode ?? null}
-          onClick={() => onShowGlobalSettings("harnesses")}
-        />
-        <KeepAwakeShortcut state={keepAwake} onToggle={onToggleKeepAwake} />
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => onShowGlobalSettings()}
-          aria-label="Global settings"
-          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
-        >
-          <SettingsIcon />
-          <span className="hidden md:inline">Global settings</span>
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onSignOut}
-          aria-label="Sign out"
-          className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
-        >
-          <LogOutIcon />
-          <span className="hidden md:inline">Sign out</span>
-        </Button>
       </div>
     </aside>
   );
 }
 
-function KeepAwakeShortcut({
-  state,
-  onToggle,
+// The rail's footer identity control: a resting row (avatar + name + a passive
+// coffee icon only when keep-awake is on + chevron) that opens an upward
+// popover consolidating harness health, the keep-awake toggle, Settings, and
+// Sign out. Replaces the old stacked shortcut buttons. An amber dot appears on
+// the resting avatar (and an amber Fix row in the popover) only when a harness
+// needs repair.
+function AccountFooter({
+  harnessSetup,
+  keepAwake,
+  onToggleKeepAwake,
+  onShowGlobalSettings,
+  onSignOut,
 }: {
-  state: KeepAwakeState | null;
-  onToggle: () => void;
+  harnessSetup: GlobalHarnessSetupStatus | null;
+  keepAwake: KeepAwakeState | null;
+  onToggleKeepAwake: () => void;
+  onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
+  onSignOut: () => void;
 }) {
-  const enabled = state?.enabled === true;
-  const unavailable = state === null;
-  const label = enabled ? "Keep machine awake on" : "Keep machine awake off";
+  const viewer = useQuery(api.users.viewer);
+  const repairs = harnessesNeedingRepair(harnessSetup);
+  const needsRepair = repairs.length > 0;
+  const awakeOn = keepAwake?.enabled === true;
+  const awakeUnavailable = keepAwake === null;
+  const name = viewer?.name || viewer?.email || "Account";
 
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={onToggle}
-      disabled={unavailable}
-      aria-pressed={enabled}
-      aria-label={label}
-      title={state?.error ?? label}
-      className="justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full"
-    >
-      <CoffeeIcon />
-      <span className="hidden min-w-0 flex-1 truncate text-left md:inline">
-        Keep machine awake
-      </span>
-      <span
-        aria-hidden
-        className={cn(
-          "hidden h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors md:flex",
-          enabled ? "bg-sidebar-foreground" : "bg-sidebar-foreground/25",
-        )}
+    <Menu>
+      <MenuTrigger
+        render={
+          <button
+            type="button"
+            aria-label="Account"
+            className="flex min-h-10 w-full items-center gap-2.5 rounded-lg bg-sidebar-accent px-2 py-1.5 text-left text-sidebar-foreground transition-colors hover:bg-sidebar-accent/80"
+          />
+        }
       >
-        <span
-          className={cn(
-            "size-3 rounded-full bg-background shadow-sm transition-transform",
-            enabled && "translate-x-3",
-          )}
-        />
-      </span>
-    </Button>
-  );
-}
+        <UserAvatar viewer={viewer} sizeClass="size-6.5" dot={needsRepair} />
+        <span className="hidden min-w-0 flex-1 truncate text-[13px] font-medium md:inline">
+          {name}
+        </span>
+        {awakeOn && (
+          <CoffeeIcon className="hidden size-3.5 shrink-0 text-sidebar-foreground/55 md:block" />
+        )}
+        <ChevronUpIcon className="hidden size-3.5 shrink-0 text-sidebar-foreground/55 md:block" />
+      </MenuTrigger>
+      <MenuContent
+        side="top"
+        align="start"
+        sideOffset={8}
+        className="w-[var(--anchor-width)] min-w-56 p-1.5"
+      >
+        <div className="flex items-center gap-2.5 px-2 pb-2 pt-1.5">
+          <UserAvatar viewer={viewer} sizeClass="size-7.5" />
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate text-[13px] font-semibold text-popover-foreground">
+              {viewer?.name || "Account"}
+            </span>
+            {viewer?.email && (
+              <span className="truncate text-[11.5px] text-muted-foreground">
+                {viewer.email}
+              </span>
+            )}
+          </div>
+        </div>
 
-function HarnessStatusShortcut({
-  label,
-  status,
-  onClick,
-}: {
-  label: string;
-  status: HarnessHookStatus | null;
-  onClick: () => void;
-}) {
-  const configured = status?.installed === true;
-  const checking = status === null;
-  const state = harnessStatusText(status);
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={onClick}
-      aria-label={`${label} hooks ${state.toLowerCase()}`}
-      className={cn(
-        "justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:w-full",
-        !checking &&
-          !configured &&
-          "border-amber-500/25 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300",
-      )}
-    >
-      {configured ? (
-        <CheckCircle2Icon className="text-emerald-500" />
-      ) : (
-        <AlertCircleIcon
-          className={cn(
-            checking ? "text-sidebar-foreground/50" : "text-amber-500",
-          )}
-        />
-      )}
-      <span className="hidden min-w-0 flex-1 truncate text-left md:inline">
-        {label}
-      </span>
-      <span
-        className={cn(
-          "hidden shrink-0 text-xs md:inline",
-          configured && "text-emerald-600 dark:text-emerald-400",
-          checking && "text-sidebar-foreground/55",
-          !checking && !configured && "text-amber-700 dark:text-amber-300",
+        <div className="my-0.5 h-px bg-border" />
+
+        {needsRepair ? (
+          repairs.map((status) => (
+            <MenuItem
+              key={status.harness}
+              onClick={() => onShowGlobalSettings("harnesses")}
+              className="h-auto items-center border border-amber-500/30 bg-amber-500/10 py-1.5 text-amber-700 data-highlighted:bg-amber-500/15 data-highlighted:text-amber-800 dark:text-amber-300 dark:data-highlighted:text-amber-200"
+            >
+              <AlertCircleIcon className="text-amber-600 dark:text-amber-400" />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="text-[13px] font-medium">
+                  {harnessLabel(status.harness)}
+                </span>
+                <span className="text-[11.5px] opacity-80">
+                  Hooks need repair
+                </span>
+              </div>
+              <span className="shrink-0 rounded-md border border-amber-500/40 bg-background px-2 py-0.5 text-[11.5px] font-semibold">
+                Fix
+              </span>
+            </MenuItem>
+          ))
+        ) : (
+          <MenuItem onClick={() => onShowGlobalSettings("harnesses")}>
+            <CheckCircle2Icon className="text-emerald-500" />
+            <span className="flex-1 text-popover-foreground/80">Harnesses</span>
+            <span className="text-[11.5px] text-muted-foreground">
+              All configured
+            </span>
+          </MenuItem>
         )}
-      >
-        {state}
-      </span>
-    </Button>
+
+        <MenuItem
+          closeOnClick={false}
+          disabled={awakeUnavailable}
+          onClick={onToggleKeepAwake}
+          aria-pressed={awakeOn}
+        >
+          <CoffeeIcon />
+          <span className="flex-1">Keep machine awake</span>
+          <span
+            aria-hidden
+            className={cn(
+              "flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors",
+              awakeOn ? "bg-foreground" : "bg-foreground/25",
+            )}
+          >
+            <span
+              className={cn(
+                "size-3 rounded-full bg-background shadow-sm transition-transform",
+                awakeOn && "translate-x-3",
+              )}
+            />
+          </span>
+        </MenuItem>
+
+        <div className="my-1 h-px bg-border" />
+
+        <MenuItem onClick={() => onShowGlobalSettings()}>
+          <SettingsIcon />
+          Settings
+        </MenuItem>
+        <MenuItem onClick={onSignOut}>
+          <LogOutIcon />
+          Sign out
+        </MenuItem>
+      </MenuContent>
+    </Menu>
   );
 }
 
@@ -649,6 +1030,7 @@ function AppShell({
   creatingProject,
   onSelectProject,
   onCreateProject,
+  onOpenProjectSettings,
   harnessSetup,
   keepAwake,
   onToggleKeepAwake,
@@ -661,6 +1043,7 @@ function AppShell({
   creatingProject: boolean;
   onSelectProject: (projectId: Id<"projects">) => void;
   onCreateProject: (name: string) => Promise<void>;
+  onOpenProjectSettings: (projectId: Id<"projects">) => void;
   harnessSetup: GlobalHarnessSetupStatus | null;
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
@@ -676,6 +1059,7 @@ function AppShell({
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
+        onOpenProjectSettings={onOpenProjectSettings}
         harnessSetup={harnessSetup}
         keepAwake={keepAwake}
         onToggleKeepAwake={onToggleKeepAwake}
@@ -1409,6 +1793,13 @@ function BoardContent({
     setShowProjectDetails(true);
   }
 
+  // Open settings for a project from the sidebar context menu: select it first
+  // (the details dialog is bound to the active project) then open the dialog.
+  function openProjectSettingsFor(targetProjectId: Id<"projects">) {
+    if (targetProjectId !== projectId) onSelectProject(targetProjectId);
+    openProjectDetails();
+  }
+
   function openGlobalSettings(tab: GlobalSettingsTab = "harnesses") {
     setGlobalSettingsTab(tab);
     setShowGlobalSettings(true);
@@ -1507,6 +1898,7 @@ function BoardContent({
         creatingProject={creatingProject}
         onSelectProject={onSelectProject}
         onCreateProject={onCreateProject}
+        onOpenProjectSettings={openProjectSettingsFor}
         harnessSetup={globalHarnessSetup}
         keepAwake={keepAwake}
         onToggleKeepAwake={() => void toggleKeepAwake()}
@@ -1753,6 +2145,7 @@ function BoardContent({
       creatingProject={creatingProject}
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
+      onOpenProjectSettings={openProjectSettingsFor}
       harnessSetup={globalHarnessSetup}
       keepAwake={keepAwake}
       onToggleKeepAwake={() => void toggleKeepAwake()}

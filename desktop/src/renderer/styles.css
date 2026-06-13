@@ -202,6 +202,14 @@ input,
 textarea,
 select,
 [role="button"],
-[data-radix-popper-content-wrapper] {
+[data-radix-popper-content-wrapper],
+/* base-ui portaled overlays (menus, context menus, and their modal backdrop).
+   Without these, popups that float over the draggable sidebar are swallowed by
+   the OS window-drag region: their items aren't clickable and outside-clicks
+   never reach base-ui's dismiss handler. The backdrop carries data-base-ui-inert
+   and covers the viewport, so making it no-drag restores outside-click dismiss. */
+[data-base-ui-inert],
+[data-slot="menu-positioner"],
+[data-slot="context-menu-positioner"] {
   -webkit-app-region: no-drag;
 }

@@ -110,7 +110,7 @@ export function ChatLaunch({
             aria-label="Codex first turn is running"
           >
             <LaunchIcon status={status} fallback={<ExternalLink />} />
-            Opening Codex…
+            Working…
             <Info className="opacity-70" aria-hidden />
           </Button>
         </TooltipTrigger>
