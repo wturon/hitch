@@ -8,6 +8,46 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-06-13
+
+- Replace the raw-markdown task editor with a **friendly, live-preview editor**.
+  The task dialog now opens a Notion-style WYSIWYG surface (headings, lists,
+  quotes, links, inline and fenced code, markdown shortcuts) with no visible
+  markdown markers, while Hitch's frontmatter is kept byte-for-byte intact —
+  only the body is edited, and `chat-*`/`status`/`title` are never re-serialized.
+  A Notion-style title input sits at the top, the modal stays short by default
+  and grows with content (capping at 85vh then scrolling), and a Formatted / Raw
+  markdown switch plus Copy task path / Archive / Delete live in the ⋯ overflow
+  menu. The dialog can also be closed while a save is still in flight.
+- Add a **Light / Dark / System theme toggle**. Dark mode already followed the
+  OS; now an Appearance tab in Global settings lets you pin Light or Dark (or
+  track the system). The choice is persisted, applied before first paint to
+  avoid a flash, and the native window frame and launch background repaint to
+  match the active theme.
+- **Integrate the macOS title bar** into the app: the board header moves into the
+  window's title area for a cleaner, more native top edge, with a stabilized
+  header height and no separate header summary row.
+- Make each **status column its own vertical scroll container**. The app shell is
+  pinned to the viewport and columns scroll their cards independently while the
+  header and sidebar stay put, instead of the whole page scrolling once a column
+  overflows. Column scroll padding was fixed so card focus rings are no longer
+  clipped at the column edges, and columns stretch to fill the available height.
+- Replace the "Open in <Harness>" pill on board cards with a **corner harness
+  chip**. At rest it's a circular harness avatar whose ring conveys live chat
+  status (faint = idle, spinner = working, amber ring + dot = needs input).
+  Hovering or focusing a card expands it into an "Open chat ↗" pill. Respects
+  `prefers-reduced-motion`.
+- Refresh the **built-in starting prompts** and make them first-class: built-ins
+  now ship in the app binary and render read-only (locked badge) so they refresh
+  with every update, while `preferences.json` stores only your own custom
+  prompts. The default execute prompt is renamed **Ship it** (still the default),
+  with new "Help me think this through" and "How hard would this be" prompts;
+  the dropdown lists built-ins first, then a divider and your custom prompts.
+- Remove the hover-revealed project-details gear from sidebar project rows,
+  keeping the row quiet.
+- Make `.hitch/` folders **self-describing** so a synced folder explains itself
+  to anyone (or any agent) who opens it.
+
 ## [0.1.11] - 2026-06-10
 
 - Add a persisted **Keep machine awake** sidebar toggle in Hitch Desktop. When
