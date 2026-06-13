@@ -2297,6 +2297,8 @@ function BoardContent({
           onOpenChange={(open) => {
             if (!open) setSelectedPath(null);
           }}
+          onArchive={selected ? () => void setArchived(selected, true) : undefined}
+          onDelete={selected ? () => void deleteCard(selected) : undefined}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
           onManageHarnesses={() => openGlobalSettings("harnesses")}
         />
