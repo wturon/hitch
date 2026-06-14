@@ -18,24 +18,6 @@ to git.
   local daemon controls.
 - `hitch.config.json` — the active project + which local paths are hitched.
 
-## Run
-
-1. `npm install`
-2. `npx convex dev` once (logs you in + creates a dev deployment).
-3. Add `HITCH_DEVICE_TOKEN` to `.env.local` until Desktop mints/stores it
-   automatically.
-4. `npm run dev` — runs Hitch Desktop; keep `npm run dev:convex` running in a
-   separate terminal or use the `.cmux` Hitch Dev command for split logs.
-5. Drop a file into a watched `.hitch/` folder; it appears in Convex within ~1s,
-   and changes made elsewhere are written back to disk.
-
-## Conventions
-
-- **One writer per file** — each agent owns its own file, so whole-file
-  last-write-wins is safe and we avoid conflict resolution for now.
-- `.hitch/` is **git-ignored**; never commit it.
-- Text / Markdown files only for now.
-
 ---
 
 ## Verifying UI changes (Electron)
