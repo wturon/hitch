@@ -15,7 +15,6 @@ import {
   quotePlugin,
   thematicBreakPlugin,
   linkPlugin,
-  linkDialogPlugin,
   codeBlockPlugin,
   codeMirrorPlugin,
   imagePlugin,
@@ -160,7 +159,6 @@ export const MarkdownEditor = forwardRef<
         quotePlugin(),
         thematicBreakPlugin(),
         linkPlugin(),
-        linkDialogPlugin(),
         codeBlockPlugin({ defaultCodeBlockLanguage: "text" }),
         codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
         // Image paste + inline rendering, only when the parent supplied both

@@ -8,6 +8,30 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-06-14
+
+- Add **task image & file attachments**. Paste or drag images and arbitrary
+  files (PDF, etc.) into the task editor: the bytes go to Convex file storage,
+  the body gets a standard markdown reference (`![](attachments/x.png)` for
+  images, `[name](path)` for other files), and the daemon materializes the blobs
+  to each device's local `.hitch/tasks/<slug>/attachments/` folder so agents can
+  read them. Drop-zone hover overlay and an in-flight "Uploading…" indicator;
+  raw and formatted views accept pasted images and files identically. Deleting a
+  task removes its attachments on every machine.
+- **Detect cross-environment `project.json` conflicts and offer an override.** A
+  folder shared between the dev and prod Convex deployments carries a
+  deployment-specific `projectId`; opening it against the other deployment now
+  surfaces a non-dismissable "Project ID mismatch" prompt instead of erroring or
+  pushing a foreign id. Confirming rewrites the `projectId` to this environment
+  and restarts the daemon, which adopts the folder by union (nothing is deleted).
+- Make the app **sidebar collapsible** with a ⌘\ (Ctrl+\ elsewhere) hotkey. The
+  rail slides off-canvas so the board reclaims the space without squishing, the
+  state persists across launches, and a fixed toggle stays put beside the macOS
+  traffic lights in both states.
+- **Auto-focus the task dialog** on open: a task with an empty body drops the
+  caret straight into the editor; a brand-new task (empty title and body) focuses
+  the title; a task that already has a body is left alone.
+
 ## [0.1.12] - 2026-06-13
 
 - Replace the raw-markdown task editor with a **friendly, live-preview editor**.
