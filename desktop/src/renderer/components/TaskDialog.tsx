@@ -136,10 +136,34 @@ function TaskEditor({
   const closeInFlightRef = useRef(false);
   // Focus-only handle into the editor; content flows through value/onChange.
   const editorRef = useRef<MarkdownEditorHandle>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     window.localStorage.setItem(VIEW_KEY, view);
   }, [view]);
+
+  // Land the caret where the user is most likely to start typing the moment a
+  // task opens, so an empty task needs no click. Only the formatted view (raw
+  // already autofocuses its textarea). An empty body → focus the body editor;
+  // an empty title *and* body (a fresh task) → focus the title instead. Anything
+  // with a body is left alone so reopening a real task doesn't grab focus.
+  //
+  // Runs once on mount — the editor is keyed per task, so a different task
+  // remounts this. Deferred a frame because the body editor is MDXEditor
+  // (Lexical mounts async) and the Dialog applies its own initial focus; by the
+  // next frame both have settled and our focus call wins.
+  useEffect(() => {
+    if (view !== "formatted") return;
+    if (draft.body.trim() !== "") return;
+    const titleEmpty = draft.title.trim() === "";
+    const id = requestAnimationFrame(() => {
+      if (titleEmpty) titleRef.current?.focus();
+      else editorRef.current?.focusEnd();
+    });
+    return () => cancelAnimationFrame(id);
+    // Mount-only: a remount (new task) is the only time we want to grab focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function persist(content: string) {
     await upsertFile({
@@ -335,6 +359,7 @@ function TaskEditor({
                 into the body. The value is read untrimmed (see `rawTitle`) so the
                 spacebar works. `p-0` keeps it flush-left with the body. */}
             <textarea
+              ref={titleRef}
               aria-label="Task title"
               rows={1}
               value={draft.title}
