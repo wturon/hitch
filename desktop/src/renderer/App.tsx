@@ -386,10 +386,6 @@ function AppShell({
 
   return (
     <div className="app-shell relative flex h-screen flex-col overflow-hidden bg-background md:flex-row">
-      <SidebarToggle
-        collapsed={collapsed}
-        onToggle={() => setCollapsed((value) => !value)}
-      />
       <AppSidebar
         projects={projects}
         selectedProjectId={selectedProjectId}
@@ -407,6 +403,14 @@ function AppShell({
       <main className="flex min-h-0 min-w-0 flex-1 flex-col p-4 pt-3 sm:p-6 sm:pt-3 lg:p-8 lg:pt-3">
         {children}
       </main>
+      {/* Rendered last so its `no-drag` region is subtracted AFTER the sidebar
+          and titlebar `drag` regions are unioned — Electron resolves overlapping
+          app-regions in DOM order, so an earlier no-drag would be re-covered by
+          a later sibling drag region and the OS would swallow the clicks. */}
+      <SidebarToggle
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((value) => !value)}
+      />
     </div>
   );
 }
