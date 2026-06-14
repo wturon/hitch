@@ -12,24 +12,16 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import type { MDXEditorMethods } from "@mdxeditor/editor";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import { sha256 } from "@/lib/hash";
-import {
-  parseFrontmatter,
-  setFrontmatterKeys,
-  splitFrontmatter,
-} from "@/lib/frontmatter";
-import {
-  clearChatFields,
-  parseChatOpenState,
-  parseChatRef,
-  parseChatStatus,
-  type Harness,
-} from "@/lib/chat";
+import type { Harness } from "@/lib/chat";
+import { useTaskDraft } from "@/hooks/useTaskDraft";
 import { DelegationBand } from "@/components/DelegationBand";
-import { MarkdownEditor } from "@/components/MarkdownEditor";
+import {
+  MarkdownEditor,
+  type MarkdownEditorHandle,
+} from "@/components/MarkdownEditor";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { cn } from "@/lib/utils";
@@ -54,16 +46,6 @@ function loadView(): View {
   // Anything other than an explicit "raw" (incl. the legacy "reading") →
   // formatted, so the stored preference migrates cleanly.
   return window.localStorage.getItem(VIEW_KEY) === "raw" ? "raw" : "formatted";
-}
-
-// Read the frontmatter `title` WITHOUT trimming. The title input is controlled by
-// this value, and `parseFrontmatter` trims — so a trailing space the user just
-// typed would be stripped on the round-trip, making the spacebar look broken in
-// the title. Reading the raw line (minus the single separator space) preserves it.
-function rawTitle(content: string): string {
-  const { frontmatterBlock } = splitFrontmatter(content);
-  const match = frontmatterBlock.match(/^title:(.*)$/m);
-  return match ? match[1].replace(/^ /, "") : "";
 }
 
 export function TaskDialog({
@@ -105,6 +87,8 @@ export function TaskDialog({
         {task && (
           // Key by identity so the editor's draft state resets per task,
           // rather than persisting a stale draft when a different card opens.
+          // useTaskDraft relies on this remount for its initialization — see
+          // the note there. Don't remove the key.
           <TaskEditor
             key={task.path}
             task={task}
@@ -142,57 +126,20 @@ function TaskEditor({
 }) {
   const upsertFile = useMutation(api.files.upsertFile);
   const enqueue = useMutation(api.commands.enqueueCommand);
-  // The draft is always the *whole* file (frontmatter + body). The friendly
-  // editor only ever sees the body half; on every body edit we recombine with
-  // the verbatim frontmatter block, so persist/dirty/the delegate band all keep
-  // operating on the full content exactly as before.
-  const [draft, setDraft] = useState(() => task.content);
+  // The whole document model lives in the hook: the full-file draft, the
+  // body/title/frontmatter selectors, the document mutations, dirty tracking,
+  // and adoption of external writes. This component owns only the things around
+  // it — persistence, close policy, focus, and chrome.
+  const draft = useTaskDraft(task.content);
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
   const closeInFlightRef = useRef(false);
-  const dirty = draft !== task.content;
-
-  // `draftRef` mirrors `draft` synchronously so handlers (body recombine, the
-  // external-edit guard) read the latest value without stale closures.
-  const draftRef = useRef(draft);
-  const viewRef = useRef(view);
-  viewRef.current = view;
-  const editorRef = useRef<MDXEditorMethods>(null);
-  // The last `task.content` we've reconciled with. Lets the external-edit effect
-  // tell a genuine outside write apart from our own save echoing back.
-  const syncedContentRef = useRef(task.content);
-
-  function updateDraft(next: string) {
-    draftRef.current = next;
-    setDraft(next);
-  }
+  // Focus-only handle into the editor; content flows through value/onChange.
+  const editorRef = useRef<MarkdownEditorHandle>(null);
 
   useEffect(() => {
     window.localStorage.setItem(VIEW_KEY, view);
   }, [view]);
-
-  // Live-following: another writer (e.g. the agent linking a session) can edit
-  // the open task file. Adopt the external change only when the user has no
-  // in-progress edits — never clobber a dirty editor. The human's draft wins on
-  // close (last-write-wins). When we do adopt while in Reading, push the new
-  // body into MDXEditor (its `markdown` prop is set-once).
-  useEffect(() => {
-    if (task.content === syncedContentRef.current) return; // our own echo / mount
-    const userEdited = draftRef.current !== syncedContentRef.current;
-    syncedContentRef.current = task.content;
-    if (userEdited) return;
-    updateDraft(task.content);
-    if (viewRef.current === "formatted") {
-      editorRef.current?.setMarkdown(splitFrontmatter(task.content).body);
-    }
-  }, [task.content]);
-
-  // The linked chat rides the file's frontmatter; the band reads it from the
-  // (live-following) draft, so it swaps compose↔linked on its own.
-  const fm = parseFrontmatter(draft).frontmatter;
-  const chat = parseChatRef(fm);
-  const chatStatus = parseChatStatus(fm);
-  const chatOpenState = parseChatOpenState(fm);
 
   async function persist(content: string) {
     await upsertFile({
@@ -207,10 +154,10 @@ function TaskEditor({
   // Explicit save (⌘S) — write the current draft without closing. No-op when
   // the draft is clean.
   async function saveDraft() {
-    if (!dirty || saving) return;
+    if (!draft.dirty || saving) return;
     setSaving(true);
     try {
-      await persist(draft);
+      await persist(draft.raw);
     } finally {
       setSaving(false);
     }
@@ -222,8 +169,8 @@ function TaskEditor({
   function closeWithSave() {
     if (closeInFlightRef.current) return;
     closeInFlightRef.current = true;
-    const content = draft;
-    const shouldPersist = dirty;
+    const content = draft.raw;
+    const shouldPersist = draft.dirty;
     onClose();
 
     if (!shouldPersist) return;
@@ -252,7 +199,7 @@ function TaskEditor({
     effort: string;
     prompt: string;
   }) {
-    if (dirty) await persist(draft);
+    if (draft.dirty) await persist(draft.raw);
     await enqueue({
       projectId: task.projectId,
       kind: "start-chat",
@@ -266,22 +213,13 @@ function TaskEditor({
 
   async function clearChat() {
     // Only frontmatter changes, so the body editor needs no update.
-    const cleared = clearChatFields(draftRef.current);
-    updateDraft(cleared);
-    await persist(cleared);
+    await persist(draft.clearChat());
   }
 
   function copyPath() {
     void navigator.clipboard.writeText(task.path).catch(() => {
       // Clipboard can be unavailable (e.g. no permission); silently ignore.
     });
-  }
-
-  // Recombine a body edit with the verbatim frontmatter block. Frontmatter never
-  // enters MDXEditor, so it stays byte-for-byte identical across edit + save.
-  function onBodyChange(nextBody: string) {
-    const { frontmatterBlock } = splitFrontmatter(draftRef.current);
-    updateDraft(frontmatterBlock + nextBody);
   }
 
   // Archive / Delete reuse the board's operations (passed down from App). Both
@@ -384,7 +322,7 @@ function TaskEditor({
         onMouseDown={(e) => {
           if (view === "formatted" && e.target === e.currentTarget) {
             e.preventDefault();
-            editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
+            editorRef.current?.focusEnd();
           }
         }}
       >
@@ -399,20 +337,12 @@ function TaskEditor({
             <textarea
               aria-label="Task title"
               rows={1}
-              value={rawTitle(draft)}
-              onChange={(e) =>
-                updateDraft(
-                  setFrontmatterKeys(draftRef.current, {
-                    title: e.target.value.replace(/\r?\n/g, " "),
-                  }),
-                )
-              }
+              value={draft.title}
+              onChange={(e) => draft.setTitle(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  editorRef.current?.focus(undefined, {
-                    defaultSelection: "rootStart",
-                  });
+                  editorRef.current?.focusStart();
                 }
               }}
               placeholder="Untitled"
@@ -421,16 +351,16 @@ function TaskEditor({
             />
             <MarkdownEditor
               ref={editorRef}
-              markdown={splitFrontmatter(draft).body}
-              onChange={onBodyChange}
+              value={draft.body}
+              onChange={draft.setBody}
               placeholder="What are you working on?"
             />
           </>
         ) : (
           <textarea
             aria-label="Task content"
-            value={draft}
-            onChange={(e) => updateDraft(e.target.value)}
+            value={draft.raw}
+            onChange={(e) => draft.setRaw(e.target.value)}
             spellCheck={false}
             autoFocus
             className="hitch-autosize min-h-[180px] w-full shrink-0 resize-none overflow-hidden bg-transparent font-mono text-xs leading-relaxed outline-none"
@@ -443,10 +373,10 @@ function TaskEditor({
         <div className="pointer-events-auto">
           <DelegationBand
             projectId={task.projectId}
-            chat={chat}
-            chatStatus={chatStatus}
-            chatOpenState={chatOpenState}
-            title={fm.title || task.title}
+            chat={draft.chat}
+            chatStatus={draft.chatStatus}
+            chatOpenState={draft.chatOpenState}
+            title={draft.frontmatter.title || task.title}
             path={task.path}
             onStart={startChat}
             onClear={() => void clearChat()}
