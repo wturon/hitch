@@ -38,5 +38,25 @@ to git.
 
 ---
 
+## Verifying UI changes (Electron)
+
+`desktop/e2e/` lets you drive the real app under Playwright to check UI work
+end-to-end — click buttons, type, assert focus/caret, take screenshots. It
+launches a **second, isolated** Electron instance: its own Chromium profile
+(`--user-data-dir`) and its own Hitch config (so its daemon stays idle and never
+touches your project sync), seeded with your signed-in `secrets.json` so it
+boots authenticated as you. Your running dev app keeps the auth-loopback port;
+the test instance just logs a benign "port in use" and skips sign-in.
+
+- Prereq: `npm run dev:renderer` running (serves the renderer on :5173).
+- `desktop/e2e/harness.mjs` exports `launchHitch()` → `{ app, page, cleanup }`.
+- `npm run e2e` (in `desktop/`) runs the example task-editor check.
+
+These are **one-off checks, not a maintained suite** — write a throwaway script,
+run it, read the screenshots in `/tmp/hitch-e2e/`, delete it. Confine any edits
+to a scratch task you create and delete.
+
+---
+
 ## Source control
 - No branching. Push everything straight to `main`
