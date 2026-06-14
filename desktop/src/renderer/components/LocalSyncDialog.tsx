@@ -23,12 +23,20 @@ interface LogEntry {
   message: string;
 }
 
+export interface ProjectConflict {
+  projectId: Id<"projects">;
+  projectName?: string;
+  localPath: string;
+  diskProjectId: string;
+}
+
 interface DaemonState {
   status: DaemonStatus;
   pid: number | null;
   repoRoot: string;
   configPath: string;
   logs: LogEntry[];
+  conflicts: ProjectConflict[];
 }
 
 export interface HitchBinding {
@@ -80,6 +88,7 @@ interface HitchDaemonApi {
   getConfig: () => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
   removeHitch: (projectId: Id<"projects">) => Promise<RemoveHitchResult>;
+  resolveProjectConflict: (projectId: Id<"projects">) => Promise<DaemonState>;
   getProjectSetup: (projectId: Id<"projects">) => Promise<ProjectSetupStatus>;
   ensureHitchDirectory: (
     projectId: Id<"projects">,
@@ -113,6 +122,7 @@ const emptyState: DaemonState = {
   repoRoot: "",
   configPath: "",
   logs: [],
+  conflicts: [],
 };
 
 const emptyConfig: LocalHitchConfig = {

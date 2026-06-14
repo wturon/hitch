@@ -60,11 +60,22 @@ export interface HitchDaemonOptions {
   logger?: HitchDaemonLogger;
 }
 
+// A folder whose on-disk project.json belongs to a different project than the
+// one this environment's config binds it to. Surfaced (not auto-resolved) so the
+// desktop UI can offer an explicit "override" — see startHitchBinding.
+export interface ProjectConflict {
+  projectId: string;
+  projectName?: string;
+  localPath: string;
+  diskProjectId: string;
+}
+
 export interface HitchDaemonHandle {
   projectId: string;
   localPath: string;
   hitchPath: string;
   hitches: ResolvedHitch[];
+  conflicts: ProjectConflict[];
   stop: () => Promise<void>;
 }
 
@@ -340,8 +351,30 @@ function readHarnessEnvironment(
   }
 }
 
+const PROJECT_CONFIG_FILENAME = "project.json";
+
+// Read the projectId baked into a folder's .hitch/project.json. Returns null for
+// a missing or unparseable file — those are not conflicts (a fresh hitch has no
+// project.json yet; a garbled one is left for normal sync to overwrite). Only a
+// well-formed file whose projectId differs from the binding is a conflict.
+function readDiskProjectId(hitchPath: string): string | null {
+  try {
+    const raw = readFileSync(join(hitchPath, PROJECT_CONFIG_FILENAME), "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return null;
+    return typeof parsed.projectId === "string" && parsed.projectId.trim()
+      ? parsed.projectId.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 interface HitchBindingHandle {
   stop: () => Promise<void>;
+  // Set when this folder's project.json belongs to a different project, in which
+  // case the binding does NOT sync (no subscription, no push) until resolved.
+  conflict?: ProjectConflict;
 }
 
 async function startHitchBinding({
@@ -356,6 +389,29 @@ async function startHitchBinding({
   const projectId = root.projectId;
   const projectLabel = root.projectName || projectId;
   mkdirSync(root.hitchPath, { recursive: true });
+
+  // Cross-environment guard: if the folder's project.json carries a different
+  // projectId (e.g. it was last synced against another Convex deployment),
+  // refuse to sync this binding so we never push a foreign project.json up or
+  // pull the wrong project's files down. Surface the conflict for the UI to
+  // resolve with an explicit override, then the daemon restarts and re-checks.
+  const diskProjectId = readDiskProjectId(root.hitchPath);
+  if (diskProjectId && diskProjectId !== projectId) {
+    logError(
+      logger,
+      `[hitch:${projectLabel}] project.json belongs to ${diskProjectId}, not ${projectId} — skipping sync until resolved`,
+    );
+    return {
+      stop: async () => {},
+      conflict: {
+        projectId,
+        projectName: root.projectName,
+        localPath: root.localPath,
+        diskProjectId,
+      },
+    };
+  }
+
   setT3Logger(logger);
 
   const lastHash = new Map<string, string>();
@@ -840,6 +896,9 @@ export async function startHitchDaemon(
     ),
   );
   const primaryHitch = config.hitches[0];
+  const conflicts = bindingHandles
+    .map((binding) => binding.conflict)
+    .filter((conflict): conflict is ProjectConflict => Boolean(conflict));
 
   let stopped = false;
   async function stop(): Promise<void> {
@@ -857,6 +916,7 @@ export async function startHitchDaemon(
     localPath: primaryHitch.localPath,
     hitchPath: primaryHitch.hitchPath,
     hitches: config.hitches,
+    conflicts,
     stop,
   };
 }

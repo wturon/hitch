@@ -55,12 +55,20 @@ interface LogEntry {
   message: string;
 }
 
+interface ProjectConflict {
+  projectId: string;
+  projectName?: string;
+  localPath: string;
+  diskProjectId: string;
+}
+
 interface DaemonState {
   status: DaemonStatus;
   pid: number | null;
   repoRoot: string;
   configPath: string;
   logs: LogEntry[];
+  conflicts: ProjectConflict[];
 }
 
 interface HitchBinding {
@@ -143,6 +151,7 @@ interface RunnerMessage {
   localPath?: unknown;
   hitchPath?: unknown;
   hitches?: unknown;
+  conflicts?: unknown;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -667,6 +676,11 @@ let status: DaemonStatus = "stopped";
 let nextLogId = 1;
 const logs: LogEntry[] = [];
 const maxLogs = 500;
+// Folders the running daemon refused to sync because their project.json points
+// at a different project (e.g. a folder shared between the dev and prod Convex
+// deployments). Repopulated from each daemon "ready" message; the renderer
+// surfaces an override prompt. See handleRunnerMessage / resolveProjectConflict.
+let conflicts: ProjectConflict[] = [];
 let stopTimer: NodeJS.Timeout | null = null;
 let quitAfterDaemonStops = false;
 let updaterConfigured = false;
@@ -724,6 +738,7 @@ function state(): DaemonState {
     repoRoot,
     configPath: localConfigPath,
     logs,
+    conflicts,
   };
 }
 
@@ -1257,6 +1272,42 @@ function readExistingHitchProjectId(localPath: string): string | null {
     throw new Error(`Existing .hitch/${PROJECT_CONFIG_FILENAME} is missing projectId`);
   }
   return existingProjectId;
+}
+
+// Rewrite the projectId baked into a folder's .hitch/project.json, preserving
+// every other field (name, statuses, …). Used to resolve a cross-environment
+// conflict: the file's body is the other deployment's metadata, but pointing it
+// at this deployment's project id lets the daemon adopt it on the next sync.
+function writeHitchProjectId(localPath: string, projectId: string): void {
+  const configPath = join(localPath, ".hitch", PROJECT_CONFIG_FILENAME);
+  if (!existsSync(configPath)) {
+    throw new Error(`No .hitch/${PROJECT_CONFIG_FILENAME} to rewrite at ${localPath}`);
+  }
+  const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error(`Existing .hitch/${PROJECT_CONFIG_FILENAME} must be a JSON object`);
+  }
+  const next = { ...parsed, projectId };
+  writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+}
+
+// User confirmed the override prompt: rewrite the folder's project.json to this
+// environment's project id and restart the daemon, which re-checks and now syncs
+// the folder (union of local ∪ server). See daemon startHitchBinding.
+async function resolveProjectConflict(projectId: ProjectId): Promise<DaemonState> {
+  const trimmed = projectId.trim();
+  const conflict = conflicts.find((entry) => entry.projectId === trimmed);
+  if (!conflict) return state();
+
+  writeHitchProjectId(conflict.localPath, trimmed);
+  addLog(
+    "system",
+    `Overrode project.json at ${conflict.localPath}: ${conflict.diskProjectId} → ${trimmed}`,
+  );
+  conflicts = conflicts.filter((entry) => entry.projectId !== trimmed);
+  broadcastState();
+  await restartDaemon();
+  return state();
 }
 
 function projectSetupStatus(projectId: ProjectId): ProjectSetupStatus {
@@ -1959,10 +2010,16 @@ async function addHitch(input: AddHitchInput): Promise<AddHitchResult> {
   if (!localPath) throw new Error("Local path is required");
   if (!existsSync(localPath)) throw new Error(`Local path does not exist: ${localPath}`);
 
+  // A folder whose project.json names a different project usually means it was
+  // last synced against another Convex deployment (the dev⇄prod shared-folder
+  // case). Don't hard-block: create the binding anyway and let the daemon detect
+  // the mismatch and surface an explicit override prompt, rather than dead-end
+  // here before the daemon ever runs.
   const existingProjectId = readExistingHitchProjectId(localPath);
   if (existingProjectId && existingProjectId !== projectId) {
-    throw new Error(
-      `This folder is already hitched to project ${existingProjectId}. Open that project or choose a different folder.`,
+    addLog(
+      "system",
+      `Hitching ${localPath} to ${projectId}, but its project.json names ${existingProjectId} — the daemon will prompt to override`,
     );
   }
 
@@ -2012,6 +2069,29 @@ async function removeHitch(projectId: ProjectId): Promise<RemoveHitchResult> {
   return { config: savedConfig, removed: true, restarted };
 }
 
+function parseConflicts(value: unknown): ProjectConflict[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): ProjectConflict[] => {
+    if (
+      isRecord(entry) &&
+      typeof entry.projectId === "string" &&
+      typeof entry.localPath === "string" &&
+      typeof entry.diskProjectId === "string"
+    ) {
+      return [
+        {
+          projectId: entry.projectId,
+          projectName:
+            typeof entry.projectName === "string" ? entry.projectName : undefined,
+          localPath: entry.localPath,
+          diskProjectId: entry.diskProjectId,
+        },
+      ];
+    }
+    return [];
+  });
+}
+
 function handleRunnerMessage(message: RunnerMessage): void {
   if (!isRecord(message)) return;
 
@@ -2029,7 +2109,15 @@ function handleRunnerMessage(message: RunnerMessage): void {
         ? `Daemon runtime ready for ${hitchCount} projects; primary project ${projectId} at ${hitchPath}`
         : `Daemon runtime ready for project ${projectId} at ${hitchPath}`,
     );
+    conflicts = parseConflicts(message.conflicts);
+    for (const conflict of conflicts) {
+      addLog(
+        "system",
+        `Project ID mismatch at ${conflict.localPath}: project.json points at ${conflict.diskProjectId}, expected ${conflict.projectId} — not syncing until resolved`,
+      );
+    }
     setStatus("running");
+    broadcastState();
     return;
   }
 
@@ -2052,6 +2140,8 @@ function handleRunnerMessage(message: RunnerMessage): void {
 function startDaemon(): DaemonState {
   if (daemon) return state();
 
+  // Stale until the fresh daemon reports its conflicts in the "ready" message.
+  conflicts = [];
   setStatus("starting");
   let config: LocalHitchConfig;
   try {
@@ -2369,6 +2459,9 @@ ipcMain.handle("daemon:clear-logs", () => clearLogs());
 ipcMain.handle("config:get", () => readLocalConfig());
 ipcMain.handle("config:add-hitch", (_event, input: AddHitchInput) =>
   addHitch(input),
+);
+ipcMain.handle("config:resolve-conflict", (_event, projectId: ProjectId) =>
+  resolveProjectConflict(projectId),
 );
 ipcMain.handle("config:remove-hitch", (_event, projectId: ProjectId) =>
   removeHitch(projectId),

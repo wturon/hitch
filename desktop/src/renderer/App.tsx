@@ -76,6 +76,7 @@ import {
   type DetailsTab as ProjectDetailsTab,
 } from "@/components/ProjectDetailsDialog";
 import { AppSidebar, CreateProjectDialog } from "@/components/AppSidebar";
+import { ProjectConflictDialog } from "@/components/ProjectConflictDialog";
 import type { KeepAwakeState, ProjectNavEntry } from "@/lib/types";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { Button } from "@/components/ui/button";
@@ -1650,5 +1651,10 @@ function BoardContent({
 }
 
 export default function Board() {
-  return <AuthenticatedBoard />;
+  return (
+    <>
+      <AuthenticatedBoard />
+      <ProjectConflictDialog />
+    </>
+  );
 }

@@ -52,6 +52,7 @@ async function main(): Promise<void> {
         localPath: hitch.localPath,
         hitchPath: hitch.hitchPath,
       })),
+      conflicts: daemon.conflicts,
     });
   } catch (err) {
     send({ type: "error", message: String(err) });

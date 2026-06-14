@@ -19,12 +19,20 @@ export interface LogEntry {
   message: string;
 }
 
+export interface ProjectConflict {
+  projectId: ProjectId;
+  projectName?: string;
+  localPath: string;
+  diskProjectId: string;
+}
+
 export interface DaemonState {
   status: DaemonStatus;
   pid: number | null;
   repoRoot: string;
   configPath: string;
   logs: LogEntry[];
+  conflicts: ProjectConflict[];
 }
 
 export interface HitchBinding {
@@ -139,6 +147,7 @@ export interface HitchDaemonApi {
   getConfig: () => Promise<LocalHitchConfig>;
   addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
   removeHitch: (projectId: ProjectId) => Promise<RemoveHitchResult>;
+  resolveProjectConflict: (projectId: ProjectId) => Promise<DaemonState>;
   getProjectSetup: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   ensureHitchDirectory: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   ensureGitignore: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
@@ -191,6 +200,8 @@ const api: HitchDaemonApi = {
   getConfig: () => ipcRenderer.invoke("config:get"),
   addHitch: (input) => ipcRenderer.invoke("config:add-hitch", input),
   removeHitch: (projectId) => ipcRenderer.invoke("config:remove-hitch", projectId),
+  resolveProjectConflict: (projectId) =>
+    ipcRenderer.invoke("config:resolve-conflict", projectId),
   getProjectSetup: (projectId) => ipcRenderer.invoke("config:get-project-setup", projectId),
   ensureHitchDirectory: (projectId) => ipcRenderer.invoke("config:ensure-hitch-directory", projectId),
   ensureGitignore: (projectId) => ipcRenderer.invoke("config:ensure-gitignore", projectId),
