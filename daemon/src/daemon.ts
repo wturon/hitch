@@ -88,6 +88,20 @@ interface FileDoc {
   updatedAt: number;
 }
 
+interface AttachmentDoc {
+  projectId: string;
+  path: string;
+  storageId: string;
+  hash: string;
+  contentType: string;
+  size: number;
+  deleted: boolean;
+  updatedAt: number;
+  // Freshly-signed download URL from listAttachments; null for a tombstone or a
+  // GC'd blob.
+  url: string | null;
+}
+
 interface CommandDoc {
   _id: string;
   projectId: string;
@@ -217,6 +231,14 @@ const hashOf = (content: string): string =>
   createHash("sha256").update(content).digest("hex");
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+
+// Files under a task's attachments/ folder are image blobs, NOT UTF-8 text.
+// They sync via the attachments table (download-only), so the text watcher must
+// never read/push them — doing so would shove corrupted binary into the `files`
+// table and pollute the cards query. Matches both a file and the dir itself.
+const ATTACHMENT_RE = /^tasks\/[^/]+\/attachments(\/|$)/;
+// A single attachment file's path, used to scope empty-folder pruning.
+const ATTACHMENT_FILE_RE = /^tasks\/[^/]+\/attachments\/[^/]+$/;
 
 function setFrontmatterKeys(
   content: string,
@@ -495,6 +517,9 @@ async function startHitchBinding({
   async function pushLocal(absPath: string): Promise<void> {
     const loc = locate(absPath);
     if (!loc) return;
+    // Never read attachment blobs as UTF-8 or push them into `files` — they sync
+    // download-only via the attachments table.
+    if (ATTACHMENT_RE.test(loc.rel)) return;
     let content: string;
     try {
       content = await readFile(absPath, "utf8");
@@ -518,6 +543,8 @@ async function startHitchBinding({
   async function pushDelete(absPath: string): Promise<void> {
     const loc = locate(absPath);
     if (!loc) return;
+    // Attachment deletes are driven by the attachments table, not the watcher.
+    if (ATTACHMENT_RE.test(loc.rel)) return;
     lastHash.delete(absPath);
     await client.mutation(anyApi.files.upsertFile, {
       projectId,
@@ -575,6 +602,93 @@ async function startHitchBinding({
       },
       (err) =>
         logError(logger, `[hitch:${projectLabel}] files subscription failed: ${String(err)}`),
+    ),
+  );
+
+  // Attachment hashes we've materialized locally, keyed by abs path — lets us
+  // skip re-downloading a blob whose bytes already match.
+  const attachmentHash = new Map<string, string>();
+
+  // After removing an attachment file, drop the now-empty attachments/ folder
+  // (and the task folder, if that too is now empty) so the local .hitch doesn't
+  // accumulate orphan directories. rmdir fails on a non-empty dir — that's the
+  // signal to stop, not an error.
+  async function pruneEmptyAttachmentDir(
+    relPath: string,
+    absPath: string,
+  ): Promise<void> {
+    if (!ATTACHMENT_FILE_RE.test(relPath)) return;
+    const attDir = dirname(absPath); // tasks/<slug>/attachments
+    const taskDir = dirname(attDir); // tasks/<slug>
+    for (const dir of [attDir, taskDir]) {
+      try {
+        await rmdir(dir);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTEMPTY" || code === "EEXIST") {
+          return;
+        }
+        logError(
+          logger,
+          `[hitch:${projectLabel}] attachment dir cleanup failed for ${dir}: ${String(err)}`,
+        );
+        return;
+      }
+    }
+  }
+
+  // Download-only materialization of image attachments: Convex storage → local
+  // disk. No upload direction in v1 (the renderer is the sole ingress), which
+  // sidesteps any re-upload echo loop. A tombstone removes the local file.
+  subscriptions.push(
+    client.onUpdate(
+      anyApi.attachments.listAttachments,
+      { projectId, deviceToken },
+      async (rows: AttachmentDoc[]) => {
+        for (const a of rows) {
+          const absPath = toAbs(a.path);
+
+          if (a.deleted) {
+            if (existsSync(absPath)) {
+              attachmentHash.delete(absPath);
+              await rm(absPath, { force: true });
+              logger.info(`[hitch:${projectLabel}] ↓✗ ${a.path}`);
+            }
+            await pruneEmptyAttachmentDir(a.path, absPath);
+            continue;
+          }
+
+          if (attachmentHash.get(absPath) === a.hash && existsSync(absPath)) {
+            continue;
+          }
+          if (!a.url) continue; // blob GC'd or not yet uploaded — nothing to pull
+          try {
+            const res = await fetch(a.url);
+            if (!res.ok) {
+              logError(
+                logger,
+                `[hitch:${projectLabel}] attachment download failed (${res.status}) for ${a.path}`,
+              );
+              continue;
+            }
+            const buf = Buffer.from(await res.arrayBuffer());
+            await mkdir(dirname(absPath), { recursive: true });
+            await writeFile(absPath, buf);
+            attachmentHash.set(absPath, a.hash);
+            logger.info(`[hitch:${projectLabel}] ↓ ${a.path}`);
+          } catch (err) {
+            logError(
+              logger,
+              `[hitch:${projectLabel}] attachment download failed for ${a.path}: ${String(err)}`,
+            );
+          }
+        }
+      },
+      (err) =>
+        logError(
+          logger,
+          `[hitch:${projectLabel}] attachments subscription failed: ${String(err)}`,
+        ),
     ),
   );
 

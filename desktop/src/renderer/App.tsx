@@ -1090,6 +1090,11 @@ function BoardContent({
       );
     },
   );
+  // Attachment rows for the project (image blobs live outside `files`). We only
+  // need them to drive the delete cascade: when a task is removed, tombstone its
+  // attachment rows so the daemon cleans up the local files + empty folders.
+  const attachments = useQuery(api.attachments.listAttachments, { projectId });
+  const tombstoneAttachment = useMutation(api.attachments.tombstoneAttachment);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
@@ -1374,9 +1379,25 @@ function BoardContent({
     }
   }
 
+  // Tombstone every (non-deleted) attachment row under a task's folder. The
+  // daemon's listAttachments subscription then removes the local blobs and the
+  // now-empty attachments/ + task folder. Server-side blob GC is out of scope.
+  async function cascadeDeleteAttachments(slug: string) {
+    const prefix = `tasks/${slug}/attachments/`;
+    const rows = (attachments ?? []).filter(
+      (row) => !row.deleted && row.path.startsWith(prefix),
+    );
+    await Promise.all(
+      rows.map((row) =>
+        tombstoneAttachment({ projectId, path: row.path }),
+      ),
+    );
+  }
+
   async function deleteCard(card: Card) {
     setPendingCardId(card.id);
     try {
+      await cascadeDeleteAttachments(card.slug);
       await upsertFile({
         projectId,
         path: card.path,
@@ -1394,15 +1415,16 @@ function BoardContent({
   // drops each card immediately.
   async function deleteAllArchived() {
     await Promise.all(
-      archivedCards.map((card) =>
-        upsertFile({
+      archivedCards.map(async (card) => {
+        await cascadeDeleteAttachments(card.slug);
+        await upsertFile({
           projectId,
           path: card.path,
           content: "",
           hash: "",
           deleted: true,
-        }),
-      ),
+        });
+      }),
     );
   }
 
@@ -1432,15 +1454,16 @@ function BoardContent({
   // sliced to a single column — the tombstone path each card already uses.
   async function deleteAllInColumn(columnCards: Card[]) {
     await Promise.all(
-      columnCards.map((card) =>
-        upsertFile({
+      columnCards.map(async (card) => {
+        await cascadeDeleteAttachments(card.slug);
+        await upsertFile({
           projectId,
           path: card.path,
           content: "",
           hash: "",
           deleted: true,
-        }),
-      ),
+        });
+      }),
     );
   }
 

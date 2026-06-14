@@ -61,6 +61,25 @@ export default defineSchema({
     .index("by_project", ["projectId"])
     .index("by_key", ["projectId", "path"]),
 
+  // One row per image attachment in a task folder. Unlike `files`, the bytes
+  // live in Convex file storage (blobs), not in a text column — base64 in a
+  // ~1 MiB document would blow up on typical screenshots. `path` is relative to
+  // .hitch/ (e.g. tasks/<slug>/attachments/image-1.png) and IS the join key the
+  // markdown reference resolves to. The daemon is download-only: it materializes
+  // these blobs to local disk and removes them on tombstone.
+  attachments: defineTable({
+    projectId: v.id("projects"),
+    path: v.string(),
+    storageId: v.id("_storage"),
+    hash: v.string(),
+    contentType: v.string(),
+    size: v.number(),
+    deleted: v.boolean(),
+    updatedAt: v.number(),
+  })
+    .index("by_project", ["projectId"])
+    .index("by_key", ["projectId", "path"]),
+
   // One row per running daemon (keyed by machine). Lets the board show which
   // machines are connected and when they were last seen.
   daemons: defineTable({

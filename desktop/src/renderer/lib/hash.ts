@@ -9,3 +9,14 @@ export async function sha256(text: string): Promise<string> {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
+
+// sha256 of raw bytes, hex-encoded. Matches the daemon's hashOf over a Buffer
+// (createHash("sha256").update(buf)), so an attachment row's `hash` lines up
+// with what the daemon recomputes on download — letting it skip a re-fetch when
+// the local blob already matches.
+export async function sha256Bytes(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}

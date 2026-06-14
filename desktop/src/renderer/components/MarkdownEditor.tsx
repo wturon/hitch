@@ -18,6 +18,7 @@ import {
   linkDialogPlugin,
   codeBlockPlugin,
   codeMirrorPlugin,
+  imagePlugin,
   markdownShortcutPlugin,
 } from "@mdxeditor/editor";
 import "@mdxeditor/editor/style.css";
@@ -76,13 +77,24 @@ export const MarkdownEditor = forwardRef<
     onChange: (markdown: string) => void;
     placeholder?: string;
     className?: string;
+    // When both are set, MDXEditor's image plugin is enabled: clipboard paste of
+    // an image uploads it (imageUploadHandler returns the relative path written
+    // as the markdown `src`) and inline display resolves that path to a signed
+    // URL (imagePreviewHandler). Supplied by the parent via useAttachments;
+    // file *drop* is handled at the dialog level, not here.
+    imageUploadHandler?: (file: File) => Promise<string>;
+    imagePreviewHandler?: (src: string) => Promise<string>;
   }
->(function MarkdownEditor({ value, onChange, placeholder, className }, ref) {
+>(function MarkdownEditor(
+  { value, onChange, placeholder, className, imageUploadHandler, imagePreviewHandler },
+  ref,
+) {
   const editorRef = useRef<MDXEditorMethods>(null);
   // The markdown we last handed to the parent (or pushed in via setMarkdown).
   // Incoming `value` props are diffed against this, NOT against MDXEditor's live
   // content: only a value the editor didn't itself produce warrants a setMarkdown.
   const lastEmittedRef = useRef(value);
+  const imagesEnabled = Boolean(imageUploadHandler && imagePreviewHandler);
 
   useImperativeHandle(ref, () => ({
     focusStart: () =>
@@ -151,6 +163,18 @@ export const MarkdownEditor = forwardRef<
         linkDialogPlugin(),
         codeBlockPlugin({ defaultCodeBlockLanguage: "text" }),
         codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
+        // Image paste + inline rendering, only when the parent supplied both
+        // handlers. The upload handler returns the relative path written as the
+        // markdown `src`; the preview handler resolves it to a signed URL.
+        ...(imagesEnabled
+          ? [
+              imagePlugin({
+                imageUploadHandler,
+                imagePreviewHandler,
+                disableImageSettingsButton: true,
+              }),
+            ]
+          : []),
         markdownShortcutPlugin(),
       ]}
     />

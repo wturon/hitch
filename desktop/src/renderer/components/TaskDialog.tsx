@@ -9,14 +9,17 @@ import {
   CopyIcon,
   EllipsisIcon,
   LoaderCircle,
+  PaperclipIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import { sha256 } from "@/lib/hash";
+import { taskSlug } from "@/lib/tasks";
 import type { Harness } from "@/lib/chat";
 import { useTaskDraft } from "@/hooks/useTaskDraft";
+import { useAttachments } from "@/hooks/useAttachments";
 import { DelegationBand } from "@/components/DelegationBand";
 import {
   MarkdownEditor,
@@ -131,12 +134,143 @@ function TaskEditor({
   // and adoption of external writes. This component owns only the things around
   // it — persistence, close policy, focus, and chrome.
   const draft = useTaskDraft(task.content);
+  // The task folder slug, used to scope attachment paths/queries to this task.
+  const slug = taskSlug(task.path);
+  // Shared upload path for both the editor's image paste and the dialog-wide
+  // file drop below. Inert (enabled: false) for a task with no slug.
+  const attachments = useAttachments(
+    slug ? { projectId: task.projectId, slug } : undefined,
+  );
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
   const closeInFlightRef = useRef(false);
   // Focus-only handle into the editor; content flows through value/onChange.
   const editorRef = useRef<MarkdownEditorHandle>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
+  // The raw-view textarea, so a paste lands at its caret.
+  const rawRef = useRef<HTMLTextAreaElement>(null);
+  // The whole-dialog drop surface. Files dropped anywhere inside upload and get
+  // appended to the body as standard markdown (images render inline, other
+  // files become `[name](path)` links).
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [draggingFile, setDraggingFile] = useState(false);
+  // The listeners below are bound once (deps: [slug]); read live state through
+  // refs so they never re-bind on every keystroke yet always see the latest.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  // Append uploaded markdown at the end of the body (formatted view, and all
+  // drops). Cursor-position insertion isn't worth the markdown-offset mapping;
+  // "lands at the bottom" is predictable and matches how attachments accrue.
+  function appendToBody(snippets: string[]) {
+    if (snippets.length === 0) return;
+    const base = draft.body.replace(/\s*$/, "");
+    const additions = snippets.join("\n\n");
+    draft.setBody(base ? `${base}\n\n${additions}\n` : `${additions}\n`);
+    requestAnimationFrame(() => editorRef.current?.focusEnd());
+  }
+
+  // Latest drop handler, read by the stable native listeners below.
+  const onDropFilesRef = useRef<(files: File[]) => void>(() => {});
+  onDropFilesRef.current = (files: File[]) => {
+    void attachments.uploadDropped(files).then(appendToBody);
+  };
+
+  // Latest file-paste handler. In raw view we splice at the textarea caret (it
+  // has a real selection); in formatted view we append at the end like a drop.
+  const onPasteFilesRef = useRef<(files: File[]) => void>(() => {});
+  onPasteFilesRef.current = (files: File[]) => {
+    void (async () => {
+      const snippets = await attachments.uploadPasted(files);
+      if (snippets.length === 0) return;
+      const ta = rawRef.current;
+      if (viewRef.current === "raw" && ta) {
+        const start = ta.selectionStart ?? draft.raw.length;
+        const end = ta.selectionEnd ?? start;
+        const insertion = snippets.join("\n\n");
+        draft.setRaw(draft.raw.slice(0, start) + insertion + draft.raw.slice(end));
+        requestAnimationFrame(() => {
+          ta.focus();
+          const pos = start + insertion.length;
+          ta.setSelectionRange(pos, pos);
+        });
+      } else {
+        appendToBody(snippets);
+      }
+    })();
+  };
+
+  // Native (not React-synthetic) drag listeners in the CAPTURE phase on the
+  // dialog root: capture + stopPropagation means we intercept the drop before it
+  // reaches Lexical's own drop handler, so ALL file drops route through our one
+  // path (uniform behavior, whole-dialog coverage) while clipboard paste — a
+  // different event — keeps flowing to the image plugin untouched. We gate on a
+  // "Files" drag so dragging text or repositioning a node is left alone.
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || !slug) return;
+    const hasFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    // dragenter/leave fire per child element; count depth so moving across the
+    // editor's inner nodes doesn't flicker the overlay off.
+    let depth = 0;
+    const onEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      depth += 1;
+      setDraggingFile(true);
+    };
+    const onOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    };
+    const onLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDraggingFile(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      depth = 0;
+      setDraggingFile(false);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length) onDropFilesRef.current(files);
+    };
+    // Clipboard paste of files, in the CAPTURE phase so we decide before Lexical
+    // does. In formatted view an image-only paste is left to the editor's image
+    // plugin (it inserts at the caret — nicer than appending); everything else
+    // (any non-image file, or any paste in raw view) we handle ourselves so both
+    // views accept pasted files identically. A fileless paste (plain text) falls
+    // straight through to normal paste.
+    const onPaste = (e: ClipboardEvent) => {
+      const files = Array.from(e.clipboardData?.files ?? []);
+      if (files.length === 0) return;
+      const allImages = files.every((f) => f.type.startsWith("image/"));
+      if (viewRef.current === "formatted" && allImages) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onPasteFilesRef.current(files);
+    };
+    el.addEventListener("dragenter", onEnter, true);
+    el.addEventListener("dragover", onOver, true);
+    el.addEventListener("dragleave", onLeave, true);
+    el.addEventListener("drop", onDrop, true);
+    el.addEventListener("paste", onPaste, true);
+    return () => {
+      el.removeEventListener("dragenter", onEnter, true);
+      el.removeEventListener("dragover", onOver, true);
+      el.removeEventListener("dragleave", onLeave, true);
+      el.removeEventListener("drop", onDrop, true);
+      el.removeEventListener("paste", onPaste, true);
+    };
+  }, [slug]);
 
   useEffect(() => {
     window.localStorage.setItem(VIEW_KEY, view);
@@ -260,6 +394,7 @@ function TaskEditor({
 
   return (
     <div
+      ref={rootRef}
       className="relative flex min-h-0 flex-auto flex-col"
       onKeyDown={(e) => {
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
@@ -378,11 +513,20 @@ function TaskEditor({
               ref={editorRef}
               value={draft.body}
               onChange={draft.setBody}
-              placeholder="What are you working on?"
+              placeholder="Describe what you're working on, or drop in a screenshot or file"
+              imageUploadHandler={
+                attachments.enabled ? attachments.imageUploadHandler : undefined
+              }
+              imagePreviewHandler={
+                attachments.enabled
+                  ? attachments.imagePreviewHandler
+                  : undefined
+              }
             />
           </>
         ) : (
           <textarea
+            ref={rawRef}
             aria-label="Task content"
             value={draft.raw}
             onChange={(e) => draft.setRaw(e.target.value)}
@@ -410,6 +554,27 @@ function TaskEditor({
           />
         </div>
       </div>
+
+      {/* Drop-zone affordance: covers the whole dialog while a file is dragged
+          over it, so the user gets "yes, drop here" feedback the editor never
+          showed on its own. pointer-events-none so it never swallows the drag
+          events our root listener is counting. */}
+      {draggingFile && (
+        <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-foreground/30 bg-background/85 backdrop-blur-sm">
+          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <PaperclipIcon className="size-4" />
+            Drop files to attach
+          </div>
+        </div>
+      )}
+
+      {/* In-flight upload feedback (MDXEditor shows nothing during upload). */}
+      {attachments.uploading > 0 && (
+        <div className="pointer-events-none absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-md border bg-background/90 px-2.5 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
+          <LoaderCircle className="size-3.5 animate-spin" />
+          Uploading…
+        </div>
+      )}
     </div>
   );
 }
