@@ -8,6 +8,15 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-06-15
+
+- **Fix a white screen on launch** introduced in 0.1.13. The markdown editor
+  pulls in prismjs through `@lexical/code`, which reads a global `Prism` that the
+  production bundle did not guarantee was defined before the editor loaded —
+  throwing `ReferenceError: Prism is not defined` at startup and stopping the app
+  from rendering. The renderer now pins `Prism` on the global before the editor
+  initializes. (Dev builds were unaffected, which is why it slipped through.)
+
 ## [0.1.13] - 2026-06-14
 
 - Add **task image & file attachments**. Paste or drag images and arbitrary
