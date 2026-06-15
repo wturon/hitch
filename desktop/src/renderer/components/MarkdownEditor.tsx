@@ -5,6 +5,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useSyncExternalStore,
   type CSSProperties,
 } from "react";
 import {
@@ -42,6 +43,33 @@ const CODE_BLOCK_LANGUAGES = {
   md: "Markdown",
   py: "Python",
 } as const;
+
+function subscribeToDocumentTheme(onStoreChange: () => void): () => void {
+  if (typeof document === "undefined") return () => {};
+
+  const observer = new MutationObserver(onStoreChange);
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+
+  return () => observer.disconnect();
+}
+
+function documentThemeSnapshot(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    document.documentElement.classList.contains("dark")
+  );
+}
+
+function useDocumentDarkTheme(): boolean {
+  return useSyncExternalStore(
+    subscribeToDocumentTheme,
+    documentThemeSnapshot,
+    () => false,
+  );
+}
 
 // The imperative surface the editor exposes to its parent. Deliberately
 // focus-only: content flows through the controlled `value`/`onChange` props, so
@@ -89,6 +117,7 @@ export const MarkdownEditor = forwardRef<
   ref,
 ) {
   const editorRef = useRef<MDXEditorMethods>(null);
+  const isDarkTheme = useDocumentDarkTheme();
   // The markdown we last handed to the parent (or pushed in via setMarkdown).
   // Incoming `value` props are diffed against this, NOT against MDXEditor's live
   // content: only a value the editor didn't itself produce warrants a setMarkdown.
@@ -151,7 +180,7 @@ export const MarkdownEditor = forwardRef<
       // Serialize with `-` bullets (MDXEditor defaults to `*`), matching how
       // task docs are authored — keeps the save diff to the actual edit.
       toMarkdownOptions={{ bullet: "-" }}
-      className="hitch-mdx"
+      className={cn("hitch-mdx", isDarkTheme && "dark-theme")}
       contentEditableClassName="hitch-mdx-content"
       plugins={[
         headingsPlugin(),
