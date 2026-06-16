@@ -8,6 +8,22 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-06-16
+
+- **Dark mode for the task editor.** The MDXEditor-based task dialog now follows
+  the app's dark theme, including syntax-highlighted fenced code blocks that were
+  previously unreadable on a dark background.
+- **Task dialog polish.** The header title is sticky and left-aligned, and the
+  formatted editor keeps the caret above the floating delegate bar while you
+  type, with dynamic clearance so text never hides behind the bar.
+- **Fix a daemon crash on overlong task-title slugs.** A very long task title
+  produced a folder slug past the filesystem's 255-byte path-component limit, so
+  the daemon's `mkdir` threw `ENAMETOOLONG`. The uncaught error crashed the
+  process, and because the offending row lived in Convex it re-crashed on every
+  restart — taking down sync entirely. Slugs are now capped at 80 characters, and
+  each synced file is applied in its own try/catch so a single unwritable file is
+  logged and skipped (and retried later) instead of killing the daemon.
+
 ## [0.1.14] - 2026-06-15
 
 - **Fix a white screen on launch** introduced in 0.1.13. The markdown editor
