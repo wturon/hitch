@@ -44,6 +44,11 @@ export interface TaskTarget {
 type View = "raw" | "formatted";
 const VIEW_KEY = "hitch:task-view";
 
+// Height of the floating top chrome / sticky header (matches the scroll area's
+// pt-14 and the header bar's h-14). The formatted title counts as "scrolled
+// out" once its bottom passes this line.
+const HEADER_H = 56;
+
 function loadView(): View {
   if (typeof window === "undefined") return "formatted";
   // Anything other than an explicit "raw" (incl. the legacy "reading") →
@@ -149,6 +154,17 @@ function TaskEditor({
   const titleRef = useRef<HTMLTextAreaElement>(null);
   // The raw-view textarea, so a paste lands at its caret.
   const rawRef = useRef<HTMLTextAreaElement>(null);
+  // The scroll area and the floating delegate-bar wrapper. We measure the band
+  // so the scroll area can reserve exactly its height (it grows when the prompt
+  // editor expands), and we watch the scroll position to drive the header.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const bandWrapRef = useRef<HTMLDivElement>(null);
+  // Live delegate-bar height; seeds at the compact size so first paint matches.
+  const [bandHeight, setBandHeight] = useState(96);
+  // Scrolled at all (→ show the hairline divider) and, in formatted view,
+  // whether the document's own title has scrolled up under the header.
+  const [scrolled, setScrolled] = useState(false);
+  const [titleScrolledOut, setTitleScrolledOut] = useState(false);
   // The whole-dialog drop surface. Files dropped anywhere inside upload and get
   // appended to the body as standard markdown (images render inline, other
   // files become `[name](path)` links).
@@ -276,6 +292,39 @@ function TaskEditor({
     window.localStorage.setItem(VIEW_KEY, view);
   }, [view]);
 
+  // Reserve room under the floating delegate bar equal to its real height, so
+  // the last lines of the document always clear it (the band grows tall when
+  // the prompt editor is expanded — a fixed inset would leave text behind it).
+  useEffect(() => {
+    const el = bandWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height;
+      if (h) setBandHeight(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Re-evaluate the header when the view toggles: content height changes, and
+  // the raw view has no rendered title to track (the header title is shown
+  // there at all times — see showHeaderTitle).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const id = requestAnimationFrame(() => {
+      setScrolled(el.scrollTop > 4);
+      const t = titleRef.current;
+      setTitleScrolledOut(
+        view === "formatted" && t
+          ? t.getBoundingClientRect().bottom <=
+              el.getBoundingClientRect().top + HEADER_H
+          : false,
+      );
+    });
+    return () => cancelAnimationFrame(id);
+  }, [view]);
+
   // Land the caret where the user is most likely to start typing the moment a
   // task opens, so an empty task needs no click. Only the formatted view (raw
   // already autofocuses its textarea). An empty body → focus the body editor;
@@ -392,6 +441,15 @@ function TaskEditor({
     onClose();
   }
 
+  // The title shown in the sticky header. Always rendered in raw view (which has
+  // no big rendered title); in formatted view it fades in only once the
+  // document's own title has scrolled up under the header.
+  const displayTitle = draft.frontmatter.title || task.title || "Untitled";
+  const showHeaderTitle = view === "raw" || titleScrolledOut;
+  // The divider + opaque background ride in with the title, never before it — so
+  // formatted view never flashes a bar over the still-visible document title.
+  const showHeaderChrome = scrolled && showHeaderTitle;
+
   return (
     <div
       ref={rootRef}
@@ -403,10 +461,32 @@ function TaskEditor({
         }
       }}
     >
+      {/* Sticky header. The task title slides in here once the document's own
+          title scrolls out of view (always shown in raw, which has no rendered
+          title). A hairline divider + opaque background appear on scroll so the
+          body flows cleanly underneath; at the top it's invisible, keeping the
+          calm open-document feel. pointer-events-none so the body and the
+          controls below stay clickable through it. */}
+      <div
+        className={cn(
+          "pointer-events-none absolute inset-x-0 top-0 z-10 flex h-14 items-center justify-center border-b px-16 transition-colors",
+          showHeaderChrome ? "border-border bg-background" : "border-transparent",
+        )}
+      >
+        <span
+          className={cn(
+            "max-w-full truncate text-sm font-semibold text-foreground transition-opacity duration-150",
+            showHeaderTitle ? "opacity-100" : "opacity-0",
+          )}
+        >
+          {displayTitle}
+        </span>
+      </div>
+
       {/* Top-right controls — ⋯ overflow menu then the X, both floating with the
           same surface treatment. The view switch (Raw ⇄ Formatted) lives in the
           menu now, keeping the modal's top chrome to just these two buttons. */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
+      <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5">
         <Menu>
           <MenuTrigger
             render={
@@ -477,7 +557,21 @@ function TaskEditor({
           A mousedown on the empty area (formatted) drops the caret into the
           body — handy now that the modal can be short. */}
       <div
-        className="flex min-h-0 flex-auto flex-col overflow-y-auto px-6 pt-14 pb-32"
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          setScrolled(el.scrollTop > 4);
+          if (view === "formatted") {
+            const t = titleRef.current;
+            setTitleScrolledOut(
+              !!t &&
+                t.getBoundingClientRect().bottom <=
+                  el.getBoundingClientRect().top + HEADER_H,
+            );
+          }
+        }}
+        className="flex min-h-0 flex-auto flex-col overflow-y-auto px-6 pt-14"
+        style={{ paddingBottom: bandHeight + 32 }}
         onMouseDown={(e) => {
           if (view === "formatted" && e.target === e.currentTarget) {
             e.preventDefault();
@@ -539,7 +633,7 @@ function TaskEditor({
 
       {/* Floating delegate bar, pinned over the bottom of the document. */}
       <div className="pointer-events-none absolute inset-x-6 bottom-4 z-10">
-        <div className="pointer-events-auto">
+        <div ref={bandWrapRef} className="pointer-events-auto">
           <DelegationBand
             projectId={task.projectId}
             chat={draft.chat}
