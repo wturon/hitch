@@ -174,9 +174,6 @@ function TaskEditor({
   // refs so they never re-bind on every keystroke yet always see the latest.
   const viewRef = useRef(view);
   viewRef.current = view;
-  // Live band height for the caret-keeper below (avoids re-binding its listener).
-  const bandHeightRef = useRef(bandHeight);
-  bandHeightRef.current = bandHeight;
 
   // Append uploaded markdown at the end of the body (formatted view, and all
   // drops). Cursor-position insertion isn't worth the markdown-offset mapping;
@@ -327,43 +324,6 @@ function TaskEditor({
     });
     return () => cancelAnimationFrame(id);
   }, [view]);
-
-  // Keep the caret above the floating delegate bar while typing in the FORMATTED
-  // editor. The raw textarea is handled natively (the scroll area's
-  // scrollPaddingBottom keeps the browser's caret-into-view above the bar), but
-  // MDXEditor/Lexical runs its own scroll-into-view that ignores scroll-padding
-  // and parks the caret at the real bottom edge — behind the bar. So after each
-  // selection change we measure the caret and, only when it has slipped under
-  // the bar (i.e. the modal is at max height), nudge the scroll container up by
-  // the overflow. A no-op otherwise, and untouched in raw view.
-  useEffect(() => {
-    const onSelectionChange = () => {
-      if (viewRef.current !== "formatted") return;
-      const el = scrollRef.current;
-      const sel = window.getSelection();
-      if (!el || !sel || sel.rangeCount === 0 || !el.contains(sel.focusNode)) {
-        return;
-      }
-      requestAnimationFrame(() => {
-        const s = window.getSelection();
-        if (!s || s.rangeCount === 0 || !el.contains(s.focusNode)) return;
-        let rect = s.getRangeAt(0).getBoundingClientRect();
-        // A collapsed caret on an empty line can report a zero-height rect; fall
-        // back to the focused block element's box.
-        if (rect.height === 0) {
-          const node = s.focusNode;
-          const block = node instanceof Element ? node : node?.parentElement;
-          if (block) rect = block.getBoundingClientRect();
-        }
-        const safeBottom =
-          el.getBoundingClientRect().bottom - (bandHeightRef.current + 32);
-        if (rect.bottom > safeBottom) el.scrollTop += rect.bottom - safeBottom;
-      });
-    };
-    document.addEventListener("selectionchange", onSelectionChange);
-    return () =>
-      document.removeEventListener("selectionchange", onSelectionChange);
-  }, []);
 
   // Land the caret where the user is most likely to start typing the moment a
   // task opens, so an empty task needs no click. Only the formatted view (raw
@@ -592,10 +552,11 @@ function TaskEditor({
 
       {/* Scroll area — grows with its content; the modal's max-h caps it and
           scrolling kicks in past that (Linear-style: short by default, taller as
-          you type). Top padding clears the floating chrome; bottom padding leaves
-          room for the floating delegate bar; the wider px-6 adds breathing room.
-          A mousedown on the empty area (formatted) drops the caret into the
-          body — handy now that the modal can be short. */}
+          you type). Top padding clears the floating chrome; the bottom margin
+          reserves the floating delegate bar's space (see the style note below);
+          the wider px-6 adds breathing room. A mousedown on the empty area
+          (formatted) drops the caret into the body — handy now the modal can be
+          short. */}
       <div
         ref={scrollRef}
         onScroll={(e) => {
@@ -611,15 +572,14 @@ function TaskEditor({
           }
         }}
         className="flex min-h-0 flex-auto flex-col overflow-y-auto px-6 pt-14"
-        // paddingBottom reserves room so the doc clears the floating bar when
-        // scrolled to the end. scrollPaddingBottom is the live half: it shrinks
-        // the scrollport's "visible region" by the same inset, so the browser's
-        // caret-into-view scroll (while typing at max height) keeps the caret
-        // above the bar instead of parking it behind the overlay.
-        style={{
-          paddingBottom: bandHeight + 32,
-          scrollPaddingBottom: bandHeight + 32,
-        }}
+        // marginBottom (NOT padding) reserves the floating bar's space by
+        // *shrinking the scroll viewport* so its bottom edge sits above the bar.
+        // That's the whole fix: padding would leave the viewport overlapping the
+        // bar, so both the browser and Lexical scroll the caret to that hidden
+        // bottom edge while typing at max height. With the viewport ending above
+        // the bar, the native caret-into-view keeps the caret visible in both
+        // views — no scroll-padding, no JS caret-tracking needed.
+        style={{ marginBottom: bandHeight + 32 }}
         onMouseDown={(e) => {
           if (view === "formatted" && e.target === e.currentTarget) {
             e.preventDefault();
