@@ -469,13 +469,13 @@ function TaskEditor({
           controls below stay clickable through it. */}
       <div
         className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 z-10 flex h-14 items-center justify-center border-b px-16 transition-colors",
+          "pointer-events-none absolute inset-x-0 top-0 z-10 flex h-14 items-center border-b pr-20 pl-6 transition-colors",
           showHeaderChrome ? "border-border bg-background" : "border-transparent",
         )}
       >
         <span
           className={cn(
-            "max-w-full truncate text-sm font-semibold text-foreground transition-opacity duration-150",
+            "min-w-0 truncate text-sm font-semibold text-foreground transition-opacity duration-150",
             showHeaderTitle ? "opacity-100" : "opacity-0",
           )}
         >
