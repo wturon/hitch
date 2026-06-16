@@ -354,3 +354,44 @@ select,
   border-top: 1px solid var(--border);
   margin: 1.5em 0;
 }
+
+/* Dark-mode fenced code blocks. The block body is a CodeMirror widget themed
+   in JS by `basicLight` (hardcoded in MDXEditor's codeMirrorPlugin) — a fixed
+   light theme the `.dark` class can't reach. We can't swap that theme from
+   here, but `basicLight`'s only unreadable parts on a dark page are the white
+   surface and its near-black plain-text/gutter colors; its Nord syntax tokens
+   read fine on dark, so we leave them. Override just the surface, keyed on the
+   stable CodeMirror class names (not MDXEditor's hashed module classes) and
+   scoped under `.dark .hitch-mdx` so we out-specify `basicLight`'s
+   `.cm-editor.<themeclass>` (2 classes < our 3). Lives in CSS so it flips
+   instantly with the theme — an extension-based fix wouldn't re-theme
+   already-open blocks (CodeMirror only rebuilds on its own deps). */
+.dark .hitch-mdx .cm-editor {
+  background: var(--card);
+  color: var(--foreground);
+}
+.dark .hitch-mdx .cm-gutters {
+  background: var(--card);
+  color: var(--muted-foreground);
+}
+.dark .hitch-mdx .cm-activeLine,
+.dark .hitch-mdx .cm-activeLineGutter {
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+.dark .hitch-mdx .cm-cursor,
+.dark .hitch-mdx .cm-dropCursor {
+  border-left-color: var(--foreground);
+}
+.dark .hitch-mdx .cm-selectionBackground,
+.dark .hitch-mdx .cm-focused .cm-selectionBackground {
+  background: color-mix(in oklab, var(--foreground) 18%, transparent);
+}
+
+/* The code-block toolbar's language picker renders a white box in dark mode:
+   its trigger background is `var(--basePageBg)`, hardcoded to literal `white`
+   in MDXEditor's `._editorRoot_` and never redefined for dark. `.hitch-mdx` is
+   that editor-root element, so redefining the variable here fixes the trigger
+   (and any other `--basePageBg` chrome) in one place. */
+.dark .hitch-mdx {
+  --basePageBg: var(--card);
+}
