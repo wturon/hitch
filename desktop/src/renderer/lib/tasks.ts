@@ -18,13 +18,22 @@ export function taskBodyPath(slug: string): string {
 
 // Kebab-case a title into a slug candidate. Lowercase, non-alphanumerics
 // collapse to single hyphens, no leading/trailing hyphen. Deliberately ASCII-
-// only and minimal (see the web-create task): unicode/long-title handling is
-// out of scope for now.
+// only (see the web-create task): unicode handling is out of scope for now.
+//
+// The result is capped at MAX_SLUG_LENGTH. A slug becomes a single path
+// component (`tasks/<slug>/…`), and filesystems limit one component to 255
+// bytes — an uncapped slug from a very long title makes the daemon's mkdir
+// throw ENAMETOOLONG and crash on sync. 80 leaves ample headroom for the
+// uniqueness suffix uniqueSlug appends.
+const MAX_SLUG_LENGTH = 80;
+
 function slugify(title: string): string {
   return title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-+|-+$/g, "")
+    .slice(0, MAX_SLUG_LENGTH)
+    .replace(/-+$/, ""); // re-strip in case the slice landed on a hyphen
 }
 
 // A slug for `title` that doesn't collide with `taken`, appending -2, -3, …

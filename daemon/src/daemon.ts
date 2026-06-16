@@ -582,22 +582,34 @@ async function startHitchBinding({
         for (const f of files) {
           const absPath = toAbs(f.path);
 
-          if (f.deleted) {
-            if (existsSync(absPath)) {
-              lastHash.delete(absPath);
-              await rm(absPath, { force: true });
-              logger.info(`[hitch:${projectLabel}] ↓✗ ${f.path}`);
+          // Apply each file independently: a single unwritable file (e.g. a
+          // path component over the OS limit → ENAMETOOLONG) must log and be
+          // skipped, never throw out of the callback and crash the daemon.
+          try {
+            if (f.deleted) {
+              if (existsSync(absPath)) {
+                lastHash.delete(absPath);
+                await rm(absPath, { force: true });
+                logger.info(`[hitch:${projectLabel}] ↓✗ ${f.path}`);
+              }
+              await pruneEmptyTaskDir(f.path, absPath);
+              continue;
             }
-            await pruneEmptyTaskDir(f.path, absPath);
-            continue;
-          }
 
-          const contentHash = hashOf(f.content);
-          if (lastHash.get(absPath) === contentHash) continue;
-          lastHash.set(absPath, contentHash);
-          await mkdir(dirname(absPath), { recursive: true });
-          await writeFile(absPath, f.content, "utf8");
-          logger.info(`[hitch:${projectLabel}] ↓ ${f.path}`);
+            const contentHash = hashOf(f.content);
+            if (lastHash.get(absPath) === contentHash) continue;
+            await mkdir(dirname(absPath), { recursive: true });
+            await writeFile(absPath, f.content, "utf8");
+            // Mark synced only after a successful write, so a transient failure
+            // is retried on the next update rather than silently masked.
+            lastHash.set(absPath, contentHash);
+            logger.info(`[hitch:${projectLabel}] ↓ ${f.path}`);
+          } catch (err) {
+            logError(
+              logger,
+              `[hitch:${projectLabel}] failed to apply ${f.path}: ${String(err)}`,
+            );
+          }
         }
       },
       (err) =>
