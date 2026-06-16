@@ -174,6 +174,9 @@ function TaskEditor({
   // refs so they never re-bind on every keystroke yet always see the latest.
   const viewRef = useRef(view);
   viewRef.current = view;
+  // Live band height for the caret-keeper below (avoids re-binding its listener).
+  const bandHeightRef = useRef(bandHeight);
+  bandHeightRef.current = bandHeight;
 
   // Append uploaded markdown at the end of the body (formatted view, and all
   // drops). Cursor-position insertion isn't worth the markdown-offset mapping;
@@ -324,6 +327,43 @@ function TaskEditor({
     });
     return () => cancelAnimationFrame(id);
   }, [view]);
+
+  // Keep the caret above the floating delegate bar while typing in the FORMATTED
+  // editor. The raw textarea is handled natively (the scroll area's
+  // scrollPaddingBottom keeps the browser's caret-into-view above the bar), but
+  // MDXEditor/Lexical runs its own scroll-into-view that ignores scroll-padding
+  // and parks the caret at the real bottom edge — behind the bar. So after each
+  // selection change we measure the caret and, only when it has slipped under
+  // the bar (i.e. the modal is at max height), nudge the scroll container up by
+  // the overflow. A no-op otherwise, and untouched in raw view.
+  useEffect(() => {
+    const onSelectionChange = () => {
+      if (viewRef.current !== "formatted") return;
+      const el = scrollRef.current;
+      const sel = window.getSelection();
+      if (!el || !sel || sel.rangeCount === 0 || !el.contains(sel.focusNode)) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        const s = window.getSelection();
+        if (!s || s.rangeCount === 0 || !el.contains(s.focusNode)) return;
+        let rect = s.getRangeAt(0).getBoundingClientRect();
+        // A collapsed caret on an empty line can report a zero-height rect; fall
+        // back to the focused block element's box.
+        if (rect.height === 0) {
+          const node = s.focusNode;
+          const block = node instanceof Element ? node : node?.parentElement;
+          if (block) rect = block.getBoundingClientRect();
+        }
+        const safeBottom =
+          el.getBoundingClientRect().bottom - (bandHeightRef.current + 32);
+        if (rect.bottom > safeBottom) el.scrollTop += rect.bottom - safeBottom;
+      });
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () =>
+      document.removeEventListener("selectionchange", onSelectionChange);
+  }, []);
 
   // Land the caret where the user is most likely to start typing the moment a
   // task opens, so an empty task needs no click. Only the formatted view (raw
