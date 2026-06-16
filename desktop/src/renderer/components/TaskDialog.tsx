@@ -571,7 +571,15 @@ function TaskEditor({
           }
         }}
         className="flex min-h-0 flex-auto flex-col overflow-y-auto px-6 pt-14"
-        style={{ paddingBottom: bandHeight + 32 }}
+        // paddingBottom reserves room so the doc clears the floating bar when
+        // scrolled to the end. scrollPaddingBottom is the live half: it shrinks
+        // the scrollport's "visible region" by the same inset, so the browser's
+        // caret-into-view scroll (while typing at max height) keeps the caret
+        // above the bar instead of parking it behind the overlay.
+        style={{
+          paddingBottom: bandHeight + 32,
+          scrollPaddingBottom: bandHeight + 32,
+        }}
         onMouseDown={(e) => {
           if (view === "formatted" && e.target === e.currentTarget) {
             e.preventDefault();
