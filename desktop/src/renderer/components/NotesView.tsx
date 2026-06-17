@@ -608,9 +608,6 @@ function NotesIndex({
                 onClick={() => activate(item)}
                 className={cn(
                   "flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5",
-                  // Divider above only when notes sit above it (not when it's the
-                  // sole row, i.e. an empty list).
-                  i > 0 && "mt-1 border-t border-border",
                   i === selected && "bg-muted",
                 )}
               >
