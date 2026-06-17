@@ -236,10 +236,15 @@ export function NotesView({
     }
   }
 
-  // Create a note from the index search bar with its title pre-filled, then open
-  // it. The slug is derived from the title (uniqued); the editor lands the cursor
-  // in the body since the title is already set. An empty doc is discarded on
-  // flush, so an abandoned create leaves nothing behind.
+  // Create a note from the index (title pre-filled, or blank for "New note") and
+  // open it. The slug is derived from the title (uniqued); the editor lands the
+  // cursor in the body when the title is set, else in the title. An empty doc is
+  // discarded on flush, so an abandoned create leaves nothing behind.
+  //
+  // Order matters: fire the optimistic write, THEN select — both land in the same
+  // render, so `docs` already contains the note when it's selected. Selecting
+  // first would briefly leave `selectedSlug` pointing at a note not yet in the
+  // list, and the fall-back-to-index effect would clear it before it arrived.
   async function createNote(title: string) {
     const taken = new Set(docs.map((d) => d.slug));
     const slug = uniqueSlug(title, taken, DEFAULT_TYPE);
@@ -248,8 +253,15 @@ export function NotesView({
       type: DEFAULT_TYPE,
       created: new Date().toISOString(),
     });
+    const hash = await sha256(content);
+    void upsertFile({
+      projectId,
+      path: noteBodyPath(slug),
+      content,
+      hash,
+      deleted: false,
+    });
     setSelectedSlug(slug);
-    await persist(noteBodyPath(slug), content);
   }
 
   // In-place save (⌘S and the type pill): write the draft at its current path,
