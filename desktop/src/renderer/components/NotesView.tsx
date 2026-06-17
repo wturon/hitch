@@ -244,7 +244,7 @@ export function NotesView({
     const taken = new Set(docs.map((d) => d.slug));
     const slug = uniqueSlug(title, taken, DEFAULT_TYPE);
     const content = setFrontmatterKeys("", {
-      title,
+      title: title || undefined,
       type: DEFAULT_TYPE,
       created: new Date().toISOString(),
     });
@@ -464,8 +464,10 @@ function NotesIndex({
   const results = useMemo(() => rankNotes(docs, query), [docs, query]);
   const items = useMemo<IndexItem[]>(() => {
     const list: IndexItem[] = results.map((doc) => ({ kind: "note", doc }));
-    const trimmed = query.trim();
-    if (trimmed) list.push({ kind: "create", title: trimmed });
+    // The create row is always present (last) so opening the page already offers
+    // "New note" without typing. It carries the trimmed query — empty means a
+    // blank, untitled note.
+    list.push({ kind: "create", title: query.trim() });
     return list;
   }, [results, query]);
 
@@ -554,85 +556,81 @@ function NotesIndex({
           />
         </div>
 
-        {items.length === 0 ? (
-          <p className="px-3 text-sm text-muted-foreground">
-            {query.trim()
-              ? "No notes match — press ↵ to create one."
-              : "No notes yet. Type a title and press ↵ to create one."}
-          </p>
-        ) : (
-          <div
-            ref={listRef}
-            id="notes-index-list"
-            role="listbox"
-            aria-label="Notes"
-            className="flex flex-col gap-0.5"
-          >
-            {items.map((item, i) =>
-              item.kind === "note" ? (
-                <div
-                  key={item.doc.slug}
-                  id={optionId(i)}
-                  data-idx={i}
-                  role="option"
-                  aria-selected={i === selected}
-                  onMouseMove={() => setSelected(i)}
-                  onClick={() => activate(item)}
-                  className={cn(
-                    "flex cursor-pointer items-baseline gap-4 rounded-lg px-3 py-2.5",
-                    i === selected && "bg-muted",
-                  )}
-                >
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-[15px] font-medium tracking-tight text-foreground">
-                        {item.doc.title}
-                      </span>
-                      <span className="shrink-0 rounded-full border border-border px-1.5 font-mono text-[10px] leading-[1.5] lowercase text-muted-foreground">
-                        {item.doc.type}
-                      </span>
-                    </div>
-                    {notePreview(item.doc.content) && (
-                      <span className="truncate text-[13px] text-muted-foreground">
-                        {notePreview(item.doc.content)}
-                      </span>
-                    )}
+        <div
+          ref={listRef}
+          id="notes-index-list"
+          role="listbox"
+          aria-label="Notes"
+          className="flex flex-col gap-0.5"
+        >
+          {items.map((item, i) =>
+            item.kind === "note" ? (
+              <div
+                key={item.doc.slug}
+                id={optionId(i)}
+                data-idx={i}
+                role="option"
+                aria-selected={i === selected}
+                onMouseMove={() => setSelected(i)}
+                onClick={() => activate(item)}
+                className={cn(
+                  "flex cursor-pointer items-baseline gap-4 rounded-lg px-3 py-2.5",
+                  i === selected && "bg-muted",
+                )}
+              >
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-[15px] font-medium tracking-tight text-foreground">
+                      {item.doc.title}
+                    </span>
+                    <span className="shrink-0 rounded-full border border-border px-1.5 font-mono text-[10px] leading-[1.5] lowercase text-muted-foreground">
+                      {item.doc.type}
+                    </span>
                   </div>
-                  <span className="shrink-0 font-mono text-[11px] lowercase text-muted-foreground/70">
-                    {relativeTime(item.doc.updatedAt)}
-                  </span>
-                </div>
-              ) : (
-                <div
-                  key="__create"
-                  id={optionId(i)}
-                  data-idx={i}
-                  role="option"
-                  aria-selected={i === selected}
-                  onMouseMove={() => setSelected(i)}
-                  onClick={() => activate(item)}
-                  className={cn(
-                    "mt-1 flex cursor-pointer items-center gap-3 rounded-lg border-t border-border px-3 py-2.5",
-                    i === selected && "bg-muted",
+                  {notePreview(item.doc.content) && (
+                    <span className="truncate text-[13px] text-muted-foreground">
+                      {notePreview(item.doc.content)}
+                    </span>
                   )}
-                >
-                  <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-foreground text-background">
-                    <PlusIcon className="size-4" />
-                  </span>
+                </div>
+                <span className="shrink-0 font-mono text-[11px] lowercase text-muted-foreground/70">
+                  {relativeTime(item.doc.updatedAt)}
+                </span>
+              </div>
+            ) : (
+              <div
+                key="__create"
+                id={optionId(i)}
+                data-idx={i}
+                role="option"
+                aria-selected={i === selected}
+                onMouseMove={() => setSelected(i)}
+                onClick={() => activate(item)}
+                className={cn(
+                  "flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5",
+                  // Divider above only when notes sit above it (not when it's the
+                  // sole row, i.e. an empty list).
+                  i > 0 && "mt-1 border-t border-border",
+                  i === selected && "bg-muted",
+                )}
+              >
+                <PlusIcon className="size-4 shrink-0 text-muted-foreground" />
+                {item.title ? (
                   <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
                     <span className="text-[15px] text-muted-foreground">Create</span>
-                    <span className="truncate text-[15px] font-semibold text-foreground">
+                    <span className="truncate text-[15px] font-medium text-foreground">
                       “{item.title}”
                     </span>
                   </span>
-                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
-                    new note
+                ) : (
+                  <span className="flex-1 text-[15px] text-muted-foreground">
+                    New note
                   </span>
-                </div>
-              ),
-            )}
-          </div>
-        )}
+                )}
+              </div>
+            ),
+          )}
+        </div>
       </div>
     </div>
   );
