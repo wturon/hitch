@@ -1621,6 +1621,7 @@ function BoardContent({
             files={files}
             showArchived={showNotesArchived}
             onShowArchivedChange={setShowNotesArchived}
+            onExit={() => setWorkspaceView("board")}
           />
         ) : (
         <DndContext

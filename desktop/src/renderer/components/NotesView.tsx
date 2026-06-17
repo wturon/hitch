@@ -35,6 +35,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -99,6 +104,7 @@ export function NotesView({
   files,
   showArchived,
   onShowArchivedChange,
+  onExit,
 }: {
   projectId: Id<"projects">;
   files: FileDoc[];
@@ -106,6 +112,9 @@ export function NotesView({
   // so its open state is owned by the parent and threaded back in here.
   showArchived: boolean;
   onShowArchivedChange: (open: boolean) => void;
+  // Esc on the index (with no query) leaves Notes for the Board — the parent owns
+  // the Board/Notes tab.
+  onExit: () => void;
 }) {
   // Same optimistic upsert the board uses: a create/rename/archive reflects
   // instantly instead of waiting on the frontmatter → daemon → Convex round trip.
@@ -330,6 +339,7 @@ export function NotesView({
         active={selected === null}
         onOpen={openDoc}
         onCreate={(title) => void createNote(title)}
+        onExit={onExit}
       />
 
       {selected && (
@@ -436,14 +446,18 @@ function NotesIndex({
   active,
   onOpen,
   onCreate,
+  onExit,
 }: {
   docs: NoteDoc[];
   active: boolean;
   onOpen: (slug: string) => void;
   onCreate: (title: string) => void;
+  onExit: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState(0);
+  // -1 means "no row highlighted yet": rows stay uniform until the user arrows
+  // (or hovers). Enter still acts on the obvious target — see onInputKeyDown.
+  const [selected, setSelected] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -456,8 +470,9 @@ function NotesIndex({
   }, [results, query]);
 
   // Keep the selection in range as the list changes (typing, recency updates).
+  // A -1 (nothing highlighted) is preserved.
   useEffect(() => {
-    setSelected((i) => Math.min(Math.max(i, 0), Math.max(0, items.length - 1)));
+    setSelected((i) => Math.min(i, items.length - 1));
   }, [items.length]);
 
   // Refocus the search input whenever the index becomes the visible view (mount
@@ -468,6 +483,7 @@ function NotesIndex({
 
   // Keep the highlighted row in view during keyboard navigation.
   useEffect(() => {
+    if (selected < 0) return;
     listRef.current
       ?.querySelector(`[data-idx="${selected}"]`)
       ?.scrollIntoView({ block: "nearest" });
@@ -482,16 +498,29 @@ function NotesIndex({
   function onInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelected((i) => Math.min(i + 1, items.length - 1));
+      if (!items.length) return;
+      setSelected((i) => (i < 0 ? 0 : Math.min(i + 1, items.length - 1)));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setSelected((i) => Math.max(i - 1, 0));
+      if (!items.length) return;
+      setSelected((i) => (i < 0 ? items.length - 1 : Math.max(i - 1, 0)));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      activate(items[selected]);
-    } else if (e.key === "Escape" && query) {
+      // The highlighted row, or — when the user typed but hasn't arrowed — the
+      // top item (type-and-enter opens the best match, or creates).
+      const target =
+        selected >= 0 ? items[selected] : query.trim() ? items[0] : undefined;
+      activate(target);
+    } else if (e.key === "Escape") {
       e.preventDefault();
-      setQuery("");
+      // First Esc clears an active query; a second (empty) Esc leaves Notes for
+      // the Board — esc takes you all the way back out.
+      if (query) {
+        setQuery("");
+        setSelected(-1);
+      } else {
+        onExit();
+      }
     }
   }
 
@@ -512,7 +541,7 @@ function NotesIndex({
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
-              setSelected(0);
+              setSelected(-1);
             }}
             onKeyDown={onInputKeyDown}
             placeholder="Search notes, or type to create…"
@@ -520,7 +549,7 @@ function NotesIndex({
             role="combobox"
             aria-expanded
             aria-controls="notes-index-list"
-            aria-activedescendant={items.length ? optionId(selected) : undefined}
+            aria-activedescendant={selected >= 0 ? optionId(selected) : undefined}
             className="h-12 flex-1 bg-transparent text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
@@ -832,34 +861,52 @@ function NoteEditor({
     onClose();
   }
 
+  // Esc / ⌘S must work even when neither the title nor body is focused (you
+  // clicked a toolbar button, or nothing is focused). A root onKeyDown only fires
+  // when focus is inside the editor, so listen on the window. Skip events from an
+  // open overlay (actions menu, Archived sheet) so Esc closes that first; the type
+  // pill stops its own Escape from propagating this far.
+  const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyHandlerRef.current = (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      void saveDraft();
+      return;
+    }
+    if (e.key === "Escape") {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[role="dialog"],[role="menu"]')) return;
+      e.preventDefault();
+      closeWithSave();
+    }
+  };
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => keyHandlerRef.current(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   return (
-    <div
-      ref={rootRef}
-      className="relative flex min-h-0 flex-1 flex-col"
-      onKeyDown={(e) => {
-        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-          e.preventDefault();
-          void saveDraft();
-          return;
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          closeWithSave();
-        }
-      }}
-    >
+    <div ref={rootRef} className="relative flex min-h-0 flex-1 flex-col">
       {/* Top bar: ← Notes (left), actions (right). Borderless and flush with the
           body — no separator rule, matching the quiet Paper design. */}
       <div className="flex h-12 shrink-0 items-center justify-between px-6">
-        <button
-          type="button"
-          onClick={closeWithSave}
-          aria-label="Back to notes"
-          className="flex items-center gap-1 rounded-lg py-1 pr-2.5 pl-1.5 text-[13px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <ChevronLeftIcon className="size-4" />
-          Notes
-        </button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onClick={closeWithSave}
+                aria-label="Back to notes"
+                className="flex items-center gap-1 rounded-lg py-1 pr-2.5 pl-1.5 text-[13px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+              />
+            }
+          >
+            <ChevronLeftIcon className="size-4" />
+            Notes
+          </TooltipTrigger>
+          <TooltipContent>Back to notes · esc</TooltipContent>
+        </Tooltip>
         <div className="flex items-center gap-1.5">
           {saving && (
             <span className="flex items-center gap-1 text-xs text-muted-foreground">
