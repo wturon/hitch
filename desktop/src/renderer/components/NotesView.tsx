@@ -72,8 +72,9 @@ function docType(type: string | undefined): string {
 }
 
 // Build the doc list from the project's files: keep only canonical index.md
-// bodies, parse frontmatter, drop tombstones.
-function noteDocs(files: FileDoc[]): NoteDoc[] {
+// bodies, parse frontmatter, drop tombstones. Exported so the workspace header
+// can count archived notes for its top-right Archived control.
+export function noteDocs(files: FileDoc[]): NoteDoc[] {
   return files.reduce<NoteDoc[]>((acc, f) => {
     if (f.deleted) return acc;
     const slug = noteSlug(f.path);
@@ -95,9 +96,15 @@ function noteDocs(files: FileDoc[]): NoteDoc[] {
 export function NotesView({
   projectId,
   files,
+  showArchived,
+  onShowArchivedChange,
 }: {
   projectId: Id<"projects">;
   files: FileDoc[];
+  // The Archived sheet is opened from the shared workspace header (top-right),
+  // so its open state is owned by the parent and threaded back in here.
+  showArchived: boolean;
+  onShowArchivedChange: (open: boolean) => void;
 }) {
   // Same optimistic upsert the board uses: a create/rename/archive reflects
   // instantly instead of waiting on the frontmatter → daemon → Convex round trip.
@@ -141,7 +148,6 @@ export function NotesView({
   const attachments = useQuery(api.attachments.listAttachments, { projectId });
 
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
-  const [showArchived, setShowArchived] = useState(false);
   const [pendingSlug, setPendingSlug] = useState<string | null>(null);
   // The open editor registers its draft-flush here; we call it before swapping
   // the selection, creating another doc, or unmounting (tab/project switch).
@@ -314,40 +320,43 @@ export function NotesView({
 
   return (
     <div className="-mx-4 flex min-h-0 flex-1 sm:-mx-6 lg:-mx-8">
-      {/* Left: quiet explorer, grouped by type. */}
-      <aside className="flex w-72 shrink-0 flex-col border-r border-border">
-        <div className="flex items-center justify-between px-4 py-3">
-          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            Notes
-          </span>
-          <button
-            type="button"
-            aria-label="New note"
-            onClick={() => void createDoc(DEFAULT_TYPE)}
-            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <PlusIcon className="size-3.5" />
-            New
-          </button>
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4">
+      {/* Left: whisper-quiet explorer, grouped by type. No column title (the
+          Board/Notes tab already labels the view) and no per-row icons — bare
+          titles. The New affordance rides on the first group's header row. */}
+      <aside className="flex w-[236px] shrink-0 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 pt-3 pb-4">
           {groups.length === 0 ? (
-            <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-              No notes yet. Jot something down for agents to read.
-            </p>
+            <div className="flex flex-col items-center gap-3 px-2 py-8 text-center">
+              <p className="text-sm font-medium text-foreground">No notes yet</p>
+              <p className="text-xs text-muted-foreground">
+                Jot something down for agents to read.
+              </p>
+              <button
+                type="button"
+                onClick={() => void createDoc(DEFAULT_TYPE)}
+                className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <PlusIcon className="size-3.5" />
+                New note
+              </button>
+            </div>
           ) : (
-            groups.map((group) => (
-              <div key={group.type} className="flex flex-col">
+            groups.map((group, i) => (
+              <div key={group.type} className="group flex flex-col">
                 <div className="flex items-center justify-between px-2 py-1">
-                  <span className="text-xs font-medium text-muted-foreground">
+                  <span className="font-mono text-[10px] lowercase text-muted-foreground/60">
                     {group.type}
                   </span>
+                  {/* The first group's "+" is the always-visible New affordance;
+                      later groups reveal their per-group "New [type]" on hover. */}
                   <button
                     type="button"
                     aria-label={`New ${group.type} note`}
                     onClick={() => void createDoc(group.type)}
-                    className="flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100"
+                    className={cn(
+                      "flex size-5 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground",
+                      i === 0 ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                    )}
                   >
                     <PlusIcon className="size-3.5" />
                   </button>
@@ -358,35 +367,19 @@ export function NotesView({
                     type="button"
                     onClick={() => selectDoc(doc.slug)}
                     className={cn(
-                      "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]",
+                      "truncate rounded-md px-2 py-1.5 text-left text-[13px]",
                       doc.slug === selectedSlug
                         ? "bg-muted font-medium text-foreground"
-                        : "text-card-foreground hover:bg-muted/60",
+                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                     )}
                   >
-                    <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 truncate">{doc.title}</span>
+                    {doc.title}
                   </button>
                 ))}
               </div>
             ))
           )}
         </div>
-
-        <button
-          type="button"
-          disabled={archivedDocs.length === 0}
-          onClick={() => setShowArchived(true)}
-          className="flex items-center gap-2 border-t border-border px-4 py-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:hover:bg-transparent"
-        >
-          <ArchiveIcon className="size-3.5" />
-          Archived
-          {archivedDocs.length > 0 && (
-            <span className="ml-auto rounded-md bg-muted px-1.5 py-0.5 text-[11px]">
-              {archivedDocs.length}
-            </span>
-          )}
-        </button>
       </aside>
 
       {/* Right: editor pane. */}
@@ -421,7 +414,7 @@ export function NotesView({
 
       <NotesArchivedSheet
         open={showArchived}
-        onOpenChange={setShowArchived}
+        onOpenChange={onShowArchivedChange}
         docs={archivedDocs}
         pendingSlug={pendingSlug}
         onUnarchive={(doc) => void setArchived(doc, false)}
@@ -432,7 +425,7 @@ export function NotesView({
 }
 
 type View = "raw" | "formatted";
-const VIEW_KEY = "hitch:task-view";
+const VIEW_KEY = "hitch:notes-view";
 
 function loadView(): View {
   if (typeof window === "undefined") return "formatted";
@@ -660,8 +653,9 @@ function NoteEditor({
         }
       }}
     >
-      {/* Top bar: type pill (left), actions (right). */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-6">
+      {/* Top bar: type pill (left), actions (right). Borderless and flush with
+          the body — no separator rule, matching the quiet Paper design. */}
+      <div className="flex h-12 shrink-0 items-center justify-between px-6">
         <TypePill type={docType(draft.frontmatter.type)} onCommit={commitType} />
         <div className="flex items-center gap-1.5">
           {saving && (
@@ -670,7 +664,7 @@ function NoteEditor({
               Saving…
             </span>
           )}
-          <Button variant="outline" size="sm" onClick={copyPath}>
+          <Button variant="ghost" size="sm" onClick={copyPath}>
             <CopyIcon />
             Copy path
           </Button>
@@ -680,7 +674,7 @@ function NoteEditor({
                 <button
                   type="button"
                   aria-label="Note actions"
-                  className="flex size-7 items-center justify-center rounded-lg border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                  className="flex size-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
                 />
               }
             >
@@ -829,7 +823,7 @@ function TypePill({
           }
         }}
         spellCheck={false}
-        className="w-32 rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs lowercase outline-none"
+        className="w-32 rounded-md bg-muted px-2.5 py-0.5 text-xs lowercase outline-none"
       />
     );
   }
@@ -842,7 +836,7 @@ function TypePill({
         setValue(type);
         setEditing(true);
       }}
-      className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs lowercase text-muted-foreground hover:text-foreground"
+      className="rounded-md bg-muted px-2.5 py-0.5 text-xs lowercase text-muted-foreground hover:text-foreground"
     >
       {type}
     </button>

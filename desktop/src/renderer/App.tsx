@@ -36,6 +36,8 @@ import {
   AlertCircleIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
+  BookIcon,
+  Columns2Icon,
   CopyIcon,
   EllipsisIcon,
   ExternalLinkIcon,
@@ -65,7 +67,7 @@ import {
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
-import { NotesView } from "@/components/NotesView";
+import { NotesView, noteDocs } from "@/components/NotesView";
 import { HarnessChip } from "@/components/HarnessChip";
 import {
   GlobalSettingsDialog,
@@ -1098,6 +1100,8 @@ function BoardContent({
   const tombstoneAttachment = useMutation(api.attachments.tombstoneAttachment);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  // The Notes view's Archived sheet, opened from the same top-right header slot.
+  const [showNotesArchived, setShowNotesArchived] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [globalSettingsTab, setGlobalSettingsTab] =
     useState<GlobalSettingsTab>("harnesses");
@@ -1308,6 +1312,10 @@ function BoardContent({
 
   const activeCards = cards.filter((card) => !card.archived);
   const archivedCards = cards.filter((card) => card.archived);
+  // Archived count for the active view: tasks on the Board, notes on Notes.
+  const archivedNoteCount = noteDocs(files).filter((d) => d.archived).length;
+  const archivedCount =
+    workspaceView === "board" ? archivedCards.length : archivedNoteCount;
   const byColumn = Object.fromEntries(
     boardStatuses.map((c) => [
       c.id,
@@ -1525,19 +1533,26 @@ function BoardContent({
     >
       <div className="flex min-h-0 flex-1 flex-col gap-6">
         <header className="window-titlebar-row -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-between gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
-          <div className="flex shrink-0 items-center gap-1">
-            {(["board", "notes"] as const).map((tab) => (
+          <div className="flex shrink-0 items-center overflow-hidden rounded-lg border border-border">
+            {(
+              [
+                ["board", Columns2Icon],
+                ["notes", BookIcon],
+              ] as const
+            ).map(([tab, Icon], i) => (
               <button
                 key={tab}
                 type="button"
                 onClick={() => setWorkspaceView(tab)}
                 className={cn(
-                  "rounded-md px-2.5 py-1 text-sm capitalize transition-colors",
+                  "flex items-center gap-1.5 px-2.5 py-1 text-[13px] font-medium capitalize transition-colors",
+                  i > 0 && "border-l border-border",
                   workspaceView === tab
-                    ? "bg-muted font-medium text-foreground"
+                    ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                <Icon className="size-3.5" />
                 {tab}
               </button>
             ))}
@@ -1551,22 +1566,24 @@ function BoardContent({
               <SettingsIcon />
               Project settings
             </Button>
-            {workspaceView === "board" && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={archivedCards.length === 0}
-                onClick={() => setShowArchived(true)}
-              >
-                <ArchiveIcon />
-                Archived
-                {archivedCards.length > 0 && (
-                  <span className="ml-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                    {archivedCards.length}
-                  </span>
-                )}
-              </Button>
-            )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={archivedCount === 0}
+              onClick={() =>
+                workspaceView === "board"
+                  ? setShowArchived(true)
+                  : setShowNotesArchived(true)
+              }
+            >
+              <ArchiveIcon />
+              Archived
+              {archivedCount > 0 && (
+                <span className="ml-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                  {archivedCount}
+                </span>
+              )}
+            </Button>
           </div>
         </header>
 
@@ -1596,7 +1613,12 @@ function BoardContent({
         )}
 
         {workspaceView === "notes" ? (
-          <NotesView projectId={projectId} files={files} />
+          <NotesView
+            projectId={projectId}
+            files={files}
+            showArchived={showNotesArchived}
+            onShowArchivedChange={setShowNotesArchived}
+          />
         ) : (
         <DndContext
           sensors={sensors}
