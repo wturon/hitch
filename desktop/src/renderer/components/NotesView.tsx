@@ -534,7 +534,7 @@ function NotesIndex({
       )}
     >
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-9 px-6 pt-12 pb-10">
-        <div className="flex items-center gap-3 rounded-xl bg-muted px-4 ring-1 ring-border focus-within:ring-2 focus-within:ring-ring/40">
+        <div className="flex items-center gap-3 border-b border-border px-1 focus-within:border-muted-foreground/40">
           <SearchIcon className="size-[18px] shrink-0 text-muted-foreground" />
           <input
             ref={inputRef}
@@ -584,9 +584,14 @@ function NotesIndex({
                   )}
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate text-[15px] font-medium tracking-tight text-foreground">
-                      {item.doc.title}
-                    </span>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-[15px] font-medium tracking-tight text-foreground">
+                        {item.doc.title}
+                      </span>
+                      <span className="shrink-0 rounded-full border border-border px-1.5 font-mono text-[10px] leading-[1.5] lowercase text-muted-foreground">
+                        {item.doc.type}
+                      </span>
+                    </div>
                     {notePreview(item.doc.content) && (
                       <span className="truncate text-[13px] text-muted-foreground">
                         {notePreview(item.doc.content)}
@@ -594,7 +599,7 @@ function NotesIndex({
                     )}
                   </div>
                   <span className="shrink-0 font-mono text-[11px] lowercase text-muted-foreground/70">
-                    {query.trim() ? item.doc.type : relativeTime(item.doc.updatedAt)}
+                    {relativeTime(item.doc.updatedAt)}
                   </span>
                 </div>
               ) : (
