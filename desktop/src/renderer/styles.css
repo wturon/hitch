@@ -196,6 +196,12 @@
   -webkit-app-region: drag;
 }
 
+@media (min-width: 768px) {
+  .app-shell[data-sidebar-collapsed="true"] .window-titlebar-row {
+    padding-left: 116px;
+  }
+}
+
 button,
 a,
 input,

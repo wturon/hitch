@@ -389,7 +389,10 @@ function AppShell({
   }, []);
 
   return (
-    <div className="app-shell relative flex h-screen flex-col overflow-hidden bg-background md:flex-row">
+    <div
+      className="app-shell relative flex h-screen flex-col overflow-hidden bg-background md:flex-row"
+      data-sidebar-collapsed={collapsed ? "true" : undefined}
+    >
       <AppSidebar
         projects={projects}
         selectedProjectId={selectedProjectId}
