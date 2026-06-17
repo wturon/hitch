@@ -6,13 +6,14 @@ import {
   AlignLeftIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
+  ChevronLeftIcon,
   CodeIcon,
   CopyIcon,
   EllipsisIcon,
-  FileTextIcon,
   LoaderCircle,
   PaperclipIcon,
   PlusIcon,
+  SearchIcon,
   Trash2Icon,
 } from "lucide-react";
 import { api } from "@convex/_generated/api";
@@ -43,7 +44,7 @@ import {
 import { cn } from "@/lib/utils";
 
 // A note is a folder under notes/, its body in index.md. This is the in-memory
-// model the explorer renders, mirroring the board's Card. `content` is the raw
+// model the index renders, mirroring the board's Card. `content` is the raw
 // file text (frontmatter + body) the editor writes back verbatim.
 interface NoteDoc {
   slug: string;
@@ -150,7 +151,8 @@ export function NotesView({
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [pendingSlug, setPendingSlug] = useState<string | null>(null);
   // The open editor registers its draft-flush here; we call it before swapping
-  // the selection, creating another doc, or unmounting (tab/project switch).
+  // the selection or on unmount (tab/project switch). It resets to a no-op when
+  // no editor is mounted, so it never re-saves a note we've already left.
   const flushRef = useRef<() => void>(() => {});
 
   // Flush the open doc on a real unmount (the tab or project changed). Safe under
@@ -159,28 +161,27 @@ export function NotesView({
   useEffect(() => () => flushRef.current(), []);
 
   const docs = useMemo(() => noteDocs(files), [files]);
-  const activeDocs = docs.filter((d) => !d.archived);
-  const archivedDocs = docs.filter((d) => d.archived);
+  const archivedDocs = useMemo(() => docs.filter((d) => d.archived), [docs]);
+  // The index lists active notes most-recently-edited first (recency, no type
+  // grouping). A freshly created/edited note carries an optimistic updatedAt of
+  // MAX_SAFE_INTEGER, so it surfaces at the top immediately.
+  const recentDocs = useMemo(
+    () =>
+      docs
+        .filter((d) => !d.archived)
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+    [docs],
+  );
   const selected = selectedSlug
     ? (docs.find((d) => d.slug === selectedSlug && !d.archived) ?? null)
     : null;
 
-  // Group active docs by type; groups ordered alphabetically (MVP). Within a
-  // group, most-recently-updated first so a freshly created/edited doc surfaces.
-  const groups = useMemo(() => {
-    const byType = new Map<string, NoteDoc[]>();
-    for (const doc of activeDocs) {
-      const list = byType.get(doc.type) ?? [];
-      list.push(doc);
-      byType.set(doc.type, list);
-    }
-    return [...byType.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([type, list]) => ({
-        type,
-        docs: list.sort((a, b) => b.updatedAt - a.updatedAt),
-      }));
-  }, [activeDocs]);
+  // If the open note disappears from the active list (archived or deleted, here
+  // or remotely), fall back to the index rather than a dangling editor.
+  useEffect(() => {
+    if (selectedSlug === null) return;
+    if (!recentDocs.some((d) => d.slug === selectedSlug)) setSelectedSlug(null);
+  }, [recentDocs, selectedSlug]);
 
   async function persist(path: string, content: string) {
     await upsertFile({
@@ -226,16 +227,16 @@ export function NotesView({
     }
   }
 
-  // Create a fresh doc of `type` with an empty title, select it, and let the
-  // editor focus the title. The slug is recomputed from the title on flush, so a
-  // placeholder "note"/"note-2" slug here is fine. An empty doc is discarded on
-  // flush, so an accidental "new" click leaves nothing behind.
-  async function createDoc(type: string) {
-    flushRef.current(); // save/reconcile the doc we're leaving
+  // Create a note from the index search bar with its title pre-filled, then open
+  // it. The slug is derived from the title (uniqued); the editor lands the cursor
+  // in the body since the title is already set. An empty doc is discarded on
+  // flush, so an abandoned create leaves nothing behind.
+  async function createNote(title: string) {
     const taken = new Set(docs.map((d) => d.slug));
-    const slug = uniqueSlug("", taken, DEFAULT_TYPE);
+    const slug = uniqueSlug(title, taken, DEFAULT_TYPE);
     const content = setFrontmatterKeys("", {
-      type: docType(type),
+      title,
+      type: DEFAULT_TYPE,
       created: new Date().toISOString(),
     });
     setSelectedSlug(slug);
@@ -250,9 +251,9 @@ export function NotesView({
   }
 
   // The deferred "explicit save" that also reconciles the slug — called when the
-  // editor unmounts (the doc is deselected, another doc is opened, or the tab
-  // changes). Discards an empty doc; renames the folder when the title's slug has
-  // drifted (write new path + migrate attachments + tombstone old).
+  // editor closes (Esc / back) or unmounts (tab/project switch). Discards an
+  // empty doc; renames the folder when the title's slug has drifted (write new
+  // path + migrate attachments + tombstone old).
   async function flushDoc(slug: string, content: string) {
     const { frontmatter } = parseFrontmatter(content);
     const { body } = splitFrontmatter(content);
@@ -310,107 +311,48 @@ export function NotesView({
     }
   }
 
-  // Switch the selected doc, flushing the outgoing draft first (save + slug
-  // reconcile). Selecting the doc already open is a no-op.
-  function selectDoc(slug: string) {
+  // Open a note from the index. Flushing the (possibly) outgoing draft first is a
+  // no-op in practice — the index is only interactive when no editor is mounted —
+  // but it's harmless and keeps the invariant explicit.
+  function openDoc(slug: string) {
     if (slug === selectedSlug) return;
     flushRef.current();
     setSelectedSlug(slug);
   }
 
   return (
-    <div className="-mx-4 flex min-h-0 flex-1 sm:-mx-6 lg:-mx-8">
-      {/* Left: whisper-quiet explorer, grouped by type. No column title (the
-          Board/Notes tab already labels the view) and no per-row icons — bare
-          titles. The New affordance rides on the first group's header row. */}
-      <aside className="flex w-[236px] shrink-0 flex-col">
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 pt-3 pb-4">
-          {groups.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 px-2 py-8 text-center">
-              <p className="text-sm font-medium text-foreground">No notes yet</p>
-              <p className="text-xs text-muted-foreground">
-                Jot something down for agents to read.
-              </p>
-              <button
-                type="button"
-                onClick={() => void createDoc(DEFAULT_TYPE)}
-                className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <PlusIcon className="size-3.5" />
-                New note
-              </button>
-            </div>
-          ) : (
-            groups.map((group, i) => (
-              <div key={group.type} className="group flex flex-col">
-                <div className="flex items-center justify-between px-2 py-1">
-                  <span className="font-mono text-[10px] lowercase text-muted-foreground/60">
-                    {group.type}
-                  </span>
-                  {/* The first group's "+" is the always-visible New affordance;
-                      later groups reveal their per-group "New [type]" on hover. */}
-                  <button
-                    type="button"
-                    aria-label={`New ${group.type} note`}
-                    onClick={() => void createDoc(group.type)}
-                    className={cn(
-                      "flex size-5 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground",
-                      i === 0 ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-                    )}
-                  >
-                    <PlusIcon className="size-3.5" />
-                  </button>
-                </div>
-                {group.docs.map((doc) => (
-                  <button
-                    key={doc.slug}
-                    type="button"
-                    onClick={() => selectDoc(doc.slug)}
-                    className={cn(
-                      "truncate rounded-md px-2 py-1.5 text-left text-[13px]",
-                      doc.slug === selectedSlug
-                        ? "bg-muted font-medium text-foreground"
-                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                    )}
-                  >
-                    {doc.title}
-                  </button>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
-      </aside>
+    <div className="-mx-4 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8">
+      {/* The index stays mounted while a note is open (just hidden) so its search
+          query, keyboard selection, and scroll position are exactly restored when
+          you Esc back. */}
+      <NotesIndex
+        docs={recentDocs}
+        active={selected === null}
+        onOpen={openDoc}
+        onCreate={(title) => void createNote(title)}
+      />
 
-      {/* Right: editor pane. */}
-      <div className="flex min-h-0 flex-1 flex-col">
-        {selected ? (
-          <NoteEditor
-            key={selected.slug}
-            projectId={projectId}
-            slug={selected.slug}
-            content={selected.content}
-            onSave={saveDoc}
-            onFlush={flushDoc}
-            registerFlush={(fn) => {
-              flushRef.current = fn;
-            }}
-            onArchive={(slug, content) =>
-              void persist(
-                noteBodyPath(slug),
-                setFrontmatterKeys(content, { archived: "true" }),
-              )
-            }
-            onDelete={(slug) => void deleteDoc(slug)}
-            onClose={() => setSelectedSlug(null)}
-          />
-        ) : (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
-            <FileTextIcon className="size-8 opacity-40" />
-            <p className="text-sm">Select a note, or create one.</p>
-          </div>
-        )}
-      </div>
+      {selected && (
+        <NoteEditor
+          key={selected.slug}
+          projectId={projectId}
+          slug={selected.slug}
+          content={selected.content}
+          onSave={saveDoc}
+          onFlush={flushDoc}
+          registerFlush={(fn) => {
+            flushRef.current = fn;
+          }}
+          onArchive={(slug, content) =>
+            void persist(
+              noteBodyPath(slug),
+              setFrontmatterKeys(content, { archived: "true" }),
+            )
+          }
+          onDelete={(slug) => void deleteDoc(slug)}
+          onClose={() => setSelectedSlug(null)}
+        />
+      )}
 
       <NotesArchivedSheet
         open={showArchived}
@@ -424,6 +366,244 @@ export function NotesView({
   );
 }
 
+// Relative "last edited" stamp for the index rows. Optimistic writes carry a
+// future timestamp (MAX_SAFE_INTEGER) → a negative diff → "now", which is what
+// we want for a note you just touched.
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const min = 60_000;
+  const hour = 60 * min;
+  const day = 24 * hour;
+  const week = 7 * day;
+  if (diff < min) return "now";
+  if (diff < hour) return `${Math.floor(diff / min)}m`;
+  if (diff < day) return `${Math.floor(diff / hour)}h`;
+  if (diff < 2 * day) return "Yesterday";
+  if (diff < week) return `${Math.floor(diff / day)}d`;
+  if (diff < 4 * week) return `${Math.floor(diff / week)}w`;
+  return new Date(ts).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// The first non-empty body line, lightly de-marked, for an index row's preview.
+function notePreview(content: string): string {
+  const { body } = splitFrontmatter(content);
+  for (const line of body.split(/\r?\n/)) {
+    const stripped = line
+      .trim()
+      .replace(/^#{1,6}\s+/, "")
+      .replace(/^[-*+]\s+/, "")
+      .replace(/^>\s+/, "")
+      .replace(/^\d+\.\s+/, "")
+      .replace(/[*_`]/g, "")
+      .trim();
+    if (stripped) return stripped;
+  }
+  return "";
+}
+
+// Rank notes against a query: title prefix > title substring > preview > type.
+// Ties break on recency. Empty query returns the list unchanged (recency order).
+function rankNotes(docs: NoteDoc[], query: string): NoteDoc[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return docs;
+  const scored: { doc: NoteDoc; score: number }[] = [];
+  for (const doc of docs) {
+    const title = doc.title.toLowerCase();
+    let score = -1;
+    if (title.startsWith(q)) score = 3;
+    else if (title.includes(q)) score = 2;
+    else if (notePreview(doc.content).toLowerCase().includes(q)) score = 1;
+    else if (doc.type.toLowerCase().includes(q)) score = 0;
+    if (score >= 0) scored.push({ doc, score });
+  }
+  scored.sort((a, b) => b.score - a.score || b.doc.updatedAt - a.doc.updatedAt);
+  return scored.map((s) => s.doc);
+}
+
+type IndexItem =
+  | { kind: "note"; doc: NoteDoc }
+  | { kind: "create"; title: string };
+
+// The Notes landing page: a search-led, keyboard-driven command list (Raycast
+// style). Empty query → recency list. Typing → ranked results with a "Create
+// <query>" row pinned last. ↑↓ move the selection, ↵ opens/creates, Esc clears
+// the query. Stays mounted (hidden) while a note is open so state is preserved.
+function NotesIndex({
+  docs,
+  active,
+  onOpen,
+  onCreate,
+}: {
+  docs: NoteDoc[];
+  active: boolean;
+  onOpen: (slug: string) => void;
+  onCreate: (title: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const results = useMemo(() => rankNotes(docs, query), [docs, query]);
+  const items = useMemo<IndexItem[]>(() => {
+    const list: IndexItem[] = results.map((doc) => ({ kind: "note", doc }));
+    const trimmed = query.trim();
+    if (trimmed) list.push({ kind: "create", title: trimmed });
+    return list;
+  }, [results, query]);
+
+  // Keep the selection in range as the list changes (typing, recency updates).
+  useEffect(() => {
+    setSelected((i) => Math.min(Math.max(i, 0), Math.max(0, items.length - 1)));
+  }, [items.length]);
+
+  // Refocus the search input whenever the index becomes the visible view (mount
+  // and every Esc-back from the editor).
+  useEffect(() => {
+    if (active) inputRef.current?.focus();
+  }, [active]);
+
+  // Keep the highlighted row in view during keyboard navigation.
+  useEffect(() => {
+    listRef.current
+      ?.querySelector(`[data-idx="${selected}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
+
+  function activate(item: IndexItem | undefined) {
+    if (!item) return;
+    if (item.kind === "note") onOpen(item.doc.slug);
+    else onCreate(item.title);
+  }
+
+  function onInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelected((i) => Math.min(i + 1, items.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelected((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      activate(items[selected]);
+    } else if (e.key === "Escape" && query) {
+      e.preventDefault();
+      setQuery("");
+    }
+  }
+
+  const optionId = (i: number) => `notes-index-option-${i}`;
+
+  return (
+    <div
+      className={cn(
+        "min-h-0 flex-1 overflow-y-auto",
+        active ? "flex flex-col" : "hidden",
+      )}
+    >
+      <div className="mx-auto flex w-full max-w-[720px] flex-col gap-9 px-6 pt-12 pb-10">
+        <div className="flex items-center gap-3 rounded-xl bg-muted px-4 ring-1 ring-border focus-within:ring-2 focus-within:ring-ring/40">
+          <SearchIcon className="size-[18px] shrink-0 text-muted-foreground" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setSelected(0);
+            }}
+            onKeyDown={onInputKeyDown}
+            placeholder="Search notes, or type to create…"
+            spellCheck={false}
+            role="combobox"
+            aria-expanded
+            aria-controls="notes-index-list"
+            aria-activedescendant={items.length ? optionId(selected) : undefined}
+            className="h-12 flex-1 bg-transparent text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
+          />
+        </div>
+
+        {items.length === 0 ? (
+          <p className="px-3 text-sm text-muted-foreground">
+            {query.trim()
+              ? "No notes match — press ↵ to create one."
+              : "No notes yet. Type a title and press ↵ to create one."}
+          </p>
+        ) : (
+          <div
+            ref={listRef}
+            id="notes-index-list"
+            role="listbox"
+            aria-label="Notes"
+            className="flex flex-col gap-0.5"
+          >
+            {items.map((item, i) =>
+              item.kind === "note" ? (
+                <div
+                  key={item.doc.slug}
+                  id={optionId(i)}
+                  data-idx={i}
+                  role="option"
+                  aria-selected={i === selected}
+                  onMouseMove={() => setSelected(i)}
+                  onClick={() => activate(item)}
+                  className={cn(
+                    "flex cursor-pointer items-baseline gap-4 rounded-lg px-3 py-2.5",
+                    i === selected && "bg-muted",
+                  )}
+                >
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-[15px] font-medium tracking-tight text-foreground">
+                      {item.doc.title}
+                    </span>
+                    {notePreview(item.doc.content) && (
+                      <span className="truncate text-[13px] text-muted-foreground">
+                        {notePreview(item.doc.content)}
+                      </span>
+                    )}
+                  </div>
+                  <span className="shrink-0 font-mono text-[11px] lowercase text-muted-foreground/70">
+                    {query.trim() ? item.doc.type : relativeTime(item.doc.updatedAt)}
+                  </span>
+                </div>
+              ) : (
+                <div
+                  key="__create"
+                  id={optionId(i)}
+                  data-idx={i}
+                  role="option"
+                  aria-selected={i === selected}
+                  onMouseMove={() => setSelected(i)}
+                  onClick={() => activate(item)}
+                  className={cn(
+                    "mt-1 flex cursor-pointer items-center gap-3 rounded-lg border-t border-border px-3 py-2.5",
+                    i === selected && "bg-muted",
+                  )}
+                >
+                  <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-foreground text-background">
+                    <PlusIcon className="size-4" />
+                  </span>
+                  <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                    <span className="text-[15px] text-muted-foreground">Create</span>
+                    <span className="truncate text-[15px] font-semibold text-foreground">
+                      “{item.title}”
+                    </span>
+                  </span>
+                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
+                    new note
+                  </span>
+                </div>
+              ),
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 type View = "raw" | "formatted";
 const VIEW_KEY = "hitch:notes-view";
 
@@ -432,8 +612,8 @@ function loadView(): View {
   return window.localStorage.getItem(VIEW_KEY) === "raw" ? "raw" : "formatted";
 }
 
-// The right-pane editor for a single note. Adapted from TaskEditor minus
-// the delegation band / chat: the document model, the formatted ⇄ raw toggle, the
+// The full-pane editor for a single note. Adapted from TaskEditor minus the
+// delegation band / chat: the document model, the formatted ⇄ raw toggle, the
 // shared attachment paste/drop path, save-on-flush, and the type pill. It is keyed
 // by slug, so a different doc remounts it — useFrontmatterDocument relies on that.
 function NoteEditor({
@@ -472,30 +652,31 @@ function NoteEditor({
   // Latest draft, read by the flush so it never closes over a stale value.
   const draftRawRef = useRef(draft.raw);
   draftRawRef.current = draft.raw;
-  // Archive / delete persist their own write and must not be re-saved by the
-  // flush that fires when we then deselect.
+  // Archive / delete / close-with-save persist their own write and must not be
+  // re-saved by the registered flush.
   const skipFlushRef = useRef(false);
 
   useEffect(() => {
     window.localStorage.setItem(VIEW_KEY, view);
   }, [view]);
 
-  // The deferred "explicit save": NotesView calls this registered flush right
-  // before it swaps the selected doc, creates another, or unmounts (a tab/project
-  // switch). We deliberately do NOT flush from the editor's own unmount effect —
-  // under StrictMode that fires a spurious cleanup immediately after mount, which
-  // would delete a just-created empty doc. Driving it from the parent's explicit
-  // actions sidesteps that; skipFlush suppresses it once archive/delete have
-  // written. Re-registered every render so it sees the latest draft + callback.
+  // The deferred "explicit save": NotesView calls this registered flush on a real
+  // unmount (tab/project switch). We deliberately do NOT flush from the editor's
+  // own unmount effect — under StrictMode that fires a spurious cleanup right
+  // after mount, which would delete a just-created empty doc. The cleanup resets
+  // it to a no-op so a closed editor can never be re-flushed. Re-registered every
+  // render so it sees the latest draft + callback.
   useEffect(() => {
     registerFlush(() => {
       if (skipFlushRef.current) return;
       void onFlush(slug, draftRawRef.current);
     });
+    return () => registerFlush(() => {});
   });
 
   // Land the caret where the user is most likely to start typing (mirrors
-  // TaskEditor). Empty title (a fresh doc) → focus the title; else the body.
+  // TaskEditor). Empty title (a fresh doc) → focus the title; else the body. A
+  // note created from search has its title set, so the cursor lands in the body.
   useEffect(() => {
     if (view !== "formatted") return;
     if (draft.body.trim() !== "") return;
@@ -614,8 +795,17 @@ function NoteEditor({
     }
   }
 
+  // Esc / ← Notes: return to the index immediately while the save fires in the
+  // background — the same dismiss feel as the task dialog (close now, persist
+  // after). skipFlush stops the registered flush from double-writing.
+  function closeWithSave() {
+    skipFlushRef.current = true;
+    void onFlush(slug, draftRawRef.current);
+    onClose();
+  }
+
   // Commit a type change immediately (it's a discrete property edit, like a
-  // select): fold it into the draft and save in place so the doc re-groups now.
+  // select): fold it into the draft and save in place.
   function commitType(value: string) {
     const next = docType(value);
     if (next === docType(draft.frontmatter.type)) return;
@@ -650,13 +840,26 @@ function NoteEditor({
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
           e.preventDefault();
           void saveDraft();
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeWithSave();
         }
       }}
     >
-      {/* Top bar: type pill (left), actions (right). Borderless and flush with
-          the body — no separator rule, matching the quiet Paper design. */}
+      {/* Top bar: ← Notes (left), actions (right). Borderless and flush with the
+          body — no separator rule, matching the quiet Paper design. */}
       <div className="flex h-12 shrink-0 items-center justify-between px-6">
-        <TypePill type={docType(draft.frontmatter.type)} onCommit={commitType} />
+        <button
+          type="button"
+          onClick={closeWithSave}
+          aria-label="Back to notes"
+          className="flex items-center gap-1 rounded-lg py-1 pr-2.5 pl-1.5 text-[13px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <ChevronLeftIcon className="size-4" />
+          Notes
+        </button>
         <div className="flex items-center gap-1.5">
           {saving && (
             <span className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -709,9 +912,11 @@ function NoteEditor({
         </div>
       </div>
 
-      {/* Scroll area: title + body (or raw textarea). */}
+      {/* Scroll area: title + body (or raw textarea). Content rides in a centered,
+          capped-width column (a comfortable reading measure) so lines never run
+          the full pane width — the papery, focused feel. */}
       <div
-        className="flex min-h-0 flex-auto flex-col overflow-y-auto px-6 pt-6 pb-10"
+        className="flex min-h-0 flex-auto flex-col overflow-y-auto px-6 pt-8 pb-10"
         onMouseDown={(e) => {
           if (view === "formatted" && e.target === e.currentTarget) {
             e.preventDefault();
@@ -719,48 +924,58 @@ function NoteEditor({
           }
         }}
       >
-        {view === "formatted" ? (
-          <>
-            <textarea
-              ref={titleRef}
-              aria-label="Note title"
-              rows={1}
-              value={draft.title}
-              onChange={(e) => draft.setTitle(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  editorRef.current?.focusStart();
+        <div className="mx-auto flex w-full max-w-[680px] flex-1 flex-col">
+          {view === "formatted" ? (
+            <>
+              {/* The freeform OKF type lives above the title in the document, not
+                  in the top bar — it reads as a property of the note. */}
+              <div className="mb-4 flex">
+                <TypePill
+                  type={docType(draft.frontmatter.type)}
+                  onCommit={commitType}
+                />
+              </div>
+              <textarea
+                ref={titleRef}
+                aria-label="Note title"
+                rows={1}
+                value={draft.title}
+                onChange={(e) => draft.setTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    editorRef.current?.focusStart();
+                  }
+                }}
+                placeholder="Untitled"
+                spellCheck={false}
+                className="hitch-autosize mb-3 w-full shrink-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-[34px] font-semibold leading-tight tracking-tight text-foreground outline-none placeholder:text-muted-foreground/40"
+              />
+              <MarkdownEditor
+                ref={editorRef}
+                value={draft.body}
+                onChange={draft.setBody}
+                placeholder="Jot something down for agents to read — drop in a screenshot or file"
+                imageUploadHandler={
+                  attachments.enabled ? attachments.imageUploadHandler : undefined
                 }
-              }}
-              placeholder="Untitled"
+                imagePreviewHandler={
+                  attachments.enabled ? attachments.imagePreviewHandler : undefined
+                }
+              />
+            </>
+          ) : (
+            <textarea
+              ref={rawRef}
+              aria-label="Note content"
+              value={draft.raw}
+              onChange={(e) => draft.setRaw(e.target.value)}
               spellCheck={false}
-              className="hitch-autosize mb-2 w-full shrink-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-[22px] font-semibold leading-snug tracking-tight text-foreground outline-none placeholder:text-muted-foreground/40"
+              autoFocus
+              className="hitch-autosize min-h-[180px] w-full shrink-0 resize-none overflow-hidden bg-transparent font-mono text-xs leading-relaxed outline-none"
             />
-            <MarkdownEditor
-              ref={editorRef}
-              value={draft.body}
-              onChange={draft.setBody}
-              placeholder="Jot something down for agents to read — drop in a screenshot or file"
-              imageUploadHandler={
-                attachments.enabled ? attachments.imageUploadHandler : undefined
-              }
-              imagePreviewHandler={
-                attachments.enabled ? attachments.imagePreviewHandler : undefined
-              }
-            />
-          </>
-        ) : (
-          <textarea
-            ref={rawRef}
-            aria-label="Note content"
-            value={draft.raw}
-            onChange={(e) => draft.setRaw(e.target.value)}
-            spellCheck={false}
-            autoFocus
-            className="hitch-autosize min-h-[180px] w-full shrink-0 resize-none overflow-hidden bg-transparent font-mono text-xs leading-relaxed outline-none"
-          />
-        )}
+          )}
+        </div>
       </div>
 
       {draggingFile && (
@@ -783,7 +998,8 @@ function NoteEditor({
 }
 
 // The freeform OKF type, shown as an editable pill. Click → inline input; commit
-// on Enter/blur (empty → "note"). Escape cancels back to the current value.
+// on Enter/blur (empty → "note"). Escape cancels back to the current value (and
+// is swallowed so it doesn't also close the editor).
 function TypePill({
   type,
   onCommit,
@@ -817,6 +1033,7 @@ function TypePill({
             e.currentTarget.blur();
           } else if (e.key === "Escape") {
             e.preventDefault();
+            e.stopPropagation();
             cancelled.current = true;
             setValue(type);
             e.currentTarget.blur();
