@@ -23,7 +23,7 @@ import {
   setFrontmatterKeys,
   splitFrontmatter,
 } from "@/lib/frontmatter";
-import { knowledgeBodyPath, knowledgeSlug } from "@/lib/knowledge";
+import { noteBodyPath, noteSlug } from "@/lib/notes";
 import { uniqueSlug } from "@/lib/tasks";
 import { useFrontmatterDocument } from "@/hooks/useFrontmatterDocument";
 import { useAttachments } from "@/hooks/useAttachments";
@@ -42,14 +42,14 @@ import {
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
-// A knowledge doc is a folder under knowledge/, its body in index.md. This is the
-// in-memory model the explorer renders, mirroring the board's Card. `content` is
-// the raw file text (frontmatter + body) the editor writes back verbatim.
-interface KnowledgeDoc {
+// A note is a folder under notes/, its body in index.md. This is the in-memory
+// model the explorer renders, mirroring the board's Card. `content` is the raw
+// file text (frontmatter + body) the editor writes back verbatim.
+interface NoteDoc {
   slug: string;
   title: string;
   type: string;
-  path: string; // knowledge/<slug>/index.md
+  path: string; // notes/<slug>/index.md
   content: string;
   archived: boolean;
   updatedAt: number;
@@ -73,10 +73,10 @@ function docType(type: string | undefined): string {
 
 // Build the doc list from the project's files: keep only canonical index.md
 // bodies, parse frontmatter, drop tombstones.
-function knowledgeDocs(files: FileDoc[]): KnowledgeDoc[] {
-  return files.reduce<KnowledgeDoc[]>((acc, f) => {
+function noteDocs(files: FileDoc[]): NoteDoc[] {
+  return files.reduce<NoteDoc[]>((acc, f) => {
     if (f.deleted) return acc;
-    const slug = knowledgeSlug(f.path);
+    const slug = noteSlug(f.path);
     if (slug === null) return acc;
     const { frontmatter } = parseFrontmatter(f.content);
     acc.push({
@@ -92,7 +92,7 @@ function knowledgeDocs(files: FileDoc[]): KnowledgeDoc[] {
   }, []);
 }
 
-export function KnowledgeView({
+export function NotesView({
   projectId,
   files,
 }: {
@@ -152,7 +152,7 @@ export function KnowledgeView({
   // ref is still the no-op default.
   useEffect(() => () => flushRef.current(), []);
 
-  const docs = useMemo(() => knowledgeDocs(files), [files]);
+  const docs = useMemo(() => noteDocs(files), [files]);
   const activeDocs = docs.filter((d) => !d.archived);
   const archivedDocs = docs.filter((d) => d.archived);
   const selected = selectedSlug
@@ -162,7 +162,7 @@ export function KnowledgeView({
   // Group active docs by type; groups ordered alphabetically (MVP). Within a
   // group, most-recently-updated first so a freshly created/edited doc surfaces.
   const groups = useMemo(() => {
-    const byType = new Map<string, KnowledgeDoc[]>();
+    const byType = new Map<string, NoteDoc[]>();
     for (const doc of activeDocs) {
       const list = byType.get(doc.type) ?? [];
       list.push(doc);
@@ -189,7 +189,7 @@ export function KnowledgeView({
   // Tombstone every (non-deleted) attachment row under a doc's folder so the
   // daemon removes the local blobs and the now-empty folders. Mirrors the board.
   async function cascadeDeleteAttachments(slug: string) {
-    const prefix = `knowledge/${slug}/attachments/`;
+    const prefix = `notes/${slug}/attachments/`;
     const rows = (attachments ?? []).filter(
       (row) => !row.deleted && row.path.startsWith(prefix),
     );
@@ -202,7 +202,7 @@ export function KnowledgeView({
   // blob (same storageId) — used when a rename recomputes the folder name. The
   // body's `attachments/<file>` references are relative, so they stay valid.
   async function migrateAttachments(oldSlug: string, newSlug: string) {
-    const prefix = `knowledge/${oldSlug}/attachments/`;
+    const prefix = `notes/${oldSlug}/attachments/`;
     const rows = (attachments ?? []).filter(
       (row) => !row.deleted && row.path.startsWith(prefix),
     );
@@ -210,7 +210,7 @@ export function KnowledgeView({
       const name = row.path.slice(prefix.length);
       await registerAttachment({
         projectId,
-        path: `knowledge/${newSlug}/attachments/${name}`,
+        path: `notes/${newSlug}/attachments/${name}`,
         storageId: row.storageId,
         hash: row.hash,
         contentType: row.contentType,
@@ -233,14 +233,14 @@ export function KnowledgeView({
       created: new Date().toISOString(),
     });
     setSelectedSlug(slug);
-    await persist(knowledgeBodyPath(slug), content);
+    await persist(noteBodyPath(slug), content);
   }
 
   // In-place save (⌘S and the type pill): write the draft at its current path,
   // never recomputing the slug. Slug reconciliation is deferred to flush so the
   // folder doesn't churn mid-edit.
   async function saveDoc(slug: string, content: string) {
-    await persist(knowledgeBodyPath(slug), content);
+    await persist(noteBodyPath(slug), content);
   }
 
   // The deferred "explicit save" that also reconciles the slug — called when the
@@ -259,24 +259,24 @@ export function KnowledgeView({
     const newSlug = uniqueSlug(title, taken, DEFAULT_TYPE);
     if (newSlug === slug) {
       const current = files.find(
-        (f) => f.path === knowledgeBodyPath(slug) && !f.deleted,
+        (f) => f.path === noteBodyPath(slug) && !f.deleted,
       );
       if (current?.content === content) return; // nothing changed
-      await persist(knowledgeBodyPath(slug), content);
+      await persist(noteBodyPath(slug), content);
       return;
     }
-    await persist(knowledgeBodyPath(newSlug), content);
+    await persist(noteBodyPath(newSlug), content);
     await migrateAttachments(slug, newSlug);
     await upsertFile({
       projectId,
-      path: knowledgeBodyPath(slug),
+      path: noteBodyPath(slug),
       content: "",
       hash: "",
       deleted: true,
     });
   }
 
-  async function setArchived(doc: KnowledgeDoc, archived: boolean) {
+  async function setArchived(doc: NoteDoc, archived: boolean) {
     const next = setFrontmatterKeys(doc.content, {
       archived: archived ? "true" : undefined,
     });
@@ -294,7 +294,7 @@ export function KnowledgeView({
       await cascadeDeleteAttachments(slug);
       await upsertFile({
         projectId,
-        path: knowledgeBodyPath(slug),
+        path: noteBodyPath(slug),
         content: "",
         hash: "",
         deleted: true,
@@ -318,11 +318,11 @@ export function KnowledgeView({
       <aside className="flex w-72 shrink-0 flex-col border-r border-border">
         <div className="flex items-center justify-between px-4 py-3">
           <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            Knowledge
+            Notes
           </span>
           <button
             type="button"
-            aria-label="New knowledge doc"
+            aria-label="New note"
             onClick={() => void createDoc(DEFAULT_TYPE)}
             className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
           >
@@ -334,7 +334,7 @@ export function KnowledgeView({
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4">
           {groups.length === 0 ? (
             <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-              No knowledge yet. Create a doc to capture context agents can read.
+              No notes yet. Jot something down for agents to read.
             </p>
           ) : (
             groups.map((group) => (
@@ -345,7 +345,7 @@ export function KnowledgeView({
                   </span>
                   <button
                     type="button"
-                    aria-label={`New ${group.type} doc`}
+                    aria-label={`New ${group.type} note`}
                     onClick={() => void createDoc(group.type)}
                     className="flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100"
                   >
@@ -392,7 +392,7 @@ export function KnowledgeView({
       {/* Right: editor pane. */}
       <div className="flex min-h-0 flex-1 flex-col">
         {selected ? (
-          <KnowledgeEditor
+          <NoteEditor
             key={selected.slug}
             projectId={projectId}
             slug={selected.slug}
@@ -404,7 +404,7 @@ export function KnowledgeView({
             }}
             onArchive={(slug, content) =>
               void persist(
-                knowledgeBodyPath(slug),
+                noteBodyPath(slug),
                 setFrontmatterKeys(content, { archived: "true" }),
               )
             }
@@ -414,12 +414,12 @@ export function KnowledgeView({
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
             <FileTextIcon className="size-8 opacity-40" />
-            <p className="text-sm">Select a doc, or create one.</p>
+            <p className="text-sm">Select a note, or create one.</p>
           </div>
         )}
       </div>
 
-      <KnowledgeArchivedSheet
+      <NotesArchivedSheet
         open={showArchived}
         onOpenChange={setShowArchived}
         docs={archivedDocs}
@@ -439,11 +439,11 @@ function loadView(): View {
   return window.localStorage.getItem(VIEW_KEY) === "raw" ? "raw" : "formatted";
 }
 
-// The right-pane editor for a single knowledge doc. Adapted from TaskEditor minus
+// The right-pane editor for a single note. Adapted from TaskEditor minus
 // the delegation band / chat: the document model, the formatted ⇄ raw toggle, the
 // shared attachment paste/drop path, save-on-flush, and the type pill. It is keyed
 // by slug, so a different doc remounts it — useFrontmatterDocument relies on that.
-function KnowledgeEditor({
+function NoteEditor({
   projectId,
   slug,
   content,
@@ -465,7 +465,7 @@ function KnowledgeEditor({
   onClose: () => void;
 }) {
   const draft = useFrontmatterDocument(content);
-  const attachments = useAttachments({ projectId, slug, base: "knowledge" });
+  const attachments = useAttachments({ projectId, slug, base: "notes" });
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
   const editorRef = useRef<MarkdownEditorHandle>(null);
@@ -487,7 +487,7 @@ function KnowledgeEditor({
     window.localStorage.setItem(VIEW_KEY, view);
   }, [view]);
 
-  // The deferred "explicit save": KnowledgeView calls this registered flush right
+  // The deferred "explicit save": NotesView calls this registered flush right
   // before it swaps the selected doc, creates another, or unmounts (a tab/project
   // switch). We deliberately do NOT flush from the editor's own unmount effect —
   // under StrictMode that fires a spurious cleanup immediately after mount, which
@@ -634,7 +634,7 @@ function KnowledgeEditor({
     // Project-root-relative path (includes .hitch/) — the reading agent's cwd is
     // the project root, so this pastes straight into a live chat.
     void navigator.clipboard
-      .writeText(`.hitch/${knowledgeBodyPath(slug)}`)
+      .writeText(`.hitch/${noteBodyPath(slug)}`)
       .catch(() => {});
   }
 
@@ -679,7 +679,7 @@ function KnowledgeEditor({
               render={
                 <button
                   type="button"
-                  aria-label="Doc actions"
+                  aria-label="Note actions"
                   className="flex size-7 items-center justify-center rounded-lg border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                 />
               }
@@ -729,7 +729,7 @@ function KnowledgeEditor({
           <>
             <textarea
               ref={titleRef}
-              aria-label="Doc title"
+              aria-label="Note title"
               rows={1}
               value={draft.title}
               onChange={(e) => draft.setTitle(e.target.value)}
@@ -747,7 +747,7 @@ function KnowledgeEditor({
               ref={editorRef}
               value={draft.body}
               onChange={draft.setBody}
-              placeholder="Capture context agents should read — drop in a screenshot or file"
+              placeholder="Jot something down for agents to read — drop in a screenshot or file"
               imageUploadHandler={
                 attachments.enabled ? attachments.imageUploadHandler : undefined
               }
@@ -759,7 +759,7 @@ function KnowledgeEditor({
         ) : (
           <textarea
             ref={rawRef}
-            aria-label="Doc content"
+            aria-label="Note content"
             value={draft.raw}
             onChange={(e) => draft.setRaw(e.target.value)}
             spellCheck={false}
@@ -809,7 +809,7 @@ function TypePill({
     return (
       <input
         autoFocus
-        aria-label="Doc type"
+        aria-label="Note type"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onBlur={() => {
@@ -849,7 +849,7 @@ function TypePill({
   );
 }
 
-function KnowledgeArchivedSheet({
+function NotesArchivedSheet({
   open,
   onOpenChange,
   docs,
@@ -859,10 +859,10 @@ function KnowledgeArchivedSheet({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  docs: KnowledgeDoc[];
+  docs: NoteDoc[];
   pendingSlug: string | null;
-  onUnarchive: (doc: KnowledgeDoc) => void;
-  onDelete: (doc: KnowledgeDoc) => void;
+  onUnarchive: (doc: NoteDoc) => void;
+  onDelete: (doc: NoteDoc) => void;
 }) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -870,7 +870,7 @@ function KnowledgeArchivedSheet({
         <SheetHeader>
           <SheetTitle>Archived</SheetTitle>
           <SheetDescription>
-            {docs.length} archived doc{docs.length === 1 ? "" : "s"}
+            {docs.length} archived note{docs.length === 1 ? "" : "s"}
           </SheetDescription>
         </SheetHeader>
         <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">

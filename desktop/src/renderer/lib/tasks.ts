@@ -38,7 +38,7 @@ export function slugify(title: string): string {
 
 // A slug for `title` that doesn't collide with `taken`, appending -2, -3, …
 // Falls back to `fallback` ("task" by default) when the title has no slug-able
-// characters — knowledge passes "note" so an untitled doc reads sensibly.
+// characters — notes pass "note" so an untitled note reads sensibly.
 export function uniqueSlug(
   title: string,
   taken: Set<string>,

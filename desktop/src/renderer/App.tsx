@@ -65,7 +65,7 @@ import {
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
-import { KnowledgeView } from "@/components/KnowledgeView";
+import { NotesView } from "@/components/NotesView";
 import { HarnessChip } from "@/components/HarnessChip";
 import {
   GlobalSettingsDialog,
@@ -1111,8 +1111,8 @@ function BoardContent({
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
   const [composingCol, setComposingCol] = useState<string | null>(null);
-  // Per-project tab: the Kanban board, or the Knowledge two-pane view.
-  const [workspaceView, setWorkspaceView] = useState<"board" | "knowledge">(
+  // Per-project tab: the Kanban board, or the Notes two-pane view.
+  const [workspaceView, setWorkspaceView] = useState<"board" | "notes">(
     "board",
   );
   const projectConfigFile = files?.find(
@@ -1526,7 +1526,7 @@ function BoardContent({
       <div className="flex min-h-0 flex-1 flex-col gap-6">
         <header className="window-titlebar-row -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-between gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
           <div className="flex shrink-0 items-center gap-1">
-            {(["board", "knowledge"] as const).map((tab) => (
+            {(["board", "notes"] as const).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -1595,8 +1595,8 @@ function BoardContent({
           </section>
         )}
 
-        {workspaceView === "knowledge" ? (
-          <KnowledgeView projectId={projectId} files={files} />
+        {workspaceView === "notes" ? (
+          <NotesView projectId={projectId} files={files} />
         ) : (
         <DndContext
           sensors={sensors}

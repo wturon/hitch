@@ -8,10 +8,10 @@ import { sha256Bytes } from "@/lib/hash";
 
 // What the upload path needs: which project owns the blobs and which doc folder
 // they belong to. `base` is the primitive's root folder under .hitch/ ("tasks"
-// by default; "knowledge" for knowledge docs), so the same hook serves both —
-// the on-disk attachment key is `<base>/<slug>/attachments/<file>`. When the
-// context is undefined (a non-doc use), the hook stays inert and `enabled` is
-// false, so callers can omit the editor's image/drop wiring.
+// by default; "notes" for notes), so the same hook serves both — the on-disk
+// attachment key is `<base>/<slug>/attachments/<file>`. When the context is
+// undefined (a non-doc use), the hook stays inert and `enabled` is false, so
+// callers can omit the editor's image/drop wiring.
 export interface AttachmentContext {
   projectId: Id<"projects">;
   slug: string;

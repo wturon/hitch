@@ -24,7 +24,7 @@ function rawTitle(content: string): string {
 // adoption of external writes. It deliberately knows nothing about persistence
 // (Convex), any dialog's close policy, or MDXEditor.
 //
-// This is the primitive-agnostic core shared by tasks and knowledge. Task-only
+// This is the primitive-agnostic core shared by tasks and notes. Task-only
 // machinery (chat-* selectors, clearChat) layers on top in useTaskDraft.
 //
 // `content` is the live file text from the query. The hook is mounted fresh per
@@ -51,7 +51,7 @@ export interface FrontmatterDocument {
   setTitle: (title: string) => void;
   // Replace the entire file (the raw full-file textarea).
   setRaw: (raw: string) => void;
-  // Set/remove arbitrary scalar frontmatter keys (e.g. knowledge's `type` pill),
+  // Set/remove arbitrary scalar frontmatter keys (e.g. a note's `type` pill),
   // leaving the body and other keys untouched. Returns the new content so a
   // caller can persist it directly.
   setFrontmatter: (updates: Record<string, string | undefined>) => string;
