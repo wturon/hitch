@@ -6,12 +6,16 @@ import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import { sha256Bytes } from "@/lib/hash";
 
-// What the upload path needs: which project owns the blobs and which task folder
-// they belong to. When undefined (a non-task use), the hook stays inert and
-// `enabled` is false, so callers can omit the editor's image/drop wiring.
+// What the upload path needs: which project owns the blobs and which doc folder
+// they belong to. `base` is the primitive's root folder under .hitch/ ("tasks"
+// by default; "knowledge" for knowledge docs), so the same hook serves both —
+// the on-disk attachment key is `<base>/<slug>/attachments/<file>`. When the
+// context is undefined (a non-doc use), the hook stays inert and `enabled` is
+// false, so callers can omit the editor's image/drop wiring.
 export interface AttachmentContext {
   projectId: Id<"projects">;
   slug: string;
+  base?: string;
 }
 
 function isImage(file: File): boolean {
@@ -92,7 +96,7 @@ export function useAttachments(ctx: AttachmentContext | undefined) {
   const reserveName = useCallback((file: File, kind: UploadKind): string => {
     const c = ctxRef.current;
     if (!c) throw new Error("Attachments are not available here");
-    const prefix = `tasks/${c.slug}/attachments/`;
+    const prefix = `${c.base ?? "tasks"}/${c.slug}/attachments/`;
     const taken = new Set<string>(reservedRef.current);
     for (const row of rowsRef.current ?? []) {
       if (!row.deleted && row.path.startsWith(prefix)) {
@@ -125,8 +129,8 @@ export function useAttachments(ctx: AttachmentContext | undefined) {
       const c = ctxRef.current;
       if (!c) throw new Error("Attachments are not available here");
       const name = reserveName(file, kind);
-      const relPath = `attachments/${name}`; // markdown src (rel to task.md)
-      const rowPath = `tasks/${c.slug}/${relPath}`; // attachment key (rel to .hitch)
+      const relPath = `attachments/${name}`; // markdown src (rel to the doc body)
+      const rowPath = `${c.base ?? "tasks"}/${c.slug}/${relPath}`; // key (rel to .hitch)
 
       setUploading((n) => n + 1);
       try {
@@ -177,7 +181,7 @@ export function useAttachments(ctx: AttachmentContext | undefined) {
   const imagePreviewHandler = useCallback(async (src: string): Promise<string> => {
     const c = ctxRef.current;
     if (!c || !src.startsWith("attachments/")) return src;
-    const rowPath = `tasks/${c.slug}/${src}`;
+    const rowPath = `${c.base ?? "tasks"}/${c.slug}/${src}`;
     const match = (rowsRef.current ?? []).find(
       (row) => !row.deleted && row.path === rowPath,
     );

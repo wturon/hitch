@@ -65,6 +65,7 @@ import {
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
+import { KnowledgeView } from "@/components/KnowledgeView";
 import { HarnessChip } from "@/components/HarnessChip";
 import {
   GlobalSettingsDialog,
@@ -1110,6 +1111,10 @@ function BoardContent({
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
   const [composingCol, setComposingCol] = useState<string | null>(null);
+  // Per-project tab: the Kanban board, or the Knowledge two-pane view.
+  const [workspaceView, setWorkspaceView] = useState<"board" | "knowledge">(
+    "board",
+  );
   const projectConfigFile = files?.find(
     (file) => file.path === PROJECT_CONFIG_PATH && !file.deleted,
   );
@@ -1519,7 +1524,24 @@ function BoardContent({
       onSignOut={() => void signOut()}
     >
       <div className="flex min-h-0 flex-1 flex-col gap-6">
-        <header className="window-titlebar-row -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-end gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+        <header className="window-titlebar-row -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-between gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+          <div className="flex shrink-0 items-center gap-1">
+            {(["board", "knowledge"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setWorkspaceView(tab)}
+                className={cn(
+                  "rounded-md px-2.5 py-1 text-sm capitalize transition-colors",
+                  workspaceView === tab
+                    ? "bg-muted font-medium text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button
               variant="outline"
@@ -1529,20 +1551,22 @@ function BoardContent({
               <SettingsIcon />
               Project settings
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={archivedCards.length === 0}
-              onClick={() => setShowArchived(true)}
-            >
-              <ArchiveIcon />
-              Archived
-              {archivedCards.length > 0 && (
-                <span className="ml-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                  {archivedCards.length}
-                </span>
-              )}
-            </Button>
+            {workspaceView === "board" && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={archivedCards.length === 0}
+                onClick={() => setShowArchived(true)}
+              >
+                <ArchiveIcon />
+                Archived
+                {archivedCards.length > 0 && (
+                  <span className="ml-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                    {archivedCards.length}
+                  </span>
+                )}
+              </Button>
+            )}
           </div>
         </header>
 
@@ -1571,6 +1595,9 @@ function BoardContent({
           </section>
         )}
 
+        {workspaceView === "knowledge" ? (
+          <KnowledgeView projectId={projectId} files={files} />
+        ) : (
         <DndContext
           sensors={sensors}
           onDragStart={(event: DragStartEvent) =>
@@ -1631,6 +1658,7 @@ function BoardContent({
             ) : null}
           </DragOverlay>
         </DndContext>
+        )}
 
         <ArchivedSheet
           open={showArchived}

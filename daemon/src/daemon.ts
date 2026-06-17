@@ -232,13 +232,14 @@ const hashOf = (content: string): string =>
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
-// Files under a task's attachments/ folder are image blobs, NOT UTF-8 text.
-// They sync via the attachments table (download-only), so the text watcher must
-// never read/push them — doing so would shove corrupted binary into the `files`
-// table and pollute the cards query. Matches both a file and the dir itself.
-const ATTACHMENT_RE = /^tasks\/[^/]+\/attachments(\/|$)/;
+// Files under a task's or knowledge doc's attachments/ folder are image blobs,
+// NOT UTF-8 text. They sync via the attachments table (download-only), so the
+// text watcher must never read/push them — doing so would shove corrupted binary
+// into the `files` table and pollute the cards query. Matches both a file and the
+// dir itself, under either primitive's folder.
+const ATTACHMENT_RE = /^(?:tasks|knowledge)\/[^/]+\/attachments(\/|$)/;
 // A single attachment file's path, used to scope empty-folder pruning.
-const ATTACHMENT_FILE_RE = /^tasks\/[^/]+\/attachments\/[^/]+$/;
+const ATTACHMENT_FILE_RE = /^(?:tasks|knowledge)\/[^/]+\/attachments\/[^/]+$/;
 
 function setFrontmatterKeys(
   content: string,
@@ -558,8 +559,12 @@ async function startHitchBinding({
     await pruneEmptyTaskDir(loc.rel, absPath);
   }
 
+  // Remove the now-empty folder left behind when a task's task.md or a knowledge
+  // doc's index.md is deleted. rmdir fails on a non-empty dir — that's the signal
+  // to stop, not an error.
   async function pruneEmptyTaskDir(relPath: string, absPath: string): Promise<void> {
-    if (!/^tasks\/[^/]+\/task\.md$/.test(relPath)) return;
+    if (!/^(?:tasks\/[^/]+\/task\.md|knowledge\/[^/]+\/index\.md)$/.test(relPath))
+      return;
 
     try {
       await rmdir(dirname(absPath));
@@ -569,7 +574,7 @@ async function startHitchBinding({
       if (code === "ENOENT" || code === "ENOTEMPTY" || code === "EEXIST") return;
       logError(
         logger,
-        `[hitch:${projectLabel}] task directory cleanup failed for ${dirname(relPath)}: ${String(err)}`,
+        `[hitch:${projectLabel}] directory cleanup failed for ${dirname(relPath)}: ${String(err)}`,
       );
     }
   }

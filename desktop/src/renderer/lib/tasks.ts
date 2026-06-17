@@ -27,7 +27,7 @@ export function taskBodyPath(slug: string): string {
 // uniqueness suffix uniqueSlug appends.
 const MAX_SLUG_LENGTH = 80;
 
-function slugify(title: string): string {
+export function slugify(title: string): string {
   return title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -37,9 +37,14 @@ function slugify(title: string): string {
 }
 
 // A slug for `title` that doesn't collide with `taken`, appending -2, -3, …
-// Falls back to "task" when the title has no slug-able characters.
-export function uniqueSlug(title: string, taken: Set<string>): string {
-  const base = slugify(title) || "task";
+// Falls back to `fallback` ("task" by default) when the title has no slug-able
+// characters — knowledge passes "note" so an untitled doc reads sensibly.
+export function uniqueSlug(
+  title: string,
+  taken: Set<string>,
+  fallback = "task",
+): string {
+  const base = slugify(title) || fallback;
   if (!taken.has(base)) return base;
   let n = 2;
   while (taken.has(`${base}-${n}`)) n++;
