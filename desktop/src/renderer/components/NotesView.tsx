@@ -546,6 +546,13 @@ function NotesIndex({
         "min-h-0 flex-1 overflow-y-auto",
         active ? "flex flex-col" : "hidden",
       )}
+      onMouseDown={(e) => {
+        // Keep the search input focused so the keyboard loop (↑↓ / ↵ / esc) keeps
+        // working — clicking empty space or a row must not blur it. Clicks on the
+        // input itself fall through so the caret lands where expected; row clicks
+        // still navigate (preventDefault stops the blur, not the click).
+        if (e.target !== inputRef.current) e.preventDefault();
+      }}
     >
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-9 px-6 pt-12 pb-10">
         <div className="flex items-center gap-3 border-b border-border px-1 focus-within:border-muted-foreground/40">
