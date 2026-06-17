@@ -210,8 +210,14 @@ select,
    and covers the viewport, so making it no-drag restores outside-click dismiss. */
 [data-base-ui-inert],
 [data-slot="menu-positioner"],
-[data-slot="context-menu-positioner"] {
+[data-slot="context-menu-positioner"],
+.hitch-task-editor-overlay-root {
   -webkit-app-region: no-drag;
+}
+
+.hitch-task-editor-overlay-root {
+  position: relative;
+  z-index: 60;
 }
 
 /* Friendly markdown editor (MDXEditor) — restyle the content surface to the

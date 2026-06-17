@@ -154,6 +154,8 @@ function TaskEditor({
   const titleRef = useRef<HTMLTextAreaElement>(null);
   // The raw-view textarea, so a paste lands at its caret.
   const rawRef = useRef<HTMLTextAreaElement>(null);
+  const [editorOverlayContainer, setEditorOverlayContainer] =
+    useState<HTMLElement | null>(null);
   // The scroll area and the floating delegate-bar wrapper. We measure the band
   // so the scroll area can reserve exactly its height (it grows when the prompt
   // editor expands), and we watch the scroll position to drive the header.
@@ -174,6 +176,17 @@ function TaskEditor({
   // refs so they never re-bind on every keystroke yet always see the latest.
   const viewRef = useRef(view);
   viewRef.current = view;
+
+  useEffect(() => {
+    const el = document.createElement("div");
+    el.className = "hitch-task-editor-overlay-root";
+    document.body.appendChild(el);
+    setEditorOverlayContainer(el);
+
+    return () => {
+      el.remove();
+    };
+  }, []);
 
   // Append uploaded markdown at the end of the body (formatted view, and all
   // drops). Cursor-position insertion isn't worth the markdown-offset mapping;
@@ -615,6 +628,7 @@ function TaskEditor({
               ref={editorRef}
               value={draft.body}
               onChange={draft.setBody}
+              overlayContainer={editorOverlayContainer}
               placeholder="Describe what you're working on, or drop in a screenshot or file"
               imageUploadHandler={
                 attachments.enabled ? attachments.imageUploadHandler : undefined

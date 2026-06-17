@@ -104,6 +104,7 @@ export const MarkdownEditor = forwardRef<
     onChange: (markdown: string) => void;
     placeholder?: string;
     className?: string;
+    overlayContainer?: HTMLElement | null;
     // When both are set, MDXEditor's image plugin is enabled: clipboard paste of
     // an image uploads it (imageUploadHandler returns the relative path written
     // as the markdown `src`) and inline display resolves that path to a signed
@@ -113,7 +114,15 @@ export const MarkdownEditor = forwardRef<
     imagePreviewHandler?: (src: string) => Promise<string>;
   }
 >(function MarkdownEditor(
-  { value, onChange, placeholder, className, imageUploadHandler, imagePreviewHandler },
+  {
+    value,
+    onChange,
+    placeholder,
+    className,
+    overlayContainer,
+    imageUploadHandler,
+    imagePreviewHandler,
+  },
   ref,
 ) {
   const editorRef = useRef<MDXEditorMethods>(null);
@@ -182,6 +191,7 @@ export const MarkdownEditor = forwardRef<
       toMarkdownOptions={{ bullet: "-" }}
       className={cn("hitch-mdx", isDarkTheme && "dark-theme")}
       contentEditableClassName="hitch-mdx-content"
+      overlayContainer={overlayContainer ?? undefined}
       plugins={[
         headingsPlugin(),
         listsPlugin(),
