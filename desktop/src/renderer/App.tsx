@@ -54,9 +54,6 @@ import {
   parseChatOpenState,
   parseChatRef,
   parseChatStatus,
-  type ChatOpenState,
-  type ChatRef,
-  type ChatStatus,
 } from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
 import {
@@ -68,7 +65,13 @@ import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { NotesView, noteDocs } from "@/components/NotesView";
-import { HarnessChip } from "@/components/HarnessChip";
+import {
+  CARD_CLASS,
+  CardChat,
+  CardContents,
+  CardSummary,
+  type Card,
+} from "@/components/TaskCard";
 import {
   GlobalSettingsDialog,
   type GlobalHarnessSetupStatus,
@@ -139,21 +142,6 @@ function columnFor(
   return statuses.some((col) => col.id === s) ? s : statuses[0].id;
 }
 
-interface Card {
-  id: string; // `tasks/${slug}` — the task folder
-  slug: string;
-  title: string;
-  owner?: string;
-  path: string; // tasks/<slug>/task.md — what the dialog writes back
-  content: string; // raw file text
-  chat: ChatRef | null; // the coding-agent chat driving this task, if linked
-  chatStatus: ChatStatus | null; // live working/ready state, if the chat reports it
-  chatOpenState: ChatOpenState | null; // whether the chat link is safe to open
-  column: string;
-  archived: boolean;
-  updatedAt: number;
-}
-
 interface HitchBinding {
   projectId: Id<"projects">;
   projectName?: string;
@@ -193,53 +181,6 @@ function keepAwakeBridge(): KeepAwakeApi | undefined {
   return typeof window !== "undefined"
     ? (window.hitchDaemon as unknown as KeepAwakeApi | undefined)
     : undefined;
-}
-
-// Shared card chrome, also reused by the drag overlay so the floating element
-// matches the one in the column.
-const CARD_CLASS =
-  "rounded-sm bg-card p-3 text-left shadow-[0_1px_1px_rgba(0,0,0,0.03)] ring-[0.75px] ring-border/70";
-
-function CardSummary({ card }: { card: Card }) {
-  return (
-    <p className="text-[13px] font-normal text-card-foreground">{card.title}</p>
-  );
-}
-
-function CardChat({
-  card,
-  projectId,
-}: {
-  card: Card;
-  projectId: Id<"projects">;
-}) {
-  if (!card.chat) return null;
-
-  return (
-    <div className="mt-3">
-      <HarnessChip
-        chat={card.chat}
-        status={card.chatStatus}
-        openState={card.chatOpenState}
-        projectId={projectId}
-      />
-    </div>
-  );
-}
-
-function CardContents({
-  card,
-  projectId,
-}: {
-  card: Card;
-  projectId: Id<"projects">;
-}) {
-  return (
-    <>
-      <CardSummary card={card} />
-      {card.chat && <CardChat card={card} projectId={projectId} />}
-    </>
-  );
 }
 
 function isInteractiveTarget(
@@ -1305,6 +1246,7 @@ function BoardContent({
         chat: parseChatRef(frontmatter),
         chatStatus: parseChatStatus(frontmatter),
         chatOpenState: parseChatOpenState(frontmatter),
+        sourceNote: frontmatter["source-note"] || undefined,
         column: columnFor(status, boardStatuses),
         archived: status === "archived",
         updatedAt: f.updatedAt,
@@ -1350,6 +1292,28 @@ function BoardContent({
       hash: await sha256(content),
       deleted: false,
     });
+  }
+
+  // Hand a note to an agent as an ordinary task: write a fresh task whose
+  // frontmatter carries the machine link (`source-note`) back to the note and
+  // whose body opens with a human-readable `Source note:` link (for the agent +
+  // honesty). The agent's job is to edit the note file in place. Same upsert path
+  // as createTask, then open the task dialog on it (pre-populated) — the
+  // optimistic insert means the card is already in `cards` when we select it.
+  async function createTaskFromNote(note: { title: string; path: string }) {
+    const taken = new Set(cards.map((card) => card.slug));
+    const title = `re: ${note.title}`;
+    const slug = uniqueSlug(title, taken);
+    const path = taskBodyPath(slug);
+    const body = `Source note: [${note.title}](${note.path})\n\n`;
+    const content = setFrontmatterKeys(body, {
+      title,
+      status: boardStatuses[0].id,
+      "source-note": note.path,
+    });
+    const hash = await sha256(content);
+    void upsertFile({ projectId, path, content, hash, deleted: false });
+    setSelectedPath(path);
   }
 
   // Duplicate a task: write a fresh `tasks/<slug>/task.md` that keeps the
@@ -1619,9 +1583,14 @@ function BoardContent({
           <NotesView
             projectId={projectId}
             files={files}
+            cards={cards}
             showArchived={showNotesArchived}
             onShowArchivedChange={setShowNotesArchived}
             onExit={() => setWorkspaceView("board")}
+            onCreateTaskFromNote={(note) => void createTaskFromNote(note)}
+            onOpenTask={(card) => setSelectedPath(card.path)}
+            onArchiveTask={(card) => void setArchived(card, true)}
+            onDeleteTask={(card) => void deleteCard(card)}
           />
         ) : (
         <DndContext

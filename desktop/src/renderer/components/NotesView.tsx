@@ -11,6 +11,7 @@ import {
   CopyIcon,
   EllipsisIcon,
   LoaderCircle,
+  MessageSquareIcon,
   PaperclipIcon,
   PlusIcon,
   SearchIcon,
@@ -32,6 +33,7 @@ import {
   MarkdownEditor,
   type MarkdownEditorHandle,
 } from "@/components/MarkdownEditor";
+import { LinkedTaskCard, type Card } from "@/components/TaskCard";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -109,12 +111,21 @@ export function noteDocs(files: FileDoc[]): NoteDoc[] {
 export function NotesView({
   projectId,
   files,
+  cards,
   showArchived,
   onShowArchivedChange,
   onExit,
+  onCreateTaskFromNote,
+  onOpenTask,
+  onArchiveTask,
+  onDeleteTask,
 }: {
   projectId: Id<"projects">;
   files: FileDoc[];
+  // Every task card (active + archived), so an open note can find the task(s)
+  // launched from it (`source-note` === the note's path) and dock the board card
+  // at its foot. The note never writes tasks itself — the parent owns that.
+  cards: Card[];
   // The Archived sheet is opened from the shared workspace header (top-right),
   // so its open state is owned by the parent and threaded back in here.
   showArchived: boolean;
@@ -122,6 +133,13 @@ export function NotesView({
   // Esc on the index (with no query) leaves Notes for the Board — the parent owns
   // the Board/Notes tab.
   onExit: () => void;
+  // Hand the open note to an agent as an ordinary task (creates it + opens the
+  // pre-populated task dialog); the note-foot card's open/archive/delete reuse
+  // the board's own task operations.
+  onCreateTaskFromNote: (note: NoteDoc) => void;
+  onOpenTask: (card: Card) => void;
+  onArchiveTask: (card: Card) => void;
+  onDeleteTask: (card: Card) => void;
 }) {
   // Same optimistic upsert the board uses: a create/rename/archive reflects
   // instantly instead of waiting on the frontmatter → daemon → Convex round trip.
@@ -191,6 +209,18 @@ export function NotesView({
   const selected = selectedSlug
     ? (docs.find((d) => d.slug === selectedSlug && !d.archived) ?? null)
     : null;
+
+  // The open note's active linked task, if any: a task whose `source-note` points
+  // back at this note. Most-recent non-archived wins; archiving/deleting it (or
+  // having none) leaves the foot showing the launcher instead.
+  const linkedTask = useMemo(() => {
+    if (!selected) return null;
+    return (
+      cards
+        .filter((c) => !c.archived && c.sourceNote === selected.path)
+        .sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null
+    );
+  }, [cards, selected]);
 
   // If the open note disappears from the active list (archived or deleted, here
   // or remotely), fall back to the index rather than a dangling editor.
@@ -370,6 +400,11 @@ export function NotesView({
           projectId={projectId}
           slug={selected.slug}
           content={selected.content}
+          linkedTask={linkedTask}
+          onLaunchTask={() => onCreateTaskFromNote(selected)}
+          onOpenTask={onOpenTask}
+          onArchiveTask={onArchiveTask}
+          onDeleteTask={onDeleteTask}
           onSave={saveDoc}
           onFlush={flushDoc}
           registerFlush={(fn) => {
@@ -789,6 +824,11 @@ function NoteEditor({
   projectId,
   slug,
   content,
+  linkedTask,
+  onLaunchTask,
+  onOpenTask,
+  onArchiveTask,
+  onDeleteTask,
   onSave,
   onFlush,
   registerFlush,
@@ -799,6 +839,12 @@ function NoteEditor({
   projectId: Id<"projects">;
   slug: string;
   content: string;
+  // The note's active linked task (board card) for the foot, or null → launcher.
+  linkedTask: Card | null;
+  onLaunchTask: () => void;
+  onOpenTask: (card: Card) => void;
+  onArchiveTask: (card: Card) => void;
+  onDeleteTask: (card: Card) => void;
   onSave: (slug: string, content: string) => Promise<void>;
   onFlush: (slug: string, content: string) => Promise<void>;
   registerFlush: (fn: () => void) => void;
@@ -814,9 +860,69 @@ function NoteEditor({
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const rawRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [draggingFile, setDraggingFile] = useState(false);
   const viewRef = useRef(view);
   viewRef.current = view;
+
+  // The floating "ask dock" at the foot (launcher or linked-task card) is pinned
+  // over the bottom of the scroll area, so the scroll viewport must reserve its
+  // height — otherwise the caret hides behind it when typing at the bottom. We
+  // measure the dock and shrink the viewport via marginBottom (NOT padding); see
+  // the long note in TaskEditor for why padding leaves the caret behind the bar.
+  const dockWrapRef = useRef<HTMLDivElement>(null);
+  const [dockHeight, setDockHeight] = useState(56);
+  useEffect(() => {
+    const el = dockWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height;
+      if (h) setDockHeight(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Keep the caret above the floating dock as the document grows — including the
+  // bare Enter that opens a fresh line. The browser's native caret-into-view
+  // doesn't fire for an empty new line (a collapsed range in an empty block has
+  // no rect to scroll to), so without this the new line hides behind the dock
+  // until the first character is typed. We nudge on both `input` (typing/paste)
+  // AND `keydown` Enter — Lexical handles Enter internally and preventDefaults
+  // the beforeinput, so no native `input` event fires for it. The nudge measures
+  // the caret (falling back to its block's rect when the range rect is empty,
+  // which is exactly the empty-line case) and scrolls just enough to clear the
+  // dock — a no-op when the native scroll already kept the caret visible.
+  useEffect(() => {
+    const sc = scrollRef.current;
+    if (!sc) return;
+    const nudge = () =>
+      requestAnimationFrame(() => {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return;
+        const node = sel.anchorNode;
+        if (!node || !sc.contains(node)) return; // not the formatted editor
+        let rect = sel.getRangeAt(0).getBoundingClientRect();
+        if (rect.height === 0 && rect.top === 0 && rect.bottom === 0) {
+          const el = node.nodeType === 3 ? node.parentElement : (node as Element);
+          if (el) rect = el.getBoundingClientRect();
+        }
+        const dock = dockWrapRef.current;
+        const safeBottom =
+          (dock ? dock.getBoundingClientRect().top : sc.getBoundingClientRect().bottom) - 8;
+        const overflow = rect.bottom - safeBottom;
+        if (overflow > 0) sc.scrollTop += overflow;
+      });
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Enter") nudge();
+    };
+    sc.addEventListener("input", nudge, true);
+    sc.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      sc.removeEventListener("input", nudge, true);
+      sc.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
 
   // Latest draft, read by the flush so it never closes over a stale value.
   const draftRawRef = useRef(draft.raw);
@@ -1099,7 +1205,14 @@ function NoteEditor({
           capped-width column (a comfortable reading measure) so lines never run
           the full pane width — the papery, focused feel. */}
       <div
-        className="flex min-h-0 flex-auto flex-col overflow-y-auto px-6 pt-8 pb-10"
+        ref={scrollRef}
+        className="flex min-h-0 flex-auto flex-col overflow-y-auto px-6 pt-8"
+        // The document scrolls UNDER the floating dock so the dock reads as
+        // hovering over the text (not a footer): the column's paddingBottom lets
+        // the last line clear past the dock, and scrollPaddingBottom keeps the
+        // caret above the dock when typing at the bottom. The +24 is the dock's
+        // bottom-4 inset plus a small gap.
+        style={{ scrollPaddingBottom: dockHeight + 24 }}
         onMouseDown={(e) => {
           if (view === "formatted" && e.target === e.currentTarget) {
             e.preventDefault();
@@ -1107,7 +1220,10 @@ function NoteEditor({
           }
         }}
       >
-        <div className="mx-auto flex w-full max-w-[680px] flex-1 flex-col">
+        <div
+          className="mx-auto flex w-full max-w-[680px] flex-1 flex-col"
+          style={{ paddingBottom: dockHeight + 24 }}
+        >
           {view === "formatted" ? (
             <>
               {/* The freeform OKF type lives above the title in the document, not
@@ -1161,6 +1277,29 @@ function NoteEditor({
         </div>
       </div>
 
+      {/* Floating "ask dock", pinned over the bottom of the note and centered on
+          the document column. Hand the note to an agent: with no active linked
+          task, a subtle launcher pill (→ the real, pre-populated task dialog);
+          once delegated, the same kanban board card (board width), live status
+          and all. It hangs here as the user scrolls — see the marginBottom note. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-6">
+        <div ref={dockWrapRef} className="pointer-events-auto">
+          {linkedTask ? (
+            <div className="w-72">
+              <LinkedTaskCard
+                card={linkedTask}
+                projectId={projectId}
+                onOpen={onOpenTask}
+                onArchive={onArchiveTask}
+                onDelete={onDeleteTask}
+              />
+            </div>
+          ) : (
+            <NoteLauncher onLaunch={onLaunchTask} />
+          )}
+        </div>
+      </div>
+
       {draggingFile && (
         <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-foreground/30 bg-background/85 backdrop-blur-sm">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -1177,6 +1316,26 @@ function NoteEditor({
         </div>
       )}
     </div>
+  );
+}
+
+// The resting foot of a note with no active linked task: a subtle pill that
+// hands the note to an agent. Clicking opens the real, pre-populated task dialog
+// (the note context rides in the task body) — no bespoke composer. Once a task
+// is delegated, this is replaced by the board card (LinkedTaskCard).
+function NoteLauncher({ onLaunch }: { onLaunch: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onLaunch}
+      className="group inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3.5 py-2 text-[13px] text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+    >
+      <MessageSquareIcon className="size-4 shrink-0 text-muted-foreground" />
+      <span className="font-medium text-foreground/80 group-hover:text-foreground">
+        Chat with or edit this note
+      </span>
+      <span className="text-muted-foreground/70">· opens a task</span>
+    </button>
   );
 }
 
