@@ -489,14 +489,19 @@ export interface StartSpec {
 // introspection needed) and openChat() can resume by that same id later. Dedup
 // still keys on the task: a second click within the grace window focuses the
 // workspace we just made instead of spawning a duplicate.
+//
+// Unlike openChat, we deliberately do NOT activateApp() here: starting a task is
+// a fire-and-forget delegation, and raising cmux to the OS foreground every time
+// just makes the user cmd-tab back to hitch. The chat still lands in cmux (and is
+// selected in-app); the user pulls it forward later via the "open" button, which
+// routes through openChat and does raise the app.
 export async function startChat(spec: StartSpec): Promise<OpenResult> {
-  // We spawned for this task moments ago (agent may still be booting) → focus
-  // that workspace rather than spawn a duplicate.
+  // We spawned for this task moments ago (agent may still be booting) → don't
+  // spawn a duplicate. Select the workspace in-app, but stay in the background.
   const memo = recentSpawns.get(spec.taskKey);
   if (memo && Date.now() - memo.at < SPAWN_GRACE_MS) {
     try {
       await cmux(["select-workspace", "--workspace", memo.workspace]);
-      await activateApp();
       return "focused";
     } catch {
       recentSpawns.delete(spec.taskKey); // workspace gone; fall through
@@ -505,7 +510,6 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
 
   // A spawn for this task is mid-flight (concurrent click) → don't race.
   if (spawning.has(spec.taskKey)) {
-    await activateApp();
     return "focused";
   }
 
@@ -527,7 +531,6 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
     if (workspace) {
       recentSpawns.set(spec.taskKey, { workspace, at: Date.now() });
     }
-    await activateApp();
     return "spawned";
   } finally {
     spawning.delete(spec.taskKey);
