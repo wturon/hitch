@@ -273,6 +273,12 @@ export function CommandPalette({
                 </CommandGroup>
               ) : (
                 <>
+                  {/* Views first: a query that matches a view name ("board"/
+                      "notes") is a strong navigation intent, so it ranks above
+                      content matches and cmdk auto-selects it. */}
+                  {rankedViews.length > 0 && (
+                    <CommandGroup heading="Views">{viewRows(rankedViews)}</CommandGroup>
+                  )}
                   {rankedTasks.length > 0 && (
                     <CommandGroup heading="Tasks">
                       {rankedTasks.map((t) => (
@@ -306,9 +312,6 @@ export function CommandPalette({
                         </CommandItem>
                       ))}
                     </CommandGroup>
-                  )}
-                  {rankedViews.length > 0 && (
-                    <CommandGroup heading="Views">{viewRows(rankedViews)}</CommandGroup>
                   )}
                 </>
               )}
