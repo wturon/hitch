@@ -33,6 +33,13 @@ import {
   type MarkdownEditorHandle,
 } from "@/components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import {
   Tooltip,
@@ -349,8 +356,11 @@ export function NotesView({
       <NotesIndex
         docs={recentDocs}
         active={selected === null}
+        pendingSlug={pendingSlug}
         onOpen={openDoc}
         onCreate={(title) => void createNote(title)}
+        onArchive={(doc) => void setArchived(doc, true)}
+        onDelete={(doc) => void deleteDoc(doc.slug)}
         onExit={onExit}
       />
 
@@ -409,6 +419,12 @@ function relativeTime(ts: number): string {
   });
 }
 
+function copyNotePath(slug: string) {
+  // Project-root-relative path (includes .hitch/) — the reading agent's cwd is
+  // the project root, so this pastes straight into a live chat.
+  void navigator.clipboard.writeText(`.hitch/${noteBodyPath(slug)}`).catch(() => {});
+}
+
 // The first non-empty body line, lightly de-marked, for an index row's preview.
 function notePreview(content: string): string {
   const { body } = splitFrontmatter(content);
@@ -456,14 +472,20 @@ type IndexItem =
 function NotesIndex({
   docs,
   active,
+  pendingSlug,
   onOpen,
   onCreate,
+  onArchive,
+  onDelete,
   onExit,
 }: {
   docs: NoteDoc[];
   active: boolean;
+  pendingSlug: string | null;
   onOpen: (slug: string) => void;
   onCreate: (title: string) => void;
+  onArchive: (doc: NoteDoc) => void;
+  onDelete: (doc: NoteDoc) => void;
   onExit: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -516,9 +538,15 @@ function NotesIndex({
   // Held in a ref so the listener always sees current state without re-binding.
   const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyHandlerRef.current = (e) => {
+    const target = e.target as HTMLElement | null;
     // Let an open overlay (the Archived sheet, a menu) handle its own keys.
+    if (target?.closest('[role="dialog"],[role="menu"]')) return;
+    // The row action trigger is inside the command-list row. Let it own Enter
+    // instead of also activating the selected note through this global handler.
+    if (target?.closest("[data-notes-index-actions]")) return;
     if (
-      (e.target as HTMLElement | null)?.closest('[role="dialog"],[role="menu"]')
+      target?.closest("button,a,input,textarea,select") &&
+      target !== inputRef.current
     )
       return;
     const input = inputRef.current;
@@ -609,38 +637,106 @@ function NotesIndex({
         >
           {items.map((item, i) =>
             item.kind === "note" ? (
-              <div
-                key={item.doc.slug}
-                id={optionId(i)}
-                data-idx={i}
-                role="option"
-                aria-selected={i === selected}
-                onMouseMove={() => setSelected(i)}
-                onClick={() => activate(item)}
-                className={cn(
-                  "flex cursor-pointer items-baseline gap-4 rounded-lg px-3 py-2.5",
-                  i === selected && "bg-muted",
-                )}
-              >
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-[15px] font-medium tracking-tight text-foreground">
-                      {item.doc.title}
-                    </span>
-                    <span className="shrink-0 rounded-full border border-border px-1.5 font-mono text-[10px] leading-[1.5] lowercase text-muted-foreground">
-                      {item.doc.type}
-                    </span>
+              <ContextMenu key={item.doc.slug}>
+                <ContextMenuTrigger className="block">
+                  <div
+                    id={optionId(i)}
+                    data-idx={i}
+                    role="option"
+                    aria-selected={i === selected}
+                    onMouseMove={() => setSelected(i)}
+                    onClick={() => activate(item)}
+                    className={cn(
+                      "group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5",
+                      i === selected && "bg-muted",
+                    )}
+                  >
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-[15px] font-medium tracking-tight text-foreground">
+                          {item.doc.title}
+                        </span>
+                        <span className="shrink-0 rounded-full border border-border px-1.5 font-mono text-[10px] leading-[1.5] lowercase text-muted-foreground">
+                          {item.doc.type}
+                        </span>
+                      </div>
+                      {notePreview(item.doc.content) && (
+                        <span className="truncate text-[13px] text-muted-foreground">
+                          {notePreview(item.doc.content)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <span className="font-mono text-[11px] lowercase text-muted-foreground/70">
+                        {relativeTime(item.doc.updatedAt)}
+                      </span>
+                      <Menu>
+                        <MenuTrigger
+                          render={
+                            <button
+                              type="button"
+                              aria-label={`Actions for ${item.doc.title}`}
+                              data-notes-index-actions
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                              className="flex size-7 items-center justify-center rounded-lg text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 data-[popup-open]:opacity-100"
+                            />
+                          }
+                        >
+                          <EllipsisIcon className="size-4" />
+                        </MenuTrigger>
+                        <MenuContent align="end">
+                          <MenuItem
+                            disabled={pendingSlug === item.doc.slug}
+                            onClick={() => copyNotePath(item.doc.slug)}
+                          >
+                            <CopyIcon />
+                            Copy path
+                          </MenuItem>
+                          <MenuItem
+                            disabled={pendingSlug === item.doc.slug}
+                            onClick={() => onArchive(item.doc)}
+                          >
+                            <ArchiveIcon />
+                            Archive
+                          </MenuItem>
+                          <div className="my-1 h-px bg-border" />
+                          <MenuItem
+                            disabled={pendingSlug === item.doc.slug}
+                            onClick={() => onDelete(item.doc)}
+                            className="text-[#B42318] data-highlighted:bg-[#B42318]/10 data-highlighted:text-[#B42318]"
+                          >
+                            <Trash2Icon />
+                            Delete
+                          </MenuItem>
+                        </MenuContent>
+                      </Menu>
+                    </div>
                   </div>
-                  {notePreview(item.doc.content) && (
-                    <span className="truncate text-[13px] text-muted-foreground">
-                      {notePreview(item.doc.content)}
-                    </span>
-                  )}
-                </div>
-                <span className="shrink-0 font-mono text-[11px] lowercase text-muted-foreground/70">
-                  {relativeTime(item.doc.updatedAt)}
-                </span>
-              </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuItem onClick={() => copyNotePath(item.doc.slug)}>
+                    <CopyIcon />
+                    Copy path
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    disabled={pendingSlug === item.doc.slug}
+                    onClick={() => onArchive(item.doc)}
+                  >
+                    <ArchiveIcon />
+                    Archive
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem
+                    disabled={pendingSlug === item.doc.slug}
+                    variant="destructive"
+                    onClick={() => onDelete(item.doc)}
+                  >
+                    <Trash2Icon />
+                    Delete
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
             ) : (
               <div
                 key="__create"
@@ -887,11 +983,7 @@ function NoteEditor({
   }
 
   function copyPath() {
-    // Project-root-relative path (includes .hitch/) — the reading agent's cwd is
-    // the project root, so this pastes straight into a live chat.
-    void navigator.clipboard
-      .writeText(`.hitch/${noteBodyPath(slug)}`)
-      .catch(() => {});
+    copyNotePath(slug);
   }
 
   function archiveDoc() {
