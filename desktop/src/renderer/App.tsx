@@ -1783,9 +1783,11 @@ function BoardContent({
           projects={paletteProjects}
           activeProjectId={projectId}
           activeProjectName={currentProject.name}
+          currentView={workspaceView}
           tasks={paletteTasks}
           notes={paletteNotes}
           onSelectProject={onSelectProject}
+          onSelectView={setWorkspaceView}
           onOpenTask={paletteOpenTask}
           onCreateTask={paletteCreateTask}
           onOpenNote={paletteOpenNote}

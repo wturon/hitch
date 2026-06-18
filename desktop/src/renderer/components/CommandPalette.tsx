@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
+  BookIcon,
   Columns2Icon,
   CornerDownLeftIcon,
   FileTextIcon,
@@ -35,6 +36,15 @@ export interface PaletteNote {
   title: string;
   meta: string; // freeform note type, shown as the mono tag
 }
+
+export type WorkspaceView = "board" | "notes";
+
+// The per-project views, switchable like a navigation command. Title is what the
+// query matches against ("board" / "notes").
+const VIEWS: { view: WorkspaceView; title: string; Icon: typeof BookIcon }[] = [
+  { view: "board", title: "Board", Icon: Columns2Icon },
+  { view: "notes", title: "Notes", Icon: BookIcon },
+];
 
 // Rank by title: prefix > substring. Ties keep input order (already recency- or
 // board-sorted upstream). An empty query returns the list unchanged.
@@ -108,9 +118,11 @@ export function CommandPalette({
   projects,
   activeProjectId,
   activeProjectName,
+  currentView,
   tasks,
   notes,
   onSelectProject,
+  onSelectView,
   onOpenTask,
   onCreateTask,
   onOpenNote,
@@ -122,9 +134,11 @@ export function CommandPalette({
   projects: PaletteProject[];
   activeProjectId: Id<"projects">;
   activeProjectName: string;
+  currentView: WorkspaceView;
   tasks: PaletteTask[];
   notes: PaletteNote[];
   onSelectProject: (id: Id<"projects">) => void;
+  onSelectView: (view: WorkspaceView) => void;
   onOpenTask: (path: string) => void;
   onCreateTask: (title: string) => void;
   onOpenNote: (slug: string) => void;
@@ -142,7 +156,12 @@ export function CommandPalette({
   const trimmed = query.trim();
   const rankedTasks = useMemo(() => rankByTitle(tasks, query), [tasks, query]);
   const rankedNotes = useMemo(() => rankByTitle(notes, query), [notes, query]);
-  const noMatches = trimmed !== "" && rankedTasks.length === 0 && rankedNotes.length === 0;
+  const rankedViews = useMemo(() => rankByTitle(VIEWS, query), [query]);
+  const noMatches =
+    trimmed !== "" &&
+    rankedTasks.length === 0 &&
+    rankedNotes.length === 0 &&
+    rankedViews.length === 0;
 
   // Run an action and dismiss. Every row routes through here so the palette
   // always closes after acting.
@@ -150,6 +169,23 @@ export function CommandPalette({
     action();
     onOpenChange(false);
   }
+
+  // The Board / Notes rows — shared between the empty state and search results.
+  // The current view is tagged `active`, mirroring the project switcher.
+  const viewRows = (views: typeof VIEWS) =>
+    views.map(({ view, title, Icon }) => (
+      <CommandItem
+        key={view}
+        value={`view:${view}`}
+        onSelect={() => run(() => onSelectView(view))}
+      >
+        <RowIcon>
+          <Icon className="size-4" />
+        </RowIcon>
+        <span className="truncate">{title}</span>
+        {view === currentView && <CommandMeta>active</CommandMeta>}
+      </CommandItem>
+    ));
 
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -192,6 +228,7 @@ export function CommandPalette({
                       </CommandItem>
                     ))}
                   </CommandGroup>
+                  <CommandGroup heading="Views">{viewRows(VIEWS)}</CommandGroup>
                   <CommandGroup heading={`Create in ${activeProjectName}`}>
                     <CreateRow
                       value="create-task"
@@ -269,6 +306,9 @@ export function CommandPalette({
                         </CommandItem>
                       ))}
                     </CommandGroup>
+                  )}
+                  {rankedViews.length > 0 && (
+                    <CommandGroup heading="Views">{viewRows(rankedViews)}</CommandGroup>
                   )}
                 </>
               )}
