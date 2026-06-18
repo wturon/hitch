@@ -1,0 +1,294 @@
+"use client";
+
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
+import {
+  Columns2Icon,
+  CornerDownLeftIcon,
+  FileTextIcon,
+  HashIcon,
+  PlusIcon,
+} from "lucide-react";
+import type { Id } from "@convex/_generated/dataModel";
+import {
+  Command,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandMeta,
+} from "@/components/ui/command";
+
+// The palette is active-project scoped: it searches the active project's tasks
+// and notes and switches between projects. Cross-project search is out of scope.
+export interface PaletteProject {
+  id: Id<"projects">;
+  name: string;
+}
+export interface PaletteTask {
+  path: string; // tasks/<slug>/task.md — the board's selection key
+  title: string;
+  meta: string; // column/status name, shown as the mono tag
+}
+export interface PaletteNote {
+  slug: string;
+  title: string;
+  meta: string; // freeform note type, shown as the mono tag
+}
+
+// Rank by title: prefix > substring. Ties keep input order (already recency- or
+// board-sorted upstream). An empty query returns the list unchanged.
+function rankByTitle<T extends { title: string }>(items: T[], query: string): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return items;
+  const scored: { item: T; score: number; i: number }[] = [];
+  items.forEach((item, i) => {
+    const title = item.title.toLowerCase();
+    let score = -1;
+    if (title.startsWith(q)) score = 2;
+    else if (title.includes(q)) score = 1;
+    if (score >= 0) scored.push({ item, score, i });
+  });
+  scored.sort((a, b) => b.score - a.score || a.i - b.i);
+  return scored.map((s) => s.item);
+}
+
+// A fixed-width (20px) leading icon slot so every row's text aligns regardless
+// of which glyph it carries.
+function RowIcon({ children }: { children: ReactNode }) {
+  return (
+    <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+// The dark rounded action square that fronts every create row.
+function CreateIcon() {
+  return (
+    <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-foreground text-background">
+      <PlusIcon className="size-3" />
+    </span>
+  );
+}
+
+// A create row whose label quotes the typed query ("New task **\"foo\"**"), or a
+// plain label when the query is empty.
+function CreateRow({
+  value,
+  label,
+  query,
+  onRun,
+}: {
+  value: string;
+  label: string;
+  query: string;
+  onRun: () => void;
+}) {
+  return (
+    <CommandItem value={value} onSelect={onRun}>
+      <CreateIcon />
+      {query ? (
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="text-muted-foreground">{label}</span>
+          <span className="truncate font-medium text-foreground">
+            “{query}”
+          </span>
+        </span>
+      ) : (
+        <span className="text-foreground">{label}</span>
+      )}
+    </CommandItem>
+  );
+}
+
+export function CommandPalette({
+  open,
+  onOpenChange,
+  projects,
+  activeProjectId,
+  activeProjectName,
+  tasks,
+  notes,
+  onSelectProject,
+  onOpenTask,
+  onCreateTask,
+  onOpenNote,
+  onCreateNote,
+  onCreateProject,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  projects: PaletteProject[];
+  activeProjectId: Id<"projects">;
+  activeProjectName: string;
+  tasks: PaletteTask[];
+  notes: PaletteNote[];
+  onSelectProject: (id: Id<"projects">) => void;
+  onOpenTask: (path: string) => void;
+  onCreateTask: (title: string) => void;
+  onOpenNote: (slug: string) => void;
+  onCreateNote: (title: string) => void;
+  onCreateProject: (name: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+
+  // Fresh query on every open — the palette is a throwaway surface, not a
+  // persistent filter.
+  useEffect(() => {
+    if (open) setQuery("");
+  }, [open]);
+
+  const trimmed = query.trim();
+  const rankedTasks = useMemo(() => rankByTitle(tasks, query), [tasks, query]);
+  const rankedNotes = useMemo(() => rankByTitle(notes, query), [notes, query]);
+  const noMatches = trimmed !== "" && rankedTasks.length === 0 && rankedNotes.length === 0;
+
+  // Run an action and dismiss. Every row routes through here so the palette
+  // always closes after acting.
+  function run(action: () => void) {
+    action();
+    onOpenChange(false);
+  }
+
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-[#141418]/30 duration-100 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
+        <DialogPrimitive.Popup
+          // Upper third, fixed 640px, soft shadow + hairline border — overlays
+          // any view (distinct from the full-pane Notes search).
+          className="fixed top-[14vh] left-1/2 z-50 w-[640px] max-w-[calc(100%-2rem)] -translate-x-1/2 overflow-hidden rounded-2xl bg-popover text-popover-foreground shadow-2xl ring-1 ring-border outline-none duration-100 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+        >
+          <DialogPrimitive.Title className="sr-only">
+            Command palette
+          </DialogPrimitive.Title>
+          {/* shouldFilter=false: we feed cmdk our own ranked, grouped lists; it
+              still owns keyboard nav, selection, and a11y across what we render. */}
+          <Command shouldFilter={false} loop>
+            <CommandInput
+              autoFocus
+              value={query}
+              onValueChange={setQuery}
+              placeholder="Search tasks and notes, jump to a project, or create…"
+            />
+            <CommandList>
+              {trimmed === "" ? (
+                <>
+                  <CommandGroup heading="Jump to">
+                    {projects.map((p) => (
+                      <CommandItem
+                        key={p.id}
+                        value={`project:${p.id}`}
+                        onSelect={() => run(() => onSelectProject(p.id))}
+                      >
+                        <RowIcon>
+                          <HashIcon className="size-4" />
+                        </RowIcon>
+                        <span className="truncate">{p.name}</span>
+                        {p.id === activeProjectId && (
+                          <CommandMeta>active</CommandMeta>
+                        )}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                  <CommandGroup heading={`Create in ${activeProjectName}`}>
+                    <CreateRow
+                      value="create-task"
+                      label="New task"
+                      query=""
+                      onRun={() => run(() => onCreateTask(""))}
+                    />
+                    <CreateRow
+                      value="create-note"
+                      label="New note"
+                      query=""
+                      onRun={() => run(() => onCreateNote(""))}
+                    />
+                    <CreateRow
+                      value="create-project"
+                      label="New project"
+                      query=""
+                      onRun={() => run(() => onCreateProject(""))}
+                    />
+                  </CommandGroup>
+                </>
+              ) : noMatches ? (
+                <CommandGroup heading="Create">
+                  <CreateRow
+                    value="create-task"
+                    label="New task"
+                    query={trimmed}
+                    onRun={() => run(() => onCreateTask(trimmed))}
+                  />
+                  <CreateRow
+                    value="create-note"
+                    label="New note"
+                    query={trimmed}
+                    onRun={() => run(() => onCreateNote(trimmed))}
+                  />
+                  <CreateRow
+                    value="create-project"
+                    label="New project"
+                    query={trimmed}
+                    onRun={() => run(() => onCreateProject(trimmed))}
+                  />
+                </CommandGroup>
+              ) : (
+                <>
+                  {rankedTasks.length > 0 && (
+                    <CommandGroup heading="Tasks">
+                      {rankedTasks.map((t) => (
+                        <CommandItem
+                          key={t.path}
+                          value={`task:${t.path}`}
+                          onSelect={() => run(() => onOpenTask(t.path))}
+                        >
+                          <RowIcon>
+                            <Columns2Icon className="size-4" />
+                          </RowIcon>
+                          <span className="truncate">{t.title}</span>
+                          {t.meta && <CommandMeta>{t.meta}</CommandMeta>}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  )}
+                  {rankedNotes.length > 0 && (
+                    <CommandGroup heading="Notes">
+                      {rankedNotes.map((n) => (
+                        <CommandItem
+                          key={n.slug}
+                          value={`note:${n.slug}`}
+                          onSelect={() => run(() => onOpenNote(n.slug))}
+                        >
+                          <RowIcon>
+                            <FileTextIcon className="size-4" />
+                          </RowIcon>
+                          <span className="truncate">{n.title}</span>
+                          {n.meta && <CommandMeta>{n.meta}</CommandMeta>}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  )}
+                </>
+              )}
+            </CommandList>
+
+            {/* Key-hint footer bar. */}
+            <div className="flex items-center gap-4 border-t border-border px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <kbd className="text-foreground">↑↓</kbd> navigate
+              </span>
+              <span className="flex items-center gap-1.5">
+                <CornerDownLeftIcon className="size-3" /> open
+              </span>
+              <span className="ml-auto flex items-center gap-1">
+                <kbd className="text-foreground">⌘K</kbd>
+              </span>
+            </div>
+          </Command>
+        </DialogPrimitive.Popup>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+}

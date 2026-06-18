@@ -71,13 +71,23 @@ export function CreateProjectDialog({
   onOpenChange,
   creating,
   onCreate,
+  initialName,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   creating: boolean;
   onCreate: (name: string) => Promise<void>;
+  // Pre-fills the field when opened — the command palette passes the typed query
+  // for its "New project “<query>”" create row.
+  initialName?: string;
 }) {
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initialName ?? "");
+
+  // Re-seed the field each time the dialog opens (the palette may carry a fresh
+  // query); also clears it after a create closes the dialog.
+  useEffect(() => {
+    if (open) setName(initialName ?? "");
+  }, [open, initialName]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

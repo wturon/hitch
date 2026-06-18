@@ -73,6 +73,14 @@ interface NoteDoc {
 // The freeform OKF type field, required with a "note" default — no untyped docs.
 const DEFAULT_TYPE = "note";
 
+// A one-shot request from the global command palette to open an existing note or
+// create one. Routed through NotesView (rather than lifting `selectedSlug` out)
+// so `openDoc`/`createNote` keep their synchronous flush-before-switch — the only
+// moment an outgoing draft can be saved before the keyed editor remounts.
+export type NoteIntent =
+  | { type: "open"; slug: string }
+  | { type: "create"; title: string };
+
 interface FileDoc {
   _id: Id<"files">;
   path: string;
@@ -119,6 +127,8 @@ export function NotesView({
   onOpenTask,
   onArchiveTask,
   onDeleteTask,
+  intent,
+  onIntentHandled,
 }: {
   projectId: Id<"projects">;
   files: FileDoc[];
@@ -140,6 +150,9 @@ export function NotesView({
   onOpenTask: (card: Card) => void;
   onArchiveTask: (card: Card) => void;
   onDeleteTask: (card: Card) => void;
+  // Open/create request from the command palette, consumed once then acked.
+  intent: NoteIntent | null;
+  onIntentHandled: () => void;
 }) {
   // Same optimistic upsert the board uses: a create/rename/archive reflects
   // instantly instead of waiting on the frontmatter → daemon → Convex round trip.
@@ -283,6 +296,10 @@ export function NotesView({
   // first would briefly leave `selectedSlug` pointing at a note not yet in the
   // list, and the fall-back-to-index effect would clear it before it arrived.
   async function createNote(title: string) {
+    // Save any open draft before swapping to the new note — a no-op from the
+    // index (no editor mounted), but the palette can create while an editor is
+    // open, and the outgoing draft must not be lost.
+    flushRef.current();
     const taken = new Set(docs.map((d) => d.slug));
     const slug = uniqueSlug(title, taken, DEFAULT_TYPE);
     const content = setFrontmatterKeys("", {
@@ -377,6 +394,18 @@ export function NotesView({
     flushRef.current();
     setSelectedSlug(slug);
   }
+
+  // Consume a one-shot palette request. openDoc/createNote both flush the
+  // outgoing draft first (see their bodies), so switching notes mid-edit is
+  // safe. Ack so the parent clears `intent` and a later identical request still
+  // re-fires.
+  useEffect(() => {
+    if (!intent) return;
+    if (intent.type === "open") openDoc(intent.slug);
+    else void createNote(intent.title);
+    onIntentHandled();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intent]);
 
   return (
     <div className="-mx-4 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8">

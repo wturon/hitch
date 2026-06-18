@@ -64,7 +64,8 @@ import {
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
-import { NotesView, noteDocs } from "@/components/NotesView";
+import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
+import { CommandPalette } from "@/components/CommandPalette";
 import {
   CARD_CLASS,
   CardChat,
@@ -1063,6 +1064,14 @@ function BoardContent({
   const [workspaceView, setWorkspaceView] = useState<"board" | "notes">(
     "board",
   );
+  // The global command palette (⌘K) and its one-shot request to NotesView to
+  // open/create a note. A palette-driven "New project" reuses the sidebar's
+  // CreateProjectDialog, pre-filled with the typed query.
+  const [showPalette, setShowPalette] = useState(false);
+  const [noteIntent, setNoteIntent] = useState<NoteIntent | null>(null);
+  const [createProjectName, setCreateProjectName] = useState<string | null>(
+    null,
+  );
   const projectConfigFile = files?.find(
     (file) => file.path === PROJECT_CONFIG_PATH && !file.deleted,
   );
@@ -1190,6 +1199,37 @@ function BoardContent({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [boardStatuses, selectedPath]);
+
+  // ⌘K (Ctrl+K) toggles the command palette. When it's already open, close it
+  // (the footer advertises ⌘K). When closed, suppress only where ⌘K means
+  // something else or the palette shouldn't appear: the MDX editor
+  // (contenteditable — it owns ⌘K for inserting links) or while another dialog/
+  // menu is up (incl. the task dialog). Plain text fields are NOT suppressed —
+  // the Notes view keeps its search input focused, and ⌘K must still open there.
+  // Base UI restores focus to the previously-focused element on close.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "k") return;
+      if (showPalette) {
+        e.preventDefault();
+        setShowPalette(false);
+        return;
+      }
+      const el = e.target as HTMLElement | null;
+      if (el?.isContentEditable) return;
+      if (
+        document.querySelector(
+          '[role="dialog"],[role="alertdialog"],[role="menu"]',
+        )
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setShowPalette(true);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showPalette]);
 
   if (!currentProject || files === undefined) {
     return (
@@ -1484,6 +1524,44 @@ function BoardContent({
     ? (cards.find((c) => c.id === activeId) ?? null)
     : null;
 
+  // Command palette (⌘K) data + actions. Active-project scoped: its task/note
+  // lists are the live cards/notes; the project list drives the switcher.
+  const paletteProjects = projects.map(({ project }) => ({
+    id: project._id,
+    name: project.name,
+  }));
+  const paletteTasks = activeCards.map((card) => ({
+    path: card.path,
+    title: card.title,
+    meta: boardStatuses.find((s) => s.id === card.column)?.name ?? card.column,
+  }));
+  const paletteNotes = noteDocs(files)
+    .filter((doc) => !doc.archived)
+    .map((doc) => ({ slug: doc.slug, title: doc.title, meta: doc.type }));
+
+  // Open a task: show the board first so the dialog floats over it (not Notes).
+  function paletteOpenTask(path: string) {
+    setWorkspaceView("board");
+    setSelectedPath(path);
+  }
+  // New task → default column. With a title, create it directly; with none, open
+  // the inline composer on the board so the user can name it.
+  function paletteCreateTask(title: string) {
+    setWorkspaceView("board");
+    if (title) void createTask(boardStatuses[0].id, title);
+    else setComposingCol(boardStatuses[0].id);
+  }
+  // Open / create a note: hand the request to NotesView (which owns the editor +
+  // draft-flush lifecycle) after switching to the Notes view.
+  function paletteOpenNote(slug: string) {
+    setWorkspaceView("notes");
+    setNoteIntent({ type: "open", slug });
+  }
+  function paletteCreateNote(title: string) {
+    setWorkspaceView("notes");
+    setNoteIntent({ type: "create", title });
+  }
+
   return (
     <AppShell
       projects={projects}
@@ -1591,6 +1669,8 @@ function BoardContent({
             onOpenTask={(card) => setSelectedPath(card.path)}
             onArchiveTask={(card) => void setArchived(card, true)}
             onDeleteTask={(card) => void deleteCard(card)}
+            intent={noteIntent}
+            onIntentHandled={() => setNoteIntent(null)}
           />
         ) : (
         <DndContext
@@ -1690,6 +1770,34 @@ function BoardContent({
           onDelete={selected ? () => void deleteCard(selected) : undefined}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
           onManageHarnesses={() => openGlobalSettings("harnesses")}
+        />
+
+        <CommandPalette
+          open={showPalette}
+          onOpenChange={setShowPalette}
+          projects={paletteProjects}
+          activeProjectId={projectId}
+          activeProjectName={currentProject.name}
+          tasks={paletteTasks}
+          notes={paletteNotes}
+          onSelectProject={onSelectProject}
+          onOpenTask={paletteOpenTask}
+          onCreateTask={paletteCreateTask}
+          onOpenNote={paletteOpenNote}
+          onCreateNote={paletteCreateNote}
+          onCreateProject={(name) => setCreateProjectName(name)}
+        />
+
+        {/* Palette-driven "New project" reuses the sidebar dialog, pre-filled
+            with the typed query. */}
+        <CreateProjectDialog
+          open={createProjectName !== null}
+          onOpenChange={(open) => {
+            if (!open) setCreateProjectName(null);
+          }}
+          creating={creatingProject}
+          onCreate={onCreateProject}
+          initialName={createProjectName ?? ""}
         />
       </div>
     </AppShell>
