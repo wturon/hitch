@@ -509,15 +509,29 @@ function NotesIndex({
     else onCreate(item.title);
   }
 
-  function onInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+  // Drive the keyboard loop from a window listener instead of the input's
+  // onKeyDown, so ↑↓/↵/esc work no matter where focus is — clicking the header
+  // (settings, tabs) or empty space no longer kills the keys. Printable keys
+  // refocus the field and keep filtering, so it behaves like a command palette.
+  // Held in a ref so the listener always sees current state without re-binding.
+  const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyHandlerRef.current = (e) => {
+    // Let an open overlay (the Archived sheet, a menu) handle its own keys.
+    if (
+      (e.target as HTMLElement | null)?.closest('[role="dialog"],[role="menu"]')
+    )
+      return;
+    const input = inputRef.current;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      if (!items.length) return;
-      setSelected((i) => (i < 0 ? 0 : Math.min(i + 1, items.length - 1)));
+      if (items.length)
+        setSelected((i) => (i < 0 ? 0 : Math.min(i + 1, items.length - 1)));
+      input?.focus();
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      if (!items.length) return;
-      setSelected((i) => (i < 0 ? items.length - 1 : Math.max(i - 1, 0)));
+      if (items.length)
+        setSelected((i) => (i < 0 ? items.length - 1 : Math.max(i - 1, 0)));
+      input?.focus();
     } else if (e.key === "Enter") {
       e.preventDefault();
       // The highlighted row, or — when the user typed but hasn't arrowed — the
@@ -535,8 +549,27 @@ function NotesIndex({
       } else {
         onExit();
       }
+    } else if (
+      e.key.length === 1 &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      document.activeElement !== input
+    ) {
+      // Typing anywhere resumes filtering: focus the field and append the
+      // character (it was dispatched away from the now-unfocused input).
+      e.preventDefault();
+      setQuery((q) => q + e.key);
+      setSelected(-1);
+      input?.focus();
     }
-  }
+  };
+  useEffect(() => {
+    if (!active) return;
+    const handler = (e: KeyboardEvent) => keyHandlerRef.current(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [active]);
 
   const optionId = (i: number) => `notes-index-option-${i}`;
 
@@ -546,13 +579,6 @@ function NotesIndex({
         "min-h-0 flex-1 overflow-y-auto",
         active ? "flex flex-col" : "hidden",
       )}
-      onMouseDown={(e) => {
-        // Keep the search input focused so the keyboard loop (↑↓ / ↵ / esc) keeps
-        // working — clicking empty space or a row must not blur it. Clicks on the
-        // input itself fall through so the caret lands where expected; row clicks
-        // still navigate (preventDefault stops the blur, not the click).
-        if (e.target !== inputRef.current) e.preventDefault();
-      }}
     >
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-9 px-6 pt-12 pb-10">
         <div className="flex items-center gap-3 border-b border-border px-1 focus-within:border-muted-foreground/40">
@@ -564,7 +590,6 @@ function NotesIndex({
               setQuery(e.target.value);
               setSelected(-1);
             }}
-            onKeyDown={onInputKeyDown}
             placeholder="Search notes, or type to create…"
             spellCheck={false}
             role="combobox"
