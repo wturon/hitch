@@ -157,11 +157,17 @@ export function CommandPalette({
   const rankedTasks = useMemo(() => rankByTitle(tasks, query), [tasks, query]);
   const rankedNotes = useMemo(() => rankByTitle(notes, query), [notes, query]);
   const rankedViews = useMemo(() => rankByTitle(VIEWS, query), [query]);
+  // rankByTitle keys off `title`; projects carry `name`, so alias it for ranking.
+  const rankedProjects = useMemo(
+    () => rankByTitle(projects.map((p) => ({ ...p, title: p.name })), query),
+    [projects, query],
+  );
   const noMatches =
     trimmed !== "" &&
     rankedTasks.length === 0 &&
     rankedNotes.length === 0 &&
-    rankedViews.length === 0;
+    rankedViews.length === 0 &&
+    rankedProjects.length === 0;
 
   // Run an action and dismiss. Every row routes through here so the palette
   // always closes after acting.
@@ -169,6 +175,23 @@ export function CommandPalette({
     action();
     onOpenChange(false);
   }
+
+  // The project rows — shared between the empty state and search results. The
+  // active project is tagged `active`.
+  const projectRows = (list: PaletteProject[]) =>
+    list.map((p) => (
+      <CommandItem
+        key={p.id}
+        value={`project:${p.id}`}
+        onSelect={() => run(() => onSelectProject(p.id))}
+      >
+        <RowIcon>
+          <HashIcon className="size-4" />
+        </RowIcon>
+        <span className="truncate">{p.name}</span>
+        {p.id === activeProjectId && <CommandMeta>active</CommandMeta>}
+      </CommandItem>
+    ));
 
   // The Board / Notes rows — shared between the empty state and search results.
   // The current view is tagged `active`, mirroring the project switcher.
@@ -211,23 +234,7 @@ export function CommandPalette({
             <CommandList>
               {trimmed === "" ? (
                 <>
-                  <CommandGroup heading="Jump to">
-                    {projects.map((p) => (
-                      <CommandItem
-                        key={p.id}
-                        value={`project:${p.id}`}
-                        onSelect={() => run(() => onSelectProject(p.id))}
-                      >
-                        <RowIcon>
-                          <HashIcon className="size-4" />
-                        </RowIcon>
-                        <span className="truncate">{p.name}</span>
-                        {p.id === activeProjectId && (
-                          <CommandMeta>active</CommandMeta>
-                        )}
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
+                  <CommandGroup heading="Jump to">{projectRows(projects)}</CommandGroup>
                   <CommandGroup heading="Views">{viewRows(VIEWS)}</CommandGroup>
                   <CommandGroup heading={`Create in ${activeProjectName}`}>
                     <CreateRow
@@ -273,9 +280,14 @@ export function CommandPalette({
                 </CommandGroup>
               ) : (
                 <>
-                  {/* Views first: a query that matches a view name ("board"/
-                      "notes") is a strong navigation intent, so it ranks above
-                      content matches and cmdk auto-selects it. */}
+                  {/* Navigation first: a query that matches a project or view
+                      name is a strong navigation intent, so these rank above
+                      content matches (and cmdk auto-selects the top one). */}
+                  {rankedProjects.length > 0 && (
+                    <CommandGroup heading="Jump to">
+                      {projectRows(rankedProjects)}
+                    </CommandGroup>
+                  )}
                   {rankedViews.length > 0 && (
                     <CommandGroup heading="Views">{viewRows(rankedViews)}</CommandGroup>
                   )}
