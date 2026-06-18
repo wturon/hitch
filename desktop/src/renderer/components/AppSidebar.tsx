@@ -27,6 +27,7 @@ import {
   LogOutIcon,
   PinIcon,
   PlusIcon,
+  SearchIcon,
   SettingsIcon,
   StarIcon,
 } from "lucide-react";
@@ -40,6 +41,7 @@ import {
 } from "@/components/GlobalSettingsDialog";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { Button } from "@/components/ui/button";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import {
   Dialog,
   DialogContent,
@@ -386,6 +388,7 @@ export function AppSidebar({
   onToggleKeepAwake,
   onShowGlobalSettings,
   onSignOut,
+  onOpenPalette,
 }: {
   projects: ProjectNavEntry[];
   selectedProjectId: Id<"projects">;
@@ -399,6 +402,9 @@ export function AppSidebar({
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onSignOut: () => void;
+  // Open the global command palette (⌘K). The sidebar's search bar is just a
+  // discoverable, clickable entry point to it.
+  onOpenPalette: () => void;
 }) {
   const [showCreateProject, setShowCreateProject] = useState(false);
   // Reactive per-project working / needs-input tallies. Aggregated server-side
@@ -534,6 +540,27 @@ export function AppSidebar({
         collapsed && "md:-ml-64",
       )}
     >
+      {/* Search bar — a discoverable, clickable entry point to the ⌘K palette.
+          Desktop rail only (the mobile bar omits it), and a no-drag button so
+          it stays clickable over the draggable titlebar region. */}
+      <button
+        type="button"
+        onClick={onOpenPalette}
+        aria-label="Search — open command palette"
+        className="mb-2 hidden h-8 w-full items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent/40 px-2.5 text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground md:flex"
+      >
+        <SearchIcon className="size-3.5 shrink-0" />
+        <span className="flex-1 text-left text-[13px]">Search…</span>
+        <KbdGroup>
+          <Kbd className="bg-sidebar-foreground/10 text-sidebar-foreground/55">
+            ⌘
+          </Kbd>
+          <Kbd className="bg-sidebar-foreground/10 text-sidebar-foreground/55">
+            K
+          </Kbd>
+        </KbdGroup>
+      </button>
+
       <nav className="hidden flex-1 flex-col gap-0.5 overflow-auto md:flex">
         <div className="flex items-center justify-between px-2 pb-1 pt-1.5">
           <span className="text-[11px] font-medium uppercase tracking-wide text-sidebar-foreground/50">

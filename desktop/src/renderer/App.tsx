@@ -290,6 +290,7 @@ function AppShell({
   onToggleKeepAwake,
   onShowGlobalSettings,
   onSignOut,
+  onOpenPalette,
   children,
 }: {
   projects: ProjectNavEntry[];
@@ -303,6 +304,7 @@ function AppShell({
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onSignOut: () => void;
+  onOpenPalette: () => void;
   children: ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -348,6 +350,7 @@ function AppShell({
         onToggleKeepAwake={onToggleKeepAwake}
         onShowGlobalSettings={onShowGlobalSettings}
         onSignOut={onSignOut}
+        onOpenPalette={onOpenPalette}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col p-4 pt-3 sm:p-6 sm:pt-3 lg:p-8 lg:pt-3">
         {children}
@@ -1245,6 +1248,7 @@ function BoardContent({
         onToggleKeepAwake={() => void toggleKeepAwake()}
         onShowGlobalSettings={openGlobalSettings}
         onSignOut={() => void signOut()}
+        onOpenPalette={() => setShowPalette(true)}
       >
         <div className="flex min-h-[50vh] items-center justify-center text-muted-foreground">
           Connecting to Convex...
@@ -1575,6 +1579,7 @@ function BoardContent({
       onToggleKeepAwake={() => void toggleKeepAwake()}
       onShowGlobalSettings={openGlobalSettings}
       onSignOut={() => void signOut()}
+      onOpenPalette={() => setShowPalette(true)}
     >
       <div className="flex min-h-0 flex-1 flex-col gap-6">
         <header className="window-titlebar-row -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-between gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
