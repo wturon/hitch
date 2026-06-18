@@ -14,7 +14,7 @@ import chokidar, { type FSWatcher } from "chokidar";
 import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { CmuxError } from "./cmux.js";
+import { CmuxError, setCmuxLogger } from "./cmux.js";
 import { closeCodexAppServer } from "./codex.js";
 import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
@@ -436,6 +436,7 @@ async function startHitchBinding({
   }
 
   setT3Logger(logger);
+  setCmuxLogger(logger);
 
   const lastHash = new Map<string, string>();
   const subscriptions: Unsubscribe[] = [];

@@ -14,6 +14,46 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+// Diagnostic logging. cmux.ts is otherwise dependency-free; the daemon wires its
+// logger in once at startup (mirroring setT3Logger), so these lines land in the
+// same local sync log stream as the daemon's other output. This bug — a chat
+// resumed in a new tab, or the wrong tab focused, when it's already open — is
+// timing-dependent and rare, so the point is to make the *next* occurrence
+// self-explaining rather than to reproduce it. Quiet by default: one decision
+// line per click plus warnings on swallowed RPC failures; the verbose
+// surface→checkpoint dump only fires under HITCH_CMUX_DEBUG.
+export interface CmuxLogger {
+  info: (message: string) => void;
+  error?: (message: string) => void;
+}
+
+let logger: CmuxLogger | null = null;
+
+export function setCmuxLogger(l: CmuxLogger): void {
+  logger = l;
+}
+
+function log(message: string): void {
+  logger?.info(`[cmux] ${message}`);
+}
+
+function warn(message: string): void {
+  (logger?.error ?? logger?.info)?.(`[cmux] ⚠ ${message}`);
+}
+
+function cmuxDebug(): boolean {
+  return Boolean(process.env.HITCH_CMUX_DEBUG);
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// UUIDs are 36 chars; the first 8 are plenty to eyeball-match across log lines.
+function short(id: string): string {
+  return id.slice(0, 8);
+}
+
 const CMUX_CANDIDATES = [
   process.env.CMUX_BIN,
   "/Applications/cmux.app/Contents/Resources/bin/cmux",
@@ -111,7 +151,12 @@ const SURFACE_LINE_RE = /surface\s+surface:\d+\s+([0-9A-Fa-f-]{36})/g;
 const WORKSPACE_LINE_RE = /workspace\s+workspace:\d+\s+([0-9A-Fa-f-]{36})/g;
 
 async function tree(): Promise<string> {
-  return cmux(["tree", "--all", "--id-format", "both"]).catch(() => "");
+  return cmux(["tree", "--all", "--id-format", "both"]).catch((err) => {
+    // An errored tree reads as "no surfaces" downstream → every open chat looks
+    // unbound and gets re-spawned. Surface it rather than swallow.
+    warn(`tree failed (treating as empty — open chats may be re-spawned): ${errMsg(err)}`);
+    return "";
+  });
 }
 
 function matchAll(text: string, re: RegExp): string[] {
@@ -130,7 +175,11 @@ async function checkpointOf(surfaceUuid: string): Promise<string | null> {
       resume_binding?: { checkpoint_id?: string | null } | null;
     };
     return data.resume_binding?.checkpoint_id ?? null;
-  } catch {
+  } catch (err) {
+    // A transient RPC failure here is indistinguishable from "no binding" to the
+    // caller, so it silently turns an open chat into a re-spawn. Log so we can
+    // tell a real unbound surface from a flaky lookup.
+    warn(`surface.resume.get failed for surface ${short(surfaceUuid)}: ${errMsg(err)}`);
     return null;
   }
 }
@@ -138,10 +187,28 @@ async function checkpointOf(surfaceUuid: string): Promise<string | null> {
 // The UUID of the surface whose resume binding targets this session, across all
 // windows — or null if the chat isn't open anywhere.
 async function findSurfaceUuid(sessionId: string): Promise<string | null> {
-  for (const surface of matchAll(await tree(), SURFACE_LINE_RE)) {
-    if ((await checkpointOf(surface)) === sessionId) return surface;
+  const surfaces = matchAll(await tree(), SURFACE_LINE_RE);
+  const bindings: Array<{ surface: string; checkpoint: string | null }> = [];
+  for (const surface of surfaces) {
+    bindings.push({ surface, checkpoint: await checkpointOf(surface) });
   }
-  return null;
+  if (cmuxDebug()) {
+    const map = bindings
+      .map((b) => `${short(b.surface)}→${b.checkpoint ? short(b.checkpoint) : "none"}`)
+      .join(", ");
+    log(`scan sess=${short(sessionId)} surfaces=[${map}]`);
+  }
+  const matches = bindings.filter((b) => b.checkpoint === sessionId);
+  if (matches.length > 1) {
+    // findSurfaceUuid returns the first match; >1 means two surfaces claim the
+    // same session — the most likely cause of "focused the wrong/unrelated tab".
+    warn(
+      `${matches.length} surfaces bind sess=${short(sessionId)} ` +
+        `(${matches.map((b) => short(b.surface)).join(", ")}); ` +
+        `focusing the first. Likely a stale/duplicate resume binding.`,
+    );
+  }
+  return matches[0]?.surface ?? null;
 }
 
 async function workspaceUuids(): Promise<Set<string>> {
@@ -182,12 +249,14 @@ async function listAllWorkspaces(): Promise<WsInfo[]> {
         for (const w of wss) {
           result.push({ id: w.id, description: w.description ?? null, index: w.index ?? 0 });
         }
-      } catch {
+      } catch (err) {
         // Skip a window we can't enumerate rather than failing the whole lookup.
+        warn(`workspace.list failed for window ${short(win.id)}: ${errMsg(err)}`);
       }
     }
-  } catch {
+  } catch (err) {
     // No windows / cmux unreachable → caller falls back to spawning a workspace.
+    warn(`window.list failed (project workspace lookup will miss): ${errMsg(err)}`);
   }
   return result;
 }
@@ -341,6 +410,7 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
     recentSpawns.delete(spec.sessionId);
     await focusSurface(uuid);
     await activateApp();
+    log(`open sess=${short(spec.sessionId)} → [1] focus existing surface ${short(uuid)}`);
     return "focused";
   }
 
@@ -351,8 +421,18 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
     try {
       await cmux(["select-workspace", "--workspace", memo.workspace]);
       await activateApp();
+      // Workspace-level select only — no specific tab is focused, so cmux keeps
+      // whatever tab that workspace had active. Logged because this branch
+      // matches the "raised cmux but left the wrong tab focused" symptom.
+      log(
+        `open sess=${short(spec.sessionId)} → [2] grace: binding not registered yet, ` +
+          `selected workspace ${short(memo.workspace)} (no specific tab focused)`,
+      );
       return "focused";
-    } catch {
+    } catch (err) {
+      warn(
+        `grace select-workspace ${short(memo.workspace)} failed: ${errMsg(err)}; falling through to spawn`,
+      );
       recentSpawns.delete(spec.sessionId); // workspace gone; fall through
     }
   }
@@ -360,6 +440,7 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
   // 3. A spawn for this session is mid-flight (concurrent click) → don't race.
   if (spawning.has(spec.sessionId)) {
     await activateApp();
+    log(`open sess=${short(spec.sessionId)} → [3] guard: spawn already in flight (no tab focus)`);
     return "focused";
   }
 
@@ -378,6 +459,10 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
       recentSpawns.set(spec.sessionId, { workspace, at: Date.now() });
     }
     await activateApp();
+    log(
+      `open sess=${short(spec.sessionId)} → [4] spawn: not open anywhere, ` +
+        `placed in workspace ${workspace ? short(workspace) : "?"}`,
+    );
     return "spawned";
   } finally {
     spawning.delete(spec.sessionId);
