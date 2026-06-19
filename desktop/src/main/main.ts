@@ -1162,6 +1162,100 @@ function setStartingPrompts(prompts: unknown): StoredStartingPrompt[] {
   return readStartingPrompts();
 }
 
+// Loop local-only state. Whether a loop is enabled, and which trigger-script
+// bytes the user has trusted, are LOCAL machine state — a synced loop definition
+// must never silently run (let alone run with permissions bypassed) on another
+// machine. So this lives in preferences.json, NOT in .hitch/ or Convex. Keyed by
+// projectId → loopPath ("loops/<slug>"). `trusted` maps a script path (rel to
+// .hitch/) to its trusted SHA-256; trust is per path+hash, re-checked each run.
+// The daemon reads the same file (see readHarnessEnvironment) for scheduling.
+interface LoopLocalState {
+  enabled: boolean;
+  trusted: Record<string, string>;
+}
+type ProjectLoopStates = Record<string, LoopLocalState>;
+
+function sanitizeLoopState(value: unknown): LoopLocalState {
+  if (!isRecord(value)) return { enabled: false, trusted: {} };
+  const trusted: Record<string, string> = isRecord(value.trusted)
+    ? Object.fromEntries(
+        Object.entries(value.trusted).filter(
+          (e): e is [string, string] =>
+            typeof e[0] === "string" && typeof e[1] === "string",
+        ),
+      )
+    : {};
+  return { enabled: value.enabled === true, trusted };
+}
+
+function readAllLoopStates(): Record<string, ProjectLoopStates> {
+  const stored = readPreferences().loops;
+  if (!isRecord(stored)) return {};
+  const out: Record<string, ProjectLoopStates> = {};
+  for (const [projectId, loops] of Object.entries(stored)) {
+    if (!isRecord(loops)) continue;
+    const project: ProjectLoopStates = {};
+    for (const [loopPath, state] of Object.entries(loops)) {
+      project[loopPath] = sanitizeLoopState(state);
+    }
+    out[projectId] = project;
+  }
+  return out;
+}
+
+function readLoopStates(projectId: string): ProjectLoopStates {
+  return readAllLoopStates()[projectId] ?? {};
+}
+
+function writeLoopStates(
+  projectId: string,
+  states: ProjectLoopStates,
+): ProjectLoopStates {
+  const all = readAllLoopStates();
+  all[projectId] = states;
+  writePreferences({ loops: all });
+  return readLoopStates(projectId);
+}
+
+function setLoopEnabled(
+  projectId: string,
+  loopPath: string,
+  enabled: boolean,
+): ProjectLoopStates {
+  const states = readLoopStates(projectId);
+  const cur = states[loopPath] ?? { enabled: false, trusted: {} };
+  states[loopPath] = { ...cur, enabled };
+  return writeLoopStates(projectId, states);
+}
+
+function setLoopTrust(
+  projectId: string,
+  loopPath: string,
+  scriptPath: string,
+  sha256: string,
+): ProjectLoopStates {
+  const states = readLoopStates(projectId);
+  const cur = states[loopPath] ?? { enabled: false, trusted: {} };
+  states[loopPath] = {
+    ...cur,
+    trusted: { ...cur.trusted, [scriptPath]: sha256 },
+  };
+  return writeLoopStates(projectId, states);
+}
+
+function clearLoopTrust(
+  projectId: string,
+  loopPath: string,
+  scriptPath: string,
+): ProjectLoopStates {
+  const states = readLoopStates(projectId);
+  const cur = states[loopPath];
+  if (!cur) return states;
+  const { [scriptPath]: _removed, ...rest } = cur.trusted;
+  states[loopPath] = { ...cur, trusted: rest };
+  return writeLoopStates(projectId, states);
+}
+
 function ensureDeviceId(): string {
   const secrets = readLocalSecrets();
   if (secrets.deviceId) return secrets.deviceId;
@@ -2509,6 +2603,29 @@ ipcMain.handle(
 ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>
   setStartingPrompts(prompts),
+);
+ipcMain.handle("loops:get-state", (_event, projectId: string) =>
+  readLoopStates(projectId),
+);
+ipcMain.handle(
+  "loops:set-enabled",
+  (_event, projectId: string, loopPath: string, enabled: boolean) =>
+    setLoopEnabled(projectId, loopPath, enabled),
+);
+ipcMain.handle(
+  "loops:set-trust",
+  (
+    _event,
+    projectId: string,
+    loopPath: string,
+    scriptPath: string,
+    sha256: string,
+  ) => setLoopTrust(projectId, loopPath, scriptPath, sha256),
+);
+ipcMain.handle(
+  "loops:clear-trust",
+  (_event, projectId: string, loopPath: string, scriptPath: string) =>
+    clearLoopTrust(projectId, loopPath, scriptPath),
 );
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());

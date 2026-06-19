@@ -9,6 +9,7 @@ import {
   FileTextIcon,
   HashIcon,
   PlusIcon,
+  RefreshCwIcon,
 } from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
 import {
@@ -46,7 +47,7 @@ export interface PaletteAction {
   onRun: () => void;
 }
 
-export type WorkspaceView = "board" | "notes";
+export type WorkspaceView = "board" | "notes" | "loops";
 
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in
@@ -59,6 +60,7 @@ export const WORKSPACE_VIEWS: {
 }[] = [
   { view: "board", title: "Tasks", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
+  { view: "loops", title: "Loops", Icon: RefreshCwIcon },
 ];
 
 // Rank by searchable text: prefix > substring. Ties keep input order (already

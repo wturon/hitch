@@ -636,9 +636,6 @@ export function AppSidebar({
                   <span className="flex-1 text-[11px] font-semibold uppercase tracking-wide text-sidebar-foreground/50">
                     More
                   </span>
-                  <span className="text-[11px] font-medium text-sidebar-foreground/35">
-                    {more.length}
-                  </span>
                 </button>
                 {moreCollapsed
                   ? activeInMore && renderRow(activeInMore)
