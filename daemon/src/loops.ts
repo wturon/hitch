@@ -10,6 +10,7 @@ import { join } from "node:path";
 export interface ScannedLoop {
   slug: string;
   loopPath: string; // "loops/<slug>" — matches loopRuns.loopPath
+  title: string;
   schedule: string; // 5-field cron
   harness: string; // "claude-code" | "codex"
   model?: string;
@@ -77,6 +78,7 @@ export async function scanLoops(hitchPath: string): Promise<ScannedLoop[]> {
     out.push({
       slug,
       loopPath: `loops/${slug}`,
+      title: fm.title || slug,
       schedule: fm.schedule || "*/30 * * * *",
       harness: fm.harness === "codex" ? "codex" : "claude-code",
       model: fm.model || undefined,

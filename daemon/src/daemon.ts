@@ -26,7 +26,7 @@ import {
   readTranscriptSummary,
   watchSessionMarker,
 } from "./loopRun.js";
-import { closeCodexAppServer } from "./codex.js";
+import { closeCodexAppServer, startCodexChat } from "./codex.js";
 import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
 import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
@@ -916,12 +916,60 @@ async function startHitchBinding({
   ): Promise<void> {
     const startedAt = Date.now();
     if (loop.harness === "codex") {
-      await patchLoopRun(runId, {
-        status: "ran",
-        finishedAt: Date.now(),
-        durationMs: Date.now() - startedAt,
-        summary: "(Codex loop runs land in Phase 7)",
+      // Codex app-server: thread/start → turn/start (bypass approvals+sandbox),
+      // link the thread id, settle on turn/completed (or timeout). No cmux. Open
+      // chat reopens via the codex:// deep link (the codex-app launcher's reopen).
+      let settled = false;
+      let resolveDone: () => void = () => {};
+      const done = new Promise<void>((r) => {
+        resolveDone = r;
       });
+      try {
+        await startCodexChat({
+          taskKey: loop.loopPath,
+          prompt: buildLoopPrompt(loop.prompt, triggerStdout),
+          cwd: root.localPath,
+          threadName: loop.title,
+          model: loop.model,
+          effort: loop.reasoning,
+          bypassApprovals: true,
+          onThreadStarted: async (threadId) => {
+            await patchLoopRun(runId, { sessionId: threadId });
+          },
+          onTurnCompleted: async () => {
+            settled = true;
+            resolveDone();
+          },
+        });
+      } catch (err) {
+        await patchLoopRun(runId, {
+          status: "launch-error",
+          finishedAt: Date.now(),
+          durationMs: Date.now() - startedAt,
+          error: String(err),
+        });
+        logError(logger, `[hitch:${projectLabel}] codex loop ${loop.slug} launch failed: ${String(err)}`);
+        return;
+      }
+      const codexTimeoutMin =
+        loop.timeoutMinutes && loop.timeoutMinutes > 0 ? loop.timeoutMinutes : 20;
+      await Promise.race([
+        done,
+        new Promise<void>((r) => setTimeout(r, codexTimeoutMin * 60_000)),
+      ]);
+      const finishedAt = Date.now();
+      await patchLoopRun(runId, {
+        // Codex summary from persisted thread data is deferred (the app-server
+        // thread/read response we model carries turn metadata, not message text);
+        // the UI falls back to status + relative time. See task notes.
+        status: settled ? "ran" : "timed-out",
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+        summary: settled ? undefined : "(timed out)",
+      });
+      logger.info(
+        `[hitch:${projectLabel}] codex loop ${loop.slug} finished (${settled ? "completed" : "timed-out"})`,
+      );
       return;
     }
 
