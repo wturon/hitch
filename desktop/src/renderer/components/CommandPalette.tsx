@@ -9,6 +9,7 @@ import {
   FileTextIcon,
   HashIcon,
   PlusIcon,
+  RefreshCwIcon,
 } from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
 import {
@@ -36,6 +37,11 @@ export interface PaletteNote {
   title: string;
   meta: string; // freeform note type, shown as the mono tag
 }
+export interface PaletteLoop {
+  slug: string;
+  title: string;
+  meta: string; // human schedule, shown as the mono tag
+}
 export interface PaletteAction {
   id: string;
   title: string;
@@ -46,7 +52,7 @@ export interface PaletteAction {
   onRun: () => void;
 }
 
-export type WorkspaceView = "board" | "notes";
+export type WorkspaceView = "board" | "notes" | "loops";
 
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in
@@ -59,6 +65,7 @@ export const WORKSPACE_VIEWS: {
 }[] = [
   { view: "board", title: "Tasks", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
+  { view: "loops", title: "Loops", Icon: RefreshCwIcon },
 ];
 
 // Rank by searchable text: prefix > substring. Ties keep input order (already
@@ -153,6 +160,7 @@ export function CommandPalette({
   currentView,
   tasks,
   notes,
+  loops,
   actions,
   onSelectProject,
   onSelectView,
@@ -160,6 +168,8 @@ export function CommandPalette({
   onCreateTask,
   onOpenNote,
   onCreateNote,
+  onOpenLoop,
+  onCreateLoop,
   onCreateProject,
 }: {
   open: boolean;
@@ -170,6 +180,7 @@ export function CommandPalette({
   currentView: WorkspaceView;
   tasks: PaletteTask[];
   notes: PaletteNote[];
+  loops: PaletteLoop[];
   actions: PaletteAction[];
   onSelectProject: (id: Id<"projects">) => void;
   onSelectView: (view: WorkspaceView) => void;
@@ -177,6 +188,8 @@ export function CommandPalette({
   onCreateTask: (title: string) => void;
   onOpenNote: (slug: string) => void;
   onCreateNote: (title: string) => void;
+  onOpenLoop: (slug: string) => void;
+  onCreateLoop: (title: string) => void;
   onCreateProject: (name: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -190,6 +203,7 @@ export function CommandPalette({
   const trimmed = query.trim();
   const rankedTasks = useMemo(() => rankByTitle(tasks, query), [tasks, query]);
   const rankedNotes = useMemo(() => rankByTitle(notes, query), [notes, query]);
+  const rankedLoops = useMemo(() => rankByTitle(loops, query), [loops, query]);
   const rankedViews = useMemo(
     () => rankByTitle(WORKSPACE_VIEWS, query),
     [query],
@@ -211,6 +225,7 @@ export function CommandPalette({
     trimmed !== "" &&
     rankedTasks.length === 0 &&
     rankedNotes.length === 0 &&
+    rankedLoops.length === 0 &&
     rankedViews.length === 0 &&
     rankedActions.length === 0 &&
     rankedProjects.length === 0;
@@ -319,6 +334,12 @@ export function CommandPalette({
                       onRun={() => run(() => onCreateNote(""))}
                     />
                     <CreateRow
+                      value="create-loop"
+                      label="New loop"
+                      query=""
+                      onRun={() => run(() => onCreateLoop(""))}
+                    />
+                    <CreateRow
                       value="create-project"
                       label="New project"
                       query=""
@@ -339,6 +360,12 @@ export function CommandPalette({
                     label="New note"
                     query={trimmed}
                     onRun={() => run(() => onCreateNote(trimmed))}
+                  />
+                  <CreateRow
+                    value="create-loop"
+                    label="New loop"
+                    query={trimmed}
+                    onRun={() => run(() => onCreateLoop(trimmed))}
                   />
                   <CreateRow
                     value="create-project"
@@ -397,6 +424,23 @@ export function CommandPalette({
                           </RowIcon>
                           <span className="truncate">{n.title}</span>
                           {n.meta && <CommandMeta>{n.meta}</CommandMeta>}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  )}
+                  {rankedLoops.length > 0 && (
+                    <CommandGroup heading="Loops">
+                      {rankedLoops.map((l) => (
+                        <CommandItem
+                          key={l.slug}
+                          value={`loop:${l.slug}`}
+                          onSelect={() => run(() => onOpenLoop(l.slug))}
+                        >
+                          <RowIcon>
+                            <RefreshCwIcon className="size-4" />
+                          </RowIcon>
+                          <span className="truncate">{l.title}</span>
+                          {l.meta && <CommandMeta>{l.meta}</CommandMeta>}
                         </CommandItem>
                       ))}
                     </CommandGroup>
