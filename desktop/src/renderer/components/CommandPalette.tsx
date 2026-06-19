@@ -57,7 +57,7 @@ export const WORKSPACE_VIEWS: {
   title: string;
   Icon: typeof BookIcon;
 }[] = [
-  { view: "board", title: "Board", Icon: Columns2Icon },
+  { view: "board", title: "Tasks", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
 ];
 

@@ -630,7 +630,7 @@ function ProjectDetailsForm({
             <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <h3 className="text-sm font-medium">Board statuses</h3>
+                  <h3 className="text-sm font-medium">Statuses</h3>
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     Configure this project's Kanban columns.
                   </p>
