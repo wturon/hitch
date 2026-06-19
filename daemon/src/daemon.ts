@@ -20,6 +20,13 @@ import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
 import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
 import type { Environment, Harness } from "./launchers/types.js";
+import {
+  type ScannedLoop,
+  cronNextRun,
+  readLoopLocalState,
+  runTrigger,
+  scanLoops,
+} from "./loops.js";
 
 if (!globalThis.WebSocket) {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
@@ -111,6 +118,7 @@ interface CommandDoc {
   environment?: string; // unset in release 1; daemon derives from harness default
   sessionId?: string;
   path?: string;
+  loopPath?: string; // loop-run: the loop dir rel to .hitch/ (e.g. "loops/pr-review")
   initialPrompt?: string;
   cwd?: string;
   model?: string; // start-chat kickoff: model to launch
@@ -805,6 +813,232 @@ async function startHitchBinding({
     15_000,
   );
 
+  // ── Loops scheduler ────────────────────────────────────────────────────
+  // In-process poller over on-disk loops ∩ locally-enabled. Stateless across
+  // restarts: next-due is recomputed from cron, seeded to "now" on first sight
+  // so a restart never replays missed ticks (no catch-up). Concurrency=skip is
+  // an in-memory set of loops currently running on this host.
+  const prefsPath = join(dirname(configPath), "preferences.json");
+  const loopNextDueAt = new Map<string, number>(); // loopPath → next fire (ms)
+  const loopSchedule = new Map<string, string>(); // loopPath → cron (change detect)
+  const activeLoopRuns = new Set<string>(); // loopPath running on this host
+
+  function readPrefsRaw(): string | null {
+    try {
+      return readFileSync(prefsPath, "utf8");
+    } catch {
+      return null;
+    }
+  }
+
+  async function createLoopRun(args: {
+    loop: ScannedLoop;
+    reason: "cron" | "manual";
+    status: string;
+    triggerExitCode?: number;
+    triggerStdout?: string;
+    triggerStderr?: string;
+    error?: string;
+  }): Promise<string | null> {
+    const startedAt = Date.now();
+    const terminal = args.status !== "running";
+    try {
+      return (await client.mutation(anyApi.loops.createRun, {
+        projectId,
+        deviceToken,
+        loopPath: args.loop.loopPath,
+        host,
+        status: args.status,
+        reason: args.reason,
+        startedAt,
+        finishedAt: terminal ? startedAt : undefined,
+        durationMs: terminal ? 0 : undefined,
+        triggerExitCode: args.triggerExitCode,
+        triggerStdout: args.triggerStdout,
+        triggerStderr: args.triggerStderr,
+        harness: args.loop.harness,
+        model: args.loop.model,
+        reasoning: args.loop.reasoning,
+        error: args.error,
+      })) as string;
+    } catch (e) {
+      logError(logger, `[hitch:${projectLabel}] loop createRun failed: ${String(e)}`);
+      return null;
+    }
+  }
+
+  // Phase 4 replaces this with the real Claude/Codex launch + done-watch +
+  // teardown. For now it finalizes the run so records don't dangle.
+  async function launchLoopAgent(
+    loop: ScannedLoop,
+    runId: string,
+  ): Promise<void> {
+    logger.info(
+      `[hitch:${projectLabel}] loop ${loop.slug} → would launch ${loop.harness} (agent launch lands in Phase 4)`,
+    );
+    try {
+      await client.mutation(anyApi.loops.patchRun, {
+        id: runId,
+        projectId,
+        deviceToken,
+        status: "ran",
+        finishedAt: Date.now(),
+        durationMs: 0,
+        summary: "(agent launch not yet wired — Phase 4)",
+      });
+    } catch (e) {
+      logError(logger, `[hitch:${projectLabel}] loop patchRun failed: ${String(e)}`);
+    }
+  }
+
+  // Run one loop: trigger gate (scheduled only — manual bypasses it), then
+  // launch. Trust is re-checked against the local hash on every scheduled run.
+  async function executeLoop(
+    loop: ScannedLoop,
+    reason: "cron" | "manual",
+  ): Promise<void> {
+    if (activeLoopRuns.has(loop.loopPath)) {
+      logger.info(
+        `[hitch:${projectLabel}] loop ${loop.slug} skipped (already running on this host)`,
+      );
+      return;
+    }
+
+    let triggerExitCode: number | undefined;
+    let triggerStdout: string | undefined;
+    let triggerStderr: string | undefined;
+
+    if (reason === "cron" && loop.triggerAbsPath && loop.triggerRelPath) {
+      const local = readLoopLocalState(readPrefsRaw(), projectId);
+      const trusted = local[loop.loopPath]?.trusted ?? {};
+      let bytes = "";
+      try {
+        bytes = await readFile(loop.triggerAbsPath, "utf8");
+      } catch {
+        bytes = "";
+      }
+      if (bytes) {
+        if (trusted[loop.triggerRelPath] !== hashOf(bytes)) {
+          await createLoopRun({
+            loop,
+            reason,
+            status: "skipped",
+            error: "trigger.sh not trusted (review required)",
+          });
+          logger.info(
+            `[hitch:${projectLabel}] loop ${loop.slug} skipped (untrusted trigger)`,
+          );
+          return;
+        }
+        const res = await runTrigger(loop.triggerAbsPath, root.localPath);
+        triggerStdout = res.stdout;
+        triggerStderr = res.stderr;
+        triggerExitCode = res.exitCode ?? undefined;
+        if (res.timedOut || res.exitCode === null) {
+          await createLoopRun({
+            loop,
+            reason,
+            status: "trigger-error",
+            triggerExitCode,
+            triggerStdout,
+            triggerStderr,
+            error: "trigger.sh timed out",
+          });
+          return;
+        }
+        if (res.exitCode === 2) {
+          await createLoopRun({
+            loop,
+            reason,
+            status: "skipped",
+            triggerExitCode,
+            triggerStdout,
+            triggerStderr,
+          });
+          logger.info(`[hitch:${projectLabel}] loop ${loop.slug} skipped (trigger exit 2)`);
+          return;
+        }
+        if (res.exitCode !== 0) {
+          await createLoopRun({
+            loop,
+            reason,
+            status: "trigger-error",
+            triggerExitCode,
+            triggerStdout,
+            triggerStderr,
+          });
+          return;
+        }
+      }
+    }
+
+    const runId = await createLoopRun({
+      loop,
+      reason,
+      status: "running",
+      triggerExitCode,
+      triggerStdout,
+      triggerStderr,
+    });
+    if (!runId) return;
+    activeLoopRuns.add(loop.loopPath);
+    try {
+      await launchLoopAgent(loop, runId);
+    } finally {
+      activeLoopRuns.delete(loop.loopPath);
+    }
+  }
+
+  async function loopTick(): Promise<void> {
+    let loops: ScannedLoop[];
+    try {
+      loops = await scanLoops(root.hitchPath);
+    } catch {
+      return;
+    }
+    const local = readLoopLocalState(readPrefsRaw(), projectId);
+    const now = Date.now();
+    const seen = new Set<string>();
+    for (const loop of loops) {
+      seen.add(loop.loopPath);
+      if (local[loop.loopPath]?.enabled !== true) {
+        loopNextDueAt.delete(loop.loopPath);
+        loopSchedule.delete(loop.loopPath);
+        continue;
+      }
+      // (Re)seed on first sight or a schedule change — next fire is the next
+      // cron occurrence after now, never a replay of a missed tick.
+      if (
+        loopSchedule.get(loop.loopPath) !== loop.schedule ||
+        !loopNextDueAt.has(loop.loopPath)
+      ) {
+        loopSchedule.set(loop.loopPath, loop.schedule);
+        const next = cronNextRun(loop.schedule, new Date(now));
+        if (next) loopNextDueAt.set(loop.loopPath, next.getTime());
+        else loopNextDueAt.delete(loop.loopPath);
+        continue;
+      }
+      const due = loopNextDueAt.get(loop.loopPath);
+      if (due == null || now < due) continue;
+      // Advance the schedule before firing so a slow run can't double-fire.
+      const next = cronNextRun(loop.schedule, new Date(now));
+      if (next) loopNextDueAt.set(loop.loopPath, next.getTime());
+      else loopNextDueAt.delete(loop.loopPath);
+      void executeLoop(loop, "cron").catch((e) =>
+        logError(logger, `[hitch:${projectLabel}] loop ${loop.slug} failed: ${String(e)}`),
+      );
+    }
+    for (const key of [...loopNextDueAt.keys()]) {
+      if (!seen.has(key)) {
+        loopNextDueAt.delete(key);
+        loopSchedule.delete(key);
+      }
+    }
+  }
+
+  void loopTick();
+  const loopTimer = setInterval(() => void loopTick().catch(() => {}), 20_000);
+
   const handledCommands = new Set<string>();
 
   async function complete(
@@ -906,6 +1140,18 @@ async function startHitchBinding({
         logger.info(
           `[hitch:${projectLabel}] ⮑ start-chat ${harness} ${path} → ${result}`,
         );
+      } else if (cmd.kind === "loop-run") {
+        // Manual "Run now": run the loop pipeline immediately, bypassing the
+        // trigger gate (reason: manual). Targeted at this host by the renderer.
+        if (!cmd.loopPath) throw new Error("loop-run requires loopPath");
+        const loops = await scanLoops(root.hitchPath);
+        const loop = loops.find((l) => l.loopPath === cmd.loopPath);
+        if (!loop) throw new Error(`loop not found: ${cmd.loopPath}`);
+        await complete(cmd, "done", "started");
+        logger.info(`[hitch:${projectLabel}] ⮑ loop-run ${cmd.loopPath} (manual)`);
+        void executeLoop(loop, "manual").catch((e) =>
+          logError(logger, `[hitch:${projectLabel}] manual loop ${loop.slug} failed: ${String(e)}`),
+        );
       } else {
         await complete(
           cmd,
@@ -973,6 +1219,7 @@ async function startHitchBinding({
       stopped = true;
       clearInterval(heartbeatTimer);
       clearInterval(reconcileTimer);
+      clearInterval(loopTimer);
       for (const subscription of subscriptions) unsubscribe(subscription);
       await watcher.close();
     },
