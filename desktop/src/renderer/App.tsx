@@ -36,8 +36,6 @@ import {
   AlertCircleIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
-  BookIcon,
-  Columns2Icon,
   CopyIcon,
   EllipsisIcon,
   ExternalLinkIcon,
@@ -65,7 +63,11 @@ import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
-import { CommandPalette } from "@/components/CommandPalette";
+import {
+  CommandPalette,
+  WORKSPACE_VIEWS,
+  type WorkspaceView,
+} from "@/components/CommandPalette";
 import {
   CARD_CLASS,
   CardChat,
@@ -1064,9 +1066,7 @@ function BoardContent({
   // Which column, if any, has its inline "new task" composer open.
   const [composingCol, setComposingCol] = useState<string | null>(null);
   // Per-project tab: the Kanban board, or the Notes two-pane view.
-  const [workspaceView, setWorkspaceView] = useState<"board" | "notes">(
-    "board",
-  );
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("board");
   // The global command palette (⌘K) and its one-shot request to NotesView to
   // open/create a note. A palette-driven "New project" reuses the sidebar's
   // CreateProjectDialog, pre-filled with the typed query.
@@ -1233,6 +1233,51 @@ function BoardContent({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [showPalette]);
+
+  // Switch the per-project view from the keyboard, mirroring a browser's tabs:
+  // ⌘1…⌘N (Ctrl on Windows/Linux) jumps to a view by position, and
+  // Ctrl+Tab / Ctrl+Shift+Tab cycles forward/back with wraparound. Ctrl+Tab
+  // stays on Ctrl across platforms (⌘Tab is the OS app switcher). Both are
+  // chrome-level like ⌘\ and fire even while typing — modifier chords never
+  // produce text, and leaving Notes mid-edit unmounts NotesView, whose unmount
+  // flush saves the open draft — so we only bail when a dialog/menu overlay
+  // (palette, task dialog, context menu) owns the keyboard.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const overlayUp = !!document.querySelector(
+        '[role="dialog"],[role="alertdialog"],[role="menu"]',
+      );
+
+      // Ctrl+Tab / Ctrl+Shift+Tab — cycle to the next / previous view.
+      if (e.key === "Tab" && e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (overlayUp) return;
+        e.preventDefault();
+        const step = e.shiftKey ? -1 : 1;
+        setWorkspaceView((prev) => {
+          const n = WORKSPACE_VIEWS.length;
+          const i = WORKSPACE_VIEWS.findIndex((v) => v.view === prev);
+          return WORKSPACE_VIEWS[(i + step + n) % n].view;
+        });
+        return;
+      }
+
+      // ⌘1…⌘N (Ctrl+1…N) — jump straight to the view at that position. A number
+      // past the last view (e.g. ⌘3 today) is left alone, not swallowed.
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        /^[1-9]$/.test(e.key)
+      ) {
+        const idx = Number(e.key) - 1;
+        if (idx >= WORKSPACE_VIEWS.length || overlayUp) return;
+        e.preventDefault();
+        setWorkspaceView(WORKSPACE_VIEWS[idx].view);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   if (!currentProject || files === undefined) {
     return (
@@ -1584,26 +1629,21 @@ function BoardContent({
       <div className="flex min-h-0 flex-1 flex-col gap-6">
         <header className="window-titlebar-row -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-between gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
           <div className="flex shrink-0 items-center overflow-hidden rounded-lg border border-border">
-            {(
-              [
-                ["board", Columns2Icon],
-                ["notes", BookIcon],
-              ] as const
-            ).map(([tab, Icon], i) => (
+            {WORKSPACE_VIEWS.map(({ view, title, Icon }, i) => (
               <button
-                key={tab}
+                key={view}
                 type="button"
-                onClick={() => setWorkspaceView(tab)}
+                onClick={() => setWorkspaceView(view)}
                 className={cn(
-                  "flex items-center gap-1.5 px-2.5 py-1 text-[13px] font-medium capitalize transition-colors",
+                  "flex items-center gap-1.5 px-2.5 py-1 text-[13px] font-medium transition-colors",
                   i > 0 && "border-l border-border",
-                  workspaceView === tab
+                  workspaceView === view
                     ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 <Icon className="size-3.5" />
-                {tab}
+                {title}
               </button>
             ))}
           </div>

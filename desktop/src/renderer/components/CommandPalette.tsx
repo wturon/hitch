@@ -39,9 +39,15 @@ export interface PaletteNote {
 
 export type WorkspaceView = "board" | "notes";
 
-// The per-project views, switchable like a navigation command. Title is what the
-// query matches against ("board" / "notes").
-const VIEWS: { view: WorkspaceView; title: string; Icon: typeof BookIcon }[] = [
+// The per-project views, in tab order — the single source of truth shared by the
+// header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in
+// App.tsx). Adding a view (e.g. Loops) here lights it up everywhere. Title is
+// what the palette query matches against ("board" / "notes").
+export const WORKSPACE_VIEWS: {
+  view: WorkspaceView;
+  title: string;
+  Icon: typeof BookIcon;
+}[] = [
   { view: "board", title: "Board", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
 ];
@@ -156,7 +162,7 @@ export function CommandPalette({
   const trimmed = query.trim();
   const rankedTasks = useMemo(() => rankByTitle(tasks, query), [tasks, query]);
   const rankedNotes = useMemo(() => rankByTitle(notes, query), [notes, query]);
-  const rankedViews = useMemo(() => rankByTitle(VIEWS, query), [query]);
+  const rankedViews = useMemo(() => rankByTitle(WORKSPACE_VIEWS, query), [query]);
   // rankByTitle keys off `title`; projects carry `name`, so alias it for ranking.
   const rankedProjects = useMemo(
     () => rankByTitle(projects.map((p) => ({ ...p, title: p.name })), query),
@@ -195,7 +201,7 @@ export function CommandPalette({
 
   // The Board / Notes rows — shared between the empty state and search results.
   // The current view is tagged `active`, mirroring the project switcher.
-  const viewRows = (views: typeof VIEWS) =>
+  const viewRows = (views: typeof WORKSPACE_VIEWS) =>
     views.map(({ view, title, Icon }) => (
       <CommandItem
         key={view}
@@ -235,7 +241,9 @@ export function CommandPalette({
               {trimmed === "" ? (
                 <>
                   <CommandGroup heading="Jump to">{projectRows(projects)}</CommandGroup>
-                  <CommandGroup heading="Views">{viewRows(VIEWS)}</CommandGroup>
+                  <CommandGroup heading="Views">
+                    {viewRows(WORKSPACE_VIEWS)}
+                  </CommandGroup>
                   <CommandGroup heading={`Create in ${activeProjectName}`}>
                     <CreateRow
                       value="create-task"
