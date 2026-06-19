@@ -36,14 +36,20 @@ import {
   AlertCircleIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
+  Code2Icon,
   CopyIcon,
   EllipsisIcon,
   ExternalLinkIcon,
   FolderSyncIcon,
   LogOutIcon,
+  MonitorIcon,
+  MoonIcon,
   PanelLeftIcon,
   PlusIcon,
+  PowerIcon,
   SettingsIcon,
+  SunIcon,
+  SunMoonIcon,
   Trash2Icon,
 } from "lucide-react";
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
@@ -66,6 +72,7 @@ import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
 import {
   CommandPalette,
   WORKSPACE_VIEWS,
+  type PaletteAction,
   type WorkspaceView,
 } from "@/components/CommandPalette";
 import {
@@ -88,6 +95,7 @@ import { AppSidebar, CreateProjectDialog } from "@/components/AppSidebar";
 import { ProjectConflictDialog } from "@/components/ProjectConflictDialog";
 import type { KeepAwakeState, ProjectNavEntry } from "@/lib/types";
 import { UpdateBanner } from "@/components/UpdateBanner";
+import { getStoredTheme, setTheme } from "@/lib/theme";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -1587,6 +1595,99 @@ function BoardContent({
   const paletteNotes = noteDocs(files)
     .filter((doc) => !doc.archived)
     .map((doc) => ({ slug: doc.slug, title: doc.title, meta: doc.type }));
+  const keepAwakeAvailable = keepAwake !== null && Boolean(keepAwakeBridge());
+  const paletteActions: PaletteAction[] = [
+    {
+      id: "theme-dark",
+      title: "Switch to Dark Mode",
+      meta: "appearance",
+      keywords: ["dark", "dark mode", "theme", "appearance", "settings"],
+      icon: <MoonIcon className="size-4" />,
+      onRun: () => setTheme("dark"),
+    },
+    {
+      id: "theme-light",
+      title: "Switch to Light Mode",
+      meta: "appearance",
+      keywords: ["light", "light mode", "theme", "appearance", "settings"],
+      icon: <SunIcon className="size-4" />,
+      onRun: () => setTheme("light"),
+    },
+    {
+      id: "theme-system",
+      title: "Use System Appearance",
+      meta: "appearance",
+      keywords: [
+        "system",
+        "system theme",
+        "automatic",
+        "theme",
+        "appearance",
+        "settings",
+      ],
+      icon: <MonitorIcon className="size-4" />,
+      onRun: () => setTheme("system"),
+    },
+    {
+      id: "theme-toggle",
+      title: "Toggle Light/Dark Mode",
+      meta: "appearance",
+      keywords: [
+        "toggle theme",
+        "toggle dark mode",
+        "toggle light mode",
+        "theme",
+        "appearance",
+        "settings",
+      ],
+      icon: <SunMoonIcon className="size-4" />,
+      onRun: () => setTheme(getStoredTheme() === "dark" ? "light" : "dark"),
+    },
+    {
+      id: "settings-appearance",
+      title: "Open Appearance Settings",
+      meta: "settings",
+      keywords: ["appearance", "theme", "settings", "preferences"],
+      icon: <SettingsIcon className="size-4" />,
+      onRun: () => openGlobalSettings("appearance"),
+    },
+    {
+      id: "keep-awake-toggle",
+      title: keepAwake?.enabled ? "Turn Keep Awake Off" : "Turn Keep Awake On",
+      meta: keepAwakeAvailable
+        ? keepAwake?.enabled
+          ? "on"
+          : "off"
+        : "unavailable",
+      keywords: [
+        "keep awake",
+        "toggle keep awake",
+        "prevent sleep",
+        "sleep",
+        "power",
+        "actions",
+      ],
+      disabled: !keepAwakeAvailable,
+      icon: <PowerIcon className="size-4" />,
+      onRun: () => void toggleKeepAwake(),
+    },
+    {
+      id: "settings-harnesses",
+      title: "Open Harness Settings",
+      meta: "settings",
+      keywords: [
+        "harness",
+        "harnesses",
+        "agent",
+        "agents",
+        "codex",
+        "claude",
+        "settings",
+      ],
+      icon: <Code2Icon className="size-4" />,
+      onRun: () => openGlobalSettings("harnesses"),
+    },
+  ];
 
   // Open a task: show the board first so the dialog floats over it (not Notes).
   function paletteOpenTask(path: string) {
@@ -1826,6 +1927,7 @@ function BoardContent({
           currentView={workspaceView}
           tasks={paletteTasks}
           notes={paletteNotes}
+          actions={paletteActions}
           onSelectProject={onSelectProject}
           onSelectView={setWorkspaceView}
           onOpenTask={paletteOpenTask}

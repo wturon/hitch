@@ -36,6 +36,15 @@ export interface PaletteNote {
   title: string;
   meta: string; // freeform note type, shown as the mono tag
 }
+export interface PaletteAction {
+  id: string;
+  title: string;
+  keywords: string[];
+  meta?: string;
+  disabled?: boolean;
+  icon: ReactNode;
+  onRun: () => void;
+}
 
 export type WorkspaceView = "board" | "notes";
 
@@ -52,14 +61,18 @@ export const WORKSPACE_VIEWS: {
   { view: "notes", title: "Notes", Icon: BookIcon },
 ];
 
-// Rank by title: prefix > substring. Ties keep input order (already recency- or
-// board-sorted upstream). An empty query returns the list unchanged.
-function rankByTitle<T extends { title: string }>(items: T[], query: string): T[] {
+// Rank by searchable text: prefix > substring. Ties keep input order (already
+// recency- or board-sorted upstream). An empty query returns the list unchanged.
+function rankByText<T>(
+  items: T[],
+  query: string,
+  searchableText: (item: T) => string,
+): T[] {
   const q = query.trim().toLowerCase();
   if (!q) return items;
   const scored: { item: T; score: number; i: number }[] = [];
   items.forEach((item, i) => {
-    const title = item.title.toLowerCase();
+    const title = searchableText(item).toLowerCase();
     let score = -1;
     if (title.startsWith(q)) score = 2;
     else if (title.includes(q)) score = 1;
@@ -67,6 +80,19 @@ function rankByTitle<T extends { title: string }>(items: T[], query: string): T[
   });
   scored.sort((a, b) => b.score - a.score || a.i - b.i);
   return scored.map((s) => s.item);
+}
+
+function rankByTitle<T extends { title: string }>(
+  items: T[],
+  query: string,
+): T[] {
+  return rankByText(items, query, (item) => item.title);
+}
+
+function actionSearchText(action: PaletteAction): string {
+  return [action.title, action.meta, ...action.keywords]
+    .filter(Boolean)
+    .join(" ");
 }
 
 // A fixed-width (20px) leading icon slot so every row's text aligns regardless
@@ -127,6 +153,7 @@ export function CommandPalette({
   currentView,
   tasks,
   notes,
+  actions,
   onSelectProject,
   onSelectView,
   onOpenTask,
@@ -143,6 +170,7 @@ export function CommandPalette({
   currentView: WorkspaceView;
   tasks: PaletteTask[];
   notes: PaletteNote[];
+  actions: PaletteAction[];
   onSelectProject: (id: Id<"projects">) => void;
   onSelectView: (view: WorkspaceView) => void;
   onOpenTask: (path: string) => void;
@@ -162,10 +190,21 @@ export function CommandPalette({
   const trimmed = query.trim();
   const rankedTasks = useMemo(() => rankByTitle(tasks, query), [tasks, query]);
   const rankedNotes = useMemo(() => rankByTitle(notes, query), [notes, query]);
-  const rankedViews = useMemo(() => rankByTitle(WORKSPACE_VIEWS, query), [query]);
+  const rankedViews = useMemo(
+    () => rankByTitle(WORKSPACE_VIEWS, query),
+    [query],
+  );
+  const rankedActions = useMemo(
+    () => rankByText(actions, query, actionSearchText),
+    [actions, query],
+  );
   // rankByTitle keys off `title`; projects carry `name`, so alias it for ranking.
   const rankedProjects = useMemo(
-    () => rankByTitle(projects.map((p) => ({ ...p, title: p.name })), query),
+    () =>
+      rankByTitle(
+        projects.map((p) => ({ ...p, title: p.name })),
+        query,
+      ),
     [projects, query],
   );
   const noMatches =
@@ -173,6 +212,7 @@ export function CommandPalette({
     rankedTasks.length === 0 &&
     rankedNotes.length === 0 &&
     rankedViews.length === 0 &&
+    rankedActions.length === 0 &&
     rankedProjects.length === 0;
 
   // Run an action and dismiss. Every row routes through here so the palette
@@ -216,6 +256,20 @@ export function CommandPalette({
       </CommandItem>
     ));
 
+  const actionRows = (list: PaletteAction[]) =>
+    list.map((action) => (
+      <CommandItem
+        key={action.id}
+        value={`action:${action.id}`}
+        disabled={action.disabled}
+        onSelect={() => run(action.onRun)}
+      >
+        <RowIcon>{action.icon}</RowIcon>
+        <span className="truncate">{action.title}</span>
+        {action.meta && <CommandMeta>{action.meta}</CommandMeta>}
+      </CommandItem>
+    ));
+
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
@@ -235,15 +289,22 @@ export function CommandPalette({
               autoFocus
               value={query}
               onValueChange={setQuery}
-              placeholder="Search tasks and notes, jump to a project, or create…"
+              placeholder="Search tasks, notes, projects, settings, or actions…"
             />
             <CommandList>
               {trimmed === "" ? (
                 <>
-                  <CommandGroup heading="Jump to">{projectRows(projects)}</CommandGroup>
+                  <CommandGroup heading="Jump to">
+                    {projectRows(projects)}
+                  </CommandGroup>
                   <CommandGroup heading="Views">
                     {viewRows(WORKSPACE_VIEWS)}
                   </CommandGroup>
+                  {actions.length > 0 && (
+                    <CommandGroup heading="Actions">
+                      {actionRows(actions)}
+                    </CommandGroup>
+                  )}
                   <CommandGroup heading={`Create in ${activeProjectName}`}>
                     <CreateRow
                       value="create-task"
@@ -297,7 +358,14 @@ export function CommandPalette({
                     </CommandGroup>
                   )}
                   {rankedViews.length > 0 && (
-                    <CommandGroup heading="Views">{viewRows(rankedViews)}</CommandGroup>
+                    <CommandGroup heading="Views">
+                      {viewRows(rankedViews)}
+                    </CommandGroup>
+                  )}
+                  {rankedActions.length > 0 && (
+                    <CommandGroup heading="Actions">
+                      {actionRows(rankedActions)}
+                    </CommandGroup>
                   )}
                   {rankedTasks.length > 0 && (
                     <CommandGroup heading="Tasks">
