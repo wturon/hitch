@@ -671,6 +671,11 @@ function LoopCard({
   return (
     <div
       onClick={onOpen}
+      title={
+        enabled
+          ? "Runs only while Hitch is open — missed runs are not caught up."
+          : "Disabled — won't run on this machine."
+      }
       className={cn(
         "flex cursor-pointer items-center gap-4 rounded-xl border-[0.75px] border-border bg-background p-4 shadow-[0_1px_1px_rgba(0,0,0,0.024)] transition-colors hover:border-muted-foreground/30",
         !enabled && "opacity-[0.55]",
@@ -896,7 +901,14 @@ function LoopDetail({
           {/* legend cutting the top border */}
           <div className="-mt-3 mb-2 flex items-center justify-between">
             <ScheduleLegend schedule={doc.schedule} onChange={setSchedule} />
-            <div className="flex items-center gap-2 bg-background pl-2">
+            <div
+              className="flex items-center gap-2 bg-background pl-2"
+              title={
+                enabled
+                  ? "Runs only while Hitch is open — missed runs are not caught up."
+                  : "Disabled — won't run on this machine."
+              }
+            >
               <LoopRing
                 schedule={doc.schedule}
                 next={next}

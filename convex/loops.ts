@@ -1,5 +1,6 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
 import { requireProjectAccess } from "./authz";
 
 // Create a loop run record (status usually starts "running" or "skipped").
@@ -37,14 +38,53 @@ export const createRun = mutation({
     if (!access.project) throw new Error("Project does not exist");
     const now = Date.now();
     const { projectId: _projectId, deviceToken: _deviceToken, ...rest } = args;
-    return await ctx.db.insert("loopRuns", {
+    const id = await ctx.db.insert("loopRuns", {
       ...rest,
       projectId: access.project._id,
       createdAt: now,
       updatedAt: now,
     });
+    // Retention: skipped-class runs (no linked chat, low value) accumulate fast
+    // for short-interval loops. Keep the most recent N per loop and drop the rest
+    // beyond a max age. `ran`/`running` records (which carry a chat) are never
+    // pruned here. See the PRD "keep last N or N days, compact the rest".
+    await pruneSkipped(ctx, access.project._id, args.loopPath, now);
+    return id;
   },
 });
+
+const SKIP_CLASS = new Set([
+  "skipped",
+  "trigger-error",
+  "launch-error",
+  "timed-out",
+  "interrupted",
+]);
+const RETAIN_SKIPPED = 20; // keep this many skipped-class runs per loop
+const RETAIN_MS = 14 * 24 * 60 * 60 * 1000; // …and drop any older than 14 days
+
+async function pruneSkipped(
+  ctx: MutationCtx,
+  projectId: Id<"projects">,
+  loopPath: string,
+  now: number,
+): Promise<void> {
+  const runs = await ctx.db
+    .query("loopRuns")
+    .withIndex("by_loop", (q) =>
+      q.eq("projectId", projectId).eq("loopPath", loopPath),
+    )
+    .order("desc")
+    .collect();
+  const skipped = runs.filter((r) => SKIP_CLASS.has(r.status));
+  let kept = 0;
+  for (const run of skipped) {
+    kept++;
+    if (kept > RETAIN_SKIPPED || run.startedAt < now - RETAIN_MS) {
+      await ctx.db.delete(run._id);
+    }
+  }
+}
 
 // Patch a loop run record as it progresses (link a session, settle status,
 // write a summary, etc.). Called by the daemon.

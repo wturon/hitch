@@ -70,6 +70,7 @@ import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
 import { LoopsView, type LoopIntent } from "@/components/LoopsView";
+import { loopDocs, humanizeCron } from "@/lib/loops";
 import {
   CommandPalette,
   WORKSPACE_VIEWS,
@@ -1601,6 +1602,11 @@ function BoardContent({
   const paletteNotes = noteDocs(files)
     .filter((doc) => !doc.archived)
     .map((doc) => ({ slug: doc.slug, title: doc.title, meta: doc.type }));
+  const paletteLoops = loopDocs(files).map((doc) => ({
+    slug: doc.slug,
+    title: doc.title,
+    meta: humanizeCron(doc.schedule),
+  }));
   const keepAwakeAvailable = keepAwake !== null && Boolean(keepAwakeBridge());
   const paletteActions: PaletteAction[] = [
     {
@@ -1716,6 +1722,14 @@ function BoardContent({
   function paletteCreateNote(title: string) {
     setWorkspaceView("notes");
     setNoteIntent({ type: "create", title });
+  }
+  function paletteOpenLoop(slug: string) {
+    setWorkspaceView("loops");
+    setLoopIntent({ type: "open", slug });
+  }
+  function paletteCreateLoop(title: string) {
+    setWorkspaceView("loops");
+    setLoopIntent({ type: "create", title });
   }
 
   return (
@@ -1944,6 +1958,7 @@ function BoardContent({
           currentView={workspaceView}
           tasks={paletteTasks}
           notes={paletteNotes}
+          loops={paletteLoops}
           actions={paletteActions}
           onSelectProject={onSelectProject}
           onSelectView={setWorkspaceView}
@@ -1951,6 +1966,8 @@ function BoardContent({
           onCreateTask={paletteCreateTask}
           onOpenNote={paletteOpenNote}
           onCreateNote={paletteCreateNote}
+          onOpenLoop={paletteOpenLoop}
+          onCreateLoop={paletteCreateLoop}
           onCreateProject={(name) => setCreateProjectName(name)}
         />
 

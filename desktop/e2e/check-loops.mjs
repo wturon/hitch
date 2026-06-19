@@ -103,23 +103,44 @@ try {
   await page.waitForTimeout(300);
   await page.screenshot({ path: `${SHOTS}/loops-05-activity.png` });
   check("Activity tab renders", true);
+
+  // --- Command palette: the loop is searchable + has a Loops group -----------
+  await page.keyboard.press("Meta+k");
+  const palInput = page.getByPlaceholder(
+    "Search tasks, notes, projects, settings, or actions…",
+  );
+  await palInput.waitFor({ timeout: 8000 });
+  await palInput.fill(title.slice(0, 14));
+  await page.waitForTimeout(300);
+  const loopsHeading = page.getByText("Loops", { exact: true });
+  const palLoopRow = page.getByText(title, { exact: false }).last();
+  await palLoopRow.waitFor({ timeout: 8000 });
+  await page.screenshot({ path: `${SHOTS}/loops-09-palette.png` });
+  check("loop is searchable in ⌘K palette", (await loopsHeading.count()) > 0);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
 } catch (err) {
   check("run completed without throwing", false, String(err));
   await page.screenshot({ path: `${SHOTS}/loops-99-error.png` }).catch(() => {});
 } finally {
-  // Best-effort cleanup: open the loop and delete via the card menu.
+  // Best-effort cleanup: delete EVERY e2e scratch loop (this run's + any
+  // orphans left by earlier runs), so the test project stays clean.
   try {
+    // Make sure we're on the index (Esc out of detail/palette if needed).
+    await page.keyboard.press("Escape").catch(() => {});
+    const back = page.getByRole("button", { name: "Back to loops" });
+    if (await back.count()) await back.click();
     await page.getByRole("button", { name: "Automations" }).first().click();
     await page.waitForTimeout(200);
-    const menuBtn = page
-      .locator(`[aria-label="Actions for ${title}"]`)
-      .first();
-    if (await menuBtn.count()) {
+    for (let i = 0; i < 20; i++) {
+      const menuBtn = page.locator('[aria-label^="Actions for e2e-loop-"]').first();
+      if (!(await menuBtn.count())) break;
       await menuBtn.click();
       await page.getByRole("menuitem", { name: "Delete" }).click();
+      await page.waitForTimeout(250);
     }
   } catch {
-    /* clearly named scratch loop */
+    /* clearly named scratch loops */
   }
   await cleanup();
 }
