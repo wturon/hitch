@@ -224,6 +224,14 @@ function projectTag(projectId: string): string {
   return `hitch:${projectId}`;
 }
 
+// Claude loop runs land in a SEPARATE workspace from the human chat workspace —
+// cleaner separation, smaller blast radius, trivial bulk cleanup. Tagged
+// distinctly so findProjectWorkspace never consolidates a loop tab into the
+// human workspace (or vice-versa). See the Loops PRD.
+export function loopsTag(projectId: string): string {
+  return `hitch-loops:${projectId}`;
+}
+
 interface WsInfo {
   id: string;
   description: string | null;
@@ -264,19 +272,44 @@ async function listAllWorkspaces(): Promise<WsInfo[]> {
 // The UUID of this project's chat workspace, or null if none is tagged yet. If
 // several somehow carry the tag (the "lax" case the user is fine with), the
 // lowest index wins — that's the most recently active / top-of-list one.
-async function findProjectWorkspace(projectId: string): Promise<string | null> {
-  const tag = projectTag(projectId);
+async function findProjectWorkspace(
+  projectId: string,
+  tag = projectTag(projectId),
+): Promise<string | null> {
   const matches = (await listAllWorkspaces()).filter((w) => w.description === tag);
   if (matches.length === 0) return null;
   matches.sort((a, b) => a.index - b.index);
   return matches[0].id;
 }
 
+// Every surface (tab) UUID inside a given workspace — used for loop-workspace
+// reboot recovery (close leftover loop tabs on startup).
+async function workspaceSurfaceUuids(workspaceId: string): Promise<string[]> {
+  try {
+    const out = await cmux([
+      "rpc",
+      "surface.list",
+      JSON.stringify({ workspace_id: workspaceId }),
+    ]);
+    const surfaces =
+      (JSON.parse(out) as { surfaces?: Array<{ id?: string }> }).surfaces ?? [];
+    return surfaces.map((s) => s.id).filter((id): id is string => Boolean(id));
+  } catch (err) {
+    warn(`surface.list failed for workspace ${short(workspaceId)}: ${errMsg(err)}`);
+    return [];
+  }
+}
+
 // Claim a workspace as this project's chat home: give it the project name (an
 // explicit name also stops cmux from auto-retitling it per active tab) and the
 // hidden tag we match on. Best-effort — an untagged workspace just won't
 // consolidate next time; it's never fatal.
-async function tagWorkspace(workspaceId: string, name: string, projectId: string): Promise<void> {
+async function tagWorkspace(
+  workspaceId: string,
+  name: string,
+  projectId: string,
+  tag = projectTag(projectId),
+): Promise<void> {
   try {
     await cmux([
       "workspace-action",
@@ -294,7 +327,7 @@ async function tagWorkspace(workspaceId: string, name: string, projectId: string
       "--action",
       "set-description",
       "--description",
-      projectTag(projectId),
+      tag,
     ]);
   } catch {
     // Non-fatal: see above.
@@ -340,6 +373,11 @@ export interface PlaceSpec {
   projectName: string;
   cwd?: string;
   command: string;
+  // Workspace tag to consolidate under + the title to give a freshly-spawned
+  // workspace. Default to the project's human-chat workspace; loops override
+  // both so their tabs live in a dedicated `<name>-loops` workspace.
+  tag?: string;
+  workspaceName?: string;
 }
 
 // Put a chat into cmux deterministically: as a new tab in this project's
@@ -347,7 +385,9 @@ export interface PlaceSpec {
 // so every later chat for the project consolidates into it. Returns the UUID of
 // the workspace the chat landed in (for the recentSpawns memo), or null.
 async function placeChat(spec: PlaceSpec): Promise<string | null> {
-  const existing = await findProjectWorkspace(spec.projectId);
+  const tag = spec.tag ?? projectTag(spec.projectId);
+  const name = spec.workspaceName ?? spec.projectName;
+  const existing = await findProjectWorkspace(spec.projectId, tag);
   if (existing) {
     await addChatTab(existing, spec.cwd, spec.command);
     return existing;
@@ -357,7 +397,7 @@ async function placeChat(spec: PlaceSpec): Promise<string | null> {
   if (spec.cwd) args.push("--cwd", spec.cwd);
   await cmux(args);
   const created = [...(await workspaceUuids())].find((w) => !before.has(w)) ?? null;
-  if (created) await tagWorkspace(created, spec.projectName, spec.projectId);
+  if (created) await tagWorkspace(created, name, spec.projectId, tag);
   return created;
 }
 
@@ -535,6 +575,78 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
   } finally {
     spawning.delete(spec.taskKey);
   }
+}
+
+export interface StartLoopSpec {
+  loopPath: string; // dedup/identity key, e.g. "loops/pr-review"
+  prompt: string;
+  sessionId: string;
+  cwd?: string;
+  model?: string;
+  effort?: string;
+  projectId: string;
+  projectName: string;
+}
+
+// Launch a BRAND-NEW Claude loop run in the project's dedicated
+// `<projectName>-loops` cmux workspace, with permissions bypassed (an
+// unattended run can't answer a permission prompt — that would read as
+// needs-input and end the run early). Like startChat: positional prompt (NOT
+// -p, so it stays on subscription auth), pinned --session-id. Returns where it
+// landed. The daemon watches the session marker for done, then closeSurface()s.
+export async function startLoopChat(spec: StartLoopSpec): Promise<OpenResult> {
+  const flags: string[] = ["--permission-mode", "bypassPermissions"];
+  if (spec.model) flags.push("--model", spec.model);
+  if (spec.effort) flags.push("--effort", spec.effort);
+  const command = `claude --session-id ${spec.sessionId} ${flags.join(" ")} ${shellQuote(spec.prompt)}`;
+  await placeChat({
+    projectId: spec.projectId,
+    projectName: spec.projectName,
+    cwd: spec.cwd,
+    command,
+    tag: loopsTag(spec.projectId),
+    workspaceName: `${spec.projectName}-loops`,
+  });
+  return "spawned";
+}
+
+// Close the cmux surface (tab) bound to a session — reaps its child `claude`
+// process. Used to tear a finished loop run's tab down. Returns true if a
+// surface was found and closed. "Open chat" later still works: it re-spawns from
+// the on-disk transcript via openChat.
+export async function closeSurface(sessionId: string): Promise<boolean> {
+  const uuid = await findSurfaceUuid(sessionId);
+  if (!uuid) return false;
+  try {
+    await cmux(["close-surface", "--surface", uuid]);
+    log(`closed surface ${short(uuid)} for sess=${short(sessionId)}`);
+    return true;
+  } catch (err) {
+    warn(`close-surface failed for ${short(uuid)}: ${errMsg(err)}`);
+    return false;
+  }
+}
+
+// Reboot recovery: close every leftover tab in this project's loops workspace.
+// In-memory active-run state is lost on daemon restart, so orphaned loop tabs
+// (and their idle claude processes) must be reaped on startup. Best-effort.
+export async function closeLoopWorkspaceSurfaces(
+  projectId: string,
+): Promise<number> {
+  const workspace = await findProjectWorkspace(projectId, loopsTag(projectId));
+  if (!workspace) return 0;
+  const surfaces = await workspaceSurfaceUuids(workspace);
+  let closed = 0;
+  for (const surface of surfaces) {
+    try {
+      await cmux(["close-surface", "--surface", surface]);
+      closed++;
+    } catch (err) {
+      warn(`reboot close-surface ${short(surface)} failed: ${errMsg(err)}`);
+    }
+  }
+  if (closed) log(`reboot recovery: closed ${closed} leftover loop surface(s)`);
+  return closed;
 }
 
 // Single-quote an arbitrary (possibly multi-line) string for sh, so the seed

@@ -4,7 +4,7 @@
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -14,7 +14,18 @@ import chokidar, { type FSWatcher } from "chokidar";
 import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { CmuxError, setCmuxLogger } from "./cmux.js";
+import {
+  CmuxError,
+  closeLoopWorkspaceSurfaces,
+  closeSurface,
+  setCmuxLogger,
+  startLoopChat,
+} from "./cmux.js";
+import {
+  claudeTranscriptPath,
+  readTranscriptSummary,
+  watchSessionMarker,
+} from "./loopRun.js";
 import { closeCodexAppServer } from "./codex.js";
 import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
@@ -819,6 +830,9 @@ async function startHitchBinding({
   // so a restart never replays missed ticks (no catch-up). Concurrency=skip is
   // an in-memory set of loops currently running on this host.
   const prefsPath = join(dirname(configPath), "preferences.json");
+  // The global Claude hook mirrors each session's status here (see main.ts);
+  // loop runs watch this for done-detection since they have no task.md.
+  const claudeMarkerDir = join(dirname(configPath), "claude-sessions");
   const loopNextDueAt = new Map<string, number>(); // loopPath → next fire (ms)
   const loopSchedule = new Map<string, string>(); // loopPath → cron (change detect)
   const activeLoopRuns = new Set<string>(); // loopPath running on this host
@@ -867,28 +881,106 @@ async function startHitchBinding({
     }
   }
 
-  // Phase 4 replaces this with the real Claude/Codex launch + done-watch +
-  // teardown. For now it finalizes the run so records don't dangle.
-  async function launchLoopAgent(
-    loop: ScannedLoop,
-    runId: string,
+  async function patchLoopRun(
+    id: string,
+    fields: Record<string, unknown>,
   ): Promise<void> {
-    logger.info(
-      `[hitch:${projectLabel}] loop ${loop.slug} → would launch ${loop.harness} (agent launch lands in Phase 4)`,
-    );
     try {
       await client.mutation(anyApi.loops.patchRun, {
-        id: runId,
+        id,
         projectId,
         deviceToken,
-        status: "ran",
-        finishedAt: Date.now(),
-        durationMs: 0,
-        summary: "(agent launch not yet wired — Phase 4)",
+        ...fields,
       });
     } catch (e) {
       logError(logger, `[hitch:${projectLabel}] loop patchRun failed: ${String(e)}`);
     }
+  }
+
+  // The trigger script's stdout is injected as labeled context for the agent.
+  function buildLoopPrompt(prompt: string, triggerStdout?: string): string {
+    const body = prompt.trim();
+    const out = triggerStdout?.trim();
+    if (!out) return body;
+    return `${body}\n\n---\nContext from trigger.sh (stdout):\n${out}`;
+  }
+
+  // Launch a Claude loop run into the dedicated `<name>-loops` cmux workspace
+  // with permissions bypassed, link the session onto the run record, watch the
+  // session marker for done (or timeout), tear the tab down, read the
+  // transcript summary, and finalize. Codex is Phase 7.
+  async function launchLoopAgent(
+    loop: ScannedLoop,
+    runId: string,
+    triggerStdout?: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    if (loop.harness === "codex") {
+      await patchLoopRun(runId, {
+        status: "ran",
+        finishedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        summary: "(Codex loop runs land in Phase 7)",
+      });
+      return;
+    }
+
+    const sessionId = randomUUID();
+    // Link up front so "Open chat" works mid-run and the UI shows the chat.
+    await patchLoopRun(runId, { sessionId });
+
+    try {
+      await startLoopChat({
+        loopPath: loop.loopPath,
+        prompt: buildLoopPrompt(loop.prompt, triggerStdout),
+        sessionId,
+        cwd: root.localPath,
+        model: loop.model,
+        effort: loop.reasoning,
+        projectId,
+        projectName: projectLabel,
+      });
+    } catch (err) {
+      const errorCode = err instanceof CmuxError ? err.code : undefined;
+      await patchLoopRun(runId, {
+        status: "launch-error",
+        finishedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        error: `${errorCode ?? "launch failed"}: ${String(err)}`,
+      });
+      logError(logger, `[hitch:${projectLabel}] loop ${loop.slug} launch failed: ${String(err)}`);
+      return;
+    }
+
+    const timeoutMin =
+      loop.timeoutMinutes && loop.timeoutMinutes > 0 ? loop.timeoutMinutes : 20;
+    const reason = await watchSessionMarker(claudeMarkerDir, sessionId, {
+      timeoutMs: timeoutMin * 60_000,
+    });
+    // Teardown: close the tab (reaps the claude process). Non-destructive — Open
+    // chat re-spawns from the on-disk transcript.
+    try {
+      await closeSurface(sessionId);
+    } catch {
+      // best-effort
+    }
+    const summary = await readTranscriptSummary(
+      claudeTranscriptPath(root.localPath, sessionId),
+    );
+    const finishedAt = Date.now();
+    await patchLoopRun(runId, {
+      status: reason === "timed-out" ? "timed-out" : "ran",
+      finishedAt,
+      durationMs: finishedAt - startedAt,
+      summary:
+        summary ??
+        (reason === "needs-input"
+          ? "(ended waiting on input)"
+          : reason === "timed-out"
+            ? "(timed out)"
+            : undefined),
+    });
+    logger.info(`[hitch:${projectLabel}] loop ${loop.slug} finished (${reason})`);
   }
 
   // Run one loop: trigger gate (scheduled only — manual bypasses it), then
@@ -983,11 +1075,46 @@ async function startHitchBinding({
     if (!runId) return;
     activeLoopRuns.add(loop.loopPath);
     try {
-      await launchLoopAgent(loop, runId);
+      await launchLoopAgent(loop, runId, triggerStdout);
     } finally {
       activeLoopRuns.delete(loop.loopPath);
     }
   }
+
+  // Reboot recovery: in-memory active-run state is lost on restart. Mark any run
+  // records still "running" on this host as interrupted, and close leftover loop
+  // tabs (and their idle claude processes) in the loops workspace. Best-effort.
+  async function recoverLoopRuns(): Promise<void> {
+    try {
+      const running = (await client.query(anyApi.loops.runningRuns, {
+        projectId,
+        deviceToken,
+        host,
+      })) as Array<{ _id: string }>;
+      for (const r of running) {
+        await patchLoopRun(r._id, { status: "interrupted", finishedAt: Date.now() });
+      }
+      if (running.length) {
+        logger.info(
+          `[hitch:${projectLabel}] reboot recovery: ${running.length} stuck loop run(s) → interrupted`,
+        );
+      }
+    } catch (e) {
+      logError(
+        logger,
+        `[hitch:${projectLabel}] loop reboot recovery (records) failed: ${String(e)}`,
+      );
+    }
+    try {
+      await closeLoopWorkspaceSurfaces(projectId);
+    } catch (e) {
+      logError(
+        logger,
+        `[hitch:${projectLabel}] loop reboot recovery (cmux) failed: ${String(e)}`,
+      );
+    }
+  }
+  void recoverLoopRuns();
 
   async function loopTick(): Promise<void> {
     let loops: ScannedLoop[];

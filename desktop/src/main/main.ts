@@ -424,11 +424,45 @@ function globalClaudeChatStatusHook(): string {
 // Contract: never break the session. Parse stdin, do a best-effort frontmatter
 // edit, and exit 0 without output for unrelated sessions or failures.
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
+
+// Per-session status marker, written for any claude session running inside a
+// hitch root. Loop runs have no task.md to settle, so the daemon watches this
+// marker to learn when a loop's first turn finishes (waiting/needs-input) or the
+// session ends. Harmless for ordinary task chats (they're driven by task.md);
+// the file is just a tiny status mirror keyed by session id, cleared on SessionEnd.
+const SESSION_MARKER_DIR = join(dirname(HITCH_CONFIG_PATH), "claude-sessions");
+const MARKER_STATUS = {
+  UserPromptSubmit: "working",
+  PreToolUse: "working",
+  SessionStart: "working",
+  Notification: "needs-input",
+  Stop: "waiting",
+};
+
+function writeSessionMarker(sessionId, status, pid) {
+  try {
+    mkdirSync(SESSION_MARKER_DIR, { recursive: true });
+    writeFileSync(
+      join(SESSION_MARKER_DIR, sessionId + ".json"),
+      JSON.stringify({ status, pid: pid ?? null, at: Date.now() }),
+    );
+  } catch {
+    // Best effort; never fail the hook.
+  }
+}
+
+function clearSessionMarker(sessionId) {
+  try {
+    rmSync(join(SESSION_MARKER_DIR, sessionId + ".json"), { force: true });
+  } catch {
+    // Best effort.
+  }
+}
 
 // Per event: which chat-status to write (if any) and whether to (re)stamp the
 // agent pid. SessionStart only refreshes the pid — a resumed session is a new
@@ -593,6 +627,19 @@ function main() {
     payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.PWD || process.cwd(),
   );
   if (!root) return;
+
+  // Mirror this session's status to a per-session marker (for loop runs, which
+  // have no task.md). Done before the tasks scan so a loops-only project still
+  // gets markers. SessionEnd clears it.
+  if (plan.clear) {
+    clearSessionMarker(sessionId);
+  } else {
+    const markerStatus = MARKER_STATUS[event];
+    if (markerStatus) {
+      const pid = plan.touchPid ? resolveAgentPid() : null;
+      writeSessionMarker(sessionId, markerStatus, pid);
+    }
+  }
 
   const tasksDir = join(root, ".hitch", "tasks");
   if (!existsSync(tasksDir)) return;
