@@ -1303,6 +1303,90 @@ function clearLoopTrust(
   return writeLoopStates(projectId, states);
 }
 
+interface TriggerTestResult {
+  exitCode: number | null;
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+}
+
+// Run a loop trigger script draft for the modal's "Run test" — the same
+// execution contract the daemon's scheduled gate uses (`/bin/bash`, project cwd,
+// 30s timeout, stdout/stderr captured). Runs the UNSAVED editor draft from a
+// temp file so a test reflects what you're editing, not what's on disk. Never
+// rejects.
+function runLoopTriggerTest(
+  script: string,
+  cwd: string | undefined,
+): Promise<TriggerTestResult> {
+  return new Promise((resolveResult) => {
+    const start = Date.now();
+    const CAP = 4096;
+    const cap = (s: string) =>
+      s.length > CAP ? `${s.slice(0, CAP)}\n…[truncated]` : s;
+    const tmp = join(app.getPath("temp"), `hitch-trigger-${randomUUID()}.sh`);
+    try {
+      writeFileSync(tmp, script, "utf8");
+    } catch (err) {
+      resolveResult({ exitCode: null, durationMs: 0, stdout: "", stderr: String(err) });
+      return;
+    }
+    const runCwd = cwd && existsSync(cwd) ? cwd : app.getPath("temp");
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    const finish = (exitCode: number | null) => {
+      if (settled) return;
+      settled = true;
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        /* ignore */
+      }
+      resolveResult({
+        exitCode: timedOut ? null : exitCode,
+        durationMs: Date.now() - start,
+        stdout: cap(stdout),
+        stderr: timedOut ? cap(`${stderr}\n[timed out after 30s]`) : cap(stderr),
+      });
+    };
+    let child: ChildProcess;
+    try {
+      child = spawn("/bin/bash", [tmp], { cwd: runCwd, detached: true });
+    } catch (err) {
+      stderr += String(err);
+      finish(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        if (child.pid) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+      finish(null);
+    }, 30_000);
+    child.stdout?.on("data", (d) => {
+      if (stdout.length < CAP * 2) stdout += String(d);
+    });
+    child.stderr?.on("data", (d) => {
+      if (stderr.length < CAP * 2) stderr += String(d);
+    });
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      stderr += String(e);
+      finish(null);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      finish(code);
+    });
+  });
+}
+
 function ensureDeviceId(): string {
   const secrets = readLocalSecrets();
   if (secrets.deviceId) return secrets.deviceId;
@@ -2673,6 +2757,11 @@ ipcMain.handle(
   "loops:clear-trust",
   (_event, projectId: string, loopPath: string, scriptPath: string) =>
     clearLoopTrust(projectId, loopPath, scriptPath),
+);
+ipcMain.handle(
+  "loops:run-trigger",
+  (_event, args: { projectId: string; cwd?: string; script: string }) =>
+    runLoopTriggerTest(args.script, args.cwd),
 );
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());

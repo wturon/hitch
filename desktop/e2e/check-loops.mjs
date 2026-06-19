@@ -62,6 +62,26 @@ try {
   await page.keyboard.type("Check open PRs and summarize.");
   check("prompt is editable", true);
 
+  // --- Trigger script modal: open, Run test, Save & trust -------------------
+  await page.getByText("Add a trigger script").click();
+  const runTest = page.getByRole("button", { name: "Run test" });
+  await runTest.waitFor({ timeout: 8000 });
+  await page.screenshot({ path: `${SHOTS}/loops-06-trigger-modal.png` });
+  await runTest.click();
+  // The starter script is all comments after `set -euo pipefail` → exit 0.
+  const wouldRun = page.getByText("would run", { exact: false }).first();
+  await wouldRun.waitFor({ timeout: 10000 });
+  await page.screenshot({ path: `${SHOTS}/loops-07-run-test.png` });
+  check("trigger Run test → exit 0 / would run", true);
+  await page.getByRole("button", { name: "Save & trust" }).click();
+  // Modal closes; the detail now shows the trigger.sh card (Trusted).
+  const triggerCard = page.getByText("Runs only when trigger.sh exits 0.", {
+    exact: false,
+  });
+  await triggerCard.waitFor({ timeout: 10000 });
+  check("Save & trust writes trigger.sh + shows trusted card", true);
+  await page.screenshot({ path: `${SHOTS}/loops-08-trigger-saved.png` });
+
   // Toggle enabled.
   const toggle = page.getByRole("switch");
   await toggle.click();

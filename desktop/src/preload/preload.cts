@@ -110,6 +110,14 @@ export interface LoopLocalState {
 }
 export type ProjectLoopStates = Record<string, LoopLocalState>;
 
+// Result of a loop trigger-script "Run test" (main process runs the draft).
+export interface TriggerTestResult {
+  exitCode: number | null; // null = killed (timeout)
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+}
+
 export interface DeviceAuthState {
   deviceId: string;
   deviceName: string;
@@ -195,6 +203,11 @@ export interface HitchDaemonApi {
     loopPath: string,
     scriptPath: string,
   ) => Promise<ProjectLoopStates>;
+  runLoopTrigger: (args: {
+    projectId: ProjectId;
+    cwd?: string;
+    script: string;
+  }) => Promise<TriggerTestResult>;
   enableCmuxAutomation: () => Promise<EnableCmuxResult>;
   openCmuxApp: () => Promise<string>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
@@ -259,6 +272,7 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("loops:set-trust", projectId, loopPath, scriptPath, sha256),
   clearLoopTrust: (projectId, loopPath, scriptPath) =>
     ipcRenderer.invoke("loops:clear-trust", projectId, loopPath, scriptPath),
+  runLoopTrigger: (args) => ipcRenderer.invoke("loops:run-trigger", args),
   enableCmuxAutomation: () => ipcRenderer.invoke("cmux:enable-automation"),
   openCmuxApp: () => ipcRenderer.invoke("cmux:open-app"),
   chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),

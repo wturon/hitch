@@ -18,9 +18,9 @@ set -euo pipefail
 # [ "$open" -gt 0 ]
 `;
 
-// The result of a "Run test" — Phase 6 wires this to a main-process runner.
+// The result of a "Run test" — the main process runs the draft script.
 export interface TriggerTestResult {
-  exitCode: number;
+  exitCode: number | null; // null = killed (timeout / signal)
   durationMs: number;
   stdout: string;
   stderr: string;
@@ -106,12 +106,11 @@ export function TriggerScriptModal({
             } | undefined)
           : undefined;
       if (!bridge?.runLoopTrigger) {
-        // Phase 6 wires the real runner; until then, surface that clearly.
         setTest({
-          exitCode: -1,
+          exitCode: null,
           durationMs: 0,
           stdout: "",
-          stderr: "Run test is not available yet (daemon runner pending).",
+          stderr: "Run test is unavailable (no desktop bridge).",
         });
         return;
       }
@@ -211,7 +210,7 @@ export function TriggerScriptModal({
             <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               Test output
             </span>
-            {test && test.exitCode >= 0 && (
+            {test && (
               <span className="flex items-center gap-2 font-mono text-[12px] text-muted-foreground">
                 <span
                   className={cn(
@@ -221,7 +220,7 @@ export function TriggerScriptModal({
                       : "bg-[#B42318]/10 text-[#B42318]",
                   )}
                 >
-                  exit {test.exitCode}
+                  {test.exitCode === null ? "killed" : `exit ${test.exitCode}`}
                 </span>
                 <span>· {(test.durationMs / 1000).toFixed(1)}s</span>
                 <span>
@@ -230,7 +229,7 @@ export function TriggerScriptModal({
                     ? "would run"
                     : test.exitCode === 2
                       ? "would skip"
-                      : "trigger error"}
+                      : "would skip (trigger error)"}
                 </span>
               </span>
             )}
