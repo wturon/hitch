@@ -354,7 +354,7 @@ function AppShell({
         onSignOut={onSignOut}
         onOpenPalette={onOpenPalette}
       />
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col p-4 pt-3 sm:p-6 sm:pt-3 lg:p-8 lg:pt-3">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col px-4 pt-3 pb-0 sm:px-6 sm:pt-3 sm:pb-0 lg:px-8 lg:pt-3 lg:pb-0">
         {children}
       </main>
       {/* Rendered last so its `no-drag` region is subtracted AFTER the sidebar
