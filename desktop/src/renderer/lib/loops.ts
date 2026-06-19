@@ -156,23 +156,29 @@ export function parseCron(expr: string): CronSpec | null {
   const hour = parseField(fields[1], 0, 23);
   const dom = parseField(fields[2], 1, 31);
   const month = parseField(fields[3], 1, 12);
-  // cron allows 0 or 7 for Sunday; normalize 7→0.
-  const dowRaw = parseField(fields[4].replace(/7/g, "0"), 0, 6);
-  if (!minute || !hour || !dom || !month || !dowRaw) return null;
+  // DoW accepts 0-7 (both 0 and 7 = Sunday). Parse over [0,7] so ranges/steps
+  // containing 7 (e.g. `1-7`, `*/7`) survive, then fold a standalone 7 → 0.
+  const dow = parseField(fields[4], 0, 7);
+  if (!minute || !hour || !dom || !month || !dow) return null;
+  if (dow.has(7)) {
+    dow.add(0);
+    dow.delete(7);
+  }
   return {
     minute,
     hour,
     dom,
     month,
-    dow: dowRaw,
+    dow,
     domRestricted: fields[2] !== "*",
     dowRestricted: fields[4] !== "*",
   };
 }
 
-// Next fire time at or after `after` (exclusive of the current minute's already
-// past seconds). Local timezone, 1-minute granularity, no catch-up. Returns null
-// if the expression is invalid or nothing fires within a year.
+// Next fire time strictly AFTER `after` — we advance to the next whole minute
+// before matching, so the current minute never re-fires. Local timezone,
+// 1-minute granularity, no catch-up. Returns null if the expression is invalid
+// or nothing fires within a year.
 export function cronNextRun(expr: string, after: Date): Date | null {
   const spec = parseCron(expr);
   if (!spec) return null;

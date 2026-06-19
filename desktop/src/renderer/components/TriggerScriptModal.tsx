@@ -129,7 +129,10 @@ export function TriggerScriptModal({
     setSaving(true);
     try {
       await onSave(scriptPath, draft);
-      const hash = currentHash ?? (await sha256(draft));
+      // Always hash the exact bytes we just saved — `currentHash` is set by an
+      // async effect and can lag a fast edit→Save, which would trust a hash that
+      // doesn't match the written bytes ("Changed since trusted" forever).
+      const hash = await sha256(draft);
       onTrust(scriptPath, hash);
       onOpenChange(false);
     } finally {

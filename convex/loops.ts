@@ -3,6 +3,19 @@ import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requireProjectAccess } from "./authz";
 
+// Constrained vocabularies so a device-token holder can't write phantom states
+// (e.g. a never-pruned fake `running`). Keep in sync with the daemon + UI.
+const RUN_STATUS = v.union(
+  v.literal("running"),
+  v.literal("ran"),
+  v.literal("skipped"),
+  v.literal("trigger-error"),
+  v.literal("launch-error"),
+  v.literal("timed-out"),
+  v.literal("interrupted"),
+);
+const RUN_REASON = v.union(v.literal("cron"), v.literal("manual"));
+
 // Create a loop run record (status usually starts "running" or "skipped").
 // Called by the daemon (deviceToken) when a scheduled or manual run begins, or
 // when a tick is skipped. Returns the new run id so the daemon can patch it as
@@ -13,8 +26,8 @@ export const createRun = mutation({
     deviceToken: v.optional(v.string()),
     loopPath: v.string(),
     host: v.string(),
-    status: v.string(),
-    reason: v.string(),
+    status: RUN_STATUS,
+    reason: RUN_REASON,
     startedAt: v.number(),
     finishedAt: v.optional(v.number()),
     durationMs: v.optional(v.number()),
@@ -60,7 +73,7 @@ const SKIP_CLASS = new Set([
   "timed-out",
   "interrupted",
 ]);
-const RETAIN_SKIPPED = 20; // keep this many skipped-class runs per loop
+const RETAIN_SKIPPED = 20; // keep this many prunable runs per loop
 const RETAIN_MS = 14 * 24 * 60 * 60 * 1000; // …and drop any older than 14 days
 
 async function pruneSkipped(
@@ -76,9 +89,15 @@ async function pruneSkipped(
     )
     .order("desc")
     .collect();
-  const skipped = runs.filter((r) => SKIP_CLASS.has(r.status));
+  // Only prune records that own NO chat. `timed-out`/`interrupted` are
+  // skip-class but carry a real sessionId (linked up front; recovery keeps it),
+  // so pruning by status alone would orphan launched chats. The no-chat
+  // predicate is the true safety boundary — never delete a chat-bearing run.
+  const prunable = runs.filter(
+    (r) => SKIP_CLASS.has(r.status) && !r.sessionId && !r.chatPid,
+  );
   let kept = 0;
-  for (const run of skipped) {
+  for (const run of prunable) {
     kept++;
     if (kept > RETAIN_SKIPPED || run.startedAt < now - RETAIN_MS) {
       await ctx.db.delete(run._id);
@@ -93,7 +112,7 @@ export const patchRun = mutation({
     id: v.id("loopRuns"),
     projectId: v.id("projects"),
     deviceToken: v.optional(v.string()),
-    status: v.optional(v.string()),
+    status: v.optional(RUN_STATUS),
     finishedAt: v.optional(v.number()),
     durationMs: v.optional(v.number()),
     triggerExitCode: v.optional(v.number()),

@@ -599,7 +599,7 @@ export async function startLoopChat(spec: StartLoopSpec): Promise<OpenResult> {
   if (spec.model) flags.push("--model", spec.model);
   if (spec.effort) flags.push("--effort", spec.effort);
   const command = `claude --session-id ${spec.sessionId} ${flags.join(" ")} ${shellQuote(spec.prompt)}`;
-  await placeChat({
+  const workspace = await placeChat({
     projectId: spec.projectId,
     projectName: spec.projectName,
     cwd: spec.cwd,
@@ -607,6 +607,11 @@ export async function startLoopChat(spec: StartLoopSpec): Promise<OpenResult> {
     tag: loopsTag(spec.projectId),
     workspaceName: `${spec.projectName}-loops`,
   });
+  // No workspace = the tab was never placed; surface it as a launch failure
+  // rather than returning "spawned" and waiting out the full timeout.
+  if (!workspace) {
+    throw new CmuxError("cmux-error", "failed to place loop chat in a workspace");
+  }
   return "spawned";
 }
 

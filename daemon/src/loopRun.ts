@@ -69,31 +69,55 @@ function assistantText(entry: unknown): string | null {
   return joined || null;
 }
 
-export type LoopDoneReason = "waiting" | "needs-input" | "ended" | "timed-out";
+export type LoopDoneReason =
+  | "waiting"
+  | "needs-input"
+  | "ended"
+  | "idle" // hook-independent fallback: transcript went quiet
+  | "timed-out";
+
+export interface LoopDoneResult {
+  reason: LoopDoneReason;
+  // The agent's pid as last reported by the hook marker, so teardown can
+  // SIGKILL as a fallback if closeSurface can't find the cmux surface.
+  pid: number | null;
+}
 
 interface SessionMarker {
   status?: string;
+  pid?: number | null;
 }
 
-// Watch the per-session marker until the loop's first turn settles. The global
-// Claude hook writes working → waiting (turn done, idle) / needs-input (blocked
-// asking — unattended, nobody answers, so terminal), or removes the file on
-// SessionEnd. Resolves with the terminal reason, or "timed-out" after
-// timeoutMs. Polls on an interval; never rejects.
+// Watch a loop's Claude session until its first turn settles, then return how it
+// ended + the agent pid (for teardown fallback). Primary signal: the per-session
+// marker the global Claude hook writes (working → waiting/needs-input, removed on
+// SessionEnd). FALLBACK when the hook isn't installed (no marker ever appears):
+// the on-disk transcript going quiet (mtime stable for `idleMs` with content) is
+// treated as `idle` — so done-detection doesn't hard-depend on the hook and a
+// loop needn't burn its full `timeoutMinutes`. Resolves "timed-out" past the
+// deadline. Polls on an interval; never rejects.
 export function watchSessionMarker(
   markerDir: string,
   sessionId: string,
-  opts: { timeoutMs: number; pollMs?: number },
-): Promise<LoopDoneReason> {
+  opts: {
+    timeoutMs: number;
+    pollMs?: number;
+    transcriptPath?: string;
+    idleMs?: number;
+  },
+): Promise<LoopDoneResult> {
   const markerPath = join(markerDir, `${sessionId}.json`);
   const pollMs = opts.pollMs ?? 2500;
+  const idleMs = opts.idleMs ?? 45_000;
   const deadline = Date.now() + opts.timeoutMs;
   return new Promise((resolveDone) => {
     let seen = false; // marker has appeared at least once
+    let lastPid: number | null = null;
     let timer: NodeJS.Timeout;
+    const done = (reason: LoopDoneReason) => resolveDone({ reason, pid: lastPid });
     const tick = async () => {
       if (Date.now() >= deadline) {
-        resolveDone("timed-out");
+        done("timed-out");
         return;
       }
       let marker: SessionMarker | null = null;
@@ -106,18 +130,32 @@ export function watchSessionMarker(
         marker = null;
       }
       if (exists) seen = true;
+      if (typeof marker?.pid === "number") lastPid = marker.pid;
       // SessionEnd removed the marker after we'd seen it → the session ended.
       if (seen && !exists) {
-        resolveDone("ended");
+        done("ended");
         return;
       }
       if (marker?.status === "waiting") {
-        resolveDone("waiting");
+        done("waiting");
         return;
       }
       if (marker?.status === "needs-input") {
-        resolveDone("needs-input");
+        done("needs-input");
         return;
+      }
+      // Hook-independent fallback: only when the marker has NEVER appeared (hook
+      // not installed). A quiescent transcript with content = the turn ended.
+      if (!seen && opts.transcriptPath) {
+        try {
+          const st = await stat(opts.transcriptPath);
+          if (st.size > 0 && Date.now() - st.mtimeMs >= idleMs) {
+            done("idle");
+            return;
+          }
+        } catch {
+          // transcript not there yet — keep waiting
+        }
       }
       timer = setTimeout(() => void tick(), pollMs);
     };

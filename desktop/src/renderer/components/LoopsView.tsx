@@ -151,6 +151,10 @@ export function LoopsView({
   const [tab, setTab] = useState<SubTab>("automations");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [runSheet, setRunSheet] = useState<LoopRun | null>(null);
+  // Slugs created this tick but not yet reflected back through the files query.
+  // Unioned into `taken` so two near-simultaneous creates can't mint the same
+  // slug and have the second overwrite the first loop's index.md.
+  const inFlightSlugs = useRef<Set<string>>(new Set());
 
   const docs = useMemo(() => loopDocs(files), [files]);
   const sorted = useMemo(
@@ -174,6 +178,15 @@ export function LoopsView({
     if (!docs.some((d) => d.slug === selectedSlug)) setSelectedSlug(null);
   }, [docs, selectedSlug]);
 
+  // Drop in-flight slugs once the optimistic write has round-tripped into docs.
+  useEffect(() => {
+    if (inFlightSlugs.current.size === 0) return;
+    const present = new Set(docs.map((d) => d.slug));
+    for (const slug of inFlightSlugs.current) {
+      if (present.has(slug)) inFlightSlugs.current.delete(slug);
+    }
+  }, [docs]);
+
   async function persist(path: string, content: string) {
     await upsertFile({
       projectId,
@@ -188,8 +201,12 @@ export function LoopsView({
   // slug is derived from the title (uniqued). A loop with no prompt is harmless —
   // it just won't have been enabled — so we don't auto-discard like notes.
   async function createLoop(title: string) {
-    const taken = new Set(docs.map((d) => d.slug));
+    const taken = new Set([
+      ...docs.map((d) => d.slug),
+      ...inFlightSlugs.current,
+    ]);
     const slug = uniqueSlug(title, taken, "loop");
+    inFlightSlugs.current.add(slug);
     const content = setFrontmatterKeys("", {
       title: title || undefined,
       schedule: `"${DEFAULT_SCHEDULE}"`,
@@ -412,7 +429,14 @@ function LoopRing({
   paused: boolean;
   size?: number;
 }) {
-  const progress = paused ? 0 : cycleProgress(schedule, next, now);
+  // The arc only needs minute granularity — memoize the (expensive) cron scans
+  // on the minute so a 1s `now` tick doesn't re-scan up to 366 days every second
+  // for every ring on screen. The countdown TEXT still updates per-second (cheap).
+  const minuteMs = Math.floor(now.getTime() / 60000) * 60000;
+  const progress = useMemo(
+    () => (paused ? 0 : cycleProgress(schedule, next, new Date(minuteMs))),
+    [paused, schedule, next, minuteMs],
+  );
   const dash = progress * RING_CIRCUMFERENCE;
   const label = paused ? "" : ringCountdown(next, now);
   return (
@@ -663,9 +687,12 @@ function LoopCard({
   onToggleEnabled: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
+  // Next-run only changes at minute boundaries — key the scan on the minute so
+  // the per-second clock tick doesn't re-run a full cron scan every second.
+  const minuteMs = Math.floor(now.getTime() / 60000) * 60000;
   const next = useMemo(
-    () => (enabled ? cronNextRun(doc.schedule, now) : null),
-    [doc.schedule, enabled, now],
+    () => (enabled ? cronNextRun(doc.schedule, new Date(minuteMs)) : null),
+    [doc.schedule, enabled, minuteMs],
   );
   const ran = relativeRan(latestRun);
   return (
@@ -850,7 +877,13 @@ function LoopDetail({
   files: FileDoc[];
 }) {
   const now = useNow(true);
-  const next = enabled ? cronNextRun(doc.schedule, now) : null;
+  // Memoize the cron scan on the minute (see LoopCard) — avoids a per-second
+  // full scan; the countdown text still ticks each second.
+  const detailMinuteMs = Math.floor(now.getTime() / 60000) * 60000;
+  const next = useMemo(
+    () => (enabled ? cronNextRun(doc.schedule, new Date(detailMinuteMs)) : null),
+    [doc.schedule, enabled, detailMinuteMs],
+  );
   const [triggerOpen, setTriggerOpen] = useState(false);
   const promptRef = useRef<MarkdownEditorHandle>(null);
 

@@ -1002,19 +1002,42 @@ async function startHitchBinding({
 
     const timeoutMin =
       loop.timeoutMinutes && loop.timeoutMinutes > 0 ? loop.timeoutMinutes : 20;
-    const reason = await watchSessionMarker(claudeMarkerDir, sessionId, {
+    const transcriptPath = claudeTranscriptPath(root.localPath, sessionId);
+    const { reason, pid } = await watchSessionMarker(claudeMarkerDir, sessionId, {
       timeoutMs: timeoutMin * 60_000,
+      transcriptPath,
     });
     // Teardown: close the tab (reaps the claude process). Non-destructive — Open
-    // chat re-spawns from the on-disk transcript.
+    // chat re-spawns from the on-disk transcript. If the surface can't be found
+    // (binding unregistered, cmux access-denied, id mismatch), fall back to
+    // SIGKILLing the agent pid the hook recorded, so an idle `claude` can't leak.
+    let closed = false;
     try {
-      await closeSurface(sessionId);
+      closed = await closeSurface(sessionId);
     } catch {
-      // best-effort
+      closed = false;
     }
-    const summary = await readTranscriptSummary(
-      claudeTranscriptPath(root.localPath, sessionId),
-    );
+    if (!closed) {
+      if (pid && pid > 1) {
+        try {
+          process.kill(pid, "SIGKILL");
+          logger.info(
+            `[hitch:${projectLabel}] loop ${loop.slug}: no surface found, SIGKILLed agent pid ${pid}`,
+          );
+        } catch {
+          logError(
+            logger,
+            `[hitch:${projectLabel}] loop ${loop.slug}: no surface and pid ${pid} kill failed — possible stale claude`,
+          );
+        }
+      } else {
+        logError(
+          logger,
+          `[hitch:${projectLabel}] loop ${loop.slug}: closeSurface found no surface and no pid — possible stale claude process`,
+        );
+      }
+    }
+    const summary = await readTranscriptSummary(transcriptPath);
     const finishedAt = Date.now();
     await patchLoopRun(runId, {
       status: reason === "timed-out" ? "timed-out" : "ran",
@@ -1037,7 +1060,40 @@ async function startHitchBinding({
     loop: ScannedLoop,
     reason: "cron" | "manual",
   ): Promise<void> {
+    // Security boundary: a run only ever happens on a host that LOCALLY enabled
+    // this loop — including manual "Run now". Otherwise a synced definition +
+    // a `loop-run` command targeting another member's host would run an agent
+    // with bypassed permissions on a machine that never enabled it. The cron
+    // poller already only fires enabled loops; this re-checks (esp. for manual).
+    const local = readLoopLocalState(readPrefsRaw(), projectId);
+    const localEntry = local[loop.loopPath];
+    if (localEntry?.enabled !== true) {
+      if (reason === "manual") {
+        await createLoopRun({
+          loop,
+          reason,
+          status: "skipped",
+          error: "loop not enabled on this host",
+        });
+      }
+      logger.info(
+        `[hitch:${projectLabel}] loop ${loop.slug} not run (${reason}): not enabled on this host`,
+      );
+      return;
+    }
+
+    // Concurrency=skip: don't overlap a run already active on this host. Surface
+    // it as a skipped record for manual runs (the command was acked "started",
+    // so a silent no-op would lie to the UI); just log for cron ticks.
     if (activeLoopRuns.has(loop.loopPath)) {
+      if (reason === "manual") {
+        await createLoopRun({
+          loop,
+          reason,
+          status: "skipped",
+          error: "a run is already active on this host",
+        });
+      }
       logger.info(
         `[hitch:${projectLabel}] loop ${loop.slug} skipped (already running on this host)`,
       );
@@ -1048,28 +1104,43 @@ async function startHitchBinding({
     let triggerStdout: string | undefined;
     let triggerStderr: string | undefined;
 
-    if (reason === "cron" && loop.triggerAbsPath && loop.triggerRelPath) {
-      const local = readLoopLocalState(readPrefsRaw(), projectId);
-      const trusted = local[loop.loopPath]?.trusted ?? {};
-      let bytes = "";
+    // Trigger gate. A configured trigger.sh is re-trust-checked every run. Manual
+    // runs do NOT execute the script (per PRD) but still require it be trusted —
+    // we won't launch an unattended agent for a loop whose gate script is
+    // untrusted/changed. The gate fails CLOSED: a configured-but-unreadable
+    // script records an error, never a silent launch.
+    if (loop.triggerAbsPath && loop.triggerRelPath) {
+      const trusted = localEntry.trusted ?? {};
+      let bytes: string | null = null;
       try {
         bytes = await readFile(loop.triggerAbsPath, "utf8");
       } catch {
-        bytes = "";
+        bytes = null;
       }
-      if (bytes) {
-        if (trusted[loop.triggerRelPath] !== hashOf(bytes)) {
-          await createLoopRun({
-            loop,
-            reason,
-            status: "skipped",
-            error: "trigger.sh not trusted (review required)",
-          });
-          logger.info(
-            `[hitch:${projectLabel}] loop ${loop.slug} skipped (untrusted trigger)`,
-          );
-          return;
-        }
+      if (bytes === null) {
+        await createLoopRun({
+          loop,
+          reason,
+          status: "trigger-error",
+          error: "trigger.sh exists but is unreadable",
+        });
+        logger.info(`[hitch:${projectLabel}] loop ${loop.slug} trigger.sh unreadable`);
+        return;
+      }
+      if (trusted[loop.triggerRelPath] !== hashOf(bytes)) {
+        await createLoopRun({
+          loop,
+          reason,
+          status: "skipped",
+          error: "trigger.sh not trusted (review required)",
+        });
+        logger.info(
+          `[hitch:${projectLabel}] loop ${loop.slug} skipped (untrusted trigger)`,
+        );
+        return;
+      }
+      // Run the gate script on scheduled ticks only; manual bypasses execution.
+      if (reason === "cron") {
         const res = await runTrigger(loop.triggerAbsPath, root.localPath);
         triggerStdout = res.stdout;
         triggerStderr = res.stderr;

@@ -1602,6 +1602,9 @@ function BoardContent({
   const paletteNotes = noteDocs(files)
     .filter((doc) => !doc.archived)
     .map((doc) => ({ slug: doc.slug, title: doc.title, meta: doc.type }));
+  // Plain (like paletteTasks/paletteNotes) — NOT useMemo: this sits after
+  // BoardContent's `files === undefined` early return, so a hook here would be
+  // conditional and crash on the first populated render.
   const paletteLoops = loopDocs(files).map((doc) => ({
     slug: doc.slug,
     title: doc.title,

@@ -9,6 +9,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -1013,11 +1014,12 @@ function readPreferences(): Record<string, unknown> {
 function writePreferences(patch: Record<string, unknown>): void {
   const next = { ...readPreferences(), ...patch };
   mkdirSync(dirname(localPreferencesPath), { recursive: true });
-  writeFileSync(
-    localPreferencesPath,
-    `${JSON.stringify(next, null, 2)}\n`,
-    "utf8",
-  );
+  // Atomic write: a racing trust+enable read-modify-write (or the daemon reading
+  // mid-write) must never see a truncated/half-written file. Write a temp file
+  // then rename (atomic on the same filesystem).
+  const tmp = `${localPreferencesPath}.${randomUUID()}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  renameSync(tmp, localPreferencesPath);
 }
 
 // { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is
@@ -1324,6 +1326,14 @@ function runLoopTriggerTest(
     const CAP = 4096;
     const cap = (s: string) =>
       s.length > CAP ? `${s.slice(0, CAP)}\n…[truncated]` : s;
+    // Only run inside a configured + on-disk hitch root — never an arbitrary cwd
+    // handed in from the renderer. Falls back to the temp dir if the project
+    // path isn't a known root (the script still runs, just not in repo context).
+    const roots = readLocalConfig().hitches.map((h) => resolve(h.localPath));
+    const runCwd =
+      cwd && roots.includes(resolve(cwd)) && existsSync(cwd)
+        ? cwd
+        : app.getPath("temp");
     const tmp = join(app.getPath("temp"), `hitch-trigger-${randomUUID()}.sh`);
     try {
       writeFileSync(tmp, script, "utf8");
@@ -1331,7 +1341,6 @@ function runLoopTriggerTest(
       resolveResult({ exitCode: null, durationMs: 0, stdout: "", stderr: String(err) });
       return;
     }
-    const runCwd = cwd && existsSync(cwd) ? cwd : app.getPath("temp");
     let stdout = "";
     let stderr = "";
     let timedOut = false;
