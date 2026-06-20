@@ -9,7 +9,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -425,45 +424,11 @@ function globalClaudeChatStatusHook(): string {
 // Contract: never break the session. Parse stdin, do a best-effort frontmatter
 // edit, and exit 0 without output for unrelated sessions or failures.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
-
-// Per-session status marker, written for any claude session running inside a
-// hitch root. Loop runs have no task.md to settle, so the daemon watches this
-// marker to learn when a loop's first turn finishes (waiting/needs-input) or the
-// session ends. Harmless for ordinary task chats (they're driven by task.md);
-// the file is just a tiny status mirror keyed by session id, cleared on SessionEnd.
-const SESSION_MARKER_DIR = join(dirname(HITCH_CONFIG_PATH), "claude-sessions");
-const MARKER_STATUS = {
-  UserPromptSubmit: "working",
-  PreToolUse: "working",
-  SessionStart: "working",
-  Notification: "needs-input",
-  Stop: "waiting",
-};
-
-function writeSessionMarker(sessionId, status, pid) {
-  try {
-    mkdirSync(SESSION_MARKER_DIR, { recursive: true });
-    writeFileSync(
-      join(SESSION_MARKER_DIR, sessionId + ".json"),
-      JSON.stringify({ status, pid: pid ?? null, at: Date.now() }),
-    );
-  } catch {
-    // Best effort; never fail the hook.
-  }
-}
-
-function clearSessionMarker(sessionId) {
-  try {
-    rmSync(join(SESSION_MARKER_DIR, sessionId + ".json"), { force: true });
-  } catch {
-    // Best effort.
-  }
-}
 
 // Per event: which chat-status to write (if any) and whether to (re)stamp the
 // agent pid. SessionStart only refreshes the pid — a resumed session is a new
@@ -628,19 +593,6 @@ function main() {
     payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.PWD || process.cwd(),
   );
   if (!root) return;
-
-  // Mirror this session's status to a per-session marker (for loop runs, which
-  // have no task.md). Done before the tasks scan so a loops-only project still
-  // gets markers. SessionEnd clears it.
-  if (plan.clear) {
-    clearSessionMarker(sessionId);
-  } else {
-    const markerStatus = MARKER_STATUS[event];
-    if (markerStatus) {
-      const pid = plan.touchPid ? resolveAgentPid() : null;
-      writeSessionMarker(sessionId, markerStatus, pid);
-    }
-  }
 
   const tasksDir = join(root, ".hitch", "tasks");
   if (!existsSync(tasksDir)) return;
@@ -1014,12 +966,11 @@ function readPreferences(): Record<string, unknown> {
 function writePreferences(patch: Record<string, unknown>): void {
   const next = { ...readPreferences(), ...patch };
   mkdirSync(dirname(localPreferencesPath), { recursive: true });
-  // Atomic write: a racing trust+enable read-modify-write (or the daemon reading
-  // mid-write) must never see a truncated/half-written file. Write a temp file
-  // then rename (atomic on the same filesystem).
-  const tmp = `${localPreferencesPath}.${randomUUID()}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-  renameSync(tmp, localPreferencesPath);
+  writeFileSync(
+    localPreferencesPath,
+    `${JSON.stringify(next, null, 2)}\n`,
+    "utf8",
+  );
 }
 
 // { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is
@@ -1209,191 +1160,6 @@ function setStartingPrompts(prompts: unknown): StoredStartingPrompt[] {
     : [];
   writePreferences({ startingPrompts: sanitized });
   return readStartingPrompts();
-}
-
-// Loop local-only state. Whether a loop is enabled, and which trigger-script
-// bytes the user has trusted, are LOCAL machine state — a synced loop definition
-// must never silently run (let alone run with permissions bypassed) on another
-// machine. So this lives in preferences.json, NOT in .hitch/ or Convex. Keyed by
-// projectId → loopPath ("loops/<slug>"). `trusted` maps a script path (rel to
-// .hitch/) to its trusted SHA-256; trust is per path+hash, re-checked each run.
-// The daemon reads the same file (see readHarnessEnvironment) for scheduling.
-interface LoopLocalState {
-  enabled: boolean;
-  trusted: Record<string, string>;
-}
-type ProjectLoopStates = Record<string, LoopLocalState>;
-
-function sanitizeLoopState(value: unknown): LoopLocalState {
-  if (!isRecord(value)) return { enabled: false, trusted: {} };
-  const trusted: Record<string, string> = isRecord(value.trusted)
-    ? Object.fromEntries(
-        Object.entries(value.trusted).filter(
-          (e): e is [string, string] =>
-            typeof e[0] === "string" && typeof e[1] === "string",
-        ),
-      )
-    : {};
-  return { enabled: value.enabled === true, trusted };
-}
-
-function readAllLoopStates(): Record<string, ProjectLoopStates> {
-  const stored = readPreferences().loops;
-  if (!isRecord(stored)) return {};
-  const out: Record<string, ProjectLoopStates> = {};
-  for (const [projectId, loops] of Object.entries(stored)) {
-    if (!isRecord(loops)) continue;
-    const project: ProjectLoopStates = {};
-    for (const [loopPath, state] of Object.entries(loops)) {
-      project[loopPath] = sanitizeLoopState(state);
-    }
-    out[projectId] = project;
-  }
-  return out;
-}
-
-function readLoopStates(projectId: string): ProjectLoopStates {
-  return readAllLoopStates()[projectId] ?? {};
-}
-
-function writeLoopStates(
-  projectId: string,
-  states: ProjectLoopStates,
-): ProjectLoopStates {
-  const all = readAllLoopStates();
-  all[projectId] = states;
-  writePreferences({ loops: all });
-  return readLoopStates(projectId);
-}
-
-function setLoopEnabled(
-  projectId: string,
-  loopPath: string,
-  enabled: boolean,
-): ProjectLoopStates {
-  const states = readLoopStates(projectId);
-  const cur = states[loopPath] ?? { enabled: false, trusted: {} };
-  states[loopPath] = { ...cur, enabled };
-  return writeLoopStates(projectId, states);
-}
-
-function setLoopTrust(
-  projectId: string,
-  loopPath: string,
-  scriptPath: string,
-  sha256: string,
-): ProjectLoopStates {
-  const states = readLoopStates(projectId);
-  const cur = states[loopPath] ?? { enabled: false, trusted: {} };
-  states[loopPath] = {
-    ...cur,
-    trusted: { ...cur.trusted, [scriptPath]: sha256 },
-  };
-  return writeLoopStates(projectId, states);
-}
-
-function clearLoopTrust(
-  projectId: string,
-  loopPath: string,
-  scriptPath: string,
-): ProjectLoopStates {
-  const states = readLoopStates(projectId);
-  const cur = states[loopPath];
-  if (!cur) return states;
-  const { [scriptPath]: _removed, ...rest } = cur.trusted;
-  states[loopPath] = { ...cur, trusted: rest };
-  return writeLoopStates(projectId, states);
-}
-
-interface TriggerTestResult {
-  exitCode: number | null;
-  durationMs: number;
-  stdout: string;
-  stderr: string;
-}
-
-// Run a loop trigger script draft for the modal's "Run test" — the same
-// execution contract the daemon's scheduled gate uses (`/bin/bash`, project cwd,
-// 30s timeout, stdout/stderr captured). Runs the UNSAVED editor draft from a
-// temp file so a test reflects what you're editing, not what's on disk. Never
-// rejects.
-function runLoopTriggerTest(
-  script: string,
-  cwd: string | undefined,
-): Promise<TriggerTestResult> {
-  return new Promise((resolveResult) => {
-    const start = Date.now();
-    const CAP = 4096;
-    const cap = (s: string) =>
-      s.length > CAP ? `${s.slice(0, CAP)}\n…[truncated]` : s;
-    // Only run inside a configured + on-disk hitch root — never an arbitrary cwd
-    // handed in from the renderer. Falls back to the temp dir if the project
-    // path isn't a known root (the script still runs, just not in repo context).
-    const roots = readLocalConfig().hitches.map((h) => resolve(h.localPath));
-    const runCwd =
-      cwd && roots.includes(resolve(cwd)) && existsSync(cwd)
-        ? cwd
-        : app.getPath("temp");
-    const tmp = join(app.getPath("temp"), `hitch-trigger-${randomUUID()}.sh`);
-    try {
-      writeFileSync(tmp, script, "utf8");
-    } catch (err) {
-      resolveResult({ exitCode: null, durationMs: 0, stdout: "", stderr: String(err) });
-      return;
-    }
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
-    const finish = (exitCode: number | null) => {
-      if (settled) return;
-      settled = true;
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        /* ignore */
-      }
-      resolveResult({
-        exitCode: timedOut ? null : exitCode,
-        durationMs: Date.now() - start,
-        stdout: cap(stdout),
-        stderr: timedOut ? cap(`${stderr}\n[timed out after 30s]`) : cap(stderr),
-      });
-    };
-    let child: ChildProcess;
-    try {
-      child = spawn("/bin/bash", [tmp], { cwd: runCwd, detached: true });
-    } catch (err) {
-      stderr += String(err);
-      finish(null);
-      return;
-    }
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        if (child.pid) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-      } catch {
-        child.kill("SIGKILL");
-      }
-      finish(null);
-    }, 30_000);
-    child.stdout?.on("data", (d) => {
-      if (stdout.length < CAP * 2) stdout += String(d);
-    });
-    child.stderr?.on("data", (d) => {
-      if (stderr.length < CAP * 2) stderr += String(d);
-    });
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      stderr += String(e);
-      finish(null);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      finish(code);
-    });
-  });
 }
 
 function ensureDeviceId(): string {
@@ -2743,34 +2509,6 @@ ipcMain.handle(
 ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>
   setStartingPrompts(prompts),
-);
-ipcMain.handle("loops:get-state", (_event, projectId: string) =>
-  readLoopStates(projectId),
-);
-ipcMain.handle(
-  "loops:set-enabled",
-  (_event, projectId: string, loopPath: string, enabled: boolean) =>
-    setLoopEnabled(projectId, loopPath, enabled),
-);
-ipcMain.handle(
-  "loops:set-trust",
-  (
-    _event,
-    projectId: string,
-    loopPath: string,
-    scriptPath: string,
-    sha256: string,
-  ) => setLoopTrust(projectId, loopPath, scriptPath, sha256),
-);
-ipcMain.handle(
-  "loops:clear-trust",
-  (_event, projectId: string, loopPath: string, scriptPath: string) =>
-    clearLoopTrust(projectId, loopPath, scriptPath),
-);
-ipcMain.handle(
-  "loops:run-trigger",
-  (_event, args: { projectId: string; cwd?: string; script: string }) =>
-    runLoopTriggerTest(args.script, args.cwd),
 );
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());

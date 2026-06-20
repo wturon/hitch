@@ -97,11 +97,10 @@ export default defineSchema({
   commands: defineTable({
     projectId: v.id("projects"),
     host: v.optional(v.string()), // target machine; unset = any daemon for the project
-    kind: v.string(), // "open-chat" (resume existing) | "start-chat" (spawn fresh) | "loop-run" (run a loop now)
+    kind: v.string(), // "open-chat" (resume existing) | "start-chat" (spawn fresh)
     harness: v.string(), // "claude-code" | "codex"
     sessionId: v.optional(v.string()), // the chat to resume; unset for start-chat
     path: v.optional(v.string()), // start-chat: the task's rel path (dedup)
-    loopPath: v.optional(v.string()), // loop-run: the loop dir rel to .hitch/ (e.g. "loops/pr-review")
     initialPrompt: v.optional(v.string()), // start-chat: seed prompt for the new session
     cwd: v.optional(v.string()),
     model: v.optional(v.string()), // start-chat: model to launch (kickoff only)
@@ -114,39 +113,4 @@ export default defineSchema({
   })
     .index("by_project", ["projectId"])
     .index("by_project_status", ["projectId", "status"]),
-
-  // One row per loop run (scheduled or manual). Loop *definitions* are files
-  // under .hitch/loops/ (synced via `files`); only the volatile run history
-  // needs a table. Status is labeled "Ran" not "Succeeded" — attended-cmux
-  // can't verify success — and surfaced UI states are Running / Ran / Skipped;
-  // the other status values are record-only detail. See the Loops PRD.
-  loopRuns: defineTable({
-    projectId: v.id("projects"),
-    loopPath: v.string(), // loop dir rel to .hitch/, e.g. "loops/pr-review" — the loop's identity
-    host: v.string(), // machine that ran it (matches daemons.hostname)
-    status: v.string(), // running | ran | skipped | trigger-error | launch-error | timed-out | interrupted
-    reason: v.string(), // cron | manual
-    startedAt: v.number(),
-    finishedAt: v.optional(v.number()),
-    durationMs: v.optional(v.number()),
-    // trigger gate (absent when no trigger.sh, or on a manual run that bypasses it)
-    triggerExitCode: v.optional(v.number()),
-    triggerStdout: v.optional(v.string()), // capped ~4 KB
-    triggerStderr: v.optional(v.string()), // capped ~4 KB
-    // snapshot of what actually launched
-    harness: v.string(), // "claude-code" | "codex"
-    model: v.optional(v.string()),
-    reasoning: v.optional(v.string()),
-    // chat linkage (lives here, not in a file — loop runs have no task.md)
-    sessionId: v.optional(v.string()), // claude session id or codex thread id; unset if skipped/launch-error
-    chatPid: v.optional(v.number()),
-    // outcome
-    summary: v.optional(v.string()), // final assistant message from the harness transcript/thread, capped
-    error: v.optional(v.string()), // trigger/launch error detail (record-only; not surfaced as a state)
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_project", ["projectId"])
-    .index("by_loop", ["projectId", "loopPath"]) // latest run per loop → last-run / next-due
-    .index("by_project_status", ["projectId", "status"]), // concurrency "already running on this host?" check
 });
