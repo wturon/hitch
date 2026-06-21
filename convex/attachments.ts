@@ -278,9 +278,16 @@ export const duplicateTaskWithAttachments = action({
           throw new Error(`Attachment blob is missing for ${row.path}`);
         }
 
+        const storageId = await ctx.storage.store(blob);
+        const metadata = await ctx.storage.getMetadata(storageId);
+        if (metadata?.sha256 !== row.hash) {
+          await ctx.storage.delete(storageId);
+          throw new Error(`Attachment copy hash mismatch for ${row.path}`);
+        }
+
         copiedRows.push({
           path: `${toPrefix}${name}`,
-          storageId: await ctx.storage.store(blob, { sha256: row.hash }),
+          storageId,
           hash: row.hash,
           contentType: row.contentType,
           size: row.size,
