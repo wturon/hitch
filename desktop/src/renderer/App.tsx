@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type SyntheticEvent,
 } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
@@ -1056,6 +1056,9 @@ function BoardContent({
   // attachment rows so the daemon cleans up the local files + empty folders.
   const attachments = useQuery(api.attachments.listAttachments, { projectId });
   const tombstoneAttachment = useMutation(api.attachments.tombstoneAttachment);
+  const duplicateTaskWithAttachments = useAction(
+    api.attachments.duplicateTaskWithAttachments,
+  );
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   // The Notes view's Archived sheet, opened from the same top-right header slot.
@@ -1425,13 +1428,18 @@ function BoardContent({
     const content = setFrontmatterKeys(clearChatFields(card.content), {
       title,
     });
-    await upsertFile({
-      projectId,
-      path: taskBodyPath(slug),
-      content,
-      hash: await sha256(content),
-      deleted: false,
-    });
+    setPendingCardId(card.id);
+    try {
+      await duplicateTaskWithAttachments({
+        projectId,
+        fromPrefix: `tasks/${card.slug}/attachments/`,
+        taskPath: taskBodyPath(slug),
+        taskContent: content,
+        taskHash: await sha256(content),
+      });
+    } finally {
+      setPendingCardId(null);
+    }
   }
 
   async function setArchived(card: Card, archived: boolean) {
