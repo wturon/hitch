@@ -15,7 +15,6 @@ export const enqueueCommand = mutation({
     harness: v.string(),
     sessionId: v.optional(v.string()),
     path: v.optional(v.string()),
-    loopPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()),
     cwd: v.optional(v.string()),
     // start-chat kickoff parameters. Passed to the harness at launch only;

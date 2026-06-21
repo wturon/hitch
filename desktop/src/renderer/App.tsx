@@ -69,8 +69,6 @@ import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
-import { LoopsView, type LoopIntent } from "@/components/LoopsView";
-import { loopDocs, humanizeCron } from "@/lib/loops";
 import {
   CommandPalette,
   WORKSPACE_VIEWS,
@@ -1082,7 +1080,6 @@ function BoardContent({
   // CreateProjectDialog, pre-filled with the typed query.
   const [showPalette, setShowPalette] = useState(false);
   const [noteIntent, setNoteIntent] = useState<NoteIntent | null>(null);
-  const [loopIntent, setLoopIntent] = useState<LoopIntent | null>(null);
   const [createProjectName, setCreateProjectName] = useState<string | null>(
     null,
   );
@@ -1360,11 +1357,7 @@ function BoardContent({
   // Archived count for the active view: tasks on the Board, notes on Notes.
   const archivedNoteCount = noteDocs(files).filter((d) => d.archived).length;
   const archivedCount =
-    workspaceView === "board"
-      ? archivedCards.length
-      : workspaceView === "notes"
-        ? archivedNoteCount
-        : 0; // Loops have no archive in V1.
+    workspaceView === "board" ? archivedCards.length : archivedNoteCount;
   const byColumn = Object.fromEntries(
     boardStatuses.map((c) => [
       c.id,
@@ -1602,14 +1595,6 @@ function BoardContent({
   const paletteNotes = noteDocs(files)
     .filter((doc) => !doc.archived)
     .map((doc) => ({ slug: doc.slug, title: doc.title, meta: doc.type }));
-  // Plain (like paletteTasks/paletteNotes) — NOT useMemo: this sits after
-  // BoardContent's `files === undefined` early return, so a hook here would be
-  // conditional and crash on the first populated render.
-  const paletteLoops = loopDocs(files).map((doc) => ({
-    slug: doc.slug,
-    title: doc.title,
-    meta: humanizeCron(doc.schedule),
-  }));
   const keepAwakeAvailable = keepAwake !== null && Boolean(keepAwakeBridge());
   const paletteActions: PaletteAction[] = [
     {
@@ -1726,14 +1711,6 @@ function BoardContent({
     setWorkspaceView("notes");
     setNoteIntent({ type: "create", title });
   }
-  function paletteOpenLoop(slug: string) {
-    setWorkspaceView("loops");
-    setLoopIntent({ type: "open", slug });
-  }
-  function paletteCreateLoop(title: string) {
-    setWorkspaceView("loops");
-    setLoopIntent({ type: "create", title });
-  }
 
   return (
     <AppShell
@@ -1826,18 +1803,7 @@ function BoardContent({
           </section>
         )}
 
-        {workspaceView === "loops" ? (
-          <LoopsView
-            projectId={projectId}
-            projectCwd={
-              localConfig?.hitches.find((h) => h.projectId === projectId)
-                ?.localPath
-            }
-            files={files}
-            intent={loopIntent}
-            onIntentHandled={() => setLoopIntent(null)}
-          />
-        ) : workspaceView === "notes" ? (
+        {workspaceView === "notes" ? (
           <NotesView
             projectId={projectId}
             files={files}
@@ -1961,7 +1927,6 @@ function BoardContent({
           currentView={workspaceView}
           tasks={paletteTasks}
           notes={paletteNotes}
-          loops={paletteLoops}
           actions={paletteActions}
           onSelectProject={onSelectProject}
           onSelectView={setWorkspaceView}
@@ -1969,8 +1934,6 @@ function BoardContent({
           onCreateTask={paletteCreateTask}
           onOpenNote={paletteOpenNote}
           onCreateNote={paletteCreateNote}
-          onOpenLoop={paletteOpenLoop}
-          onCreateLoop={paletteCreateLoop}
           onCreateProject={(name) => setCreateProjectName(name)}
         />
 

@@ -101,23 +101,6 @@ export interface GlobalHarnessSetupStatus {
   claudeCode: HarnessHookStatus;
 }
 
-// Local-only loop state (never synced): per-loop enabled flag + trusted
-// trigger-script hashes. Keyed by loopPath ("loops/<slug>"); `trusted` maps a
-// script path (rel to .hitch/) to its trusted SHA-256.
-export interface LoopLocalState {
-  enabled: boolean;
-  trusted: Record<string, string>;
-}
-export type ProjectLoopStates = Record<string, LoopLocalState>;
-
-// Result of a loop trigger-script "Run test" (main process runs the draft).
-export interface TriggerTestResult {
-  exitCode: number | null; // null = killed (timeout)
-  durationMs: number;
-  stdout: string;
-  stderr: string;
-}
-
 export interface DeviceAuthState {
   deviceId: string;
   deviceName: string;
@@ -186,28 +169,6 @@ export interface HitchDaemonApi {
   ) => Promise<Record<string, boolean>>;
   getStartingPrompts: () => Promise<StartingPrompt[]>;
   setStartingPrompts: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
-  getLoopStates: (projectId: ProjectId) => Promise<ProjectLoopStates>;
-  setLoopEnabled: (
-    projectId: ProjectId,
-    loopPath: string,
-    enabled: boolean,
-  ) => Promise<ProjectLoopStates>;
-  setLoopTrust: (
-    projectId: ProjectId,
-    loopPath: string,
-    scriptPath: string,
-    sha256: string,
-  ) => Promise<ProjectLoopStates>;
-  clearLoopTrust: (
-    projectId: ProjectId,
-    loopPath: string,
-    scriptPath: string,
-  ) => Promise<ProjectLoopStates>;
-  runLoopTrigger: (args: {
-    projectId: ProjectId;
-    cwd?: string;
-    script: string;
-  }) => Promise<TriggerTestResult>;
   enableCmuxAutomation: () => Promise<EnableCmuxResult>;
   openCmuxApp: () => Promise<string>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
@@ -265,14 +226,6 @@ const api: HitchDaemonApi = {
   getStartingPrompts: () => ipcRenderer.invoke("config:get-starting-prompts"),
   setStartingPrompts: (prompts) =>
     ipcRenderer.invoke("config:set-starting-prompts", prompts),
-  getLoopStates: (projectId) => ipcRenderer.invoke("loops:get-state", projectId),
-  setLoopEnabled: (projectId, loopPath, enabled) =>
-    ipcRenderer.invoke("loops:set-enabled", projectId, loopPath, enabled),
-  setLoopTrust: (projectId, loopPath, scriptPath, sha256) =>
-    ipcRenderer.invoke("loops:set-trust", projectId, loopPath, scriptPath, sha256),
-  clearLoopTrust: (projectId, loopPath, scriptPath) =>
-    ipcRenderer.invoke("loops:clear-trust", projectId, loopPath, scriptPath),
-  runLoopTrigger: (args) => ipcRenderer.invoke("loops:run-trigger", args),
   enableCmuxAutomation: () => ipcRenderer.invoke("cmux:enable-automation"),
   openCmuxApp: () => ipcRenderer.invoke("cmux:open-app"),
   chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),

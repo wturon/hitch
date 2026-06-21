@@ -70,12 +70,6 @@ export interface CodexStartSpec {
   // accepts both): the model id and the reasoning effort (ReasoningEffort).
   model?: string;
   effort?: string;
-  // Loop runs are unattended and must not stall on an approval/sandbox prompt.
-  // Sets the app-server equivalent of `--dangerously-bypass-approvals-and-sandbox`
-  // (approval never + danger-full-access). ASSUMPTION — the exact TurnStartParams
-  // field names for the installed codex app-server protocol must be confirmed;
-  // if they differ this is the one place to adjust. Task chats never set it.
-  bypassApprovals?: boolean;
   onThreadStarted?: (threadId: string) => Promise<void>;
   onTurnCompleted?: (threadId: string) => Promise<void>;
 }
@@ -335,11 +329,6 @@ async function doStartCodexChat(
     // Override the model/effort for this turn (and subsequent ones) when set.
     if (spec.model) turnParams.model = spec.model;
     if (spec.effort) turnParams.effort = spec.effort;
-    // Unattended loop runs bypass approvals + sandbox (see CodexStartSpec).
-    if (spec.bypassApprovals) {
-      turnParams.approvalPolicy = "never";
-      turnParams.sandboxPolicy = { mode: "danger-full-access" };
-    }
     await server.request("turn/start", turnParams, 45_000);
   } catch (err) {
     unsubscribeTurnCompleted?.();
