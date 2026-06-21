@@ -186,6 +186,7 @@ export interface HitchDaemonApi {
   startKeepAwake: () => Promise<KeepAwakeState>;
   stopKeepAwake: () => Promise<KeepAwakeState>;
   setNativeTheme: (mode: "light" | "dark" | "system") => Promise<void>;
+  copyImageFromUrl: (url: string) => Promise<void>;
   onState: (callback: (state: DaemonState) => void) => () => void;
   onAuthCallback: (callback: (payload: AuthCallback) => void) => () => void;
   onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => () => void;
@@ -245,6 +246,7 @@ const api: HitchDaemonApi = {
   startKeepAwake: () => ipcRenderer.invoke("keep-awake:start"),
   stopKeepAwake: () => ipcRenderer.invoke("keep-awake:stop"),
   setNativeTheme: (mode) => ipcRenderer.invoke("theme:set-source", mode),
+  copyImageFromUrl: (url) => ipcRenderer.invoke("clipboard:copy-image-from-url", url),
   onState: (callback) => {
     const listener = (_event: IpcRendererEvent, state: DaemonState) => {
       callback(state);
