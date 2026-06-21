@@ -34,13 +34,29 @@ function ContextMenuPortal({
 function ContextMenuContent({
   className,
   children,
+  align = "start",
+  side,
+  sideOffset = 4,
+  collisionPadding,
+  anchor,
   ...props
-}: ContextMenuPrimitive.Popup.Props) {
+}: ContextMenuPrimitive.Popup.Props & {
+  align?: ContextMenuPrimitive.Positioner.Props["align"]
+  side?: ContextMenuPrimitive.Positioner.Props["side"]
+  sideOffset?: ContextMenuPrimitive.Positioner.Props["sideOffset"]
+  collisionPadding?: ContextMenuPrimitive.Positioner.Props["collisionPadding"]
+  anchor?: ContextMenuPrimitive.Positioner.Props["anchor"]
+}) {
   return (
     <ContextMenuPortal>
       <ContextMenuPrimitive.Positioner
         className="z-50 outline-none"
         data-slot="context-menu-positioner"
+        align={align}
+        side={side}
+        sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
+        anchor={anchor}
       >
         <ContextMenuPrimitive.Popup
           data-slot="context-menu-content"

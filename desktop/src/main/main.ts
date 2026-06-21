@@ -20,6 +20,7 @@ import { promisify } from "node:util";
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   nativeImage,
@@ -2536,6 +2537,23 @@ ipcMain.handle("theme:set-source", (_event, mode: unknown) => {
   const source =
     mode === "light" || mode === "dark" || mode === "system" ? mode : "system";
   setWindowThemeBackground(source);
+});
+
+ipcMain.handle("clipboard:copy-image-from-url", async (_event, url: unknown) => {
+  if (typeof url !== "string") throw new Error("Image URL is required");
+  const parsed = new URL(url);
+  // Renderer fetch already handles ordinary preview loading. This privileged
+  // fallback is only for clipboard-write failures, so keep network scope tight.
+  if (!["https:", "data:"].includes(parsed.protocol)) {
+    throw new Error("Unsupported image URL");
+  }
+  const res = await fetch(parsed);
+  if (!res.ok) throw new Error(`Image fetch failed (${res.status})`);
+  const image = nativeImage.createFromBuffer(
+    Buffer.from(await res.arrayBuffer()),
+  );
+  if (image.isEmpty()) throw new Error("Image could not be decoded");
+  clipboard.writeImage(image);
 });
 
 ipcMain.handle("updater:get-status", () => updaterStatus);

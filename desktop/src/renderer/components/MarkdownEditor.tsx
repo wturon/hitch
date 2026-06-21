@@ -1,16 +1,21 @@
 "use client";
 
 import {
+  useCallback,
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
   type CSSProperties,
 } from "react";
 import {
   MDXEditor,
   type MDXEditorMethods,
+  ImageNode,
+  addComposerChild$,
   headingsPlugin,
   listsPlugin,
   quotePlugin,
@@ -21,9 +26,17 @@ import {
   codeMirrorPlugin,
   imagePlugin,
   markdownShortcutPlugin,
+  realmPlugin,
 } from "@mdxeditor/editor";
+import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
+import { $getNodeByKey, $nodesOfType, type NodeKey } from "lexical";
 import "@mdxeditor/editor/style.css";
 
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 
 // Languages offered for fenced code blocks. The empty key is the fallback for
@@ -71,6 +84,187 @@ function useDocumentDarkTheme(): boolean {
     () => false,
   );
 }
+
+interface ClipboardBridge {
+  copyImageFromUrl?: (url: string) => Promise<void>;
+}
+
+interface ImageContextMenuState {
+  x: number;
+  y: number;
+  nodeKey: NodeKey;
+  src: string;
+}
+
+async function copyImageBlobToClipboard(blob: Blob) {
+  if (!("ClipboardItem" in window) || !navigator.clipboard?.write) {
+    throw new Error("Image clipboard writes are not available");
+  }
+  const type = blob.type || "image/png";
+  const item = new ClipboardItem({ [type]: blob });
+  await navigator.clipboard.write([item]);
+}
+
+async function copyImageToClipboard(
+  src: string,
+  imagePreviewHandler: ((src: string) => Promise<string>) | undefined,
+) {
+  const resolvedSrc = imagePreviewHandler
+    ? await imagePreviewHandler(src)
+    : src;
+  try {
+    const res = await fetch(resolvedSrc);
+    if (!res.ok) throw new Error(`Image fetch failed (${res.status})`);
+    await copyImageBlobToClipboard(await res.blob());
+    return;
+  } catch (err) {
+    const bridge =
+      typeof window !== "undefined"
+        ? (window.hitchDaemon as ClipboardBridge | undefined)
+        : undefined;
+    if (!bridge?.copyImageFromUrl) throw err;
+    await bridge.copyImageFromUrl(resolvedSrc);
+  }
+}
+
+function MarkdownImageContextMenu({
+  imagePreviewHandler,
+}: {
+  imagePreviewHandler?: (src: string) => Promise<string>;
+}) {
+  const [editor] = useLexicalComposerContext();
+  const [menu, setMenu] = useState<ImageContextMenuState | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(
+    null,
+  );
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  useEffect(() => {
+    const root = editor.getRootElement();
+    if (!root) return;
+
+    const onContextMenu = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const imageWrapper = target.closest('[data-editor-block-type="image"]');
+      if (!(imageWrapper instanceof HTMLElement)) return;
+
+      let nextMenu: ImageContextMenuState | null = null;
+      editor.getEditorState().read(() => {
+        for (const node of $nodesOfType(ImageNode)) {
+          const element = editor.getElementByKey(node.getKey());
+          if (element?.contains(imageWrapper)) {
+            nextMenu = {
+              x: event.clientX,
+              y: event.clientY,
+              nodeKey: node.getKey(),
+              src: node.getSrc(),
+            };
+            break;
+          }
+        }
+      });
+      if (!nextMenu) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      setCopyStatus(null);
+      setMenu(nextMenu);
+    };
+
+    root.addEventListener("contextmenu", onContextMenu, true);
+    return () => root.removeEventListener("contextmenu", onContextMenu, true);
+  }, [editor]);
+
+  useEffect(() => {
+    if (!copyStatus) return;
+    const timer = window.setTimeout(() => setCopyStatus(null), 1800);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [copyStatus]);
+
+  const copyImage = useCallback(() => {
+    if (!menu) return;
+    const src = menu.src;
+    closeMenu();
+    void copyImageToClipboard(src, imagePreviewHandler)
+      .then(() => setCopyStatus("copied"))
+      .catch((err) => {
+        console.error("Image copy failed", err);
+        setCopyStatus("failed");
+      });
+  }, [closeMenu, imagePreviewHandler, menu]);
+
+  const deleteImage = useCallback(() => {
+    if (!menu) return;
+    const nodeKey = menu.nodeKey;
+    closeMenu();
+    editor.update(() => {
+      const node = $getNodeByKey(nodeKey);
+      if (node instanceof ImageNode) node.remove();
+    });
+  }, [closeMenu, editor, menu]);
+
+  const anchor = useMemo(() => {
+    if (!menu) return null;
+    return {
+      getBoundingClientRect: () =>
+        DOMRect.fromRect({
+          x: menu.x,
+          y: menu.y,
+          width: 0,
+          height: 0,
+        }),
+    };
+  }, [menu]);
+
+  return (
+    <ContextMenu
+      open={Boolean(menu)}
+      onOpenChange={(open) => {
+        if (!open) closeMenu();
+      }}
+    >
+      <ContextMenuContent
+        anchor={anchor}
+        side="bottom"
+        align="start"
+        sideOffset={0}
+        collisionPadding={8}
+      >
+        <ContextMenuItem onClick={copyImage}>Copy Image</ContextMenuItem>
+        <ContextMenuItem variant="destructive" onClick={deleteImage}>
+          Delete
+        </ContextMenuItem>
+      </ContextMenuContent>
+      {copyStatus && (
+        <div
+          role="status"
+          className={cn(
+            "fixed right-4 bottom-4 z-50 rounded-md border bg-card px-3 py-2 text-xs shadow-lg",
+            copyStatus === "failed" && "text-destructive",
+          )}
+        >
+          {copyStatus === "copied" ? "Image copied" : "Could not copy image"}
+        </div>
+      )}
+    </ContextMenu>
+  );
+}
+
+const imageContextMenuPlugin = realmPlugin<{
+  imagePreviewHandler?: (src: string) => Promise<string>;
+}>({
+  init(realm, params) {
+    realm.pub(addComposerChild$, () => (
+      <MarkdownImageContextMenu
+        imagePreviewHandler={params?.imagePreviewHandler}
+      />
+    ));
+  },
+});
 
 // The imperative surface the editor exposes to its parent. Deliberately
 // focus-only: content flows through the controlled `value`/`onChange` props, so
@@ -133,6 +327,33 @@ export const MarkdownEditor = forwardRef<
   // content: only a value the editor didn't itself produce warrants a setMarkdown.
   const lastEmittedRef = useRef(value);
   const imagesEnabled = Boolean(imageUploadHandler && imagePreviewHandler);
+  const editorPlugins = useMemo(
+    () => [
+      headingsPlugin(),
+      listsPlugin(),
+      quotePlugin(),
+      thematicBreakPlugin(),
+      linkPlugin(),
+      linkDialogPlugin(),
+      codeBlockPlugin({ defaultCodeBlockLanguage: "text" }),
+      codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
+      // Image paste + inline rendering, only when the parent supplied both
+      // handlers. The upload handler returns the relative path written as the
+      // markdown `src`; the preview handler resolves it to a signed URL.
+      ...(imagesEnabled
+        ? [
+            imagePlugin({
+              imageUploadHandler,
+              imagePreviewHandler,
+              disableImageSettingsButton: true,
+            }),
+            imageContextMenuPlugin({ imagePreviewHandler }),
+          ]
+        : []),
+      markdownShortcutPlugin(),
+    ],
+    [imagePreviewHandler, imageUploadHandler, imagesEnabled],
+  );
 
   useImperativeHandle(ref, () => ({
     focusStart: () =>
@@ -166,57 +387,35 @@ export const MarkdownEditor = forwardRef<
           : undefined
       }
     >
-    <MDXEditor
-      ref={editorRef}
-      markdown={value}
-      // Skip the change MDXEditor fires when it normalizes the *initial*
-      // markdown (whitespace, bullet glyphs, etc.) — and the same echo from
-      // `setMarkdown`. Forwarding it would mark a task dirty just by opening it
-      // (or adopting an external write), rewriting files you only viewed. Real
-      // keystrokes have initial=false; only those advance lastEmitted + onChange.
-      onChange={(md, initialMarkdownNormalize) => {
-        if (initialMarkdownNormalize) return;
-        lastEmittedRef.current = md;
-        onChange(md);
-      }}
-      // Task bodies can contain markdown the enabled plugins don't model (raw
-      // HTML, the odd directive). Don't process HTML (pass it through as text)
-      // and swallow parse errors so a stray construct degrades instead of
-      // crashing the dialog.
-      suppressHtmlProcessing
-      onError={({ error, source }) =>
-        console.warn("MarkdownEditor parse issue:", error, source)
-      }
-      // Serialize with `-` bullets (MDXEditor defaults to `*`), matching how
-      // task docs are authored — keeps the save diff to the actual edit.
-      toMarkdownOptions={{ bullet: "-" }}
-      className={cn("hitch-mdx", isDarkTheme && "dark-theme")}
-      contentEditableClassName="hitch-mdx-content"
-      overlayContainer={overlayContainer ?? undefined}
-      plugins={[
-        headingsPlugin(),
-        listsPlugin(),
-        quotePlugin(),
-        thematicBreakPlugin(),
-        linkPlugin(),
-        linkDialogPlugin(),
-        codeBlockPlugin({ defaultCodeBlockLanguage: "text" }),
-        codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
-        // Image paste + inline rendering, only when the parent supplied both
-        // handlers. The upload handler returns the relative path written as the
-        // markdown `src`; the preview handler resolves it to a signed URL.
-        ...(imagesEnabled
-          ? [
-              imagePlugin({
-                imageUploadHandler,
-                imagePreviewHandler,
-                disableImageSettingsButton: true,
-              }),
-            ]
-          : []),
-        markdownShortcutPlugin(),
-      ]}
-    />
+      <MDXEditor
+        ref={editorRef}
+        markdown={value}
+        // Skip the change MDXEditor fires when it normalizes the *initial*
+        // markdown (whitespace, bullet glyphs, etc.) — and the same echo from
+        // `setMarkdown`. Forwarding it would mark a task dirty just by opening it
+        // (or adopting an external write), rewriting files you only viewed. Real
+        // keystrokes have initial=false; only those advance lastEmitted + onChange.
+        onChange={(md, initialMarkdownNormalize) => {
+          if (initialMarkdownNormalize) return;
+          lastEmittedRef.current = md;
+          onChange(md);
+        }}
+        // Task bodies can contain markdown the enabled plugins don't model (raw
+        // HTML, the odd directive). Don't process HTML (pass it through as text)
+        // and swallow parse errors so a stray construct degrades instead of
+        // crashing the dialog.
+        suppressHtmlProcessing
+        onError={({ error, source }) =>
+          console.warn("MarkdownEditor parse issue:", error, source)
+        }
+        // Serialize with `-` bullets (MDXEditor defaults to `*`), matching how
+        // task docs are authored — keeps the save diff to the actual edit.
+        toMarkdownOptions={{ bullet: "-" }}
+        className={cn("hitch-mdx", isDarkTheme && "dark-theme")}
+        contentEditableClassName="hitch-mdx-content"
+        overlayContainer={overlayContainer ?? undefined}
+        plugins={editorPlugins}
+      />
     </div>
   );
 });
