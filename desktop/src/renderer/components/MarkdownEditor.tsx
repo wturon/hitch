@@ -11,7 +11,6 @@ import {
   useSyncExternalStore,
   type CSSProperties,
 } from "react";
-import { createPortal } from "react-dom";
 import {
   MDXEditor,
   type MDXEditorMethods,
@@ -33,6 +32,11 @@ import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext
 import { $getNodeByKey, $nodesOfType, type NodeKey } from "lexical";
 import "@mdxeditor/editor/style.css";
 
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 
 // Languages offered for fenced code blocks. The empty key is the fallback for
@@ -130,6 +134,9 @@ function MarkdownImageContextMenu({
 }) {
   const [editor] = useLexicalComposerContext();
   const [menu, setMenu] = useState<ImageContextMenuState | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(
+    null,
+  );
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
@@ -162,6 +169,7 @@ function MarkdownImageContextMenu({
 
       event.preventDefault();
       event.stopPropagation();
+      setCopyStatus(null);
       setMenu(nextMenu);
     };
 
@@ -170,41 +178,23 @@ function MarkdownImageContextMenu({
   }, [editor]);
 
   useEffect(() => {
-    if (!menu) return;
-
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        target.closest("[data-hitch-image-context-menu]")
-      ) {
-        return;
-      }
-      closeMenu();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu();
-    };
-
-    window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("blur", closeMenu);
-    window.addEventListener("scroll", closeMenu, true);
+    if (!copyStatus) return;
+    const timer = window.setTimeout(() => setCopyStatus(null), 1800);
     return () => {
-      window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("blur", closeMenu);
-      window.removeEventListener("scroll", closeMenu, true);
+      window.clearTimeout(timer);
     };
-  }, [closeMenu, menu]);
+  }, [copyStatus]);
 
   const copyImage = useCallback(() => {
     if (!menu) return;
     const src = menu.src;
     closeMenu();
-    void copyImageToClipboard(src, imagePreviewHandler).catch((err) => {
-      console.error("Image copy failed", err);
-    });
+    void copyImageToClipboard(src, imagePreviewHandler)
+      .then(() => setCopyStatus("copied"))
+      .catch((err) => {
+        console.error("Image copy failed", err);
+        setCopyStatus("failed");
+      });
   }, [closeMenu, imagePreviewHandler, menu]);
 
   const deleteImage = useCallback(() => {
@@ -217,33 +207,50 @@ function MarkdownImageContextMenu({
     });
   }, [closeMenu, editor, menu]);
 
-  if (!menu) return null;
+  const anchor = useMemo(() => {
+    if (!menu) return null;
+    return {
+      getBoundingClientRect: () =>
+        DOMRect.fromRect({
+          x: menu.x,
+          y: menu.y,
+          width: 0,
+          height: 0,
+        }),
+    };
+  }, [menu]);
 
-  return createPortal(
-    <div
-      data-hitch-image-context-menu
-      className="fixed z-50 min-w-40 rounded-lg bg-popover p-1 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10"
-      style={{ left: menu.x, top: menu.y }}
-      role="menu"
+  return (
+    <ContextMenu
+      open={Boolean(menu)}
+      onOpenChange={(open) => {
+        if (!open) closeMenu();
+      }}
     >
-      <button
-        type="button"
-        role="menuitem"
-        className="flex h-8 w-full cursor-default select-none items-center rounded-md px-2 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
-        onClick={copyImage}
+      <ContextMenuContent
+        anchor={anchor}
+        side="bottom"
+        align="start"
+        sideOffset={0}
+        collisionPadding={8}
       >
-        Copy Image
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        className="flex h-8 w-full cursor-default select-none items-center rounded-md px-2 text-left text-sm text-destructive outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive"
-        onClick={deleteImage}
-      >
-        Delete
-      </button>
-    </div>,
-    document.body,
+        <ContextMenuItem onClick={copyImage}>Copy Image</ContextMenuItem>
+        <ContextMenuItem variant="destructive" onClick={deleteImage}>
+          Delete
+        </ContextMenuItem>
+      </ContextMenuContent>
+      {copyStatus && (
+        <div
+          role="status"
+          className={cn(
+            "fixed right-4 bottom-4 z-50 rounded-md border bg-card px-3 py-2 text-xs shadow-lg",
+            copyStatus === "failed" && "text-destructive",
+          )}
+        >
+          {copyStatus === "copied" ? "Image copied" : "Could not copy image"}
+        </div>
+      )}
+    </ContextMenu>
   );
 }
 
