@@ -22,6 +22,7 @@ import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
 import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
 import type { Environment, Harness } from "./launchers/types.js";
+import type { LocalChatRow } from "./chatLifecycleStore.js";
 
 if (!globalThis.WebSocket) {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
@@ -330,6 +331,50 @@ function settledChatStatus(content: string): string | undefined {
   return TERMINAL_TASK_STATUSES.has(taskStatus(content)) ? undefined : "waiting";
 }
 
+export function projectedChatStatus(
+  content: string,
+  chat: LocalChatRow,
+): string | undefined {
+  if (chat.status === "idle") return undefined;
+  if (chat.status === "waiting") return settledChatStatus(content);
+  return chat.status;
+}
+
+export function projectedChatFrontmatter(
+  content: string,
+  chat: LocalChatRow,
+): Record<string, string | undefined> {
+  const status = projectedChatStatus(content, chat);
+  const updates: Record<string, string | undefined> = {
+    "chat-harness": chat.harness,
+    "chat-id": chat.chatId ?? undefined,
+    "chat-status": status,
+    "chat-open-state": chat.pending ? "pending" : undefined,
+  };
+
+  if (chat.harness === "claude-code") {
+    updates["chat-cwd"] = chat.cwd || undefined;
+    updates["chat-env"] = chat.environment ?? undefined;
+  } else {
+    updates["chat-cwd"] = undefined;
+    updates["chat-env"] = undefined;
+  }
+
+  if (!status) updates["chat-pid"] = undefined;
+  return updates;
+}
+
+export function frontmatterAlreadyProjected(
+  content: string,
+  updates: Record<string, string | undefined>,
+): boolean {
+  for (const [key, value] of Object.entries(updates)) {
+    const current = frontmatterValue(content, key);
+    if ((current ?? undefined) !== value) return false;
+  }
+  return true;
+}
+
 function unsubscribe(subscription: Unsubscribe): void {
   if (typeof subscription === "function") {
     subscription();
@@ -499,6 +544,40 @@ async function startHitchBinding({
     return synced;
   }
 
+  async function projectReducedTaskFrontmatter(): Promise<number> {
+    let projected = 0;
+    const chats = chatLifecycleStore.listTaskLinkedChats(projectId);
+    for (const chat of chats) {
+      const linkedPath = chat.linkedPath;
+      if (!linkedPath || !/^tasks\/[^/]+\/task\.md$/.test(linkedPath)) continue;
+
+      const absPath = toAbs(linkedPath);
+      let content: string;
+      try {
+        content = await readFile(absPath, "utf8");
+      } catch {
+        continue;
+      }
+
+      const updates = projectedChatFrontmatter(content, chat);
+      if (frontmatterAlreadyProjected(content, updates)) continue;
+
+      try {
+        await writeFile(absPath, setFrontmatterKeys(content, updates), "utf8");
+        projected += 1;
+        logger.info(
+          `[hitch:${projectLabel}] projected chat ${chat.chatId ?? chat.launchId ?? chat.localKey} → ${linkedPath}`,
+        );
+      } catch (err) {
+        logError(
+          logger,
+          `[hitch:${projectLabel}] failed to project chat ${chat.localKey} to ${linkedPath}: ${String(err)}`,
+        );
+      }
+    }
+    return projected;
+  }
+
   let reducing = false;
   let reduceAgain = false;
   async function reduceAndSyncChats(reason: string): Promise<void> {
@@ -519,10 +598,11 @@ async function startHitchBinding({
           if (result.eventsReduced < 100) break;
         }
         const synced = await syncReducedChats();
-        if (totalReduced > 0 || synced > 0) {
+        const projected = await projectReducedTaskFrontmatter();
+        if (totalReduced > 0 || synced > 0 || projected > 0) {
           chatLifecycleStore.cleanupReducedEvents();
           logger.info(
-            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), synced ${synced} chat(s) (${reason})`,
+            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), synced ${synced} chat(s), projected ${projected} task(s) (${reason})`,
           );
         }
       } while (reduceAgain);
@@ -584,32 +664,14 @@ async function startHitchBinding({
   async function linkCodexThread(path: string, threadId: string) {
     const absPath = toAbs(path);
     const current = await readFile(absPath, "utf8");
-    // Stamp chat-status: working in the same write that links the thread. The
-    // daemon is about to submit the first turn, so the chat is working *now* —
-    // don't wait for the codex Stop hook (the first lifecycle event we'd
-    // otherwise see) to light up the card.
     const next = setFrontmatterKeys(current, {
       "chat-harness": "codex",
       "chat-id": threadId,
       "chat-cwd": undefined,
-      "chat-status": "working",
       "chat-open-state": "pending",
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${projectLabel}] linked codex thread ${threadId} → ${path}`);
-  }
-
-  async function settleCodexThread(path: string, threadId: string) {
-    const absPath = toAbs(path);
-    const current = await readFile(absPath, "utf8");
-    if (frontmatterValue(current, "chat-id") !== threadId) return;
-
-    const next = setFrontmatterKeys(current, {
-      "chat-status": "waiting",
-      "chat-open-state": undefined,
-    });
-    await writeFile(absPath, next, "utf8");
-    logger.info(`[hitch:${projectLabel}] codex thread ${threadId} is waiting → ${path}`);
   }
 
   async function linkClaudeSession(
@@ -621,16 +683,13 @@ async function startHitchBinding({
     const absPath = toAbs(path);
     const current = await readFile(absPath, "utf8");
     // Pin the session id (cmux passes it to `claude --session-id`) or bind a
-    // discovered id (vscode/cursor) — either way link before/at first turn. Stamp
-    // chat-status: working in the same write; the Stop hook settles it to waiting
-    // later. chat-env records which environment owns the session so the daemon's
-    // pid-healing knows whether to apply (only for process-lifecycle envs).
+    // discovered id (vscode/cursor). chat-env records which environment owns the
+    // session so the daemon's pid-healing knows whether to apply.
     const next = setFrontmatterKeys(current, {
       "chat-harness": "claude-code",
       "chat-id": sessionId,
       "chat-cwd": cwd,
       "chat-env": environment,
-      "chat-status": "working",
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${projectLabel}] linked claude session ${sessionId} → ${path}`);
@@ -960,19 +1019,9 @@ async function startHitchBinding({
           );
         }
 
-        const next = setFrontmatterKeys(content, {
-          "chat-status": undefined,
-          "chat-pid": undefined,
-        });
-        if (next === content) continue;
-        try {
-          await writeFile(absPath, next, "utf8");
-          logger.info(
-            `[hitch:${projectLabel}] healed stale claude chat-status (pid ${pid} gone) → tasks/${entry.name}/task.md`,
-          );
-        } catch {
-          // best-effort; the next tick retries
-        }
+        logger.info(
+          `[hitch:${projectLabel}] recorded ended claude session (pid ${pid} gone) → tasks/${entry.name}/task.md`,
+        );
         continue;
       }
     }
@@ -1153,7 +1202,6 @@ async function startHitchBinding({
                     }),
                   `codex completed ${threadId}`,
                 );
-                if (isTaskLinked) await settleCodexThread(linkedPath, threadId);
                 await settlePendingChat(
                   cmd,
                   harness,
