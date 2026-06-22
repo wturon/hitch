@@ -18,6 +18,8 @@
     "typecheck": "tsc --noEmit",
     "smoke:chat-lifecycle-store": "tsx scripts/chat-lifecycle-store-smoke.ts",
     "smoke:chat-lifecycle-producers": "tsx scripts/chat-lifecycle-producers-smoke.ts",
+    "smoke:chat-lifecycle-reducer": "tsx scripts/chat-lifecycle-reducer-smoke.ts",
+    "smoke:chat-lifecycle-wakeup": "tsx scripts/chat-lifecycle-wakeup-smoke.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {
