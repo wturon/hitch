@@ -133,7 +133,7 @@ function TaskEditor({
   onManageHarnesses?: () => void;
 }) {
   const upsertFile = useMutation(api.files.upsertFile);
-  const enqueue = useMutation(api.commands.enqueueCommand);
+  const startPendingChat = useMutation(api.chats.startChat);
   // The whole document model lives in the hook: the full-file draft, the
   // body/title/frontmatter selectors, the document mutations, dirty tracking,
   // and adoption of external writes. This component owns only the things around
@@ -420,11 +420,11 @@ function TaskEditor({
     prompt: string;
   }) {
     if (draft.dirty) await persist(draft.raw);
-    await enqueue({
+    await startPendingChat({
       projectId: task.projectId,
-      kind: "start-chat",
       harness,
-      path: task.path,
+      linkedType: "task",
+      linkedPath: task.path,
       initialPrompt: prompt,
       model,
       effort,
