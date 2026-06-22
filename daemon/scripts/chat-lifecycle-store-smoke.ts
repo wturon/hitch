@@ -1,12 +1,53 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import assert from "node:assert/strict";
 import { openChatLifecycleStore } from "../src/chatLifecycleStore.js";
 
 const tempDir = mkdtempSync(join(tmpdir(), "hitch-chat-lifecycle-"));
+const hookDbTempDir = mkdtempSync(join(tmpdir(), "hitch-chat-hook-db-"));
 
 try {
+  const hookDb = new DatabaseSync(join(hookDbTempDir, "chat-lifecycle.sqlite"));
+  hookDb.exec(`
+    CREATE TABLE meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE chat_events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL UNIQUE,
+      schema_version INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      producer TEXT NOT NULL,
+      harness TEXT NOT NULL,
+      provider_event TEXT NOT NULL,
+      lifecycle TEXT NOT NULL,
+      status TEXT,
+      project_id TEXT,
+      project_local_path TEXT,
+      chat_id TEXT,
+      launch_id TEXT,
+      turn_id TEXT,
+      cwd TEXT NOT NULL,
+      host TEXT NOT NULL,
+      observed_at INTEGER NOT NULL,
+      raw_payload_hash TEXT,
+      raw_payload_ref TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      reduced_at INTEGER
+    );
+  `);
+  hookDb.close();
+
+  const migratedHookDbStore = openChatLifecycleStore({
+    appSupportDir: hookDbTempDir,
+  });
+  assert.equal(migratedHookDbStore.listDirtyChats().length, 0);
+  assert.equal(migratedHookDbStore.getMeta("schema_version"), "1");
+  migratedHookDbStore.close();
+
   const store = openChatLifecycleStore({ appSupportDir: tempDir });
   const now = Date.now();
 
@@ -192,4 +233,5 @@ try {
   console.log("chat lifecycle store smoke passed");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
+  rmSync(hookDbTempDir, { recursive: true, force: true });
 }

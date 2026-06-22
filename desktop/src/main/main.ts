@@ -202,66 +202,51 @@ const AUTH_LOOPBACK_ORIGIN = `http://127.0.0.1:${AUTH_LOOPBACK_PORT}`;
 const run = promisify(execFile);
 
 function globalCodexChatStatusHook(): string {
-  return `#!/usr/bin/env node
-// Hitch user-level Codex lifecycle hook. This hook is installed globally, so it
-// must scope itself: it only touches task files inside enabled Hitch roots.
-//
-// Contract: never break Codex. Parse stdin, do a best-effort frontmatter edit,
-// and exit 0 without output for unrelated sessions or failures.
+  return globalChatLifecycleHook("codex");
+}
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+function globalClaudeChatStatusHook(): string {
+  return globalChatLifecycleHook("claude-code");
+}
+
+function globalChatLifecycleHook(harness: Harness): string {
+  return `#!/usr/bin/env node
+// Hitch user-level ${harness === "codex" ? "Codex" : "Claude Code"} lifecycle hook.
+// This hook is installed globally and must never interrupt the harness. It only
+// captures normalized lifecycle events into Hitch's local SQLite inbox.
+
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
+import { dirname, relative, resolve, sep } from "node:path";
 
 const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
+const HITCH_APP_SUPPORT_DIR = ${JSON.stringify(appSupportDir)};
+const HITCH_DB_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.sqlite";
+const HITCH_BUMP_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.bump";
+const HARNESS = ${JSON.stringify(harness)};
+const PRODUCER = ${JSON.stringify(harness === "codex" ? "codex-hook" : "claude-code-hook")};
 
-const STATUS_FOR_EVENT = {
-  UserPromptSubmit: "working",
-  userPromptSubmit: "working",
-  PermissionRequest: "needs-input",
-  permissionRequest: "needs-input",
-  PreToolUse: "working",
-  preToolUse: "working",
-  Stop: "waiting",
-  stop: "waiting",
+const EVENT_PLAN_BY_HARNESS = {
+  codex: {
+    UserPromptSubmit: { lifecycle: "turn.started", status: "working" },
+    userPromptSubmit: { providerEvent: "UserPromptSubmit", lifecycle: "turn.started", status: "working" },
+    PreToolUse: { lifecycle: "turn.resumed", status: "working" },
+    preToolUse: { providerEvent: "PreToolUse", lifecycle: "turn.resumed", status: "working" },
+    PermissionRequest: { lifecycle: "turn.needs_input", status: "needs-input" },
+    permissionRequest: { providerEvent: "PermissionRequest", lifecycle: "turn.needs_input", status: "needs-input" },
+    Stop: { lifecycle: "turn.completed", status: "waiting" },
+    stop: { providerEvent: "Stop", lifecycle: "turn.completed", status: "waiting" },
+  },
+  "claude-code": {
+    SessionStart: { lifecycle: "session.started", status: null },
+    UserPromptSubmit: { lifecycle: "turn.started", status: "working" },
+    PreToolUse: { lifecycle: "turn.resumed", status: "working" },
+    Notification: { lifecycle: "turn.needs_input", status: "needs-input", requirePermissionPrompt: true },
+    Stop: { lifecycle: "turn.completed", status: "waiting" },
+    SessionEnd: { lifecycle: "session.ended", status: null },
+  },
 };
-
-const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
-
-const FRONTMATTER_RE = /^---\\r?\\n([\\s\\S]*?)\\r?\\n---\\r?\\n?([\\s\\S]*)$/;
-
-function parseFrontmatter(content) {
-  const match = content.match(FRONTMATTER_RE);
-  if (!match) return null;
-
-  const fm = {};
-  for (const line of match[1].split(/\\r?\\n/)) {
-    const idx = line.indexOf(":");
-    if (idx === -1) continue;
-    const key = line.slice(0, idx).trim();
-    if (!key) continue;
-    fm[key] = line
-      .slice(idx + 1)
-      .trim()
-      .replace(/^[\\"']|[\\"']$/g, "");
-  }
-  return fm;
-}
-
-function setKeys(content, updates) {
-  const eol = content.includes("\\r\\n") ? "\\r\\n" : "\\n";
-  const match = content.match(FRONTMATTER_RE);
-  let lines = match ? match[1].split(/\\r?\\n/) : [];
-  const body = match ? match[2] : content;
-  const touched = new Set(Object.keys(updates));
-  lines = lines.filter((line) => {
-    const idx = line.indexOf(":");
-    return idx === -1 || !touched.has(line.slice(0, idx).trim());
-  });
-  for (const [key, value] of Object.entries(updates)) {
-    if (value != null && value !== "") lines.push(\`\${key}: \${value}\`);
-  }
-  return \`---\${eol}\${lines.join(eol)}\${eol}---\${eol}\${body}\`;
-}
 
 function readStdin() {
   try {
@@ -271,14 +256,50 @@ function readStdin() {
   }
 }
 
-function candidateChatIds(payload) {
+function hash(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function isInside(root, cwd) {
+  const rel = relative(root, cwd);
+  return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep));
+}
+
+function hitchProjects() {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(HITCH_CONFIG_PATH, "utf8"));
+  } catch {
+    return [];
+  }
+  if (!raw || !Array.isArray(raw.hitches)) return [];
+
+  return raw.hitches
+    .filter((entry) => entry && entry.enabled !== false)
+    .map((entry) => {
+      const localPath =
+        typeof entry.localPath === "string" ? entry.localPath.trim() : "";
+      return {
+        projectId: typeof entry.projectId === "string" ? entry.projectId : null,
+        localPath: localPath ? resolve(localPath) : null,
+      };
+    })
+    .filter((entry) => entry.projectId && entry.localPath);
+}
+
+function projectForCwd(cwd) {
+  const resolvedCwd = resolve(cwd || process.cwd());
+  return hitchProjects().find((entry) => isInside(entry.localPath, resolvedCwd)) || null;
+}
+
+function chatId(payload) {
   const candidates = [
     payload.session_id,
     payload.sessionId,
     payload.thread_id,
     payload.threadId,
-    payload.thread?.id,
-    process.env.CODEX_THREAD_ID,
+    payload.thread && payload.thread.id,
+    HARNESS === "codex" ? process.env.CODEX_THREAD_ID : null,
   ]
     .filter((value) => typeof value === "string")
     .map((value) => value.trim())
@@ -295,280 +316,193 @@ function candidateChatIds(payload) {
   );
   if (transcriptId) candidates.push(transcriptId[0]);
 
-  return new Set(candidates);
+  return candidates[0] || null;
 }
 
-function taskStatus(fm) {
-  return (fm.status ?? "").trim().toLowerCase().replace(/\\s+/g, "-");
-}
-
-function isInside(root, cwd) {
-  const rel = relative(root, cwd);
-  return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep));
-}
-
-function hitchRoots() {
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync(HITCH_CONFIG_PATH, "utf8"));
-  } catch {
-    return [];
+function metadata(payload, providerEvent) {
+  const out = {};
+  if (typeof payload.tool_name === "string") out.toolName = payload.tool_name;
+  if (typeof payload.toolName === "string") out.toolName = payload.toolName;
+  if (typeof payload.notification_type === "string") {
+    out.notificationType = payload.notification_type;
   }
-  if (!raw || !Array.isArray(raw.hitches)) return [];
-
-  return raw.hitches
-    .filter((entry) => entry && entry.enabled !== false)
-    .map((entry) => (typeof entry.localPath === "string" ? entry.localPath.trim() : ""))
-    .filter(Boolean)
-    .map((localPath) => resolve(localPath));
-}
-
-function rootForCwd(cwd) {
-  const resolvedCwd = resolve(cwd || process.cwd());
-  return hitchRoots().find((root) => isInside(root, resolvedCwd)) ?? null;
-}
-
-function main() {
-  let payload;
-  try {
-    payload = JSON.parse(readStdin() || "{}");
-  } catch {
-    return;
+  if (providerEvent === "SessionStart") {
+    if (typeof payload.source === "string") out.source = payload.source;
+    if (typeof payload.model === "string") out.model = payload.model;
+    if (typeof payload.session_title === "string") out.title = payload.session_title;
   }
-
-  const event = payload.hook_event_name || payload.hookEventName;
-  if (!(event in STATUS_FOR_EVENT)) return;
-  const status = STATUS_FOR_EVENT[event];
-
-  const chatIds = candidateChatIds(payload);
-  if (chatIds.size === 0) return;
-
-  const root = rootForCwd(
-    payload.cwd ||
-      process.env.CODEX_PROJECT_DIR ||
-      process.env.PWD ||
-      process.cwd(),
-  );
-  if (!root) return;
-
-  const tasksDir = join(root, ".hitch", "tasks");
-  if (!existsSync(tasksDir)) return;
-
-  let slugs;
-  try {
-    slugs = readdirSync(tasksDir, { withFileTypes: true });
-  } catch {
-    return;
+  if (providerEvent === "SessionEnd" && typeof payload.reason === "string") {
+    out.reason = payload.reason;
   }
-
-  for (const entry of slugs) {
-    if (!entry.isDirectory()) continue;
-    const file = join(tasksDir, entry.name, "task.md");
-    if (!existsSync(file)) continue;
-
-    let content;
-    try {
-      content = readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
-
-    const fm = parseFrontmatter(content);
-    if (!fm || fm["chat-harness"] !== "codex" || !chatIds.has(fm["chat-id"])) {
-      continue;
-    }
-
-    const nextStatus =
-      status === "waiting" && TERMINAL_TASK_STATUSES.has(taskStatus(fm))
-        ? undefined
-        : status;
-    const current = (fm["chat-status"] ?? "").trim() || null;
-    const currentOpenState = (fm["chat-open-state"] ?? "").trim() || null;
-    const nextOpenState = status === "waiting" ? null : currentOpenState;
-    if (current === (nextStatus ?? null) && currentOpenState === nextOpenState) return;
-
-    try {
-      writeFileSync(
-        file,
-        setKeys(content, {
-          "chat-status": nextStatus,
-          "chat-open-state": status === "waiting" ? undefined : currentOpenState,
-        }),
-      );
-    } catch {
-      // Best effort; never fail the hook.
-    }
-    return;
+  if (providerEvent === "Stop" && Array.isArray(payload.background_tasks)) {
+    out.backgroundTaskCount = payload.background_tasks.length;
   }
-}
-
-try {
-  main();
-} catch {
-  // Never let a hook error interrupt the session.
-}
-`;
-}
-
-function globalClaudeChatStatusHook(): string {
-  return `#!/usr/bin/env node
-// Hitch user-level Claude Code lifecycle hook. This hook is installed globally,
-// so it must scope itself: it only touches task files inside enabled Hitch
-// roots and only for tasks whose chat-harness is claude-code.
-//
-// It stamps chat-status (working→needs-input→waiting) on the happy path AND
-// records the agent's process id as chat-pid. The daemon uses chat-pid to heal
-// cards whose session ended without a clean Stop/SessionEnd (terminal closed,
-// killed, crashed): a dead pid means the chat is over. See daemon
-// reconcileChatStatus.
-//
-// Contract: never break the session. Parse stdin, do a best-effort frontmatter
-// edit, and exit 0 without output for unrelated sessions or failures.
-
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { join, relative, resolve, sep } from "node:path";
-
-const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
-
-// Per event: which chat-status to write (if any) and whether to (re)stamp the
-// agent pid. SessionStart only refreshes the pid — a resumed session is a new
-// process — without forcing a status. SessionEnd clears both.
-//
-// Notification fires when the agent is blocked on the human; we register it
-// scoped to permission_prompt matchers, but also guard on notification_type
-// below so a config that fires it broadly can't mislabel idle/auth pings.
-// PreToolUse is the only signal that the user answered and the agent resumed —
-// it flips needs-input back to working. It fires on every tool call, so it skips
-// the pid walk (the pid is stable mid-turn, already stamped by UserPromptSubmit)
-// and short-circuits via willChange once the card is already working.
-const EVENT_PLAN = {
-  UserPromptSubmit: { status: "working", touchPid: true },
-  PreToolUse: { status: "working" },
-  Notification: { status: "needs-input", touchPid: true, requirePermissionPrompt: true },
-  Stop: { status: "waiting", touchPid: true },
-  SessionStart: { touchPid: true },
-  SessionEnd: { clear: true },
-};
-
-const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
-
-const FRONTMATTER_RE = /^---\\r?\\n([\\s\\S]*?)\\r?\\n---\\r?\\n?([\\s\\S]*)$/;
-
-function parseFrontmatter(content) {
-  const match = content.match(FRONTMATTER_RE);
-  if (!match) return null;
-  const fm = {};
-  for (const line of match[1].split(/\\r?\\n/)) {
-    const idx = line.indexOf(":");
-    if (idx === -1) continue;
-    const key = line.slice(0, idx).trim();
-    if (!key) continue;
-    fm[key] = line
-      .slice(idx + 1)
-      .trim()
-      .replace(/^[\\"']|[\\"']$/g, "");
+  if (providerEvent === "Stop" && Array.isArray(payload.session_crons)) {
+    out.sessionCronCount = payload.session_crons.length;
   }
-  return fm;
+  return out;
 }
 
-function setKeys(content, updates) {
-  const eol = content.includes("\\r\\n") ? "\\r\\n" : "\\n";
-  const match = content.match(FRONTMATTER_RE);
-  let lines = match ? match[1].split(/\\r?\\n/) : [];
-  const body = match ? match[2] : content;
-  const touched = new Set(Object.keys(updates));
-  lines = lines.filter((line) => {
-    const idx = line.indexOf(":");
-    return idx === -1 || !touched.has(line.slice(0, idx).trim());
-  });
-  for (const [key, value] of Object.entries(updates)) {
-    if (value != null && value !== "") lines.push(\`\${key}: \${value}\`);
-  }
-  return \`---\${eol}\${lines.join(eol)}\${eol}---\${eol}\${body}\`;
+function turnId(payload) {
+  const id = payload.turn_id || payload.turnId;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 
-function willChange(fm, updates) {
-  for (const [key, value] of Object.entries(updates)) {
-    const current = (fm[key] ?? "").trim() || null;
-    const next = value == null || value === "" ? null : String(value);
-    if (current !== next) return true;
-  }
-  return false;
+function toolUseId(payload) {
+  const id = payload.tool_use_id || payload.toolUseId;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 
-function readStdin() {
-  try {
-    return readFileSync(0, "utf8");
-  } catch {
-    return "";
-  }
-}
-
-function basename(p) {
-  const i = p.lastIndexOf("/");
-  return i === -1 ? p : p.slice(i + 1);
-}
-
-function psInfo(pid) {
-  try {
-    const out = execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], {
-      encoding: "utf8",
-    }).trim();
-    const m = out.match(/^\\s*(\\d+)\\s+(.*)$/);
-    if (!m) return null;
-    return { ppid: Number(m[1]), comm: m[2] };
-  } catch {
+function normalize(payload) {
+  const hookEvent = payload.hook_event_name || payload.hookEventName;
+  if (typeof hookEvent !== "string") return null;
+  const plan = EVENT_PLAN_BY_HARNESS[HARNESS][hookEvent];
+  if (!plan) return null;
+  const providerEvent = plan.providerEvent || hookEvent;
+  if (plan.requirePermissionPrompt && payload.notification_type !== "permission_prompt") {
     return null;
   }
+
+  const id = chatId(payload);
+  if (!id) return null;
+
+  const cwd =
+    typeof payload.cwd === "string" && payload.cwd.trim()
+      ? payload.cwd.trim()
+      : HARNESS === "codex"
+        ? process.env.CODEX_PROJECT_DIR || process.env.PWD || process.cwd()
+        : process.env.CLAUDE_PROJECT_DIR || process.env.PWD || process.cwd();
+  const project = projectForCwd(cwd);
+  if (!project) return null;
+
+  const rawPayloadHash = hash(payload);
+  const event = {
+    schemaVersion: 1,
+    source: "hook",
+    producer: PRODUCER,
+    harness: HARNESS,
+    providerEvent,
+    lifecycle: plan.lifecycle,
+    status: plan.status,
+    projectId: project.projectId,
+    projectLocalPath: project.localPath,
+    chatId: id,
+    launchId: null,
+    turnId: turnId(payload),
+    cwd: resolve(cwd),
+    host: hostname(),
+    observedAt: Date.now(),
+    rawPayloadHash,
+    rawPayloadRef: null,
+    metadata: metadata(payload, providerEvent),
+  };
+  event.eventId = hash({
+    source: event.source,
+    producer: event.producer,
+    harness: event.harness,
+    providerEvent: event.providerEvent,
+    chatId: event.chatId,
+    launchId: event.launchId,
+    turnId: event.turnId,
+    toolUseId: toolUseId(payload),
+    status: event.status,
+    rawPayloadHash,
+  });
+  return event;
 }
 
-// The hook runs as a descendant of the claude process, so walk up the parent
-// chain to find it. Bounded so an odd tree can't loop; falls back to the
-// immediate parent if claude isn't positively identified.
-function resolveAgentPid() {
-  let pid = process.ppid;
-  for (let i = 0; i < 6 && pid > 1; i++) {
-    const info = psInfo(pid);
-    if (!info) break;
-    if (basename(info.comm) === "claude") return pid;
-    if (!info.ppid || info.ppid <= 1) break;
-    pid = info.ppid;
-  }
-  return process.ppid || null;
-}
-
-function taskStatus(fm) {
-  return (fm.status ?? "").trim().toLowerCase().replace(/\\s+/g, "-");
-}
-
-function isInside(root, cwd) {
-  const rel = relative(root, cwd);
-  return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep));
-}
-
-function hitchRoots() {
-  let raw;
+async function openDb() {
+  const { DatabaseSync } = await import("node:sqlite");
+  mkdirSync(dirname(HITCH_DB_PATH), { recursive: true });
+  const db = new DatabaseSync(HITCH_DB_PATH);
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA busy_timeout = 1000");
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("BEGIN IMMEDIATE");
   try {
-    raw = JSON.parse(readFileSync(HITCH_CONFIG_PATH, "utf8"));
-  } catch {
-    return [];
+    db.exec(
+      "CREATE TABLE IF NOT EXISTS meta (" +
+        "key TEXT PRIMARY KEY," +
+        "value TEXT NOT NULL" +
+      ");" +
+      "CREATE TABLE IF NOT EXISTS chat_events (" +
+        "seq INTEGER PRIMARY KEY AUTOINCREMENT," +
+        "event_id TEXT NOT NULL UNIQUE," +
+        "schema_version INTEGER NOT NULL," +
+        "source TEXT NOT NULL," +
+        "producer TEXT NOT NULL," +
+        "harness TEXT NOT NULL," +
+        "provider_event TEXT NOT NULL," +
+        "lifecycle TEXT NOT NULL," +
+        "status TEXT," +
+        "project_id TEXT," +
+        "project_local_path TEXT," +
+        "chat_id TEXT," +
+        "launch_id TEXT," +
+        "turn_id TEXT," +
+        "cwd TEXT NOT NULL," +
+        "host TEXT NOT NULL," +
+        "observed_at INTEGER NOT NULL," +
+        "raw_payload_hash TEXT," +
+        "raw_payload_ref TEXT," +
+        "metadata_json TEXT NOT NULL DEFAULT '{}'," +
+        "reduced_at INTEGER" +
+      ");" +
+      "CREATE INDEX IF NOT EXISTS chat_events_by_reducer " +
+        "ON chat_events(seq) WHERE reduced_at IS NULL;" +
+      "CREATE INDEX IF NOT EXISTS chat_events_by_chat " +
+        "ON chat_events(harness, chat_id, seq);" +
+      "CREATE INDEX IF NOT EXISTS chat_events_by_launch " +
+        "ON chat_events(launch_id, seq);"
+    );
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
   }
-  if (!raw || !Array.isArray(raw.hitches)) return [];
-
-  return raw.hitches
-    .filter((entry) => entry && entry.enabled !== false)
-    .map((entry) => (typeof entry.localPath === "string" ? entry.localPath.trim() : ""))
-    .filter(Boolean)
-    .map((localPath) => resolve(localPath));
+  return db;
 }
 
-function rootForCwd(cwd) {
-  const resolvedCwd = resolve(cwd || process.cwd());
-  return hitchRoots().find((root) => isInside(root, resolvedCwd)) ?? null;
+async function insertEvent(event) {
+  const db = await openDb();
+  try {
+    const result = db.prepare(
+      "INSERT OR IGNORE INTO chat_events (" +
+        "event_id, schema_version, source, producer, harness, provider_event, " +
+        "lifecycle, status, project_id, project_local_path, chat_id, launch_id, " +
+        "turn_id, cwd, host, observed_at, raw_payload_hash, raw_payload_ref, metadata_json" +
+      ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(
+      event.eventId,
+      event.schemaVersion,
+      event.source,
+      event.producer,
+      event.harness,
+      event.providerEvent,
+      event.lifecycle,
+      event.status,
+      event.projectId,
+      event.projectLocalPath,
+      event.chatId,
+      event.launchId,
+      event.turnId,
+      event.cwd,
+      event.host,
+      event.observedAt,
+      event.rawPayloadHash,
+      event.rawPayloadRef,
+      JSON.stringify(event.metadata || {})
+    );
+    if (Number(result.changes) > 0) {
+      mkdirSync(dirname(HITCH_BUMP_PATH), { recursive: true });
+      writeFileSync(HITCH_BUMP_PATH, String(result.lastInsertRowid) + "\\n", "utf8");
+    }
+  } finally {
+    db.close();
+  }
 }
 
-function main() {
+async function main() {
   let payload;
   try {
     payload = JSON.parse(readStdin() || "{}");
@@ -576,98 +510,13 @@ function main() {
     return;
   }
 
-  const event = payload.hook_event_name;
-  const plan = EVENT_PLAN[event];
-  if (!plan) return;
-
-  // Notification covers several types (permission, idle, auth); only a
-  // permission prompt means "blocked on the human". Matcher scoping should
-  // already narrow this, but double-check the payload to be safe.
-  if (plan.requirePermissionPrompt && payload.notification_type !== "permission_prompt") {
-    return;
-  }
-
-  const sessionId = payload.session_id;
-  if (!sessionId) return;
-
-  const root = rootForCwd(
-    payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.PWD || process.cwd(),
-  );
-  if (!root) return;
-
-  const tasksDir = join(root, ".hitch", "tasks");
-  if (!existsSync(tasksDir)) return;
-
-  let slugs;
-  try {
-    slugs = readdirSync(tasksDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-
-  // Resolve the agent pid at most once, and only if we'll actually stamp it.
-  let cachedPid;
-  function agentPid() {
-    if (cachedPid === undefined) cachedPid = resolveAgentPid() ?? null;
-    return cachedPid;
-  }
-
-  for (const entry of slugs) {
-    if (!entry.isDirectory()) continue;
-    const file = join(tasksDir, entry.name, "task.md");
-    if (!existsSync(file)) continue;
-
-    let content;
-    try {
-      content = readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
-
-    const fm = parseFrontmatter(content);
-    if (!fm || fm["chat-harness"] !== "claude-code" || fm["chat-id"] !== sessionId) {
-      continue;
-    }
-
-    const updates = {};
-    if (plan.clear) {
-      updates["chat-status"] = undefined;
-      updates["chat-pid"] = undefined;
-    } else {
-      if (plan.touchPid) {
-        const pid = agentPid();
-        if (pid) updates["chat-pid"] = String(pid);
-      }
-      if (plan.status) {
-        // A done/archived task should settle (clear), not light up as waiting
-        // or needs-input from a late hook. A live "working" stamp is harmless.
-        const settle =
-          plan.status !== "working" && TERMINAL_TASK_STATUSES.has(taskStatus(fm));
-        if (settle) {
-          updates["chat-status"] = undefined;
-          updates["chat-pid"] = undefined;
-        } else {
-          updates["chat-status"] = plan.status;
-        }
-      }
-    }
-
-    if (!willChange(fm, updates)) return;
-
-    try {
-      writeFileSync(file, setKeys(content, updates));
-    } catch {
-      // Best effort; never fail the hook.
-    }
-    return;
-  }
+  const event = normalize(payload);
+  if (event) await insertEvent(event);
 }
 
-try {
-  main();
-} catch {
+main().catch(() => {
   // Never let a hook error interrupt the session.
-}
+});
 `;
 }
 
