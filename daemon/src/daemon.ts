@@ -16,6 +16,8 @@ import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { CmuxError, setCmuxLogger } from "./cmux.js";
 import { closeCodexAppServer } from "./codex.js";
+import { openChatLifecycleStore } from "./chatLifecycleStore.js";
+import { DaemonLifecycleProducer } from "./chatLifecycleProducers.js";
 import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
 import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
@@ -443,6 +445,27 @@ async function startHitchBinding({
 
   const lastHash = new Map<string, string>();
   const subscriptions: Unsubscribe[] = [];
+  const chatLifecycleStore = openChatLifecycleStore({ env });
+  const lifecycleProducer = new DaemonLifecycleProducer({
+    store: chatLifecycleStore,
+    projectId,
+    projectLocalPath: root.localPath,
+    host,
+  });
+
+  function emitLifecycle(
+    emit: () => { inserted: boolean; seq: number | null },
+    label: string,
+  ): void {
+    try {
+      emit();
+    } catch (err) {
+      logError(
+        logger,
+        `[hitch:${projectLabel}] failed to record chat lifecycle event (${label}): ${String(err)}`,
+      );
+    }
+  }
 
   function locate(absPath: string): { rel: string } | null {
     const rel = relative(root.hitchPath, absPath);
@@ -841,6 +864,21 @@ async function startHitchBinding({
         // to the hooks rather than risk clearing a session that's just booting.
         if (!Number.isInteger(pid) || pid <= 1) continue;
         if (await isAgentAlive(pid, harness)) continue;
+        const chatId = frontmatterValue(content, "chat-id");
+        if (chatId) {
+          emitLifecycle(
+            () =>
+              lifecycleProducer.sessionEnded({
+                harness: "claude-code",
+                environment: env ?? null,
+                cwd: frontmatterValue(content, "chat-cwd") ?? root.localPath,
+                linkedPath: `tasks/${entry.name}/task.md`,
+                chatId,
+                pid,
+              }),
+            `claude ended ${chatId}`,
+          );
+        }
 
         const next = setFrontmatterKeys(content, {
           "chat-status": undefined,
@@ -948,9 +986,38 @@ async function startHitchBinding({
         }
         const launchKey = linkedPath ?? cmd.launchId ?? cmd._id;
         const launchCwd = cmd.cwd ?? root.localPath;
+        const title = isTaskLinked
+          ? await taskTitle(linkedPath)
+          : promptTitle(cmd.initialPrompt);
+        emitLifecycle(
+          () =>
+            lifecycleProducer.chatCreated({
+              commandId: cmd._id,
+              launchId: cmd.launchId ?? null,
+              harness,
+              environment: launcher.environment,
+              cwd: launchCwd,
+              linkedPath: linkedPath ?? null,
+              title,
+            }),
+          `start-chat ${cmd.launchId ?? cmd._id}`,
+        );
         const onLinked =
           harness === "codex"
             ? async (threadId: string) => {
+                emitLifecycle(
+                  () =>
+                    lifecycleProducer.chatBound({
+                      commandId: cmd._id,
+                      launchId: cmd.launchId ?? null,
+                      harness,
+                      environment: launcher.environment,
+                      cwd: launchCwd,
+                      linkedPath: linkedPath ?? null,
+                      chatId: threadId,
+                    }),
+                  `codex bound ${threadId}`,
+                );
                 if (isTaskLinked) await linkCodexThread(linkedPath, threadId);
                 await bindPendingChat(
                   cmd,
@@ -961,6 +1028,19 @@ async function startHitchBinding({
                 );
               }
             : async (sessionId: string) => {
+                emitLifecycle(
+                  () =>
+                    lifecycleProducer.chatBound({
+                      commandId: cmd._id,
+                      launchId: cmd.launchId ?? null,
+                      harness,
+                      environment: launcher.environment,
+                      cwd: launchCwd,
+                      linkedPath: linkedPath ?? null,
+                      chatId: sessionId,
+                    }),
+                  `claude bound ${sessionId}`,
+                );
                 if (isTaskLinked) {
                   await linkClaudeSession(
                     linkedPath,
@@ -980,6 +1060,19 @@ async function startHitchBinding({
         const onSettled =
           harness === "codex"
             ? async (threadId: string) => {
+                emitLifecycle(
+                  () =>
+                    lifecycleProducer.turnCompleted({
+                      commandId: cmd._id,
+                      launchId: cmd.launchId ?? null,
+                      harness,
+                      environment: launcher.environment,
+                      cwd: launchCwd,
+                      linkedPath: linkedPath ?? null,
+                      chatId: threadId,
+                    }),
+                  `codex completed ${threadId}`,
+                );
                 if (isTaskLinked) await settleCodexThread(linkedPath, threadId);
                 await settlePendingChat(
                   cmd,
@@ -994,7 +1087,7 @@ async function startHitchBinding({
           taskKey: launchKey,
           prompt: cmd.initialPrompt,
           cwd: launchCwd,
-          title: isTaskLinked ? await taskTitle(linkedPath) : promptTitle(cmd.initialPrompt),
+          title,
           model: cmd.model,
           effort: cmd.effort,
           project,
@@ -1075,6 +1168,7 @@ async function startHitchBinding({
       clearInterval(reconcileTimer);
       for (const subscription of subscriptions) unsubscribe(subscription);
       await watcher.close();
+      chatLifecycleStore.close();
     },
   };
 }
