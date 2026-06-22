@@ -8,6 +8,7 @@ import {
   CornerDownLeftIcon,
   FileTextIcon,
   HashIcon,
+  MessageCircleIcon,
   PlusIcon,
 } from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
@@ -46,19 +47,20 @@ export interface PaletteAction {
   onRun: () => void;
 }
 
-export type WorkspaceView = "board" | "notes";
+export type WorkspaceView = "board" | "notes" | "chats";
 
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in
-// App.tsx). Adding a view (e.g. Loops) here lights it up everywhere. Title is
-// what the palette query matches against ("board" / "notes").
+// App.tsx). Adding a view here lights it up everywhere. Title is what the palette
+// query matches against ("board" / "notes" / "chats"). Chats is last per the PRD.
 export const WORKSPACE_VIEWS: {
   view: WorkspaceView;
   title: string;
   Icon: typeof BookIcon;
 }[] = [
-  { view: "board", title: "Tasks", Icon: Columns2Icon },
+  { view: "board", title: "Board", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
+  { view: "chats", title: "Chats", Icon: MessageCircleIcon },
 ];
 
 // Rank by searchable text: prefix > substring. Ties keep input order (already

@@ -69,6 +69,7 @@ import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
+import { ChatsView } from "@/components/ChatsView";
 import {
   CommandPalette,
   WORKSPACE_VIEWS,
@@ -1359,8 +1360,15 @@ function BoardContent({
   const archivedCards = cards.filter((card) => card.archived);
   // Archived count for the active view: tasks on the Board, notes on Notes.
   const archivedNoteCount = noteDocs(files).filter((d) => d.archived).length;
+  // The header's Archived control is board/notes-specific — the Chats tab keeps
+  // its archived group inside its own "View all" screen, so it reads 0 here
+  // (disabling the button) on the Chats view.
   const archivedCount =
-    workspaceView === "board" ? archivedCards.length : archivedNoteCount;
+    workspaceView === "board"
+      ? archivedCards.length
+      : workspaceView === "notes"
+        ? archivedNoteCount
+        : 0;
   const byColumn = Object.fromEntries(
     boardStatuses.map((c) => [
       c.id,
@@ -1825,6 +1833,11 @@ function BoardContent({
             onDeleteTask={(card) => void deleteCard(card)}
             intent={noteIntent}
             onIntentHandled={() => setNoteIntent(null)}
+          />
+        ) : workspaceView === "chats" ? (
+          <ChatsView
+            projectId={projectId}
+            onManageHarnesses={() => openGlobalSettings("harnesses")}
           />
         ) : (
         <DndContext
