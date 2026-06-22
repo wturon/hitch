@@ -124,6 +124,52 @@ interface CommandDoc {
   status: string;
 }
 
+type ChatStatus = "working" | "needs-input" | "waiting" | "idle";
+
+export interface PendingChatBindingArgs {
+  projectId: string;
+  deviceToken: string;
+  launchId: string;
+  harness: Harness;
+  chatId: string;
+  host: string;
+  cwd: string;
+  status: ChatStatus;
+  environment: Environment;
+  resumeKind: "open-chat-command";
+  resumePayload: Record<string, never>;
+  observedAt: number;
+}
+
+export function pendingChatBindingArgs(input: {
+  cmd: { launchId?: string };
+  projectId: string;
+  deviceToken: string;
+  harness: Harness;
+  chatId: string;
+  host: string;
+  cwd: string;
+  status: ChatStatus;
+  environment: Environment;
+  observedAt?: number;
+}): PendingChatBindingArgs | null {
+  if (!input.cmd.launchId) return null;
+  return {
+    projectId: input.projectId,
+    deviceToken: input.deviceToken,
+    launchId: input.cmd.launchId,
+    harness: input.harness,
+    chatId: input.chatId,
+    host: input.host,
+    cwd: input.cwd,
+    status: input.status,
+    environment: input.environment,
+    resumeKind: "open-chat-command",
+    resumePayload: {},
+    observedAt: input.observedAt ?? Date.now(),
+  };
+}
+
 type Unsubscribe = (() => void) | { unsubscribe: () => void };
 
 const defaultLogger: HitchDaemonLogger = {
@@ -716,11 +762,20 @@ async function startHitchBinding({
     cwd: string,
     environment: Environment,
   ): Promise<void> {
-    void cmd;
-    void harness;
-    void sessionId;
-    void cwd;
-    void environment;
+    const args = pendingChatBindingArgs({
+      cmd,
+      projectId,
+      deviceToken,
+      harness,
+      chatId: sessionId,
+      host,
+      cwd,
+      status: "working",
+      environment,
+    });
+    if (args) {
+      await client.mutation(anyApi.chats.bindPendingChat, args);
+    }
     await reduceAndSyncChats("chat-bound");
   }
 
@@ -731,11 +786,20 @@ async function startHitchBinding({
     cwd: string,
     environment: Environment,
   ): Promise<void> {
-    void cmd;
-    void harness;
-    void sessionId;
-    void cwd;
-    void environment;
+    const args = pendingChatBindingArgs({
+      cmd,
+      projectId,
+      deviceToken,
+      harness,
+      chatId: sessionId,
+      host,
+      cwd,
+      status: "waiting",
+      environment,
+    });
+    if (args) {
+      await client.mutation(anyApi.chats.bindPendingChat, args);
+    }
     await reduceAndSyncChats("chat-settled");
   }
 
