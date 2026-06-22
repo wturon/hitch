@@ -7,7 +7,7 @@ import { mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import dotenv from "dotenv";
 import chokidar, { type FSWatcher } from "chokidar";
@@ -467,6 +467,108 @@ async function startHitchBinding({
     }
   }
 
+  async function syncReducedChats(): Promise<number> {
+    const dirtyChats = chatLifecycleStore.listDirtyChats(100);
+    let synced = 0;
+    for (const chat of dirtyChats) {
+      if (!chat.projectId) continue;
+      const convexId = (await client.mutation(anyApi.chats.upsertReducedState, {
+        projectId: chat.projectId,
+        deviceToken,
+        launchId: chat.launchId ?? undefined,
+        harness: chat.harness,
+        chatId: chat.chatId ?? undefined,
+        pending: chat.pending,
+        status: chat.status,
+        title: chat.title,
+        cwd: chat.cwd,
+        host: chat.host,
+        environment: chat.environment ?? undefined,
+        linkedType: chat.linkedType ?? undefined,
+        linkedPath: chat.linkedPath ?? undefined,
+        resumeKind: chat.resumeKind,
+        resumePayload: chat.resumePayload,
+        firstObservedAt: chat.firstObservedAt,
+        lastEventAt: chat.lastEventAt,
+        lastStatusAt: chat.lastStatusAt,
+        endedAt: chat.endedAt ?? undefined,
+      })) as string;
+      chatLifecycleStore.markChatSynced(chat.localKey, { convexId });
+      synced += 1;
+    }
+    return synced;
+  }
+
+  let reducing = false;
+  let reduceAgain = false;
+  async function reduceAndSyncChats(reason: string): Promise<void> {
+    if (reducing) {
+      reduceAgain = true;
+      return;
+    }
+    reducing = true;
+    try {
+      do {
+        reduceAgain = false;
+        let totalReduced = 0;
+        let totalChanged = 0;
+        for (;;) {
+          const result = chatLifecycleStore.reduceLifecycleEvents();
+          totalReduced += result.eventsReduced;
+          totalChanged += result.chatsChanged;
+          if (result.eventsReduced < 100) break;
+        }
+        const synced = await syncReducedChats();
+        if (totalReduced > 0 || synced > 0) {
+          chatLifecycleStore.cleanupReducedEvents();
+          logger.info(
+            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), synced ${synced} chat(s) (${reason})`,
+          );
+        }
+      } while (reduceAgain);
+    } catch (err) {
+      logError(
+        logger,
+        `[hitch:${projectLabel}] chat lifecycle reduce/sync failed (${reason}): ${String(err)}`,
+      );
+    } finally {
+      reducing = false;
+    }
+  }
+
+  let reduceDebounce: NodeJS.Timeout | undefined;
+  function scheduleReduce(reason: string): void {
+    if (reduceDebounce) clearTimeout(reduceDebounce);
+    reduceDebounce = setTimeout(() => {
+      reduceDebounce = undefined;
+      void reduceAndSyncChats(reason);
+    }, 100);
+  }
+
+  void reduceAndSyncChats("startup");
+  const chatReducePollTimer = setInterval(
+    () => void reduceAndSyncChats("poll"),
+    2_000,
+  );
+  const chatBumpName = basename(chatLifecycleStore.paths.bumpPath);
+  function isChatBumpPath(path: string): boolean {
+    return basename(path) === chatBumpName;
+  }
+  const chatBumpWatcher = chokidar.watch(dirname(chatLifecycleStore.paths.bumpPath), {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 25 },
+  });
+  chatBumpWatcher
+    .on("add", (path) => {
+      if (isChatBumpPath(path)) scheduleReduce("bump");
+    })
+    .on("change", (path) => {
+      if (isChatBumpPath(path)) scheduleReduce("bump");
+    })
+    .on("error", (err) =>
+      logError(logger, `[hitch:${projectLabel}] chat bump watcher failed: ${err}`),
+    );
+
   function locate(absPath: string): { rel: string } | null {
     const rel = relative(root.hitchPath, absPath);
     if (rel && !rel.startsWith("..") && !rel.startsWith(sep)) {
@@ -555,20 +657,12 @@ async function startHitchBinding({
     cwd: string,
     environment: Environment,
   ): Promise<void> {
-    if (!cmd.launchId) return;
-    await client.mutation(anyApi.chats.bindPendingChat, {
-      projectId,
-      deviceToken,
-      launchId: cmd.launchId,
-      harness,
-      chatId: sessionId,
-      host: hostname(),
-      cwd,
-      status: "working",
-      environment,
-      resumeKind: "open-chat-command",
-      observedAt: Date.now(),
-    });
+    void cmd;
+    void harness;
+    void sessionId;
+    void cwd;
+    void environment;
+    await reduceAndSyncChats("chat-bound");
   }
 
   async function settlePendingChat(
@@ -578,26 +672,12 @@ async function startHitchBinding({
     cwd: string,
     environment: Environment,
   ): Promise<void> {
-    if (!cmd.launchId) return;
-    const now = Date.now();
-    await client.mutation(anyApi.chats.upsertReducedState, {
-      projectId,
-      deviceToken,
-      launchId: cmd.launchId,
-      harness,
-      chatId: sessionId,
-      pending: false,
-      status: "waiting",
-      title: cmd.initialPrompt ? promptTitle(cmd.initialPrompt) : undefined,
-      cwd,
-      host: hostname(),
-      environment,
-      linkedType: cmd.linkedType,
-      linkedPath: cmd.linkedPath,
-      resumeKind: "open-chat-command",
-      lastEventAt: now,
-      lastStatusAt: now,
-    });
+    void cmd;
+    void harness;
+    void sessionId;
+    void cwd;
+    void environment;
+    await reduceAndSyncChats("chat-settled");
   }
 
   async function pushLocal(absPath: string): Promise<void> {
@@ -1166,7 +1246,10 @@ async function startHitchBinding({
       stopped = true;
       clearInterval(heartbeatTimer);
       clearInterval(reconcileTimer);
+      clearInterval(chatReducePollTimer);
+      if (reduceDebounce) clearTimeout(reduceDebounce);
       for (const subscription of subscriptions) unsubscribe(subscription);
+      await chatBumpWatcher.close();
       await watcher.close();
       chatLifecycleStore.close();
     },

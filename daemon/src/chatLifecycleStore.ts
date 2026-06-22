@@ -95,6 +95,12 @@ export interface LocalChatRow extends Required<LocalChatInput> {
   resumePayload: Record<string, unknown>;
 }
 
+export interface ChatLifecycleReductionResult {
+  eventsReduced: number;
+  chatsChanged: number;
+  cursor: number;
+}
+
 export interface ChatLifecyclePaths {
   appSupportDir: string;
   databasePath: string;
@@ -173,6 +179,10 @@ function booleanInt(value: boolean | undefined, fallback: boolean): number {
 
 function bool(value: unknown): boolean {
   return Number(value) === 1;
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function runInTransaction(db: DatabaseSync, fn: () => void): void {
@@ -323,110 +333,59 @@ export class ChatLifecycleStore {
 
   upsertLocalChat(chat: LocalChatInput): void {
     runInTransaction(this.db, () => {
-      if (chat.launchId) {
+      this.upsertLocalChatUnsafe(chat);
+    });
+  }
+
+  reduceLifecycleEvents(
+    options: { limit?: number; now?: number } = {},
+  ): ChatLifecycleReductionResult {
+    const startedCursor = this.getReducerCursor();
+    const events = this.readEventsAfter(startedCursor, options.limit ?? 100);
+    if (events.length === 0) {
+      return { eventsReduced: 0, chatsChanged: 0, cursor: startedCursor };
+    }
+
+    const now = options.now ?? Date.now();
+    const reducedAt = now;
+    let cursor = startedCursor;
+    let chatsChanged = 0;
+
+    runInTransaction(this.db, () => {
+      for (const event of events) {
+        const next = this.reduceEventToLocalChat(event, now);
+        if (next) {
+          const existing = this.findLocalChatForEvent(event);
+          const changed = !existing || !this.sameReducedChat(existing, next);
+          this.upsertLocalChatUnsafe({
+            ...next,
+            dirty: existing?.dirty || changed,
+            lastSyncedAt: existing?.lastSyncedAt ?? null,
+            convexId: existing?.convexId ?? null,
+            updatedAt: changed || !existing ? now : existing.updatedAt,
+          });
+          if (changed) chatsChanged += 1;
+        }
+
+        this.db
+          .prepare("UPDATE chat_events SET reduced_at = ? WHERE seq = ?")
+          .run(reducedAt, event.seq);
+        cursor = event.seq;
         this.db
           .prepare(
-            `UPDATE local_chats
-             SET local_key = ?
-             WHERE launch_id = ?
-               AND local_key != ?
-               AND NOT EXISTS (
-                 SELECT 1 FROM local_chats AS target
-                 WHERE target.local_key = ?
-               )`,
+            `INSERT INTO meta (key, value)
+             VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
           )
-          .run(chat.localKey, chat.launchId, chat.localKey, chat.localKey);
+          .run(REDUCER_CURSOR_KEY, String(cursor));
       }
-
-      this.db
-        .prepare(
-          `INSERT INTO local_chats (
-            local_key,
-            project_id,
-            launch_id,
-            harness,
-            chat_id,
-            pending,
-            status,
-            title,
-            cwd,
-            host,
-            environment,
-            linked_type,
-            linked_path,
-            resume_kind,
-            resume_payload_json,
-            first_observed_at,
-            last_event_at,
-            last_status_at,
-            ended_at,
-            pinned,
-            pinned_at,
-            archived_at,
-            deleted_at,
-            dirty,
-            last_synced_at,
-            convex_id,
-            updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(local_key) DO UPDATE SET
-            project_id = excluded.project_id,
-            launch_id = excluded.launch_id,
-            harness = excluded.harness,
-            chat_id = excluded.chat_id,
-            pending = excluded.pending,
-            status = excluded.status,
-            title = excluded.title,
-            cwd = excluded.cwd,
-            host = excluded.host,
-            environment = excluded.environment,
-            linked_type = excluded.linked_type,
-            linked_path = excluded.linked_path,
-            resume_kind = excluded.resume_kind,
-            resume_payload_json = excluded.resume_payload_json,
-            first_observed_at = excluded.first_observed_at,
-            last_event_at = excluded.last_event_at,
-            last_status_at = excluded.last_status_at,
-            ended_at = excluded.ended_at,
-            pinned = excluded.pinned,
-            pinned_at = excluded.pinned_at,
-            archived_at = excluded.archived_at,
-            deleted_at = excluded.deleted_at,
-            dirty = excluded.dirty,
-            last_synced_at = excluded.last_synced_at,
-            convex_id = excluded.convex_id,
-            updated_at = excluded.updated_at`,
-        )
-        .run(
-          chat.localKey,
-          chat.projectId,
-          chat.launchId,
-          chat.harness,
-          chat.chatId,
-          booleanInt(chat.pending, false),
-          chat.status,
-          chat.title,
-          chat.cwd,
-          chat.host,
-          chat.environment,
-          chat.linkedType,
-          chat.linkedPath,
-          chat.resumeKind,
-          jsonString(chat.resumePayload),
-          chat.firstObservedAt,
-          chat.lastEventAt,
-          chat.lastStatusAt,
-          chat.endedAt,
-          booleanInt(chat.pinned, false),
-          chat.pinnedAt ?? null,
-          chat.archivedAt ?? null,
-          chat.deletedAt ?? null,
-          booleanInt(chat.dirty, true),
-          chat.lastSyncedAt ?? null,
-          chat.convexId ?? null,
-          chat.updatedAt,
-        );
     });
+
+    return {
+      eventsReduced: events.length,
+      chatsChanged,
+      cursor,
+    };
   }
 
   getLocalChat(localKey: string): LocalChatRow | null {
@@ -593,6 +552,256 @@ export class ChatLifecycleStore {
   private writeBump(seq: number): void {
     mkdirSync(dirname(this.paths.bumpPath), { recursive: true });
     writeFileSync(this.paths.bumpPath, `${seq}\n`, "utf8");
+  }
+
+  private upsertLocalChatUnsafe(chat: LocalChatInput): void {
+    if (chat.launchId) {
+      this.db
+        .prepare(
+          `UPDATE local_chats
+           SET local_key = ?
+           WHERE launch_id = ?
+             AND local_key != ?
+             AND NOT EXISTS (
+               SELECT 1 FROM local_chats AS target
+               WHERE target.local_key = ?
+             )`,
+        )
+        .run(chat.localKey, chat.launchId, chat.localKey, chat.localKey);
+    }
+
+    this.db
+      .prepare(
+        `INSERT INTO local_chats (
+          local_key,
+          project_id,
+          launch_id,
+          harness,
+          chat_id,
+          pending,
+          status,
+          title,
+          cwd,
+          host,
+          environment,
+          linked_type,
+          linked_path,
+          resume_kind,
+          resume_payload_json,
+          first_observed_at,
+          last_event_at,
+          last_status_at,
+          ended_at,
+          pinned,
+          pinned_at,
+          archived_at,
+          deleted_at,
+          dirty,
+          last_synced_at,
+          convex_id,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(local_key) DO UPDATE SET
+          project_id = excluded.project_id,
+          launch_id = excluded.launch_id,
+          harness = excluded.harness,
+          chat_id = excluded.chat_id,
+          pending = excluded.pending,
+          status = excluded.status,
+          title = excluded.title,
+          cwd = excluded.cwd,
+          host = excluded.host,
+          environment = excluded.environment,
+          linked_type = excluded.linked_type,
+          linked_path = excluded.linked_path,
+          resume_kind = excluded.resume_kind,
+          resume_payload_json = excluded.resume_payload_json,
+          first_observed_at = excluded.first_observed_at,
+          last_event_at = excluded.last_event_at,
+          last_status_at = excluded.last_status_at,
+          ended_at = excluded.ended_at,
+          pinned = excluded.pinned,
+          pinned_at = excluded.pinned_at,
+          archived_at = excluded.archived_at,
+          deleted_at = excluded.deleted_at,
+          dirty = excluded.dirty,
+          last_synced_at = excluded.last_synced_at,
+          convex_id = excluded.convex_id,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        chat.localKey,
+        chat.projectId,
+        chat.launchId,
+        chat.harness,
+        chat.chatId,
+        booleanInt(chat.pending, false),
+        chat.status,
+        chat.title,
+        chat.cwd,
+        chat.host,
+        chat.environment,
+        chat.linkedType,
+        chat.linkedPath,
+        chat.resumeKind,
+        jsonString(chat.resumePayload),
+        chat.firstObservedAt,
+        chat.lastEventAt,
+        chat.lastStatusAt,
+        chat.endedAt,
+        booleanInt(chat.pinned, false),
+        chat.pinnedAt ?? null,
+        chat.archivedAt ?? null,
+        chat.deletedAt ?? null,
+        booleanInt(chat.dirty, true),
+        chat.lastSyncedAt ?? null,
+        chat.convexId ?? null,
+        chat.updatedAt,
+      );
+  }
+
+  private localKeyForEvent(event: ChatLifecycleEventRow): string | null {
+    if (event.chatId) {
+      return `chat:${event.harness}:${event.host}:${event.chatId}`;
+    }
+    if (event.launchId) return `launch:${event.launchId}`;
+    return null;
+  }
+
+  private findLocalChatForEvent(event: ChatLifecycleEventRow): LocalChatRow | null {
+    if (event.chatId) {
+      const byChat = this.getLocalChat(
+        `chat:${event.harness}:${event.host}:${event.chatId}`,
+      );
+      if (byChat) return byChat;
+    }
+    if (event.launchId) {
+      const row = this.db
+        .prepare("SELECT * FROM local_chats WHERE launch_id = ?")
+        .get(event.launchId);
+      if (row) return this.localChatFromRow(row);
+    }
+    const localKey = this.localKeyForEvent(event);
+    return localKey ? this.getLocalChat(localKey) : null;
+  }
+
+  private reduceEventToLocalChat(
+    event: ChatLifecycleEventRow,
+    now: number,
+  ): LocalChatInput | null {
+    const localKey = this.localKeyForEvent(event);
+    if (!localKey) return null;
+
+    const existing = this.findLocalChatForEvent(event);
+    const environment =
+      optionalString(event.metadata.environment) ?? existing?.environment ?? null;
+    const linkedType =
+      event.metadata.linkedType === "task" || event.metadata.linkedType === "note"
+        ? event.metadata.linkedType
+        : existing?.linkedType ?? null;
+    const linkedPath =
+      optionalString(event.metadata.linkedPath) ?? existing?.linkedPath ?? null;
+    const title =
+      optionalString(event.metadata.title) ??
+      existing?.title ??
+      (event.harness === "codex"
+        ? "Untitled Codex chat"
+        : "Untitled Claude Code chat");
+    const status = this.statusForEvent(event, existing?.status);
+    const statusChanged = !existing || existing.status !== status;
+    const endedAt =
+      event.lifecycle === "session.ended"
+        ? event.observedAt
+        : existing?.endedAt ?? null;
+    const pending = event.chatId ? false : existing?.pending ?? true;
+    const chatId = event.chatId ?? existing?.chatId ?? null;
+
+    return {
+      localKey,
+      projectId: event.projectId ?? existing?.projectId ?? null,
+      launchId: event.launchId ?? existing?.launchId ?? null,
+      harness: event.harness,
+      chatId,
+      pending,
+      status,
+      title,
+      cwd: event.cwd || existing?.cwd || "",
+      host: event.host || existing?.host || "",
+      environment,
+      linkedType,
+      linkedPath,
+      resumeKind: existing?.resumeKind ?? "open-chat-command",
+      resumePayload: {
+        ...(existing?.resumePayload ?? {}),
+        launchId: event.launchId ?? existing?.launchId ?? null,
+        chatId,
+        cwd: event.cwd || existing?.cwd || "",
+        linkedPath,
+      },
+      firstObservedAt: Math.min(existing?.firstObservedAt ?? event.observedAt, event.observedAt),
+      lastEventAt: Math.max(existing?.lastEventAt ?? event.observedAt, event.observedAt),
+      lastStatusAt: statusChanged
+        ? event.observedAt
+        : existing?.lastStatusAt ?? event.observedAt,
+      endedAt,
+      pinned: existing?.pinned ?? false,
+      pinnedAt: existing?.pinnedAt ?? null,
+      archivedAt: existing?.archivedAt ?? null,
+      deletedAt: existing?.deletedAt ?? null,
+      dirty: true,
+      lastSyncedAt: existing?.lastSyncedAt ?? null,
+      convexId: existing?.convexId ?? null,
+      updatedAt: now,
+    };
+  }
+
+  private statusForEvent(
+    event: ChatLifecycleEventRow,
+    fallback: ChatLifecycleStatus | undefined,
+  ): ChatLifecycleStatus {
+    if (event.status) return event.status;
+    if (event.lifecycle === "session.ended") return "idle";
+    if (event.lifecycle === "turn.needs_input") return "needs-input";
+    if (event.lifecycle === "turn.completed") return "waiting";
+    if (
+      event.lifecycle === "chat.created" ||
+      event.lifecycle === "chat.bound" ||
+      event.lifecycle === "turn.started" ||
+      event.lifecycle === "turn.resumed" ||
+      event.lifecycle === "session.started"
+    ) {
+      return "working";
+    }
+    return fallback ?? "waiting";
+  }
+
+  private sameReducedChat(existing: LocalChatRow, next: LocalChatInput): boolean {
+    return (
+      existing.localKey === next.localKey &&
+      existing.projectId === next.projectId &&
+      existing.launchId === next.launchId &&
+      existing.harness === next.harness &&
+      existing.chatId === next.chatId &&
+      existing.pending === next.pending &&
+      existing.status === next.status &&
+      existing.title === next.title &&
+      existing.cwd === next.cwd &&
+      existing.host === next.host &&
+      existing.environment === next.environment &&
+      existing.linkedType === next.linkedType &&
+      existing.linkedPath === next.linkedPath &&
+      existing.resumeKind === next.resumeKind &&
+      JSON.stringify(existing.resumePayload) ===
+        JSON.stringify(next.resumePayload ?? {}) &&
+      existing.firstObservedAt === next.firstObservedAt &&
+      existing.lastEventAt === next.lastEventAt &&
+      existing.lastStatusAt === next.lastStatusAt &&
+      existing.endedAt === next.endedAt &&
+      existing.pinned === (next.pinned ?? false) &&
+      existing.pinnedAt === (next.pinnedAt ?? null) &&
+      existing.archivedAt === (next.archivedAt ?? null) &&
+      existing.deletedAt === (next.deletedAt ?? null)
+    );
   }
 
   private eventFromRow(row: unknown): ChatLifecycleEventRow {
