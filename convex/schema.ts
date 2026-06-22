@@ -113,4 +113,53 @@ export default defineSchema({
   })
     .index("by_project", ["projectId"])
     .index("by_project_status", ["projectId", "status"]),
+
+  // Synced chat registry rows reduced from local lifecycle observations. Hitch
+  // tracks metadata and resume handles; harnesses still own transcripts.
+  chats: defineTable({
+    projectId: v.id("projects"),
+    launchId: v.optional(v.string()),
+    harness: v.union(v.literal("claude-code"), v.literal("codex")),
+    chatId: v.optional(v.string()),
+    pending: v.boolean(),
+    status: v.union(
+      v.literal("working"),
+      v.literal("needs-input"),
+      v.literal("waiting"),
+      v.literal("idle"),
+    ),
+    title: v.string(),
+    cwd: v.string(),
+    host: v.string(),
+    environment: v.optional(
+      v.union(
+        v.literal("cmux"),
+        v.literal("codex-app"),
+        v.literal("vscode"),
+        v.literal("cursor"),
+        v.literal("t3code"),
+      ),
+    ),
+    linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
+    linkedPath: v.optional(v.string()),
+    resumeKind: v.union(v.literal("open-chat-command"), v.literal("external")),
+    resumePayload: v.optional(v.any()),
+    firstObservedAt: v.number(),
+    lastEventAt: v.number(),
+    lastStatusAt: v.number(),
+    endedAt: v.optional(v.number()),
+    pinned: v.optional(v.boolean()),
+    pinnedAt: v.optional(v.number()),
+    archivedAt: v.optional(v.number()),
+    deletedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_project", ["projectId"])
+    .index("by_project_status", ["projectId", "status"])
+    .index("by_project_updated", ["projectId", "updatedAt"])
+    .index("by_project_pinned", ["projectId", "pinned", "pinnedAt"])
+    .index("by_project_archived", ["projectId", "archivedAt"])
+    .index("by_project_launch", ["projectId", "launchId"])
+    .index("by_project_chat", ["projectId", "harness", "chatId", "host"]),
 });

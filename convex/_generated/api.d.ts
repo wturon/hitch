@@ -11,6 +11,7 @@
 import type * as attachments from "../attachments.js";
 import type * as auth from "../auth.js";
 import type * as authz from "../authz.js";
+import type * as chats from "../chats.js";
 import type * as commands from "../commands.js";
 import type * as deviceTokens from "../deviceTokens.js";
 import type * as files from "../files.js";
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   attachments: typeof attachments;
   auth: typeof auth;
   authz: typeof authz;
+  chats: typeof chats;
   commands: typeof commands;
   deviceTokens: typeof deviceTokens;
   files: typeof files;
