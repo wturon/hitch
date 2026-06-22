@@ -183,6 +183,26 @@ async function requireProjectChat(
   return { chat, project: access.project };
 }
 
+function resumeCommandForChat(
+  chat: Pick<Chat, "projectId" | "host" | "harness" | "chatId" | "cwd">,
+  now: number,
+) {
+  if (!chat.chatId) {
+    throw new Error("Chat is not ready to resume");
+  }
+  return {
+    projectId: chat.projectId,
+    host: chat.host === "unknown" ? undefined : chat.host,
+    kind: "open-chat",
+    harness: chat.harness,
+    sessionId: chat.chatId,
+    cwd: chat.cwd,
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 async function projectChats(
   ctx: QueryCtx,
   args: {
@@ -503,6 +523,25 @@ export const upsertReducedState = mutation({
       createdAt: now,
       updatedAt: now,
     });
+  },
+});
+
+export const resumeChat = mutation({
+  args: {
+    projectId: v.id("projects"),
+    id: v.id("chats"),
+  },
+  handler: async (ctx, args) => {
+    const { chat } = await requireProjectChat(ctx, args);
+    if (chat.pending) {
+      throw new Error("Chat is still starting");
+    }
+    if (chat.resumeKind !== "open-chat-command") {
+      throw new Error("Chat does not support command-based resume");
+    }
+
+    const now = Date.now();
+    return await ctx.db.insert("commands", resumeCommandForChat(chat, now));
   },
 });
 
