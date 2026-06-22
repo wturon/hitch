@@ -18,6 +18,7 @@ import { CmuxError, setCmuxLogger } from "./cmux.js";
 import { closeCodexAppServer } from "./codex.js";
 import { openChatLifecycleStore } from "./chatLifecycleStore.js";
 import { DaemonLifecycleProducer } from "./chatLifecycleProducers.js";
+import { titleFromInitialPrompt } from "./chatTitles.js";
 import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
 import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
@@ -741,20 +742,6 @@ async function startHitchBinding({
     logger.info(`[hitch:${projectLabel}] linked claude session ${sessionId} → ${path}`);
   }
 
-  async function taskTitle(path: string): Promise<string | undefined> {
-    try {
-      return frontmatterValue(await readFile(toAbs(path), "utf8"), "title");
-    } catch {
-      return undefined;
-    }
-  }
-
-  function promptTitle(prompt: string): string {
-    const normalized = prompt.replace(/\s+/g, " ").trim();
-    if (normalized.length <= 72) return normalized;
-    return `${normalized.slice(0, 69).trimEnd()}...`;
-  }
-
   async function bindPendingChat(
     cmd: CommandDoc,
     harness: Harness,
@@ -1179,9 +1166,7 @@ async function startHitchBinding({
         }
         const launchKey = linkedPath ?? cmd.launchId ?? cmd._id;
         const launchCwd = cmd.cwd ?? root.localPath;
-        const title = isTaskLinked
-          ? await taskTitle(linkedPath)
-          : promptTitle(cmd.initialPrompt);
+        const title = titleFromInitialPrompt(cmd.initialPrompt, harness);
         emitLifecycle(
           () =>
             lifecycleProducer.chatCreated({

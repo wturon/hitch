@@ -20,6 +20,7 @@
     "smoke:chat-lifecycle-hook-fixtures": "tsx scripts/chat-lifecycle-hook-fixtures-smoke.ts",
     "smoke:chat-lifecycle-producers": "tsx scripts/chat-lifecycle-producers-smoke.ts",
     "smoke:chat-lifecycle-reducer": "tsx scripts/chat-lifecycle-reducer-smoke.ts",
+    "smoke:chat-title": "tsx scripts/chat-title-smoke.ts",
     "smoke:chat-frontmatter-projection": "tsx scripts/chat-frontmatter-projection-smoke.ts",
     "smoke:chat-pending-binding": "tsx scripts/chat-pending-binding-smoke.ts",
     "smoke:chat-lifecycle-wakeup": "tsx scripts/chat-lifecycle-wakeup-smoke.ts",
