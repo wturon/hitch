@@ -407,6 +407,20 @@ export class ChatLifecycleStore {
       .map((row) => this.localChatFromRow(row));
   }
 
+  listTaskLinkedChats(projectId: string, limit = 500): LocalChatRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM local_chats
+         WHERE project_id = ?
+           AND linked_type = 'task'
+           AND linked_path IS NOT NULL
+         ORDER BY updated_at ASC
+         LIMIT ?`,
+      )
+      .all(projectId, limit)
+      .map((row) => this.localChatFromRow(row));
+  }
+
   markChatDirty(localKey: string, updatedAt = Date.now()): void {
     this.db
       .prepare(
