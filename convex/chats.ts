@@ -297,10 +297,7 @@ export const startChat = mutation({
     const access = await requireProjectMemberById(ctx, args.projectId);
     const now = Date.now();
     const id = launchId();
-    const { linkedType, linkedPath } = normalizeLink(
-      args.linkedType,
-      args.linkedPath,
-    );
+    const link = normalizeLink(args.linkedType, args.linkedPath);
     const cwd = args.cwd ?? "";
     const host = args.host ?? "unknown";
     const title = normalizeTitle(args.initialPrompt, args.harness);
@@ -314,8 +311,8 @@ export const startChat = mutation({
       title,
       cwd,
       host,
-      linkedType,
-      linkedPath,
+      linkedType: link.linkedType,
+      linkedPath: link.linkedPath,
       resumeKind: "open-chat-command",
       resumePayload: {},
       firstObservedAt: now,
@@ -331,9 +328,9 @@ export const startChat = mutation({
       kind: "start-chat",
       harness: args.harness,
       launchId: id,
-      path: linkedType === "task" ? linkedPath : undefined,
-      linkedType,
-      linkedPath,
+      path: link.linkedType === "task" ? link.linkedPath : undefined,
+      linkedType: link.linkedType,
+      linkedPath: link.linkedPath,
       initialPrompt: args.initialPrompt,
       cwd: args.cwd,
       model: args.model,
