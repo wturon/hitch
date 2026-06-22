@@ -109,8 +109,11 @@ interface CommandDoc {
   kind: string;
   harness: string;
   environment?: string; // unset in release 1; daemon derives from harness default
+  launchId?: string;
   sessionId?: string;
   path?: string;
+  linkedType?: "task" | "note";
+  linkedPath?: string;
   initialPrompt?: string;
   cwd?: string;
   model?: string; // start-chat kickoff: model to launch
@@ -516,6 +519,64 @@ async function startHitchBinding({
     }
   }
 
+  function promptTitle(prompt: string): string {
+    const normalized = prompt.replace(/\s+/g, " ").trim();
+    if (normalized.length <= 72) return normalized;
+    return `${normalized.slice(0, 69).trimEnd()}...`;
+  }
+
+  async function bindPendingChat(
+    cmd: CommandDoc,
+    harness: Harness,
+    sessionId: string,
+    cwd: string,
+    environment: Environment,
+  ): Promise<void> {
+    if (!cmd.launchId) return;
+    await client.mutation(anyApi.chats.bindPendingChat, {
+      projectId,
+      deviceToken,
+      launchId: cmd.launchId,
+      harness,
+      chatId: sessionId,
+      host: hostname(),
+      cwd,
+      status: "working",
+      environment,
+      resumeKind: "open-chat-command",
+      observedAt: Date.now(),
+    });
+  }
+
+  async function settlePendingChat(
+    cmd: CommandDoc,
+    harness: Harness,
+    sessionId: string,
+    cwd: string,
+    environment: Environment,
+  ): Promise<void> {
+    if (!cmd.launchId) return;
+    const now = Date.now();
+    await client.mutation(anyApi.chats.upsertReducedState, {
+      projectId,
+      deviceToken,
+      launchId: cmd.launchId,
+      harness,
+      chatId: sessionId,
+      pending: false,
+      status: "waiting",
+      title: cmd.initialPrompt ? promptTitle(cmd.initialPrompt) : undefined,
+      cwd,
+      host: hostname(),
+      environment,
+      linkedType: cmd.linkedType,
+      linkedPath: cmd.linkedPath,
+      resumeKind: "open-chat-command",
+      lastEventAt: now,
+      lastStatusAt: now,
+    });
+  }
+
   async function pushLocal(absPath: string): Promise<void> {
     const loc = locate(absPath);
     if (!loc) return;
@@ -878,23 +939,62 @@ async function startHitchBinding({
         if (!launcher.startNew) {
           throw new Error(`start-chat not supported for ${cmd.harness}`);
         }
-        if (!cmd.path) throw new Error("start-chat requires path");
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
-        const path = cmd.path;
+        const linkedType = cmd.linkedType ?? (cmd.path ? "task" : undefined);
+        const linkedPath = cmd.linkedPath ?? cmd.path;
+        const isTaskLinked = linkedType === "task" && linkedPath !== undefined;
+        if (!isTaskLinked && !cmd.launchId) {
+          throw new Error("start-chat requires path or launchId");
+        }
+        const launchKey = linkedPath ?? cmd.launchId ?? cmd._id;
+        const launchCwd = cmd.cwd ?? root.localPath;
         const onLinked =
           harness === "codex"
-              ? (threadId: string) => linkCodexThread(path, threadId)
-              : (sessionId: string) =>
-                  linkClaudeSession(path, sessionId, root.localPath, launcher.environment);
+            ? async (threadId: string) => {
+                if (isTaskLinked) await linkCodexThread(linkedPath, threadId);
+                await bindPendingChat(
+                  cmd,
+                  harness,
+                  threadId,
+                  launchCwd,
+                  launcher.environment,
+                );
+              }
+            : async (sessionId: string) => {
+                if (isTaskLinked) {
+                  await linkClaudeSession(
+                    linkedPath,
+                    sessionId,
+                    launchCwd,
+                    launcher.environment,
+                  );
+                }
+                await bindPendingChat(
+                  cmd,
+                  harness,
+                  sessionId,
+                  launchCwd,
+                  launcher.environment,
+                );
+              };
         const onSettled =
           harness === "codex"
-              ? (threadId: string) => settleCodexThread(path, threadId)
-              : undefined;
+            ? async (threadId: string) => {
+                if (isTaskLinked) await settleCodexThread(linkedPath, threadId);
+                await settlePendingChat(
+                  cmd,
+                  harness,
+                  threadId,
+                  launchCwd,
+                  launcher.environment,
+                );
+              }
+            : undefined;
         const { result } = await launcher.startNew({
-          taskKey: path,
+          taskKey: launchKey,
           prompt: cmd.initialPrompt,
-          cwd: root.localPath,
-          title: await taskTitle(path),
+          cwd: launchCwd,
+          title: isTaskLinked ? await taskTitle(linkedPath) : promptTitle(cmd.initialPrompt),
           model: cmd.model,
           effort: cmd.effort,
           project,
@@ -904,7 +1004,7 @@ async function startHitchBinding({
         });
         await complete(cmd, "done", result);
         logger.info(
-          `[hitch:${projectLabel}] ⮑ start-chat ${harness} ${path} → ${result}`,
+          `[hitch:${projectLabel}] ⮑ start-chat ${harness} ${launchKey} → ${result}`,
         );
       } else {
         await complete(
