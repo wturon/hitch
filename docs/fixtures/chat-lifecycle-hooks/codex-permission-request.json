@@ -1,0 +1,11 @@
+{
+  "session_id": "codex-thread-01KTEST000000000000000000",
+  "cwd": "/Users/example/project",
+  "hook_event_name": "PermissionRequest",
+  "turn_id": "turn_01",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm install",
+    "description": "Requires network access"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "session_id": "codex-thread-01KTEST000000000000000000",
+  "cwd": "/Users/example/project",
+  "hook_event_name": "UserPromptSubmit",
+  "turn_id": "turn_01",
+  "prompt": "Tiny fixture prompt."
+}

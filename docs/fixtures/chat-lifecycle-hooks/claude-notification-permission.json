@@ -1,0 +1,9 @@
+{
+  "session_id": "claude-session-01KTEST000000000000000000",
+  "transcript_path": "/Users/example/.claude/projects/example/claude-session-01KTEST000000000000000000.jsonl",
+  "cwd": "/Users/example/project",
+  "permission_mode": "default",
+  "hook_event_name": "Notification",
+  "notification_type": "permission_prompt",
+  "message": "Claude needs permission to use Bash"
+}
