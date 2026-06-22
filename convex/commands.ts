@@ -13,8 +13,11 @@ export const enqueueCommand = mutation({
     host: v.optional(v.string()),
     kind: v.string(),
     harness: v.string(),
+    launchId: v.optional(v.string()),
     sessionId: v.optional(v.string()),
     path: v.optional(v.string()),
+    linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
+    linkedPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()),
     cwd: v.optional(v.string()),
     // start-chat kickoff parameters. Passed to the harness at launch only;
@@ -26,8 +29,12 @@ export const enqueueCommand = mutation({
     const access = await requireProjectMemberById(ctx, args.projectId);
     const now = Date.now();
     const { projectId: _projectId, ...command } = args;
+    const linkedType = command.linkedType ?? (command.path ? "task" : undefined);
+    const linkedPath = command.linkedPath ?? command.path;
     return await ctx.db.insert("commands", {
       ...command,
+      linkedType,
+      linkedPath,
       projectId: access.project._id,
       status: "pending",
       createdAt: now,

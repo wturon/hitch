@@ -99,8 +99,11 @@ export default defineSchema({
     host: v.optional(v.string()), // target machine; unset = any daemon for the project
     kind: v.string(), // "open-chat" (resume existing) | "start-chat" (spawn fresh)
     harness: v.string(), // "claude-code" | "codex"
+    launchId: v.optional(v.string()), // start-chat: pending chat row correlation id
     sessionId: v.optional(v.string()), // the chat to resume; unset for start-chat
     path: v.optional(v.string()), // start-chat: the task's rel path (dedup)
+    linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
+    linkedPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()), // start-chat: seed prompt for the new session
     cwd: v.optional(v.string()),
     model: v.optional(v.string()), // start-chat: model to launch (kickoff only)

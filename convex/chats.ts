@@ -1,15 +1,41 @@
-import { query } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { requireProjectAccess } from "./authz";
+import {
+  requireProjectAccess,
+  requireProjectMemberById,
+} from "./authz";
 
 type Chat = Doc<"chats">;
+type Harness = Chat["harness"];
+type LinkedType = NonNullable<Chat["linkedType"]>;
 
 const DEFAULT_HOME_LIMIT = 20;
 const DEFAULT_PINNED_LIMIT = 20;
 const DEFAULT_HISTORY_LIMIT = 100;
 const MAX_LIMIT = 250;
+const MAX_TITLE_LENGTH = 72;
+
+const harnessValidator = v.union(v.literal("claude-code"), v.literal("codex"));
+const statusValidator = v.union(
+  v.literal("working"),
+  v.literal("needs-input"),
+  v.literal("waiting"),
+  v.literal("idle"),
+);
+const environmentValidator = v.union(
+  v.literal("cmux"),
+  v.literal("codex-app"),
+  v.literal("vscode"),
+  v.literal("cursor"),
+  v.literal("t3code"),
+);
+const linkedTypeValidator = v.union(v.literal("task"), v.literal("note"));
+const resumeKindValidator = v.union(
+  v.literal("open-chat-command"),
+  v.literal("external"),
+);
 
 function clampLimit(value: number | undefined, fallback: number) {
   if (value === undefined) return fallback;
@@ -83,6 +109,78 @@ function matchesSearch(chat: Chat, search: string | undefined) {
   const needle = search?.trim().toLowerCase();
   if (!needle) return true;
   return searchableText(chat).includes(needle);
+}
+
+function normalizeTitle(value: string | undefined, harness: Harness) {
+  const fallback =
+    harness === "codex" ? "Untitled Codex chat" : "Untitled Claude Code chat";
+  const normalized = value?.replace(/\s+/g, " ").trim() || fallback;
+  if (normalized.length <= MAX_TITLE_LENGTH) return normalized;
+  return `${normalized.slice(0, MAX_TITLE_LENGTH - 3).trimEnd()}...`;
+}
+
+function launchId() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `launch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeLink(
+  linkedType: LinkedType | undefined,
+  linkedPath: string | undefined,
+) {
+  if (!linkedType && !linkedPath) return {};
+  if (!linkedType || !linkedPath) {
+    throw new Error("Both linkedType and linkedPath are required for chat links");
+  }
+  return { linkedType, linkedPath };
+}
+
+async function chatByLaunch(
+  ctx: MutationCtx,
+  projectId: Id<"projects">,
+  value: string,
+) {
+  return await ctx.db
+    .query("chats")
+    .withIndex("by_project_launch", (q) =>
+      q.eq("projectId", projectId).eq("launchId", value),
+    )
+    .unique();
+}
+
+async function chatByHarnessId(
+  ctx: MutationCtx,
+  args: {
+    projectId: Id<"projects">;
+    harness: Harness;
+    chatId: string;
+    host: string;
+  },
+) {
+  return await ctx.db
+    .query("chats")
+    .withIndex("by_project_chat", (q) =>
+      q
+        .eq("projectId", args.projectId)
+        .eq("harness", args.harness)
+        .eq("chatId", args.chatId)
+        .eq("host", args.host),
+    )
+    .unique();
+}
+
+async function requireProjectChat(
+  ctx: MutationCtx,
+  args: { id: Id<"chats">; projectId: Id<"projects"> },
+) {
+  const access = await requireProjectMemberById(ctx, args.projectId);
+  const chat = await ctx.db.get(args.id);
+  if (!chat || chat.projectId !== access.project._id || isDeleted(chat)) {
+    throw new Error("Chat not found");
+  }
+  return { chat, project: access.project };
 }
 
 async function projectChats(
@@ -180,5 +278,285 @@ export const getChat = query({
       return null;
     }
     return chat;
+  },
+});
+
+export const startChat = mutation({
+  args: {
+    projectId: v.id("projects"),
+    harness: harnessValidator,
+    initialPrompt: v.string(),
+    cwd: v.optional(v.string()),
+    host: v.optional(v.string()),
+    model: v.optional(v.string()),
+    effort: v.optional(v.string()),
+    linkedType: v.optional(linkedTypeValidator),
+    linkedPath: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectMemberById(ctx, args.projectId);
+    const now = Date.now();
+    const id = launchId();
+    const { linkedType, linkedPath } = normalizeLink(
+      args.linkedType,
+      args.linkedPath,
+    );
+    const cwd = args.cwd ?? "";
+    const host = args.host ?? "unknown";
+    const title = normalizeTitle(args.initialPrompt, args.harness);
+
+    const chatId = await ctx.db.insert("chats", {
+      projectId: access.project._id,
+      launchId: id,
+      harness: args.harness,
+      pending: true,
+      status: "working",
+      title,
+      cwd,
+      host,
+      linkedType,
+      linkedPath,
+      resumeKind: "open-chat-command",
+      resumePayload: {},
+      firstObservedAt: now,
+      lastEventAt: now,
+      lastStatusAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const commandId = await ctx.db.insert("commands", {
+      projectId: access.project._id,
+      host: args.host,
+      kind: "start-chat",
+      harness: args.harness,
+      launchId: id,
+      path: linkedType === "task" ? linkedPath : undefined,
+      linkedType,
+      linkedPath,
+      initialPrompt: args.initialPrompt,
+      cwd: args.cwd,
+      model: args.model,
+      effort: args.effort,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { chatId, commandId, launchId: id };
+  },
+});
+
+export const bindPendingChat = mutation({
+  args: {
+    projectId: v.id("projects"),
+    deviceToken: v.string(),
+    launchId: v.string(),
+    harness: harnessValidator,
+    chatId: v.string(),
+    host: v.string(),
+    cwd: v.optional(v.string()),
+    status: v.optional(statusValidator),
+    environment: v.optional(environmentValidator),
+    resumeKind: v.optional(resumeKindValidator),
+    resumePayload: v.optional(v.any()),
+    observedAt: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const { project } = await requireProjectAccess(
+      ctx,
+      args.projectId,
+      args.deviceToken,
+    );
+    if (!project) throw new Error("Project does not exist");
+
+    const existing = await chatByHarnessId(ctx, {
+      projectId: project._id,
+      harness: args.harness,
+      chatId: args.chatId,
+      host: args.host,
+    });
+    const pending = await chatByLaunch(ctx, project._id, args.launchId);
+    if (!pending) throw new Error("Pending chat not found");
+    if (pending.projectId !== project._id) throw new Error("Chat project mismatch");
+    if (pending.harness !== args.harness) throw new Error("Chat harness mismatch");
+    if (existing && existing._id !== pending._id) {
+      throw new Error("Chat is already bound to another row");
+    }
+
+    const now = Date.now();
+    const observedAt = args.observedAt ?? now;
+    await ctx.db.patch(pending._id, {
+      chatId: args.chatId,
+      pending: false,
+      status: args.status ?? pending.status,
+      cwd: args.cwd ?? pending.cwd,
+      host: args.host,
+      environment: args.environment ?? pending.environment,
+      resumeKind: args.resumeKind ?? pending.resumeKind,
+      resumePayload: args.resumePayload ?? pending.resumePayload,
+      lastEventAt: Math.max(pending.lastEventAt, observedAt),
+      lastStatusAt:
+        args.status && args.status !== pending.status
+          ? observedAt
+          : pending.lastStatusAt,
+      updatedAt: now,
+    });
+
+    return pending._id;
+  },
+});
+
+export const upsertReducedState = mutation({
+  args: {
+    projectId: v.id("projects"),
+    deviceToken: v.string(),
+    launchId: v.optional(v.string()),
+    harness: harnessValidator,
+    chatId: v.optional(v.string()),
+    pending: v.optional(v.boolean()),
+    status: statusValidator,
+    title: v.optional(v.string()),
+    cwd: v.string(),
+    host: v.string(),
+    environment: v.optional(environmentValidator),
+    linkedType: v.optional(linkedTypeValidator),
+    linkedPath: v.optional(v.string()),
+    resumeKind: v.optional(resumeKindValidator),
+    resumePayload: v.optional(v.any()),
+    firstObservedAt: v.optional(v.number()),
+    lastEventAt: v.number(),
+    lastStatusAt: v.optional(v.number()),
+    endedAt: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const { project } = await requireProjectAccess(
+      ctx,
+      args.projectId,
+      args.deviceToken,
+    );
+    if (!project) throw new Error("Project does not exist");
+    if (!args.launchId && !args.chatId) {
+      throw new Error("Either launchId or chatId is required");
+    }
+
+    const { linkedType, linkedPath } = normalizeLink(
+      args.linkedType,
+      args.linkedPath,
+    );
+    const now = Date.now();
+    const byChat =
+      args.chatId === undefined
+        ? null
+        : await chatByHarnessId(ctx, {
+            projectId: project._id,
+            harness: args.harness,
+            chatId: args.chatId,
+            host: args.host,
+          });
+    const byLaunch =
+      args.launchId === undefined
+        ? null
+        : await chatByLaunch(ctx, project._id, args.launchId);
+    const existing = byChat ?? byLaunch;
+    if (byChat && byLaunch && byChat._id !== byLaunch._id) {
+      throw new Error("Reduced chat identifiers match different rows");
+    }
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        launchId: args.launchId ?? existing.launchId,
+        chatId: args.chatId ?? existing.chatId,
+        pending: args.pending ?? (args.chatId ? false : existing.pending),
+        status: args.status,
+        title: normalizeTitle(args.title ?? existing.title, args.harness),
+        cwd: args.cwd,
+        host: args.host,
+        environment: args.environment,
+        linkedType,
+        linkedPath,
+        resumeKind: args.resumeKind ?? existing.resumeKind,
+        resumePayload: args.resumePayload ?? existing.resumePayload,
+        lastEventAt: args.lastEventAt,
+        lastStatusAt: args.lastStatusAt ?? args.lastEventAt,
+        endedAt: args.endedAt,
+        updatedAt: now,
+      });
+      return existing._id;
+    }
+
+    return await ctx.db.insert("chats", {
+      projectId: project._id,
+      launchId: args.launchId,
+      harness: args.harness,
+      chatId: args.chatId,
+      pending: args.pending ?? args.chatId === undefined,
+      status: args.status,
+      title: normalizeTitle(args.title, args.harness),
+      cwd: args.cwd,
+      host: args.host,
+      environment: args.environment,
+      linkedType,
+      linkedPath,
+      resumeKind: args.resumeKind ?? "open-chat-command",
+      resumePayload: args.resumePayload ?? {},
+      firstObservedAt: args.firstObservedAt ?? args.lastEventAt,
+      lastEventAt: args.lastEventAt,
+      lastStatusAt: args.lastStatusAt ?? args.lastEventAt,
+      endedAt: args.endedAt,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+
+export const setPinned = mutation({
+  args: {
+    projectId: v.id("projects"),
+    id: v.id("chats"),
+    pinned: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const { chat } = await requireProjectChat(ctx, args);
+    const now = Date.now();
+    await ctx.db.patch(chat._id, {
+      pinned: args.pinned,
+      pinnedAt: args.pinned ? now : undefined,
+      updatedAt: now,
+    });
+    return chat._id;
+  },
+});
+
+export const setArchived = mutation({
+  args: {
+    projectId: v.id("projects"),
+    id: v.id("chats"),
+    archived: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const { chat } = await requireProjectChat(ctx, args);
+    const now = Date.now();
+    await ctx.db.patch(chat._id, {
+      archivedAt: args.archived ? now : undefined,
+      updatedAt: now,
+    });
+    return chat._id;
+  },
+});
+
+export const deleteChat = mutation({
+  args: {
+    projectId: v.id("projects"),
+    id: v.id("chats"),
+  },
+  handler: async (ctx, args) => {
+    const { chat } = await requireProjectChat(ctx, args);
+    const now = Date.now();
+    await ctx.db.patch(chat._id, {
+      deletedAt: now,
+      updatedAt: now,
+    });
+    return chat._id;
   },
 });
