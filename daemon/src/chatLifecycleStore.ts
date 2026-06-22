@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { normalizeChatTitle } from "./chatTitles.js";
 
 export type ChatLifecycleStatus =
   | "working"
@@ -715,12 +716,10 @@ export class ChatLifecycleStore {
         : existing?.linkedType ?? null;
     const linkedPath =
       optionalString(event.metadata.linkedPath) ?? existing?.linkedPath ?? null;
-    const title =
-      optionalString(event.metadata.title) ??
-      existing?.title ??
-      (event.harness === "codex"
-        ? "Untitled Codex chat"
-        : "Untitled Claude Code chat");
+    const title = normalizeChatTitle(
+      optionalString(event.metadata.title) ?? existing?.title,
+      event.harness,
+    );
     const status = this.statusForEvent(event, existing?.status);
     const statusChanged = !existing || existing.status !== status;
     const endedAt =
