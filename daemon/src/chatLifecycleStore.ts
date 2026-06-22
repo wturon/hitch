@@ -322,94 +322,111 @@ export class ChatLifecycleStore {
   }
 
   upsertLocalChat(chat: LocalChatInput): void {
-    this.db
-      .prepare(
-        `INSERT INTO local_chats (
-          local_key,
-          project_id,
-          launch_id,
-          harness,
-          chat_id,
-          pending,
-          status,
-          title,
-          cwd,
-          host,
-          environment,
-          linked_type,
-          linked_path,
-          resume_kind,
-          resume_payload_json,
-          first_observed_at,
-          last_event_at,
-          last_status_at,
-          ended_at,
-          pinned,
-          pinned_at,
-          archived_at,
-          deleted_at,
-          dirty,
-          last_synced_at,
-          convex_id,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(local_key) DO UPDATE SET
-          project_id = excluded.project_id,
-          launch_id = excluded.launch_id,
-          harness = excluded.harness,
-          chat_id = excluded.chat_id,
-          pending = excluded.pending,
-          status = excluded.status,
-          title = excluded.title,
-          cwd = excluded.cwd,
-          host = excluded.host,
-          environment = excluded.environment,
-          linked_type = excluded.linked_type,
-          linked_path = excluded.linked_path,
-          resume_kind = excluded.resume_kind,
-          resume_payload_json = excluded.resume_payload_json,
-          first_observed_at = excluded.first_observed_at,
-          last_event_at = excluded.last_event_at,
-          last_status_at = excluded.last_status_at,
-          ended_at = excluded.ended_at,
-          pinned = excluded.pinned,
-          pinned_at = excluded.pinned_at,
-          archived_at = excluded.archived_at,
-          deleted_at = excluded.deleted_at,
-          dirty = excluded.dirty,
-          last_synced_at = excluded.last_synced_at,
-          convex_id = excluded.convex_id,
-          updated_at = excluded.updated_at`,
-      )
-      .run(
-        chat.localKey,
-        chat.projectId,
-        chat.launchId,
-        chat.harness,
-        chat.chatId,
-        booleanInt(chat.pending, false),
-        chat.status,
-        chat.title,
-        chat.cwd,
-        chat.host,
-        chat.environment,
-        chat.linkedType,
-        chat.linkedPath,
-        chat.resumeKind,
-        jsonString(chat.resumePayload),
-        chat.firstObservedAt,
-        chat.lastEventAt,
-        chat.lastStatusAt,
-        chat.endedAt,
-        booleanInt(chat.pinned, false),
-        chat.pinnedAt ?? null,
-        chat.archivedAt ?? null,
-        chat.deletedAt ?? null,
-        booleanInt(chat.dirty, true),
-        chat.lastSyncedAt ?? null,
-        chat.convexId ?? null,
-        chat.updatedAt,
-      );
+    runInTransaction(this.db, () => {
+      if (chat.launchId) {
+        this.db
+          .prepare(
+            `UPDATE local_chats
+             SET local_key = ?
+             WHERE launch_id = ?
+               AND local_key != ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM local_chats AS target
+                 WHERE target.local_key = ?
+               )`,
+          )
+          .run(chat.localKey, chat.launchId, chat.localKey, chat.localKey);
+      }
+
+      this.db
+        .prepare(
+          `INSERT INTO local_chats (
+            local_key,
+            project_id,
+            launch_id,
+            harness,
+            chat_id,
+            pending,
+            status,
+            title,
+            cwd,
+            host,
+            environment,
+            linked_type,
+            linked_path,
+            resume_kind,
+            resume_payload_json,
+            first_observed_at,
+            last_event_at,
+            last_status_at,
+            ended_at,
+            pinned,
+            pinned_at,
+            archived_at,
+            deleted_at,
+            dirty,
+            last_synced_at,
+            convex_id,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(local_key) DO UPDATE SET
+            project_id = excluded.project_id,
+            launch_id = excluded.launch_id,
+            harness = excluded.harness,
+            chat_id = excluded.chat_id,
+            pending = excluded.pending,
+            status = excluded.status,
+            title = excluded.title,
+            cwd = excluded.cwd,
+            host = excluded.host,
+            environment = excluded.environment,
+            linked_type = excluded.linked_type,
+            linked_path = excluded.linked_path,
+            resume_kind = excluded.resume_kind,
+            resume_payload_json = excluded.resume_payload_json,
+            first_observed_at = excluded.first_observed_at,
+            last_event_at = excluded.last_event_at,
+            last_status_at = excluded.last_status_at,
+            ended_at = excluded.ended_at,
+            pinned = excluded.pinned,
+            pinned_at = excluded.pinned_at,
+            archived_at = excluded.archived_at,
+            deleted_at = excluded.deleted_at,
+            dirty = excluded.dirty,
+            last_synced_at = excluded.last_synced_at,
+            convex_id = excluded.convex_id,
+            updated_at = excluded.updated_at`,
+        )
+        .run(
+          chat.localKey,
+          chat.projectId,
+          chat.launchId,
+          chat.harness,
+          chat.chatId,
+          booleanInt(chat.pending, false),
+          chat.status,
+          chat.title,
+          chat.cwd,
+          chat.host,
+          chat.environment,
+          chat.linkedType,
+          chat.linkedPath,
+          chat.resumeKind,
+          jsonString(chat.resumePayload),
+          chat.firstObservedAt,
+          chat.lastEventAt,
+          chat.lastStatusAt,
+          chat.endedAt,
+          booleanInt(chat.pinned, false),
+          chat.pinnedAt ?? null,
+          chat.archivedAt ?? null,
+          chat.deletedAt ?? null,
+          booleanInt(chat.dirty, true),
+          chat.lastSyncedAt ?? null,
+          chat.convexId ?? null,
+          chat.updatedAt,
+        );
+    });
   }
 
   getLocalChat(localKey: string): LocalChatRow | null {

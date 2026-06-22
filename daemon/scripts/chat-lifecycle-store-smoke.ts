@@ -130,6 +130,60 @@ try {
   store.markChatDirty("chat:codex:host-1:chat-1", now + 3);
   assert.equal(store.listDirtyChats().length, 1);
 
+  store.upsertLocalChat({
+    localKey: "launch:launch-1",
+    projectId: "project-1",
+    launchId: "launch-1",
+    harness: "claude-code",
+    chatId: null,
+    pending: true,
+    status: "working",
+    title: "Pending chat",
+    cwd: "/tmp/project",
+    host: "host-1",
+    environment: "cmux",
+    linkedType: null,
+    linkedPath: null,
+    resumeKind: "open-chat-command",
+    resumePayload: { commandId: "command-2" },
+    firstObservedAt: now,
+    lastEventAt: now,
+    lastStatusAt: now,
+    endedAt: null,
+    dirty: true,
+    updatedAt: now,
+  });
+
+  store.upsertLocalChat({
+    localKey: "chat:claude-code:host-1:session-1",
+    projectId: "project-1",
+    launchId: "launch-1",
+    harness: "claude-code",
+    chatId: "session-1",
+    pending: false,
+    status: "working",
+    title: "Pending chat",
+    cwd: "/tmp/project",
+    host: "host-1",
+    environment: "cmux",
+    linkedType: null,
+    linkedPath: null,
+    resumeKind: "open-chat-command",
+    resumePayload: { commandId: "command-2" },
+    firstObservedAt: now,
+    lastEventAt: now + 4,
+    lastStatusAt: now + 4,
+    endedAt: null,
+    dirty: true,
+    updatedAt: now + 4,
+  });
+
+  assert.equal(store.getLocalChat("launch:launch-1"), null);
+  const boundChat = store.getLocalChat("chat:claude-code:host-1:session-1");
+  assert.equal(boundChat?.launchId, "launch-1");
+  assert.equal(boundChat?.chatId, "session-1");
+  assert.equal(boundChat?.pending, false);
+
   const deleted = store.cleanupReducedEvents({ now });
   assert.equal(deleted, 2);
   assert.equal(store.readEventsAfter(0).length, 0);
