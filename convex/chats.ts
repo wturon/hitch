@@ -440,10 +440,7 @@ export const upsertReducedState = mutation({
       throw new Error("Either launchId or chatId is required");
     }
 
-    const { linkedType, linkedPath } = normalizeLink(
-      args.linkedType,
-      args.linkedPath,
-    );
+    const link = normalizeLink(args.linkedType, args.linkedPath);
     const now = Date.now();
     const byChat =
       args.chatId === undefined
@@ -472,14 +469,16 @@ export const upsertReducedState = mutation({
         title: normalizeTitle(args.title ?? existing.title, args.harness),
         cwd: args.cwd,
         host: args.host,
-        environment: args.environment,
-        linkedType,
-        linkedPath,
+        environment: args.environment ?? existing.environment,
+        linkedType:
+          "linkedType" in link ? link.linkedType : existing.linkedType,
+        linkedPath:
+          "linkedPath" in link ? link.linkedPath : existing.linkedPath,
         resumeKind: args.resumeKind ?? existing.resumeKind,
         resumePayload: args.resumePayload ?? existing.resumePayload,
         lastEventAt: args.lastEventAt,
         lastStatusAt: args.lastStatusAt ?? args.lastEventAt,
-        endedAt: args.endedAt,
+        endedAt: args.endedAt ?? existing.endedAt,
         updatedAt: now,
       });
       return existing._id;
@@ -496,8 +495,8 @@ export const upsertReducedState = mutation({
       cwd: args.cwd,
       host: args.host,
       environment: args.environment,
-      linkedType,
-      linkedPath,
+      linkedType: link.linkedType,
+      linkedPath: link.linkedPath,
       resumeKind: args.resumeKind ?? "open-chat-command",
       resumePayload: args.resumePayload ?? {},
       firstObservedAt: args.firstObservedAt ?? args.lastEventAt,
