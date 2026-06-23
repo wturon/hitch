@@ -61,6 +61,37 @@ export default defineSchema({
     .index("by_project", ["projectId"])
     .index("by_key", ["projectId", "path"]),
 
+  // Derived read model for synced `.hitch/automations/<slug>/index.md`
+  // definitions. The markdown file remains the editable source of truth; this
+  // table stores normalized frontmatter and schedule state for UI/scheduler
+  // reads.
+  automations: defineTable({
+    projectId: v.id("projects"),
+    automationPath: v.string(),
+    name: v.string(),
+    enabled: v.boolean(),
+    schedule: v.string(),
+    timezone: v.string(),
+    harness: v.string(),
+    model: v.optional(v.string()),
+    effort: v.optional(v.string()),
+    prompt: v.string(),
+    lastScheduledAt: v.optional(v.number()),
+    nextRunAt: v.optional(v.number()),
+    lastRunId: v.optional(v.string()),
+    validationError: v.optional(v.string()),
+    deleted: v.boolean(),
+    sourceUpdatedAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_project", ["projectId"])
+    .index("by_key", ["projectId", "automationPath"])
+    .index("by_project_enabled_next_run", [
+      "projectId",
+      "enabled",
+      "nextRunAt",
+    ]),
+
   // One row per image attachment in a task folder. Unlike `files`, the bytes
   // live in Convex file storage (blobs), not in a text column — base64 in a
   // ~1 MiB document would blow up on typical screenshots. `path` is relative to
