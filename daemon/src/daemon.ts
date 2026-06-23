@@ -306,6 +306,18 @@ const ATTACHMENT_RE = /^(?:tasks|notes)\/[^/]+\/attachments(\/|$)/;
 // A single attachment file's path, used to scope empty-folder pruning.
 const ATTACHMENT_FILE_RE = /^(?:tasks|notes)\/[^/]+\/attachments\/[^/]+$/;
 
+// The canonical body file of each primitive that owns a per-slug folder: a
+// task's task.md, a note's index.md, an automation's index.md. When one of
+// these is deleted its folder is now empty, so we try to prune the dir behind
+// it. Keep automations here so deleting a routine cleans up
+// `automations/<slug>/` instead of leaving an empty husk on disk.
+const PRUNABLE_BODY_RE =
+  /^(?:tasks\/[^/]+\/task\.md|notes\/[^/]+\/index\.md|automations\/[^/]+\/index\.md)$/;
+
+export function isPrunableBodyPath(relPath: string): boolean {
+  return PRUNABLE_BODY_RE.test(relPath);
+}
+
 function setFrontmatterKeys(
   content: string,
   updates: Record<string, string | undefined>,
@@ -907,12 +919,11 @@ async function startHitchBinding({
     await pruneEmptyTaskDir(loc.rel, absPath);
   }
 
-  // Remove the now-empty folder left behind when a task's task.md or a note's
-  // index.md is deleted. rmdir fails on a non-empty dir — that's the signal to
-  // stop, not an error.
+  // Remove the now-empty folder left behind when a task's task.md, a note's
+  // index.md, or an automation's index.md is deleted. rmdir fails on a non-empty
+  // dir — that's the signal to stop, not an error.
   async function pruneEmptyTaskDir(relPath: string, absPath: string): Promise<void> {
-    if (!/^(?:tasks\/[^/]+\/task\.md|notes\/[^/]+\/index\.md)$/.test(relPath))
-      return;
+    if (!isPrunableBodyPath(relPath)) return;
 
     try {
       await rmdir(dirname(absPath));
