@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireProjectAccess, requireUser } from "./authz";
+import { projectSyncedAutomationFile } from "./automations";
 
 // Insert or update a file by its (projectId, path) key. A delete is just an
 // upsert with deleted: true (a tombstone) so other machines learn to remove the
@@ -28,13 +29,14 @@ export const upsertFile = mutation({
       )
       .unique();
 
+    const updatedAt = Date.now();
     const doc = {
       projectId: access.project._id,
       path: args.path,
       content: args.content,
       hash: args.hash,
       deleted: args.deleted,
-      updatedAt: Date.now(),
+      updatedAt,
     };
     if (existing) {
       if (existing.hash === args.hash && existing.deleted === args.deleted) {
@@ -44,6 +46,13 @@ export const upsertFile = mutation({
     } else {
       await ctx.db.insert("files", doc);
     }
+    await projectSyncedAutomationFile(ctx, {
+      projectId: access.project._id,
+      path: args.path,
+      content: args.content,
+      deleted: args.deleted,
+      sourceUpdatedAt: updatedAt,
+    });
   },
 });
 

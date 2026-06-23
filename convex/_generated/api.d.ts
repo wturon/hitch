@@ -11,6 +11,8 @@
 import type * as attachments from "../attachments.js";
 import type * as auth from "../auth.js";
 import type * as authz from "../authz.js";
+import type * as automationDefinitions from "../automationDefinitions.js";
+import type * as automations from "../automations.js";
 import type * as chats from "../chats.js";
 import type * as commands from "../commands.js";
 import type * as crons from "../crons.js";
@@ -31,6 +33,8 @@ declare const fullApi: ApiFromModules<{
   attachments: typeof attachments;
   auth: typeof auth;
   authz: typeof authz;
+  automationDefinitions: typeof automationDefinitions;
+  automations: typeof automations;
   chats: typeof chats;
   commands: typeof commands;
   crons: typeof crons;
