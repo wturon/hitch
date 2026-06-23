@@ -105,6 +105,7 @@ export default defineSchema({
     linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
     linkedPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()), // start-chat: seed prompt for the new session
+    title: v.optional(v.string()), // start-chat: Hitch display placeholder
     cwd: v.optional(v.string()),
     model: v.optional(v.string()), // start-chat: model to launch (kickoff only)
     effort: v.optional(v.string()), // start-chat: reasoning/effort level (kickoff only)

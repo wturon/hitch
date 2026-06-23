@@ -61,6 +61,7 @@ export interface StartStandaloneChatInput {
   projectId: Id<"projects">;
   harness: Harness;
   initialPrompt: string;
+  title?: string;
   cwd?: string;
   host?: string;
   model?: string;

@@ -375,7 +375,10 @@ Mutation behavior:
 
 - Generate `launchId`.
 - Create `chats` row with `pending: true`, `chatId` unset, `status: "working"`,
-  `title` derived from the first prompt, and link fields when present.
+  `title` derived from an explicit launch placeholder when present, otherwise
+  the first prompt, and link fields when present. Task-linked launches should
+  pass the task title as the placeholder; standalone chats fall back to the
+  first prompt until the harness exposes its own title.
 - Enqueue a `commands` row with `kind: "start-chat"`, `launchId`, `harness`,
   `initialPrompt`, `cwd`, `model`, `effort`, `linkedType`, and `linkedPath`.
 - Return `{ chatId: Id<"chats">, commandId: Id<"commands">, launchId }`.
