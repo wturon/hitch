@@ -36,7 +36,11 @@ const environmentValidator = v.union(
   v.literal("cursor"),
   v.literal("t3code"),
 );
-const linkedTypeValidator = v.union(v.literal("task"), v.literal("note"));
+const linkedTypeValidator = v.union(
+  v.literal("task"),
+  v.literal("note"),
+  v.literal("automation"),
+);
 const resumeKindValidator = v.union(
   v.literal("open-chat-command"),
   v.literal("external"),

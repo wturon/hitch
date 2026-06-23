@@ -6,7 +6,7 @@ import { harnessLabel } from "@/lib/chat";
 
 export type StoredChatStatus = ChatStatus | "idle";
 export type ChatDisplayStatus = "working" | "needs-input" | "idle";
-export type ChatLinkedType = "task" | "note";
+export type ChatLinkedType = "task" | "note" | "automation";
 export type ChatResumeKind = "open-chat-command" | "external";
 
 export type ChatHomeQuery = FunctionReturnType<typeof api.chats.listHome>;

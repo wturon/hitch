@@ -91,7 +91,36 @@ export default defineSchema({
       "projectId",
       "enabled",
       "nextRunAt",
+    ])
+    .index("by_enabled_next_run", [
+      "enabled",
+      "nextRunAt",
     ]),
+
+  automationRuns: defineTable({
+    projectId: v.id("projects"),
+    automationId: v.id("automations"),
+    automationPath: v.string(),
+    trigger: v.union(v.literal("schedule"), v.literal("manual")),
+    scheduledFor: v.number(),
+    startedAt: v.optional(v.number()),
+    endedAt: v.optional(v.number()),
+    commandId: v.optional(v.id("commands")),
+    chatId: v.optional(v.id("chats")),
+    launchId: v.optional(v.string()),
+    status: v.union(
+      v.literal("running"),
+      v.literal("done"),
+      v.literal("skipped"),
+    ),
+    skipReason: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_project", ["projectId"])
+    .index("by_automation", ["automationId"])
+    .index("by_automation_status", ["automationId", "status"])
+    .index("by_command", ["commandId"]),
 
   // One row per image attachment in a task folder. Unlike `files`, the bytes
   // live in Convex file storage (blobs), not in a text column — base64 in a
@@ -134,7 +163,9 @@ export default defineSchema({
     launchId: v.optional(v.string()), // start-chat: pending chat row correlation id
     sessionId: v.optional(v.string()), // the chat to resume; unset for start-chat
     path: v.optional(v.string()), // start-chat: the task's rel path (dedup)
-    linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
+    linkedType: v.optional(
+      v.union(v.literal("task"), v.literal("note"), v.literal("automation")),
+    ),
     linkedPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()), // start-chat: seed prompt for the new session
     title: v.optional(v.string()), // start-chat: Hitch display placeholder
@@ -182,7 +213,9 @@ export default defineSchema({
         v.literal("t3code"),
       ),
     ),
-    linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
+    linkedType: v.optional(
+      v.union(v.literal("task"), v.literal("note"), v.literal("automation")),
+    ),
     linkedPath: v.optional(v.string()),
     resumeKind: v.union(v.literal("open-chat-command"), v.literal("external")),
     resumePayload: v.optional(v.any()),

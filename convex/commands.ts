@@ -1,4 +1,6 @@
 import { internalMutation, mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
   requireProjectAccess,
@@ -49,6 +51,26 @@ function observableCommand<
   };
 }
 
+async function markAutomationRunForCommand(
+  ctx: MutationCtx,
+  commandId: Id<"commands">,
+  patch: {
+    status: "done" | "skipped";
+    endedAt: number;
+    skipReason?: string;
+  },
+) {
+  const run = await ctx.db
+    .query("automationRuns")
+    .withIndex("by_command", (q) => q.eq("commandId", commandId))
+    .unique();
+  if (!run || run.status !== "running") return;
+  await ctx.db.patch(run._id, {
+    ...patch,
+    updatedAt: patch.endedAt,
+  });
+}
+
 // Enqueue an action for a daemon to run locally (the browser can't open a
 // terminal itself). Returns the new command's id so the caller can watch it.
 export const enqueueCommand = mutation({
@@ -60,7 +82,9 @@ export const enqueueCommand = mutation({
     launchId: v.optional(v.string()),
     sessionId: v.optional(v.string()),
     path: v.optional(v.string()),
-    linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
+    linkedType: v.optional(
+      v.union(v.literal("task"), v.literal("note"), v.literal("automation")),
+    ),
     linkedPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()),
     title: v.optional(v.string()),
@@ -173,6 +197,11 @@ export const expireStaleCommands = mutation({
       .take(EXPIRE_BATCH_LIMIT);
     for (const command of stale) {
       await ctx.db.patch(command._id, expirePatch(now));
+      await markAutomationRunForCommand(ctx, command._id, {
+        status: "skipped",
+        skipReason: "command-expired-before-claim",
+        endedAt: now,
+      });
     }
     return stale.length;
   },
@@ -191,6 +220,11 @@ export const expireStaleCommandsForAllProjects = internalMutation({
       .take(EXPIRE_BATCH_LIMIT);
     for (const command of stale) {
       await ctx.db.patch(command._id, expirePatch(now));
+      await markAutomationRunForCommand(ctx, command._id, {
+        status: "skipped",
+        skipReason: "command-expired-before-claim",
+        endedAt: now,
+      });
     }
     return stale.length;
   },
@@ -229,11 +263,17 @@ export const completeCommand = mutation({
     ) {
       throw new Error("Command claim mismatch");
     }
+    const now = Date.now();
     await ctx.db.patch(args.id, {
       status: args.status,
       result: args.result,
       errorCode: args.errorCode,
-      updatedAt: Date.now(),
+      updatedAt: now,
+    });
+    await markAutomationRunForCommand(ctx, args.id, {
+      status: args.status === "done" ? "done" : "skipped",
+      skipReason: args.status === "done" ? undefined : "command-error",
+      endedAt: now,
     });
   },
 });
