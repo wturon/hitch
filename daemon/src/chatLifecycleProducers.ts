@@ -17,6 +17,7 @@ export interface DaemonLifecycleProducerOptions {
 export interface DaemonLifecycleEventBase {
   commandId?: string;
   launchId?: string | null;
+  automationRunId?: string | null;
   harness: ChatLifecycleHarness;
   environment?: string | null;
   cwd: string;
@@ -106,6 +107,7 @@ export class DaemonLifecycleProducer {
       metadata: {
         commandId: input.commandId ?? null,
         launchId: input.launchId ?? null,
+        automationRunId: input.automationRunId ?? null,
         environment: input.environment ?? null,
         linkedType: linkedType(input.linkedPath),
         linkedPath: input.linkedPath ?? null,
@@ -126,6 +128,7 @@ export class DaemonLifecycleProducer {
       metadata: {
         commandId: input.commandId ?? null,
         launchId: input.launchId ?? null,
+        automationRunId: input.automationRunId ?? null,
         environment: input.environment ?? null,
         linkedType: linkedType(input.linkedPath),
         linkedPath: input.linkedPath ?? null,
@@ -145,6 +148,7 @@ export class DaemonLifecycleProducer {
       metadata: {
         commandId: input.commandId ?? null,
         launchId: input.launchId ?? null,
+        automationRunId: input.automationRunId ?? null,
         environment: input.environment ?? null,
         linkedType: linkedType(input.linkedPath),
         linkedPath: input.linkedPath ?? null,
@@ -165,6 +169,7 @@ export class DaemonLifecycleProducer {
       metadata: {
         commandId: input.commandId ?? null,
         launchId: input.launchId ?? null,
+        automationRunId: input.automationRunId ?? null,
         environment: input.environment ?? null,
         linkedType: linkedType(input.linkedPath),
         linkedPath: input.linkedPath ?? null,

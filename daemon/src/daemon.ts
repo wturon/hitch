@@ -117,6 +117,7 @@ interface CommandDoc {
   harness: string;
   environment?: string; // unset in release 1; daemon derives from harness default
   launchId?: string;
+  automationRunId?: string;
   sessionId?: string;
   path?: string;
   linkedType?: "task" | "note" | "automation";
@@ -138,6 +139,7 @@ export interface PendingChatBindingArgs {
   projectId: string;
   deviceToken: string;
   launchId: string;
+  automationRunId?: string;
   harness: Harness;
   chatId: string;
   host: string;
@@ -150,7 +152,7 @@ export interface PendingChatBindingArgs {
 }
 
 export function pendingChatBindingArgs(input: {
-  cmd: { launchId?: string };
+  cmd: { launchId?: string; automationRunId?: string };
   projectId: string;
   deviceToken: string;
   harness: Harness;
@@ -166,6 +168,9 @@ export function pendingChatBindingArgs(input: {
     projectId: input.projectId,
     deviceToken: input.deviceToken,
     launchId: input.cmd.launchId,
+    ...(input.cmd.automationRunId
+      ? { automationRunId: input.cmd.automationRunId }
+      : {}),
     harness: input.harness,
     chatId: input.chatId,
     host: input.host,
@@ -575,6 +580,10 @@ async function startHitchBinding({
         projectId: chat.projectId,
         deviceToken,
         launchId: chat.launchId ?? undefined,
+        automationRunId:
+          typeof chat.resumePayload.automationRunId === "string"
+            ? chat.resumePayload.automationRunId
+            : undefined,
         harness: chat.harness,
         chatId: chat.chatId ?? undefined,
         pending: chat.pending,
@@ -1246,6 +1255,7 @@ async function startHitchBinding({
             lifecycleProducer.chatCreated({
               commandId: cmd._id,
               launchId: cmd.launchId ?? null,
+              automationRunId: cmd.automationRunId ?? null,
               harness,
               environment: launcher.environment,
               cwd: launchCwd,
@@ -1262,6 +1272,7 @@ async function startHitchBinding({
                     lifecycleProducer.chatBound({
                       commandId: cmd._id,
                       launchId: cmd.launchId ?? null,
+                      automationRunId: cmd.automationRunId ?? null,
                       harness,
                       environment: launcher.environment,
                       cwd: launchCwd,
@@ -1285,6 +1296,7 @@ async function startHitchBinding({
                     lifecycleProducer.chatBound({
                       commandId: cmd._id,
                       launchId: cmd.launchId ?? null,
+                      automationRunId: cmd.automationRunId ?? null,
                       harness,
                       environment: launcher.environment,
                       cwd: launchCwd,
@@ -1320,6 +1332,7 @@ async function startHitchBinding({
                     lifecycleProducer.turnCompleted({
                       commandId: cmd._id,
                       launchId: cmd.launchId ?? null,
+                      automationRunId: cmd.automationRunId ?? null,
                       harness,
                       environment: launcher.environment,
                       cwd: launchCwd,

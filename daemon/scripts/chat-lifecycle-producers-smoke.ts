@@ -22,6 +22,7 @@ try {
     producer.chatCreated({
       commandId: "cmd-1",
       launchId: "launch-1",
+      automationRunId: "run-1",
       harness: "codex",
       environment: "codex-app",
       cwd: "/tmp/project",
@@ -35,6 +36,7 @@ try {
     producer.chatBound({
       commandId: "cmd-1",
       launchId: "launch-1",
+      automationRunId: "run-1",
       harness: "codex",
       environment: "codex-app",
       cwd: "/tmp/project",
@@ -48,6 +50,7 @@ try {
     producer.chatBound({
       commandId: "cmd-1",
       launchId: "launch-1",
+      automationRunId: "run-1",
       harness: "codex",
       environment: "codex-app",
       cwd: "/tmp/project",
@@ -61,6 +64,7 @@ try {
     producer.turnCompleted({
       commandId: "cmd-1",
       launchId: "launch-1",
+      automationRunId: "run-1",
       harness: "codex",
       environment: "codex-app",
       cwd: "/tmp/project",
@@ -100,6 +104,7 @@ try {
     ],
   );
   assert.equal(events[1]?.metadata.linkedPath, "tasks/example/task.md");
+  assert.equal(events[2]?.metadata.automationRunId, "run-1");
   assert.equal(events[3]?.metadata.pid, 1234);
 
   store.close();

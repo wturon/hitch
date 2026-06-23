@@ -162,6 +162,7 @@ export default defineSchema({
     kind: v.string(), // "open-chat" (resume existing) | "start-chat" (spawn fresh)
     harness: v.string(), // "claude-code" | "codex"
     launchId: v.optional(v.string()), // start-chat: pending chat row correlation id
+    automationRunId: v.optional(v.id("automationRuns")),
     sessionId: v.optional(v.string()), // the chat to resume; unset for start-chat
     path: v.optional(v.string()), // start-chat: the task's rel path (dedup)
     linkedType: v.optional(

@@ -755,6 +755,9 @@ export class ChatLifecycleStore {
         : existing?.linkedType ?? null;
     const linkedPath =
       optionalString(event.metadata.linkedPath) ?? existing?.linkedPath ?? null;
+    const automationRunId =
+      optionalString(event.metadata.automationRunId) ??
+      optionalString(existing?.resumePayload.automationRunId);
     const title = normalizeChatTitle(
       optionalString(event.metadata.title) ?? existing?.title,
       event.harness,
@@ -789,6 +792,7 @@ export class ChatLifecycleStore {
         chatId,
         cwd: event.cwd || existing?.cwd || "",
         linkedPath,
+        automationRunId,
       },
       firstObservedAt: Math.min(existing?.firstObservedAt ?? event.observedAt, event.observedAt),
       lastEventAt: Math.max(existing?.lastEventAt ?? event.observedAt, event.observedAt),
