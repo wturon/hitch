@@ -120,7 +120,8 @@ export default defineSchema({
     .index("by_project", ["projectId"])
     .index("by_automation", ["automationId"])
     .index("by_automation_status", ["automationId", "status"])
-    .index("by_command", ["commandId"]),
+    .index("by_command", ["commandId"])
+    .index("by_launch", ["launchId"]),
 
   // One row per image attachment in a task folder. Unlike `files`, the bytes
   // live in Convex file storage (blobs), not in a text column — base64 in a

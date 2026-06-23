@@ -54,8 +54,14 @@ function launchId(input: DaemonLifecycleEventBase): string | null {
   return input.launchId ?? fallbackLaunchId(input.commandId);
 }
 
-function linkedType(path: string | null | undefined): "task" | null {
-  return path ? "task" : null;
+function linkedType(
+  path: string | null | undefined,
+): "task" | "note" | "automation" | null {
+  if (!path) return null;
+  if (path.startsWith("tasks/")) return "task";
+  if (path.startsWith("notes/")) return "note";
+  if (path.startsWith("automations/")) return "automation";
+  return null;
 }
 
 function eventId(

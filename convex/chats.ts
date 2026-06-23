@@ -159,6 +159,35 @@ async function chatByLaunch(
     .unique();
 }
 
+async function markAutomationRunSettledForLaunch(
+  ctx: MutationCtx,
+  args: {
+    projectId: Id<"projects">;
+    launchId: string | undefined;
+    chatId: Id<"chats">;
+    endedAt: number;
+  },
+) {
+  if (!args.launchId) return;
+  const run = await ctx.db
+    .query("automationRuns")
+    .withIndex("by_launch", (q) => q.eq("launchId", args.launchId))
+    .unique();
+  if (!run || run.projectId !== args.projectId || run.status !== "running") {
+    return;
+  }
+  await ctx.db.patch(run._id, {
+    status: "done",
+    endedAt: args.endedAt,
+    chatId: args.chatId,
+    updatedAt: args.endedAt,
+  });
+}
+
+function isSettledStatus(status: Chat["status"]) {
+  return status === "waiting" || status === "idle";
+}
+
 async function chatByHarnessId(
   ctx: MutationCtx,
   args: {
@@ -433,6 +462,16 @@ export const bindPendingChat = mutation({
       updatedAt: now,
     });
 
+    const nextStatus = args.status ?? pending.status;
+    if (isSettledStatus(nextStatus)) {
+      await markAutomationRunSettledForLaunch(ctx, {
+        projectId: project._id,
+        launchId: args.launchId,
+        chatId: pending._id,
+        endedAt: observedAt,
+      });
+    }
+
     return pending._id;
   },
 });
@@ -511,10 +550,18 @@ export const upsertReducedState = mutation({
         endedAt: args.endedAt ?? existing.endedAt,
         updatedAt: now,
       });
+      if (args.launchId && isSettledStatus(args.status)) {
+        await markAutomationRunSettledForLaunch(ctx, {
+          projectId: project._id,
+          launchId: args.launchId,
+          chatId: existing._id,
+          endedAt: args.lastStatusAt ?? args.lastEventAt,
+        });
+      }
       return existing._id;
     }
 
-    return await ctx.db.insert("chats", {
+    const id = await ctx.db.insert("chats", {
       projectId: project._id,
       launchId: args.launchId,
       harness: args.harness,
@@ -536,6 +583,15 @@ export const upsertReducedState = mutation({
       createdAt: now,
       updatedAt: now,
     });
+    if (args.launchId && isSettledStatus(args.status)) {
+      await markAutomationRunSettledForLaunch(ctx, {
+        projectId: project._id,
+        launchId: args.launchId,
+        chatId: id,
+        endedAt: args.lastStatusAt ?? args.lastEventAt,
+      });
+    }
+    return id;
   },
 });
 

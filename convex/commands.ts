@@ -270,11 +270,13 @@ export const completeCommand = mutation({
       errorCode: args.errorCode,
       updatedAt: now,
     });
-    await markAutomationRunForCommand(ctx, args.id, {
-      status: args.status === "done" ? "done" : "skipped",
-      skipReason: args.status === "done" ? undefined : "command-error",
-      endedAt: now,
-    });
+    if (args.status !== "done") {
+      await markAutomationRunForCommand(ctx, args.id, {
+        status: "skipped",
+        skipReason: "command-error",
+        endedAt: now,
+      });
+    }
   },
 });
 
