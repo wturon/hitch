@@ -518,9 +518,11 @@ function ChatSection({
 export function ChatsView({
   projectId,
   onManageHarnesses,
+  onExit,
 }: {
   projectId: Id<"projects">;
   onManageHarnesses?: () => void;
+  onExit: () => void;
 }) {
   const [mode, setMode] = useState<"home" | "all">("home");
   const [query, setQuery] = useState("");
@@ -594,6 +596,22 @@ export function ChatsView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [mode, query]);
+
+  // Esc from the Chats home steps back to Notes. The View all drill-in keeps its
+  // own Esc behavior above (clear search, then return home), so the workspace
+  // ladder remains Chats → Notes → Board.
+  useEffect(() => {
+    if (mode !== "home") return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[role="dialog"],[role="menu"]')) return;
+      e.preventDefault();
+      onExit();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode, onExit]);
 
   const composer = (
     <ChatComposer onStart={startChat} onManageHarnesses={onManageHarnesses} />

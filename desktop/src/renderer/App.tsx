@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -204,6 +205,78 @@ function isInteractiveTarget(
     'button, a, input, select, textarea, [role="button"], [role="link"], [data-card-drag-ignore]',
   );
   return interactiveTarget !== null && interactiveTarget !== currentTarget;
+}
+
+type BoardFocusColumn = {
+  id: string;
+  cardIds: string[];
+};
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)
+  );
+}
+
+function findFocusedBoardCardId(
+  cardNodes: Map<string, HTMLDivElement>,
+): string | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return null;
+  for (const [cardId, node] of cardNodes) {
+    if (node === active) return cardId;
+  }
+  return null;
+}
+
+function firstBoardCardId(columns: BoardFocusColumn[]): string | null {
+  for (const column of columns) {
+    if (column.cardIds.length > 0) return column.cardIds[0];
+  }
+  return null;
+}
+
+function nextBoardCardId(
+  columns: BoardFocusColumn[],
+  currentCardId: string | null,
+  key: string,
+): string | null {
+  if (!currentCardId) return firstBoardCardId(columns);
+
+  const columnIndex = columns.findIndex((column) =>
+    column.cardIds.includes(currentCardId),
+  );
+  if (columnIndex < 0) return firstBoardCardId(columns);
+
+  const column = columns[columnIndex];
+  const rowIndex = column.cardIds.indexOf(currentCardId);
+  if (key === "ArrowUp") {
+    return column.cardIds[Math.max(0, rowIndex - 1)] ?? currentCardId;
+  }
+  if (key === "ArrowDown") {
+    return (
+      column.cardIds[Math.min(column.cardIds.length - 1, rowIndex + 1)] ??
+      currentCardId
+    );
+  }
+
+  const step = key === "ArrowLeft" ? -1 : 1;
+  for (
+    let i = columnIndex + step;
+    i >= 0 && i < columns.length;
+    i += step
+  ) {
+    const candidateColumn = columns[i];
+    if (candidateColumn.cardIds.length === 0) continue;
+    return (
+      candidateColumn.cardIds[
+        Math.min(rowIndex, candidateColumn.cardIds.length - 1)
+      ] ?? null
+    );
+  }
+  return currentCardId;
 }
 
 function WindowDragRegion() {
@@ -566,10 +639,17 @@ interface DraggableCardProps {
   card: Card;
   projectId: Id<"projects">;
   pending: boolean;
+  registerCardNode: (cardId: string, node: HTMLDivElement | null) => void;
   onOpen: (card: Card) => void;
   onArchiveToggle: (card: Card, archived: boolean) => void;
   onDuplicate: (card: Card) => void;
   onDelete: (card: Card) => void;
+}
+
+function copyTaskPath(card: Card) {
+  void navigator.clipboard.writeText(`.hitch/${card.path}`).catch(() => {
+    // Clipboard can be unavailable (e.g. no permission); silently ignore.
+  });
 }
 
 // A board card that can be picked up from any non-interactive surface (left-drag,
@@ -582,6 +662,7 @@ function DraggableCard({
   card,
   projectId,
   pending,
+  registerCardNode,
   onOpen,
   onArchiveToggle,
   onDuplicate,
@@ -590,6 +671,13 @@ function DraggableCard({
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: card.id,
   });
+  const setCardRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      setNodeRef(node);
+      registerCardNode(card.id, node);
+    },
+    [card.id, registerCardNode, setNodeRef],
+  );
   const dragListeners = useMemo(() => {
     return Object.fromEntries(
       Object.entries(listeners ?? {}).map(([eventName, listener]) => [
@@ -606,9 +694,10 @@ function DraggableCard({
     <ContextMenu>
       <ContextMenuTrigger className="block">
         <div
-          ref={setNodeRef}
+          ref={setCardRef}
           {...attributes}
           {...dragListeners}
+          data-board-card-id={card.id}
           role="button"
           tabIndex={0}
           onClick={(event) => {
@@ -632,6 +721,10 @@ function DraggableCard({
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuItem disabled={pending} onClick={() => copyTaskPath(card)}>
+          <CopyIcon />
+          Copy path
+        </ContextMenuItem>
         <ContextMenuItem
           disabled={pending}
           onClick={() => onArchiveToggle(card, !card.archived)}
@@ -1106,6 +1199,15 @@ function BoardContent({
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 1 } }),
   );
+  const boardFocusColumnsRef = useRef<BoardFocusColumn[]>([]);
+  const boardCardNodesRef = useRef(new Map<string, HTMLDivElement>());
+  const registerBoardCardNode = useCallback(
+    (cardId: string, node: HTMLDivElement | null) => {
+      if (node) boardCardNodesRef.current.set(cardId, node);
+      else boardCardNodesRef.current.delete(cardId);
+    },
+    [],
+  );
   const localConfigReady = localConfig !== null;
   const projectIsHitched = Boolean(
     localConfig?.hitches.some(
@@ -1215,6 +1317,47 @@ function BoardContent({
     return () => window.removeEventListener("keydown", onKey);
   }, [boardStatuses, selectedPath]);
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (
+        e.key !== "ArrowUp" &&
+        e.key !== "ArrowDown" &&
+        e.key !== "ArrowLeft" &&
+        e.key !== "ArrowRight"
+      ) {
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (workspaceView !== "board" || selectedPath || composingCol) return;
+      if (
+        document.querySelector(
+          '[role="dialog"],[role="alertdialog"],[role="menu"]',
+        )
+      ) {
+        return;
+      }
+      if (isTextEditingTarget(e.target)) return;
+
+      const columns = boardFocusColumnsRef.current;
+      if (columns.length === 0) return;
+
+      const cardNodes = boardCardNodesRef.current;
+      const focusedCardId = findFocusedBoardCardId(cardNodes);
+      const nextCardId = nextBoardCardId(columns, focusedCardId, e.key);
+      if (!nextCardId) return;
+
+      const nextNode = cardNodes.get(nextCardId);
+      if (!nextNode) return;
+
+      e.preventDefault();
+      nextNode.focus();
+      nextNode.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [composingCol, selectedPath, workspaceView]);
+
   // ⌘K (Ctrl+K) toggles the command palette. When it's already open, close it
   // (the footer advertises ⌘K). When closed, suppress only where ⌘K means
   // something else or the palette shouldn't appear: the MDX editor
@@ -1290,6 +1433,10 @@ function BoardContent({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  if (!currentProject || files === undefined) {
+    boardFocusColumnsRef.current = [];
+  }
 
   if (!currentProject || files === undefined) {
     return (
@@ -1375,6 +1522,10 @@ function BoardContent({
       activeCards.filter((card) => card.column === c.id),
     ]),
   ) as Record<string, Card[]>;
+  boardFocusColumnsRef.current = boardStatuses.map((column) => ({
+    id: column.id,
+    cardIds: byColumn[column.id].map((card) => card.id),
+  }));
 
   const selected = selectedPath
     ? (cards.find((card) => card.path === selectedPath) ?? null)
@@ -1838,6 +1989,7 @@ function BoardContent({
           <ChatsView
             projectId={projectId}
             onManageHarnesses={() => openGlobalSettings("harnesses")}
+            onExit={() => setWorkspaceView("notes")}
           />
         ) : (
         <DndContext
@@ -1870,6 +2022,7 @@ function BoardContent({
                     card={card}
                     projectId={projectId}
                     pending={pendingCardId === card.id}
+                    registerCardNode={registerBoardCardNode}
                     onOpen={(card) => setSelectedPath(card.path)}
                     onArchiveToggle={(c, archived) =>
                       void setArchived(c, archived)

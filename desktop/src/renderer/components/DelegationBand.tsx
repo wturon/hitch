@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
@@ -41,6 +41,7 @@ import {
 import { HarnessIcon } from "@/components/HarnessIcon";
 import { ChatLaunch } from "@/components/ChatLaunch";
 import { Button } from "@/components/ui/button";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import {
   Select,
   SelectContent,
@@ -48,6 +49,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 // Sentinel value for the dropdown's footer action. It's not a real preset id —
@@ -209,7 +215,8 @@ export function DelegationBand({
     setPrompt(buildStartPrompt(preset, { title, path }));
   }
 
-  async function start() {
+  const start = useCallback(async () => {
+    if (starting) return;
     setStarting(true);
     try {
       await onStart({ harness, model, effort, prompt });
@@ -218,7 +225,36 @@ export function DelegationBand({
       // agent writes its id back, so keep the button busy briefly.
       setTimeout(() => setStarting(false), 1500);
     }
-  }
+  }, [effort, harness, model, onStart, prompt, starting]);
+
+  // While the task dialog is open and no chat is linked yet, Cmd+Enter sends
+  // the current delegation prompt from anywhere in the dialog.
+  useEffect(() => {
+    if (chat) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (
+        e.key !== "Enter" ||
+        !e.metaKey ||
+        e.shiftKey ||
+        e.altKey ||
+        e.repeat
+      ) {
+        return;
+      }
+      if (
+        document.querySelector(
+          '[role="alertdialog"],[role="menu"],[role="listbox"]',
+        )
+      ) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      void start();
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [chat, start]);
 
   // Whether the current (harness, environment) pair accepts model/effort at
   // launch. Unset env falls back to the harness default.
@@ -445,18 +481,28 @@ export function DelegationBand({
 
         {/* Send — the primary one-click trigger. Black rounded square, up-arrow,
             no text. */}
-        <Button
-          onClick={start}
-          disabled={starting}
-          aria-label="Delegate to agent"
-          className="size-8 shrink-0 rounded-lg p-0"
-        >
-          {starting ? (
-            <LoaderCircle className="animate-spin" />
-          ) : (
-            <ArrowUp className="size-4" strokeWidth={2.5} />
-          )}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
+            <Button
+              onClick={start}
+              disabled={starting}
+              aria-label="Delegate to agent"
+              className="size-8 shrink-0 rounded-lg p-0"
+            >
+              {starting ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <ArrowUp className="size-4" strokeWidth={2.5} />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            <KbdGroup>
+              <Kbd>⌘</Kbd>
+              <Kbd>Enter</Kbd>
+            </KbdGroup>
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       {!paramsHonored && (
