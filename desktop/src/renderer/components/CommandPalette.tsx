@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
   BookIcon,
+  BotIcon,
   Columns2Icon,
   CornerDownLeftIcon,
   FileTextIcon,
@@ -37,6 +38,11 @@ export interface PaletteNote {
   title: string;
   meta: string; // freeform note type, shown as the mono tag
 }
+export interface PaletteAutomation {
+  path: string;
+  title: string;
+  meta: string;
+}
 export interface PaletteAction {
   id: string;
   title: string;
@@ -47,12 +53,12 @@ export interface PaletteAction {
   onRun: () => void;
 }
 
-export type WorkspaceView = "board" | "notes" | "chats";
+export type WorkspaceView = "board" | "notes" | "chats" | "automations";
 
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in
 // App.tsx). Adding a view here lights it up everywhere. Title is what the palette
-// query matches against ("tasks" / "notes" / "chats"). Chats is last per the PRD.
+// query matches against ("tasks" / "notes" / "chats" / "automations").
 // The first view keeps the internal `board` id but the product label is "Tasks".
 export const WORKSPACE_VIEWS: {
   view: WorkspaceView;
@@ -62,6 +68,7 @@ export const WORKSPACE_VIEWS: {
   { view: "board", title: "Tasks", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
   { view: "chats", title: "Chats", Icon: MessageCircleIcon },
+  { view: "automations", title: "Automations", Icon: BotIcon },
 ];
 
 // Rank by searchable text: prefix > substring. Ties keep input order (already
@@ -156,6 +163,7 @@ export function CommandPalette({
   currentView,
   tasks,
   notes,
+  automations,
   actions,
   onSelectProject,
   onSelectView,
@@ -163,6 +171,8 @@ export function CommandPalette({
   onCreateTask,
   onOpenNote,
   onCreateNote,
+  onOpenAutomation,
+  onCreateAutomation,
   onCreateProject,
 }: {
   open: boolean;
@@ -173,6 +183,7 @@ export function CommandPalette({
   currentView: WorkspaceView;
   tasks: PaletteTask[];
   notes: PaletteNote[];
+  automations: PaletteAutomation[];
   actions: PaletteAction[];
   onSelectProject: (id: Id<"projects">) => void;
   onSelectView: (view: WorkspaceView) => void;
@@ -180,6 +191,8 @@ export function CommandPalette({
   onCreateTask: (title: string) => void;
   onOpenNote: (slug: string) => void;
   onCreateNote: (title: string) => void;
+  onOpenAutomation: (path: string) => void;
+  onCreateAutomation: (title: string) => void;
   onCreateProject: (name: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -193,6 +206,10 @@ export function CommandPalette({
   const trimmed = query.trim();
   const rankedTasks = useMemo(() => rankByTitle(tasks, query), [tasks, query]);
   const rankedNotes = useMemo(() => rankByTitle(notes, query), [notes, query]);
+  const rankedAutomations = useMemo(
+    () => rankByTitle(automations, query),
+    [automations, query],
+  );
   const rankedViews = useMemo(
     () => rankByTitle(WORKSPACE_VIEWS, query),
     [query],
@@ -214,6 +231,7 @@ export function CommandPalette({
     trimmed !== "" &&
     rankedTasks.length === 0 &&
     rankedNotes.length === 0 &&
+    rankedAutomations.length === 0 &&
     rankedViews.length === 0 &&
     rankedActions.length === 0 &&
     rankedProjects.length === 0;
@@ -322,6 +340,12 @@ export function CommandPalette({
                       onRun={() => run(() => onCreateNote(""))}
                     />
                     <CreateRow
+                      value="create-automation"
+                      label="New automation"
+                      query=""
+                      onRun={() => run(() => onCreateAutomation(""))}
+                    />
+                    <CreateRow
                       value="create-project"
                       label="New project"
                       query=""
@@ -342,6 +366,12 @@ export function CommandPalette({
                     label="New note"
                     query={trimmed}
                     onRun={() => run(() => onCreateNote(trimmed))}
+                  />
+                  <CreateRow
+                    value="create-automation"
+                    label="New automation"
+                    query={trimmed}
+                    onRun={() => run(() => onCreateAutomation(trimmed))}
                   />
                   <CreateRow
                     value="create-project"
@@ -400,6 +430,27 @@ export function CommandPalette({
                           </RowIcon>
                           <span className="truncate">{n.title}</span>
                           {n.meta && <CommandMeta>{n.meta}</CommandMeta>}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  )}
+                  {rankedAutomations.length > 0 && (
+                    <CommandGroup heading="Automations">
+                      {rankedAutomations.map((automation) => (
+                        <CommandItem
+                          key={automation.path}
+                          value={`automation:${automation.path}`}
+                          onSelect={() =>
+                            run(() => onOpenAutomation(automation.path))
+                          }
+                        >
+                          <RowIcon>
+                            <BotIcon className="size-4" />
+                          </RowIcon>
+                          <span className="truncate">{automation.title}</span>
+                          {automation.meta && (
+                            <CommandMeta>{automation.meta}</CommandMeta>
+                          )}
                         </CommandItem>
                       ))}
                     </CommandGroup>

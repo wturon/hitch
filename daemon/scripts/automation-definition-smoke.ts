@@ -82,6 +82,26 @@ assert.match(invalid.validationError ?? "", /5-field cron/);
 assert.equal(invalid.nextRunAt, undefined);
 assert.equal(invalid.scheduleDescription, "");
 
+const blankPrompt = projectAutomationDefinition({
+  path: "automations/blank-prompt/index.md",
+  content: `---
+name: Blank prompt
+enabled: true
+schedule: "0 9 * * *"
+timezone: UTC
+---
+${"   "}
+`,
+  deleted: false,
+  now: baseTime,
+});
+
+assert.ok(blankPrompt);
+assert.equal(blankPrompt.enabled, false);
+assert.match(blankPrompt.validationError ?? "", /prompt is required/);
+assert.equal(blankPrompt.nextRunAt, undefined);
+assert.equal(blankPrompt.prompt, "");
+
 const deleted = projectAutomationDefinition({
   path: "automations/deleted/index.md",
   content: "",

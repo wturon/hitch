@@ -118,6 +118,7 @@ export function projectAutomationDefinition(
     }
     enabled = truthy(frontmatter.enabled, true);
     if (!schedule) throw new Error(`schedule is required`);
+    if (!body.trim()) throw new Error(`prompt is required`);
     validateSchedule(schedule, timezone);
     scheduleDescription = scheduleToEnglish(schedule);
     nextRunAt = nextRunForScheduleState(schedule, timezone, enabled, input.now);
