@@ -71,6 +71,7 @@ export default defineSchema({
     name: v.string(),
     enabled: v.boolean(),
     schedule: v.string(),
+    scheduleDescription: v.string(),
     timezone: v.string(),
     harness: v.string(),
     model: v.optional(v.string()),
