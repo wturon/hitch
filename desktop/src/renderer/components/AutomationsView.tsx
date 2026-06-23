@@ -540,7 +540,6 @@ function AutomationDetail({
   runs,
   onSave,
   onRunNow,
-  onSetEnabled,
   onDelete,
 }: {
   projectId: Id<"projects">;
@@ -549,7 +548,6 @@ function AutomationDetail({
   runs: AutomationRunRecord[];
   onSave: (draft: AutomationDefinitionDraft) => Promise<void>;
   onRunNow: () => void;
-  onSetEnabled: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
   const [draft, setDraft] = useState(() => draftFromContent(file.content));
@@ -572,14 +570,20 @@ function AutomationDetail({
     [draft, file.content],
   );
 
-  async function save() {
+  async function save(nextDraft = draft) {
     if (!scheduleStatus.ok) return;
     setSaving(true);
     try {
-      await onSave(applyScheduleToDraft(draft, scheduleValue));
+      await onSave(applyScheduleToDraft(nextDraft, scheduleValue));
     } finally {
       setSaving(false);
     }
+  }
+
+  async function toggleEnabled() {
+    const nextDraft = { ...draft, enabled: !draft.enabled };
+    setDraft(nextDraft);
+    await save(nextDraft);
   }
 
   function updateSchedule(nextValue: ScheduleBuilderValue) {
@@ -639,9 +643,7 @@ function AutomationDetail({
             <MenuContent align="end">
               <MenuItem
                 onClick={() => {
-                  const nextEnabled = !draft.enabled;
-                  setDraft((next) => ({ ...next, enabled: nextEnabled }));
-                  onSetEnabled(nextEnabled);
+                  void toggleEnabled();
                 }}
               >
                 {draft.enabled ? <PauseCircleIcon /> : <PowerIcon />}
@@ -700,9 +702,7 @@ function AutomationDetail({
         <button
           type="button"
           onClick={() => {
-            const nextEnabled = !draft.enabled;
-            setDraft((next) => ({ ...next, enabled: nextEnabled }));
-            onSetEnabled(nextEnabled);
+            void toggleEnabled();
           }}
           className="flex min-h-16 flex-col items-start justify-center rounded-lg px-3 py-2 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
@@ -1027,9 +1027,6 @@ export function AutomationsView({
               actions.updateAutomation(effectiveSelected.automationPath, draft)
             }
             onRunNow={() => void actions.runNow(effectiveSelected.automationPath)}
-            onSetEnabled={(enabled) =>
-              void actions.setEnabled(effectiveSelected.automationPath, enabled)
-            }
             onDelete={() => {
               setSelectedPath(null);
               void actions.deleteAutomation(effectiveSelected.automationPath);
