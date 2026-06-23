@@ -109,14 +109,20 @@ export default defineSchema({
     cwd: v.optional(v.string()),
     model: v.optional(v.string()), // start-chat: model to launch (kickoff only)
     effort: v.optional(v.string()), // start-chat: reasoning/effort level (kickoff only)
-    status: v.string(), // "pending" | "done" | "error"
+    status: v.string(), // "pending" | "done" | "error" | "expired"
+    statusReason: v.optional(v.string()),
+    expiresAt: v.optional(v.number()),
+    claimedAt: v.optional(v.number()),
+    claimedBy: v.optional(v.string()),
     result: v.optional(v.string()), // "focused"/"spawned" or an error message
     errorCode: v.optional(v.string()), // machine-readable failure kind, e.g. "cmux-access-denied"
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index("by_project", ["projectId"])
-    .index("by_project_status", ["projectId", "status"]),
+    .index("by_project_status", ["projectId", "status"])
+    .index("by_project_status_expires", ["projectId", "status", "expiresAt"])
+    .index("by_status_expires", ["status", "expiresAt"]),
 
   // Synced chat registry rows reduced from local lifecycle observations. Hitch
   // tracks metadata and resume handles; harnesses still own transcripts.

@@ -127,6 +127,9 @@ interface CommandDoc {
   model?: string; // start-chat kickoff: model to launch
   effort?: string; // start-chat kickoff: reasoning/effort level
   status: string;
+  expiresAt?: number;
+  claimedAt?: number;
+  claimedBy?: string;
 }
 
 type ChatStatus = "working" | "needs-input" | "waiting" | "idle";
@@ -1160,6 +1163,16 @@ async function startHitchBinding({
       errorCode,
       projectId,
       deviceToken,
+      claimedBy: host,
+    });
+  }
+
+  async function claimCommand(cmd: CommandDoc): Promise<CommandDoc | null> {
+    return await client.mutation(anyApi.commands.claimCommand, {
+      id: cmd._id,
+      projectId,
+      deviceToken,
+      claimedBy: host,
     });
   }
 
@@ -1366,7 +1379,19 @@ async function startHitchBinding({
           if (handledCommands.has(cmd._id)) continue;
           if (cmd.host && cmd.host !== host) continue;
           handledCommands.add(cmd._id);
-          void runCommand(cmd);
+          void (async () => {
+            try {
+              const claimed = await claimCommand(cmd);
+              if (!claimed) return;
+              await runCommand(claimed);
+            } catch (err) {
+              handledCommands.delete(cmd._id);
+              logError(
+                logger,
+                `[hitch:${projectLabel}] command claim failed for ${cmd._id}: ${String(err)}`,
+              );
+            }
+          })();
         }
       },
       (err) =>

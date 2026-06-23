@@ -16,6 +16,11 @@ const DEFAULT_PINNED_LIMIT = 20;
 const DEFAULT_HISTORY_LIMIT = 100;
 const MAX_LIMIT = 250;
 const MAX_TITLE_LENGTH = 72;
+const DEFAULT_COMMAND_TTL_MS = 5 * 60 * 1000;
+
+function commandExpiry(now: number): number {
+  return now + DEFAULT_COMMAND_TTL_MS;
+}
 
 const harnessValidator = v.union(v.literal("claude-code"), v.literal("codex"));
 const statusValidator = v.union(
@@ -198,6 +203,7 @@ function resumeCommandForChat(
     sessionId: chat.chatId,
     cwd: chat.cwd,
     status: "pending",
+    expiresAt: commandExpiry(now),
     createdAt: now,
     updatedAt: now,
   };
@@ -358,6 +364,7 @@ export const startChat = mutation({
       model: args.model,
       effort: args.effort,
       status: "pending",
+      expiresAt: commandExpiry(now),
       createdAt: now,
       updatedAt: now,
     });

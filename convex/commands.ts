@@ -1,9 +1,53 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import {
   requireProjectAccess,
   requireProjectMemberById,
 } from "./authz";
+
+const DEFAULT_COMMAND_TTL_MS = 5 * 60 * 1000;
+const EXPIRE_BATCH_LIMIT = 100;
+
+function commandExpiry(now: number): number {
+  return now + DEFAULT_COMMAND_TTL_MS;
+}
+
+function expirePatch(now: number, reason = "ttl-expired") {
+  return {
+    status: "expired",
+    statusReason: reason,
+    updatedAt: now,
+  };
+}
+
+function isExpiredUnclaimedPending(
+  command: {
+    status: string;
+    expiresAt?: number;
+    claimedAt?: number;
+  },
+  now: number,
+) {
+  return (
+    command.status === "pending" &&
+    command.claimedAt === undefined &&
+    command.expiresAt !== undefined &&
+    command.expiresAt <= now
+  );
+}
+
+function observableCommand<
+  Command extends { status: string; expiresAt?: number; claimedAt?: number },
+>(
+  command: Command,
+  now: number,
+) {
+  if (!isExpiredUnclaimedPending(command, now)) return command;
+  return {
+    ...command,
+    ...expirePatch(now),
+  };
+}
 
 // Enqueue an action for a daemon to run locally (the browser can't open a
 // terminal itself). Returns the new command's id so the caller can watch it.
@@ -38,14 +82,15 @@ export const enqueueCommand = mutation({
       linkedPath,
       projectId: access.project._id,
       status: "pending",
+      expiresAt: commandExpiry(now),
       createdAt: now,
       updatedAt: now,
     });
   },
 });
 
-// The pending commands for a project. The daemon subscribes to this; as soon as
-// it marks one done, it drops out of the result set.
+// The unclaimed, unexpired pending commands for a project. This is only a queue
+// view; daemons must claim a command before executing it.
 export const pendingCommands = query({
   args: { projectId: v.id("projects"), deviceToken: v.string() },
   handler: async (ctx, args) => {
@@ -55,12 +100,99 @@ export const pendingCommands = query({
       args.deviceToken,
     );
     if (!project) throw new Error("Project does not exist");
+    const now = Date.now();
     return await ctx.db
       .query("commands")
-      .withIndex("by_project_status", (q) =>
-        q.eq("projectId", project._id).eq("status", "pending"),
+      .withIndex("by_project_status_expires", (q) =>
+        q
+          .eq("projectId", project._id)
+          .eq("status", "pending")
+          .gt("expiresAt", now),
       )
+      .filter((q) => q.eq(q.field("claimedAt"), undefined))
       .collect();
+  },
+});
+
+export const claimCommand = mutation({
+  args: {
+    id: v.id("commands"),
+    projectId: v.id("projects"),
+    deviceToken: v.string(),
+    claimedBy: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const command = await ctx.db.get(args.id);
+    if (!command) return null;
+    const { project } = await requireProjectAccess(
+      ctx,
+      args.projectId,
+      args.deviceToken,
+    );
+    if (!project) throw new Error("Project does not exist");
+    if (command.projectId !== project._id) throw new Error("Command project mismatch");
+
+    const now = Date.now();
+    if (command.status !== "pending") return null;
+    if (isExpiredUnclaimedPending(command, now)) {
+      await ctx.db.patch(args.id, expirePatch(now));
+      return null;
+    }
+    if (command.claimedAt !== undefined) return null;
+    if (command.host && command.host !== args.claimedBy) return null;
+
+    await ctx.db.patch(args.id, {
+      claimedAt: now,
+      claimedBy: args.claimedBy,
+      updatedAt: now,
+    });
+    return await ctx.db.get(args.id);
+  },
+});
+
+export const expireStaleCommands = mutation({
+  args: { projectId: v.id("projects"), deviceToken: v.string() },
+  handler: async (ctx, args) => {
+    const { project } = await requireProjectAccess(
+      ctx,
+      args.projectId,
+      args.deviceToken,
+    );
+    if (!project) throw new Error("Project does not exist");
+
+    const now = Date.now();
+    const stale = await ctx.db
+      .query("commands")
+      .withIndex("by_project_status_expires", (q) =>
+        q
+          .eq("projectId", project._id)
+          .eq("status", "pending")
+          .lte("expiresAt", now),
+      )
+      .filter((q) => q.eq(q.field("claimedAt"), undefined))
+      .take(EXPIRE_BATCH_LIMIT);
+    for (const command of stale) {
+      await ctx.db.patch(command._id, expirePatch(now));
+    }
+    return stale.length;
+  },
+});
+
+export const expireStaleCommandsForAllProjects = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const stale = await ctx.db
+      .query("commands")
+      .withIndex("by_status_expires", (q) =>
+        q.eq("status", "pending").lte("expiresAt", now),
+      )
+      .filter((q) => q.eq(q.field("claimedAt"), undefined))
+      .take(EXPIRE_BATCH_LIMIT);
+    for (const command of stale) {
+      await ctx.db.patch(command._id, expirePatch(now));
+    }
+    return stale.length;
   },
 });
 
@@ -75,6 +207,7 @@ export const completeCommand = mutation({
     errorCode: v.optional(v.string()),
     projectId: v.id("projects"),
     deviceToken: v.string(),
+    claimedBy: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const command = await ctx.db.get(args.id);
@@ -86,6 +219,16 @@ export const completeCommand = mutation({
     );
     if (!project) throw new Error("Project does not exist");
     if (command.projectId !== project._id) throw new Error("Command project mismatch");
+    if (command.status === "expired") {
+      throw new Error("Command has expired");
+    }
+    if (
+      args.claimedBy !== undefined &&
+      command.claimedBy !== undefined &&
+      command.claimedBy !== args.claimedBy
+    ) {
+      throw new Error("Command claim mismatch");
+    }
     await ctx.db.patch(args.id, {
       status: args.status,
       result: args.result,
@@ -104,6 +247,6 @@ export const getCommand = query({
     const { project } = await requireProjectMemberById(ctx, args.projectId);
     const command = await ctx.db.get(args.id);
     if (!command || command.projectId !== project._id) return null;
-    return command;
+    return observableCommand(command, Date.now());
   },
 });
