@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type MouseEvent } from "react";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
@@ -146,6 +146,10 @@ function ChatRow({
   const togglePin = () => (chat.pinned ? onUnpin(chat) : onPin(chat));
   const toggleArchive = () =>
     chat.archived ? onUnarchive(chat) : onArchive(chat);
+  const runMenuAction = (event: MouseEvent, action: () => void) => {
+    event.stopPropagation();
+    action();
+  };
 
   return (
     <ContextMenu>
@@ -201,22 +205,25 @@ function ChatRow({
                 <EllipsisIcon className="size-4" />
               </MenuTrigger>
               <MenuContent align="end">
-                <MenuItem disabled={!resumable} onClick={resume}>
+                <MenuItem
+                  disabled={!resumable}
+                  onClick={(event) => runMenuAction(event, resume)}
+                >
                   <SquareTerminalIcon />
                   Resume chat
                   <CornerDownLeftIcon className="ml-auto size-3.5 text-muted-foreground" />
                 </MenuItem>
-                <MenuItem onClick={togglePin}>
+                <MenuItem onClick={(event) => runMenuAction(event, togglePin)}>
                   {chat.pinned ? <PinOffIcon /> : <PinIcon />}
                   {chat.pinned ? "Unpin chat" : "Pin chat"}
                 </MenuItem>
                 <div className="my-1 h-px bg-border" />
-                <MenuItem onClick={toggleArchive}>
+                <MenuItem onClick={(event) => runMenuAction(event, toggleArchive)}>
                   {chat.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
                   {chat.archived ? "Unarchive" : "Archive"}
                 </MenuItem>
                 <MenuItem
-                  onClick={() => onDelete(chat)}
+                  onClick={(event) => runMenuAction(event, () => onDelete(chat))}
                   className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
                 >
                   <Trash2Icon />
@@ -228,21 +235,27 @@ function ChatRow({
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem disabled={!resumable} onClick={resume}>
+        <ContextMenuItem
+          disabled={!resumable}
+          onClick={(event) => runMenuAction(event, resume)}
+        >
           <SquareTerminalIcon />
           Resume chat
           <CornerDownLeftIcon className="ml-auto size-3.5 text-muted-foreground" />
         </ContextMenuItem>
-        <ContextMenuItem onClick={togglePin}>
+        <ContextMenuItem onClick={(event) => runMenuAction(event, togglePin)}>
           {chat.pinned ? <PinOffIcon /> : <PinIcon />}
           {chat.pinned ? "Unpin chat" : "Pin chat"}
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onClick={toggleArchive}>
+        <ContextMenuItem onClick={(event) => runMenuAction(event, toggleArchive)}>
           {chat.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
           {chat.archived ? "Unarchive" : "Archive"}
         </ContextMenuItem>
-        <ContextMenuItem variant="destructive" onClick={() => onDelete(chat)}>
+        <ContextMenuItem
+          variant="destructive"
+          onClick={(event) => runMenuAction(event, () => onDelete(chat))}
+        >
           <Trash2Icon />
           Delete
         </ContextMenuItem>
