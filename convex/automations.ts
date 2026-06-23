@@ -7,6 +7,7 @@ import {
   projectAutomationDefinition,
   type AutomationDefinitionProjection,
 } from "./automationDefinitions";
+import { nextRunForScheduleState } from "./automationSchedules";
 
 type Automation = Doc<"automations">;
 
@@ -43,6 +44,7 @@ function automationDoc(
     name: projection.name,
     enabled: projection.enabled,
     schedule: projection.schedule,
+    scheduleDescription: projection.scheduleDescription,
     timezone: projection.timezone,
     harness: projection.harness,
     model: projection.model,
@@ -230,6 +232,7 @@ export const updateScheduleState = mutation({
     lastScheduledAt: v.optional(v.number()),
     nextRunAt: v.optional(v.number()),
     lastRunId: v.optional(v.string()),
+    recomputeNextRunAt: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const access = await requireProjectMemberById(ctx, args.projectId);
@@ -244,14 +247,27 @@ export const updateScheduleState = mutation({
     if (!automation || automation.deleted) {
       throw new Error("Automation not found");
     }
-    await ctx.db.patch(
-      automation._id,
-      withoutUndefined({
-        lastScheduledAt: args.lastScheduledAt,
-        nextRunAt: args.nextRunAt,
-        lastRunId: args.lastRunId,
-        updatedAt: Date.now(),
-      }),
-    );
+    const lastScheduledAt = args.lastScheduledAt;
+    const recomputeNextRunAt =
+      args.recomputeNextRunAt ?? lastScheduledAt !== undefined;
+    const nextRunAt =
+      args.nextRunAt ??
+      (recomputeNextRunAt
+        ? nextRunForScheduleState(
+            automation.schedule,
+            automation.timezone,
+            automation.enabled,
+            lastScheduledAt ?? Date.now(),
+          )
+        : undefined);
+    const patch: Partial<Automation> = withoutUndefined({
+      lastScheduledAt,
+      lastRunId: args.lastRunId,
+      updatedAt: Date.now(),
+    });
+    if (args.nextRunAt !== undefined || recomputeNextRunAt) {
+      patch.nextRunAt = nextRunAt;
+    }
+    await ctx.db.patch(automation._id, patch);
   },
 });

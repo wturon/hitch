@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { projectAutomationDefinition } from "../../convex/automationDefinitions";
 import {
+  cronFromPreset,
   nextRunAfter,
-  projectAutomationDefinition,
-} from "../../convex/automationDefinitions";
+  nextRunForScheduleState,
+  scheduleToEnglish,
+} from "../../convex/automationSchedules";
 
 const baseTime = Date.UTC(2026, 5, 23, 12, 2, 10);
 
@@ -30,6 +33,7 @@ assert.equal(valid.slug, "review-prs");
 assert.equal(valid.name, "Review open PRs");
 assert.equal(valid.enabled, true);
 assert.equal(valid.schedule, "15 * * * *");
+assert.equal(valid.scheduleDescription, "Hourly at :15");
 assert.equal(valid.timezone, "UTC");
 assert.equal(valid.harness, "codex");
 assert.equal(valid.model, "gpt-5");
@@ -56,6 +60,7 @@ assert.ok(disabled);
 assert.equal(disabled.enabled, false);
 assert.equal(disabled.validationError, undefined);
 assert.equal(disabled.nextRunAt, undefined);
+assert.equal(disabled.scheduleDescription, "Every 5 minutes");
 
 const invalid = projectAutomationDefinition({
   path: "automations/bad/index.md",
@@ -75,6 +80,7 @@ assert.ok(invalid);
 assert.equal(invalid.enabled, false);
 assert.match(invalid.validationError ?? "", /5-field cron/);
 assert.equal(invalid.nextRunAt, undefined);
+assert.equal(invalid.scheduleDescription, "");
 
 const deleted = projectAutomationDefinition({
   path: "automations/deleted/index.md",
@@ -90,13 +96,77 @@ const deleted = projectAutomationDefinition({
 assert.ok(deleted);
 assert.equal(deleted.deleted, true);
 assert.equal(deleted.enabled, false);
+assert.equal(deleted.scheduleDescription, "");
 assert.equal(deleted.lastScheduledAt, Date.UTC(2026, 5, 23, 10));
 assert.equal(deleted.lastRunId, "run-123");
 
+assert.equal(cronFromPreset({ kind: "daily", hour: 9, minute: 30 }), "30 9 * * *");
+assert.equal(
+  cronFromPreset({ kind: "weekly", dayOfWeek: 2, hour: 14, minute: 5 }),
+  "5 14 * * 2",
+);
+assert.equal(
+  cronFromPreset({ kind: "weekdays", hour: 9, minute: 0 }),
+  "0 9 * * 1-5",
+);
+assert.equal(cronFromPreset({ kind: "hourly", minute: 15 }), "15 * * * *");
+assert.equal(
+  cronFromPreset({ kind: "custom", cron: "*/20   8-17  * * 1-5" }),
+  "*/20 8-17 * * 1-5",
+);
+assert.throws(
+  () => cronFromPreset({ kind: "hourly", minute: 60 }),
+  /minute must be an integer/,
+);
+assert.equal(scheduleToEnglish("30 9 * * *"), "Daily at 9:30 AM");
+assert.equal(
+  scheduleToEnglish("0 9 * * 1-5"),
+  "Every weekday at 9:00 AM",
+);
+assert.equal(
+  scheduleToEnglish("5 14 * * 2"),
+  "Weekly on Tuesday at 2:05 PM",
+);
+assert.equal(scheduleToEnglish("15 * * * *"), "Hourly at :15");
 assert.equal(
   nextRunAfter("0 9 * * 1-5", "America/New_York", Date.UTC(2026, 5, 23, 12)),
   Date.UTC(2026, 5, 23, 13),
 );
+assert.equal(
+  nextRunAfter("0 9 * * 1-5", "America/New_York", Date.UTC(2026, 5, 26, 14)),
+  Date.UTC(2026, 5, 29, 13),
+);
+assert.equal(
+  nextRunAfter("15 * * * *", "UTC", Date.UTC(2026, 5, 23, 12, 15)),
+  Date.UTC(2026, 5, 23, 13, 15),
+);
+assert.equal(
+  nextRunAfter("30 2 * * *", "America/New_York", Date.UTC(2026, 2, 7, 8)),
+  Date.UTC(2026, 2, 9, 6, 30),
+);
+assert.equal(
+  nextRunAfter("15 * * * *", "UTC", Date.UTC(2026, 5, 23, 12, 16)),
+  Date.UTC(2026, 5, 23, 13, 15),
+);
+assert.equal(
+  nextRunForScheduleState(
+    "15 * * * *",
+    "UTC",
+    true,
+    Date.UTC(2026, 5, 23, 12, 15),
+  ),
+  Date.UTC(2026, 5, 23, 13, 15),
+);
+assert.equal(
+  nextRunForScheduleState(
+    "15 * * * *",
+    "UTC",
+    false,
+    Date.UTC(2026, 5, 23, 12, 15),
+  ),
+  undefined,
+);
+assert.throws(() => nextRunAfter("99 * * * *", "UTC", baseTime), /out of range/);
 assert.equal(
   projectAutomationDefinition({
     path: "notes/not-automation/index.md",
