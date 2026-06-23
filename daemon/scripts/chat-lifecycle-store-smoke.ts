@@ -168,6 +168,34 @@ try {
     "convex-chat-1",
   );
 
+  const codexChats = store.listCodexChatsForTitleRefresh("project-1");
+  assert.equal(codexChats.length, 1);
+  assert.equal(codexChats[0]?.chatId, "chat-1");
+  assert.equal(
+    store.updateChatTitle(
+      "chat:codex:host-1:chat-1",
+      "Generated Codex title",
+      now + 3,
+    ),
+    true,
+  );
+  assert.equal(
+    store.getLocalChat("chat:codex:host-1:chat-1")?.title,
+    "Generated Codex title",
+  );
+  assert.equal(store.listDirtyChats().length, 1);
+  assert.equal(
+    store.updateChatTitle(
+      "chat:codex:host-1:chat-1",
+      "Generated Codex title",
+      now + 4,
+    ),
+    false,
+  );
+  store.markChatSynced("chat:codex:host-1:chat-1", {
+    syncedAt: now + 4,
+  });
+
   store.markChatDirty("chat:codex:host-1:chat-1", now + 3);
   assert.equal(store.listDirtyChats().length, 1);
 

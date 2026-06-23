@@ -426,6 +426,7 @@ function TaskEditor({
       linkedType: "task",
       linkedPath: task.path,
       initialPrompt: prompt,
+      title: draft.title.trim() || task.title,
       model,
       effort,
     });

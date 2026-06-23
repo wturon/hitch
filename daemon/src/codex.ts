@@ -52,6 +52,8 @@ export type CodexTurnStatus =
 
 interface ThreadReadResponse {
   thread: {
+    title?: string | null;
+    name?: string | null;
     turns?: Array<{
       id: string;
       status: CodexTurnStatus;
@@ -65,7 +67,6 @@ export interface CodexStartSpec {
   taskKey: string;
   prompt: string;
   cwd: string;
-  threadName?: string;
   // Kickoff parameters passed on `turn/start` (the app-server's TurnStartParams
   // accepts both): the model id and the reasoning effort (ReasoningEffort).
   model?: string;
@@ -84,6 +85,11 @@ export interface CodexTurnSnapshot {
   status: CodexTurnStatus;
   startedAt?: number | null;
   completedAt?: number | null;
+}
+
+export interface CodexThreadSnapshot {
+  title: string | null;
+  latestTurn: CodexTurnSnapshot | null;
 }
 
 const recentStarts = new Map<string, { threadId: string; at: number }>();
@@ -299,13 +305,6 @@ async function doStartCodexChat(
   const threadId = started.thread.id;
   recentStarts.set(spec.taskKey, { threadId, at: Date.now() });
 
-  if (spec.threadName) {
-    await server.request("thread/name/set", {
-      threadId,
-      name: spec.threadName,
-    });
-  }
-
   if (spec.onThreadStarted) await spec.onThreadStarted(threadId);
 
   let unsubscribeTurnCompleted: (() => void) | undefined;
@@ -345,9 +344,9 @@ export async function openCodexThread(threadId: string): Promise<void> {
   });
 }
 
-export async function latestCodexTurn(
+export async function latestCodexThread(
   threadId: string,
-): Promise<CodexTurnSnapshot | null> {
+): Promise<CodexThreadSnapshot | null> {
   if (!threadId) return null;
   const response = await server.request<ThreadReadResponse>(
     "thread/read",
@@ -355,7 +354,10 @@ export async function latestCodexTurn(
     10_000,
   );
   const turns = response.thread.turns ?? [];
-  return turns.at(-1) ?? null;
+  return {
+    title: response.thread.name ?? response.thread.title ?? null,
+    latestTurn: turns.at(-1) ?? null,
+  };
 }
 
 export async function closeCodexAppServer(): Promise<void> {

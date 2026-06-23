@@ -310,6 +310,7 @@ export const startChat = mutation({
     host: v.optional(v.string()),
     model: v.optional(v.string()),
     effort: v.optional(v.string()),
+    title: v.optional(v.string()),
     linkedType: v.optional(linkedTypeValidator),
     linkedPath: v.optional(v.string()),
   },
@@ -320,7 +321,7 @@ export const startChat = mutation({
     const link = normalizeLink(args.linkedType, args.linkedPath);
     const cwd = args.cwd ?? "";
     const host = args.host ?? "unknown";
-    const title = normalizeTitle(args.initialPrompt, args.harness);
+    const title = normalizeTitle(args.title ?? args.initialPrompt, args.harness);
 
     const chatId = await ctx.db.insert("chats", {
       projectId: access.project._id,
@@ -352,6 +353,7 @@ export const startChat = mutation({
       linkedType: link.linkedType,
       linkedPath: link.linkedPath,
       initialPrompt: args.initialPrompt,
+      title,
       cwd: args.cwd,
       model: args.model,
       effort: args.effort,

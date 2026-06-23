@@ -33,6 +33,7 @@ export interface DaemonChatBoundInput extends DaemonLifecycleEventBase {
 
 export interface DaemonTurnCompletedInput extends DaemonLifecycleEventBase {
   chatId: string;
+  title?: string | null;
 }
 
 export interface DaemonSessionEndedInput extends DaemonLifecycleEventBase {
@@ -141,6 +142,7 @@ export class DaemonLifecycleProducer {
         environment: input.environment ?? null,
         linkedType: linkedType(input.linkedPath),
         linkedPath: input.linkedPath ?? null,
+        title: input.title ?? null,
       },
     });
   }

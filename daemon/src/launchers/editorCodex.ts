@@ -86,7 +86,6 @@ function makeEditorCodexLauncher(config: EditorConfig): Launcher {
         taskKey: ctx.taskKey,
         prompt: ctx.prompt,
         cwd: ctx.cwd ?? "",
-        threadName: ctx.title,
         model: ctx.model,
         effort: ctx.effort,
         onThreadStarted: async (threadId) => {

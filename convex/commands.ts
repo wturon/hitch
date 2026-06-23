@@ -19,6 +19,7 @@ export const enqueueCommand = mutation({
     linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
     linkedPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()),
+    title: v.optional(v.string()),
     cwd: v.optional(v.string()),
     // start-chat kickoff parameters. Passed to the harness at launch only;
     // never persisted to the task.

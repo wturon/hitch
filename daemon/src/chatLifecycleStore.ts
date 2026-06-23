@@ -422,6 +422,39 @@ export class ChatLifecycleStore {
       .map((row) => this.localChatFromRow(row));
   }
 
+  listCodexChatsForTitleRefresh(projectId: string, limit = 20): LocalChatRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM local_chats
+         WHERE project_id = ?
+           AND harness = 'codex'
+           AND chat_id IS NOT NULL
+           AND deleted_at IS NULL
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(projectId, limit)
+      .map((row) => this.localChatFromRow(row));
+  }
+
+  updateChatTitle(localKey: string, title: string, updatedAt = Date.now()): boolean {
+    const existing = this.getLocalChat(localKey);
+    if (!existing) return false;
+    const normalized = normalizeChatTitle(title, existing.harness);
+    if (existing.title === normalized) return false;
+
+    const result = this.db
+      .prepare(
+        `UPDATE local_chats
+         SET title = ?,
+             dirty = 1,
+             updated_at = ?
+         WHERE local_key = ?`,
+      )
+      .run(normalized, updatedAt, localKey);
+    return numberFromSqlite(result.changes) > 0;
+  }
+
   markChatDirty(localKey: string, updatedAt = Date.now()): void {
     this.db
       .prepare(

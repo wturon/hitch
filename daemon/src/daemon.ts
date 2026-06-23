@@ -15,7 +15,7 @@ import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { CmuxError, setCmuxLogger } from "./cmux.js";
-import { closeCodexAppServer } from "./codex.js";
+import { closeCodexAppServer, latestCodexThread } from "./codex.js";
 import { openChatLifecycleStore } from "./chatLifecycleStore.js";
 import { DaemonLifecycleProducer } from "./chatLifecycleProducers.js";
 import { titleFromInitialPrompt } from "./chatTitles.js";
@@ -119,6 +119,7 @@ interface CommandDoc {
   linkedType?: "task" | "note";
   linkedPath?: string;
   initialPrompt?: string;
+  title?: string;
   cwd?: string;
   model?: string; // start-chat kickoff: model to launch
   effort?: string; // start-chat kickoff: reasoning/effort level
@@ -625,6 +626,26 @@ async function startHitchBinding({
     return projected;
   }
 
+  async function refreshCodexThreadTitles(): Promise<number> {
+    const chats = chatLifecycleStore.listCodexChatsForTitleRefresh(projectId);
+    const results = await Promise.all(
+      chats.map(async (chat) => {
+        if (!chat.chatId) return false;
+        const snapshot = await latestCodexThread(chat.chatId).catch((err) => {
+          logError(
+            logger,
+            `[hitch:${projectLabel}] failed to read Codex thread title for ${chat.chatId}: ${String(err)}`,
+          );
+          return null;
+        });
+        const title = snapshot?.title?.trim();
+        if (!title) return false;
+        return chatLifecycleStore.updateChatTitle(chat.localKey, title);
+      }),
+    );
+    return results.filter(Boolean).length;
+  }
+
   let reducing = false;
   let reduceAgain = false;
   async function reduceAndSyncChats(reason: string): Promise<void> {
@@ -644,13 +665,23 @@ async function startHitchBinding({
           totalChanged += result.chatsChanged;
           if (result.eventsReduced < 100) break;
         }
+        const isDelayedCodexTitleRefresh = reason.startsWith(
+          "codex-title-refresh",
+        );
+        const titlesRefreshed =
+          totalReduced > 0 || isDelayedCodexTitleRefresh
+            ? await refreshCodexThreadTitles()
+            : 0;
         const synced = await syncReducedChats();
         const projected = await projectReducedTaskFrontmatter();
-        if (totalReduced > 0 || synced > 0 || projected > 0) {
+        if (totalReduced > 0 || titlesRefreshed > 0 || synced > 0 || projected > 0) {
           chatLifecycleStore.cleanupReducedEvents();
           logger.info(
-            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), synced ${synced} chat(s), projected ${projected} task(s) (${reason})`,
+            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), refreshed ${titlesRefreshed} Codex title(s), synced ${synced} chat(s), projected ${projected} task(s) (${reason})`,
           );
+        }
+        if (totalReduced > 0 && !isDelayedCodexTitleRefresh) {
+          scheduleCodexTitleRefresh(reason);
         }
       } while (reduceAgain);
     } catch (err) {
@@ -661,6 +692,15 @@ async function startHitchBinding({
     } finally {
       reducing = false;
     }
+  }
+
+  let codexTitleRefreshTimer: NodeJS.Timeout | undefined;
+  function scheduleCodexTitleRefresh(reason: string): void {
+    if (codexTitleRefreshTimer) clearTimeout(codexTitleRefreshTimer);
+    codexTitleRefreshTimer = setTimeout(() => {
+      codexTitleRefreshTimer = undefined;
+      void reduceAndSyncChats(`codex-title-refresh:${reason}`);
+    }, 5_000);
   }
 
   let reduceDebounce: NodeJS.Timeout | undefined;
@@ -1166,7 +1206,7 @@ async function startHitchBinding({
         }
         const launchKey = linkedPath ?? cmd.launchId ?? cmd._id;
         const launchCwd = cmd.cwd ?? root.localPath;
-        const title = titleFromInitialPrompt(cmd.initialPrompt, harness);
+        const title = cmd.title ?? titleFromInitialPrompt(cmd.initialPrompt, harness);
         emitLifecycle(
           () =>
             lifecycleProducer.chatCreated({
@@ -1238,6 +1278,9 @@ async function startHitchBinding({
         const onSettled =
           harness === "codex"
             ? async (threadId: string) => {
+                const latestThread = await latestCodexThread(threadId).catch(
+                  () => null,
+                );
                 emitLifecycle(
                   () =>
                     lifecycleProducer.turnCompleted({
@@ -1248,6 +1291,7 @@ async function startHitchBinding({
                       cwd: launchCwd,
                       linkedPath: linkedPath ?? null,
                       chatId: threadId,
+                      title: latestThread?.title ?? null,
                     }),
                   `codex completed ${threadId}`,
                 );
@@ -1344,6 +1388,7 @@ async function startHitchBinding({
       clearInterval(heartbeatTimer);
       clearInterval(reconcileTimer);
       clearInterval(chatReducePollTimer);
+      if (codexTitleRefreshTimer) clearTimeout(codexTitleRefreshTimer);
       if (reduceDebounce) clearTimeout(reduceDebounce);
       for (const subscription of subscriptions) unsubscribe(subscription);
       await chatBumpWatcher.close();
