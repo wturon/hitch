@@ -29,6 +29,22 @@ assert.deepEqual(bound, {
   observedAt: 1_800_000_000_000,
 });
 
+const automationBound = pendingChatBindingArgs({
+  cmd: { launchId: "launch-2", automationRunId: "run-1" },
+  projectId: "project-1",
+  deviceToken: "device-token-1",
+  harness: "codex",
+  chatId: "thread-2",
+  host: "host-1",
+  cwd: "/tmp/project",
+  status: "waiting",
+  environment: "codex-app",
+});
+
+assert.equal(automationBound?.automationRunId, "run-1");
+assert.equal(automationBound?.launchId, "launch-2");
+assert.equal(automationBound?.chatId, "thread-2");
+
 const legacy = pendingChatBindingArgs({
   cmd: {},
   projectId: "project-1",

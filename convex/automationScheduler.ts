@@ -140,11 +140,25 @@ async function insertPendingChatAndCommand(
     createdAt: now,
     updatedAt: now,
   });
+  const runId = await ctx.db.insert("automationRuns", {
+    projectId: automation.projectId,
+    automationId: automation._id,
+    automationPath: automation.automationPath,
+    trigger: "schedule",
+    scheduledFor,
+    startedAt: now,
+    chatId,
+    launchId: id,
+    status: "running",
+    createdAt: now,
+    updatedAt: now,
+  });
   const commandId = await ctx.db.insert("commands", {
     projectId: automation.projectId,
     kind: "start-chat",
     harness,
     launchId: id,
+    automationRunId: runId,
     linkedType: "automation",
     linkedPath: automation.automationPath,
     initialPrompt: automation.prompt,
@@ -156,20 +170,7 @@ async function insertPendingChatAndCommand(
     createdAt: now,
     updatedAt: now,
   });
-  const runId = await ctx.db.insert("automationRuns", {
-    projectId: automation.projectId,
-    automationId: automation._id,
-    automationPath: automation.automationPath,
-    trigger: "schedule",
-    scheduledFor,
-    startedAt: now,
-    commandId,
-    chatId,
-    launchId: id,
-    status: "running",
-    createdAt: now,
-    updatedAt: now,
-  });
+  await ctx.db.patch(runId, { commandId, updatedAt: now });
   return { commandId, runId };
 }
 

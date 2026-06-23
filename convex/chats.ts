@@ -164,15 +164,20 @@ async function markAutomationRunSettledForLaunch(
   args: {
     projectId: Id<"projects">;
     launchId: string | undefined;
+    automationRunId?: Id<"automationRuns">;
     chatId: Id<"chats">;
     endedAt: number;
   },
 ) {
-  if (!args.launchId) return;
-  const run = await ctx.db
-    .query("automationRuns")
-    .withIndex("by_launch", (q) => q.eq("launchId", args.launchId))
-    .unique();
+  const run =
+    args.automationRunId !== undefined
+      ? await ctx.db.get(args.automationRunId)
+      : args.launchId
+        ? await ctx.db
+            .query("automationRuns")
+            .withIndex("by_launch", (q) => q.eq("launchId", args.launchId))
+            .unique()
+        : null;
   if (!run || run.projectId !== args.projectId || run.status !== "running") {
     return;
   }
@@ -411,6 +416,7 @@ export const bindPendingChat = mutation({
     projectId: v.id("projects"),
     deviceToken: v.string(),
     launchId: v.string(),
+    automationRunId: v.optional(v.id("automationRuns")),
     harness: harnessValidator,
     chatId: v.string(),
     host: v.string(),
@@ -467,6 +473,7 @@ export const bindPendingChat = mutation({
       await markAutomationRunSettledForLaunch(ctx, {
         projectId: project._id,
         launchId: args.launchId,
+        automationRunId: args.automationRunId,
         chatId: pending._id,
         endedAt: observedAt,
       });
@@ -481,6 +488,7 @@ export const upsertReducedState = mutation({
     projectId: v.id("projects"),
     deviceToken: v.string(),
     launchId: v.optional(v.string()),
+    automationRunId: v.optional(v.id("automationRuns")),
     harness: harnessValidator,
     chatId: v.optional(v.string()),
     pending: v.optional(v.boolean()),
@@ -554,6 +562,7 @@ export const upsertReducedState = mutation({
         await markAutomationRunSettledForLaunch(ctx, {
           projectId: project._id,
           launchId: args.launchId,
+          automationRunId: args.automationRunId,
           chatId: existing._id,
           endedAt: args.lastStatusAt ?? args.lastEventAt,
         });
@@ -587,6 +596,7 @@ export const upsertReducedState = mutation({
       await markAutomationRunSettledForLaunch(ctx, {
         projectId: project._id,
         launchId: args.launchId,
+        automationRunId: args.automationRunId,
         chatId: id,
         endedAt: args.lastStatusAt ?? args.lastEventAt,
       });

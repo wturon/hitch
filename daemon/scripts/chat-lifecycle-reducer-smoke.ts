@@ -33,6 +33,7 @@ function event(
       environment: "codex-app",
       linkedType: "task",
       linkedPath: "tasks/example/task.md",
+      automationRunId: "run-1",
       title: "Example task",
     },
     ...overrides,
@@ -77,6 +78,7 @@ try {
   const boundChat = store.getLocalChat("chat:codex:host-1:thread-1");
   assert.equal(boundChat?.launchId, "launch-1");
   assert.equal(boundChat?.pending, false);
+  assert.equal(boundChat?.resumePayload.automationRunId, "run-1");
   assert.equal(boundChat?.dirty, true);
   store.markChatSynced("chat:codex:host-1:thread-1", {
     syncedAt: 1_800_000_000_301,
