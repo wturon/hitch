@@ -159,12 +159,45 @@ async function chatByLaunch(
     .unique();
 }
 
+export function automationRunMatchesLifecycle(
+  run: {
+    projectId: Id<"projects">;
+    automationPath: string;
+    launchId?: string;
+    status: "running" | "done" | "skipped";
+  },
+  args: {
+    projectId: Id<"projects">;
+    launchId?: string;
+    automationRunId?: Id<"automationRuns">;
+    linkedType?: LinkedType;
+    linkedPath?: string;
+  },
+) {
+  if (run.projectId !== args.projectId || run.status !== "running") {
+    return false;
+  }
+  if (args.automationRunId === undefined) return true;
+
+  if (args.launchId !== undefined && run.launchId !== args.launchId) {
+    return false;
+  }
+  const hasAutomationLink =
+    args.linkedType === "automation" && args.linkedPath !== undefined;
+  if (hasAutomationLink && run.automationPath !== args.linkedPath) {
+    return false;
+  }
+  return args.launchId !== undefined || hasAutomationLink;
+}
+
 async function markAutomationRunSettledForLaunch(
   ctx: MutationCtx,
   args: {
     projectId: Id<"projects">;
     launchId: string | undefined;
     automationRunId?: Id<"automationRuns">;
+    linkedType?: LinkedType;
+    linkedPath?: string;
     chatId: Id<"chats">;
     endedAt: number;
   },
@@ -181,6 +214,7 @@ async function markAutomationRunSettledForLaunch(
   if (!run || run.projectId !== args.projectId || run.status !== "running") {
     return;
   }
+  if (!automationRunMatchesLifecycle(run, args)) return;
   await ctx.db.patch(run._id, {
     status: "done",
     endedAt: args.endedAt,
@@ -474,6 +508,8 @@ export const bindPendingChat = mutation({
         projectId: project._id,
         launchId: args.launchId,
         automationRunId: args.automationRunId,
+        linkedType: pending.linkedType,
+        linkedPath: pending.linkedPath,
         chatId: pending._id,
         endedAt: observedAt,
       });
@@ -538,6 +574,10 @@ export const upsertReducedState = mutation({
     }
 
     if (existing) {
+      const nextLinkedType =
+        "linkedType" in link ? link.linkedType : existing.linkedType;
+      const nextLinkedPath =
+        "linkedPath" in link ? link.linkedPath : existing.linkedPath;
       await ctx.db.patch(existing._id, {
         launchId: args.launchId ?? existing.launchId,
         chatId: args.chatId ?? existing.chatId,
@@ -547,10 +587,8 @@ export const upsertReducedState = mutation({
         cwd: args.cwd,
         host: args.host,
         environment: args.environment ?? existing.environment,
-        linkedType:
-          "linkedType" in link ? link.linkedType : existing.linkedType,
-        linkedPath:
-          "linkedPath" in link ? link.linkedPath : existing.linkedPath,
+        linkedType: nextLinkedType,
+        linkedPath: nextLinkedPath,
         resumeKind: args.resumeKind ?? existing.resumeKind,
         resumePayload: args.resumePayload ?? existing.resumePayload,
         lastEventAt: args.lastEventAt,
@@ -563,6 +601,8 @@ export const upsertReducedState = mutation({
           projectId: project._id,
           launchId: args.launchId,
           automationRunId: args.automationRunId,
+          linkedType: nextLinkedType,
+          linkedPath: nextLinkedPath,
           chatId: existing._id,
           endedAt: args.lastStatusAt ?? args.lastEventAt,
         });
@@ -597,6 +637,8 @@ export const upsertReducedState = mutation({
         projectId: project._id,
         launchId: args.launchId,
         automationRunId: args.automationRunId,
+        linkedType: link.linkedType,
+        linkedPath: link.linkedPath,
         chatId: id,
         endedAt: args.lastStatusAt ?? args.lastEventAt,
       });

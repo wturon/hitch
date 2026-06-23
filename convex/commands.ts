@@ -80,7 +80,6 @@ export const enqueueCommand = mutation({
     kind: v.string(),
     harness: v.string(),
     launchId: v.optional(v.string()),
-    automationRunId: v.optional(v.id("automationRuns")),
     sessionId: v.optional(v.string()),
     path: v.optional(v.string()),
     linkedType: v.optional(
