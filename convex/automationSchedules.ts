@@ -18,7 +18,7 @@ interface ParsedCron {
   rawFields: string[];
 }
 
-const DAY_NAMES = [
+export const DAY_NAMES = [
   "Sunday",
   "Monday",
   "Tuesday",
