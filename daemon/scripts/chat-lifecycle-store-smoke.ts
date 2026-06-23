@@ -168,7 +168,7 @@ try {
     "convex-chat-1",
   );
 
-  const codexChats = store.listCodexChatsForTitleRefresh("project-1");
+  const codexChats = store.listChatsForTitleRefresh("project-1", "codex");
   assert.equal(codexChats.length, 1);
   assert.equal(codexChats[0]?.chatId, "chat-1");
   assert.equal(

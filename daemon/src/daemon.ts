@@ -21,7 +21,10 @@ import { DaemonLifecycleProducer } from "./chatLifecycleProducers.js";
 import { titleFromInitialPrompt } from "./chatTitles.js";
 import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
-import { stopClaudeSessionLinker } from "./launchers/claudeSessionLinker.js";
+import {
+  readClaudeAiTitle,
+  stopClaudeSessionLinker,
+} from "./launchers/claudeSessionLinker.js";
 import type { Environment, Harness } from "./launchers/types.js";
 import type { LocalChatRow } from "./chatLifecycleStore.js";
 
@@ -627,7 +630,7 @@ async function startHitchBinding({
   }
 
   async function refreshCodexThreadTitles(): Promise<number> {
-    const chats = chatLifecycleStore.listCodexChatsForTitleRefresh(projectId);
+    const chats = chatLifecycleStore.listChatsForTitleRefresh(projectId, "codex");
     const results = await Promise.all(
       chats.map(async (chat) => {
         if (!chat.chatId) return false;
@@ -644,6 +647,26 @@ async function startHitchBinding({
       }),
     );
     return results.filter(Boolean).length;
+  }
+
+  // Claude Code owns its own naming: a small model writes the session title into
+  // the transcript on the first turn. We read it back rather than imposing one,
+  // so the launch placeholder (task title / first prompt) gives way to Claude's
+  // generated title once it lands. Mirrors refreshCodexThreadTitles, but reads
+  // the transcript on disk instead of querying an app-server.
+  function refreshClaudeChatTitles(): number {
+    const chats = chatLifecycleStore.listChatsForTitleRefresh(
+      projectId,
+      "claude-code",
+    );
+    let changed = 0;
+    for (const chat of chats) {
+      if (!chat.chatId) continue;
+      const title = readClaudeAiTitle(chat.cwd, chat.chatId);
+      if (!title) continue;
+      if (chatLifecycleStore.updateChatTitle(chat.localKey, title)) changed += 1;
+    }
+    return changed;
   }
 
   let reducing = false;
@@ -665,23 +688,21 @@ async function startHitchBinding({
           totalChanged += result.chatsChanged;
           if (result.eventsReduced < 100) break;
         }
-        const isDelayedCodexTitleRefresh = reason.startsWith(
-          "codex-title-refresh",
-        );
+        const isDelayedTitleRefresh = reason.startsWith("title-refresh");
         const titlesRefreshed =
-          totalReduced > 0 || isDelayedCodexTitleRefresh
-            ? await refreshCodexThreadTitles()
+          totalReduced > 0 || isDelayedTitleRefresh
+            ? (await refreshCodexThreadTitles()) + refreshClaudeChatTitles()
             : 0;
         const synced = await syncReducedChats();
         const projected = await projectReducedTaskFrontmatter();
         if (totalReduced > 0 || titlesRefreshed > 0 || synced > 0 || projected > 0) {
           chatLifecycleStore.cleanupReducedEvents();
           logger.info(
-            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), refreshed ${titlesRefreshed} Codex title(s), synced ${synced} chat(s), projected ${projected} task(s) (${reason})`,
+            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), refreshed ${titlesRefreshed} title(s), synced ${synced} chat(s), projected ${projected} task(s) (${reason})`,
           );
         }
-        if (totalReduced > 0 && !isDelayedCodexTitleRefresh) {
-          scheduleCodexTitleRefresh(reason);
+        if (totalReduced > 0 && !isDelayedTitleRefresh) {
+          scheduleTitleRefresh(reason);
         }
       } while (reduceAgain);
     } catch (err) {
@@ -694,12 +715,12 @@ async function startHitchBinding({
     }
   }
 
-  let codexTitleRefreshTimer: NodeJS.Timeout | undefined;
-  function scheduleCodexTitleRefresh(reason: string): void {
-    if (codexTitleRefreshTimer) clearTimeout(codexTitleRefreshTimer);
-    codexTitleRefreshTimer = setTimeout(() => {
-      codexTitleRefreshTimer = undefined;
-      void reduceAndSyncChats(`codex-title-refresh:${reason}`);
+  let titleRefreshTimer: NodeJS.Timeout | undefined;
+  function scheduleTitleRefresh(reason: string): void {
+    if (titleRefreshTimer) clearTimeout(titleRefreshTimer);
+    titleRefreshTimer = setTimeout(() => {
+      titleRefreshTimer = undefined;
+      void reduceAndSyncChats(`title-refresh:${reason}`);
     }, 5_000);
   }
 
@@ -1388,7 +1409,7 @@ async function startHitchBinding({
       clearInterval(heartbeatTimer);
       clearInterval(reconcileTimer);
       clearInterval(chatReducePollTimer);
-      if (codexTitleRefreshTimer) clearTimeout(codexTitleRefreshTimer);
+      if (titleRefreshTimer) clearTimeout(titleRefreshTimer);
       if (reduceDebounce) clearTimeout(reduceDebounce);
       for (const subscription of subscriptions) unsubscribe(subscription);
       await chatBumpWatcher.close();

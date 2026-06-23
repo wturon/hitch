@@ -9,7 +9,7 @@
 // (verified empirically). So one cheap, always-on watcher serves every
 // fire-and-forget Claude environment; this is a harness concern, not a per-env one.
 
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
@@ -43,6 +43,58 @@ function projectsDir(): string {
 // our own known cwds and compare — never reverse it (it isn't reversible).
 export function mungeCwd(cwd: string): string {
   return cwd.replace(/[/.]/g, "-");
+}
+
+// The canonical on-disk transcript for a Claude session: the filename IS the id.
+export function claudeTranscriptPath(cwd: string, sessionId: string): string {
+  return join(projectsDir(), mungeCwd(cwd), `${sessionId}.jsonl`);
+}
+
+// Claude re-emits its small-model-generated session title each turn as an
+// {"type":"ai-title","aiTitle":"..."} line, so the freshest copy lives near the
+// end of the transcript. We scan a bounded tail to stay cheap on multi-MB
+// transcripts; the title first appears on turn one when the file is tiny (well
+// within the window), and a miss self-heals since the next turn re-emits it
+// nearer the tail. Returns null until Claude has named the session (or for a
+// session that ran on another host, whose transcript isn't on this disk).
+const AI_TITLE_TAIL_BYTES = 512 * 1024;
+
+export function readClaudeAiTitle(cwd: string, sessionId: string): string | null {
+  const path = claudeTranscriptPath(cwd, sessionId);
+  let text: string;
+  try {
+    const size = statSync(path).size;
+    if (size <= AI_TITLE_TAIL_BYTES) {
+      text = readFileSync(path, "utf8");
+    } else {
+      const fd = openSync(path, "r");
+      try {
+        const buf = Buffer.allocUnsafe(AI_TITLE_TAIL_BYTES);
+        const read = readSync(fd, buf, 0, AI_TITLE_TAIL_BYTES, size - AI_TITLE_TAIL_BYTES);
+        text = buf.toString("utf8", 0, read);
+      } finally {
+        closeSync(fd);
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  let title: string | null = null;
+  for (const line of text.split("\n")) {
+    // Cheap pre-filter before JSON.parse; the tail window may begin mid-line, so
+    // the partial leading line simply fails to parse and is skipped.
+    if (!line.includes('"ai-title"')) continue;
+    try {
+      const obj = JSON.parse(line) as { type?: string; aiTitle?: unknown };
+      if (obj.type === "ai-title" && typeof obj.aiTitle === "string" && obj.aiTitle.trim()) {
+        title = obj.aiTitle.trim();
+      }
+    } catch {
+      // garbled/partial line within the tail window; ignore
+    }
+  }
+  return title;
 }
 
 function prune(now: number): void {

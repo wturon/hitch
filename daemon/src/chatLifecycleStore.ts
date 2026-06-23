@@ -422,18 +422,22 @@ export class ChatLifecycleStore {
       .map((row) => this.localChatFromRow(row));
   }
 
-  listCodexChatsForTitleRefresh(projectId: string, limit = 20): LocalChatRow[] {
+  listChatsForTitleRefresh(
+    projectId: string,
+    harness: ChatLifecycleHarness,
+    limit = 20,
+  ): LocalChatRow[] {
     return this.db
       .prepare(
         `SELECT * FROM local_chats
          WHERE project_id = ?
-           AND harness = 'codex'
+           AND harness = ?
            AND chat_id IS NOT NULL
            AND deleted_at IS NULL
          ORDER BY updated_at DESC
          LIMIT ?`,
       )
-      .all(projectId, limit)
+      .all(projectId, harness, limit)
       .map((row) => this.localChatFromRow(row));
   }
 
