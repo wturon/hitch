@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   AlertCircleIcon,
+  ArrowUpIcon,
   BotIcon,
   CalendarDaysIcon,
   CheckCircle2Icon,
@@ -19,6 +20,17 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
+import {
+  HARNESSES,
+  MODELS_BY_HARNESS,
+  defaultModel,
+  defaultReasoning,
+  harnessLabel,
+  modelLabel,
+  reasoningLabel,
+  reasoningOptions,
+  type Harness,
+} from "@/lib/chat";
 import {
   automationFileForPath,
   defaultAutomationDraft,
@@ -101,6 +113,17 @@ function clampNumber(value: string, min: number, max: number) {
 
 function timeValue(value: ScheduleBuilderValue) {
   return `${twoDigit(value.hour)}:${twoDigit(value.minute)}`;
+}
+
+function automationHarness(value: string | undefined): Harness {
+  return value === "claude-code" ? "claude-code" : "codex";
+}
+
+function statusTone(run: AutomationStatusRun | null | undefined) {
+  if (run?.status === "running") return "bg-[#F59E0B]";
+  if (run?.status === "skipped") return "bg-amber-500";
+  if (run?.status === "done") return "bg-emerald-500";
+  return "bg-muted-foreground/40";
 }
 
 function ScheduleBuilder({
@@ -246,6 +269,119 @@ function applyScheduleToDraft(
     schedule: cronFromBuilder(scheduleValue),
     timezone: scheduleValue.timezone,
   };
+}
+
+function AutomationPromptComposer({
+  draft,
+  onChange,
+  minRows = 6,
+}: {
+  draft: AutomationDefinitionDraft;
+  onChange: (draft: AutomationDefinitionDraft) => void;
+  minRows?: number;
+}) {
+  const harness = automationHarness(draft.harness);
+  const model = draft.model || defaultModel(harness);
+  const effort = draft.effort || defaultReasoning(harness, model);
+  const chipTrigger = "h-7 gap-1.5 border-0 px-2 font-normal hover:bg-muted";
+
+  function chooseAgent(value: string | null) {
+    if (!value) return;
+    const sep = value.indexOf("|");
+    const nextHarness = automationHarness(value.slice(0, sep));
+    const nextModel = value.slice(sep + 1) || defaultModel(nextHarness);
+    onChange({
+      ...draft,
+      harness: nextHarness,
+      model: nextModel,
+      effort: defaultReasoning(nextHarness, nextModel),
+    });
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-background shadow-sm focus-within:ring-2 focus-within:ring-ring">
+      <textarea
+        value={draft.prompt}
+        onChange={(event) => onChange({ ...draft, prompt: event.target.value })}
+        spellCheck={false}
+        rows={minRows}
+        className="block min-h-32 w-full resize-y bg-transparent px-3.5 py-3 font-mono text-[13px] leading-relaxed outline-none placeholder:text-muted-foreground"
+        placeholder="Describe exactly what the agent should do each time this automation runs."
+      />
+      <div className="flex items-center justify-between gap-2 border-t border-border py-2 pr-2 pl-2.5">
+        <div className="flex min-w-0 items-center gap-1">
+          <Select value={`${harness}|${model}`} onValueChange={chooseAgent}>
+            <SelectTrigger aria-label="Agent and model" className={chipTrigger}>
+              <SelectValue>
+                {(value: string) => {
+                  const sep = value.indexOf("|");
+                  const selectedHarness = automationHarness(value.slice(0, sep));
+                  const selectedModel = value.slice(sep + 1);
+                  return (
+                    <span className="flex items-center gap-1.5">
+                      <HarnessIcon harness={selectedHarness} className="size-4" />
+                      <span className="font-medium">
+                        {harnessLabel(selectedHarness)}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {modelLabel(selectedHarness, selectedModel)}
+                      </span>
+                    </span>
+                  );
+                }}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {HARNESSES.map((optionHarness) => (
+                <Fragment key={optionHarness}>
+                  <div className="flex items-center gap-2 px-2 pt-1.5 pb-1 text-xs font-medium text-muted-foreground">
+                    <HarnessIcon harness={optionHarness} className="size-3.5" />
+                    {harnessLabel(optionHarness)}
+                  </div>
+                  {MODELS_BY_HARNESS[optionHarness].map((optionModel) => (
+                    <SelectItem
+                      key={`${optionHarness}|${optionModel.id}`}
+                      value={`${optionHarness}|${optionModel.id}`}
+                      className="pl-7"
+                    >
+                      {optionModel.label}
+                    </SelectItem>
+                  ))}
+                </Fragment>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <span className="h-4 w-px shrink-0 bg-border" aria-hidden />
+
+          <Select
+            value={effort}
+            onValueChange={(nextEffort) => {
+              if (!nextEffort) return;
+              onChange({ ...draft, effort: nextEffort });
+            }}
+          >
+            <SelectTrigger aria-label="Reasoning effort" className={chipTrigger}>
+              <GaugeIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <SelectValue>
+                {(value: string) => reasoningLabel(harness, value, model)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {reasoningOptions(harness, model).map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+          <ArrowUpIcon className="size-4" strokeWidth={2.5} />
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function runStatus(run: AutomationStatusRun | null | undefined): string {
@@ -404,6 +540,8 @@ function AutomationDetail({
   runs,
   onSave,
   onRunNow,
+  onSetEnabled,
+  onDelete,
 }: {
   projectId: Id<"projects">;
   file: AutomationFileDoc;
@@ -411,11 +549,14 @@ function AutomationDetail({
   runs: AutomationRunRecord[];
   onSave: (draft: AutomationDefinitionDraft) => Promise<void>;
   onRunNow: () => void;
+  onSetEnabled: (enabled: boolean) => void;
+  onDelete: () => void;
 }) {
   const [draft, setDraft] = useState(() => draftFromContent(file.content));
   const [scheduleValue, setScheduleValue] = useState(() =>
     scheduleValueFromDraft(draftFromContent(file.content)),
   );
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const chatActions = useChatActions();
 
@@ -453,7 +594,7 @@ function AutomationDetail({
   }
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-4">
+    <section className="flex min-h-0 flex-1 flex-col gap-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <input
@@ -463,20 +604,6 @@ function AutomationDetail({
             }
             className="w-full bg-transparent text-2xl font-semibold tracking-tight outline-none"
           />
-          <div className="mt-2 flex flex-wrap gap-2 text-xs font-medium uppercase text-muted-foreground">
-            <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-border px-2 py-1">
-              <CalendarDaysIcon className="size-3.5 shrink-0" />
-              <span className="truncate">
-                Schedule {automation.scheduleDescription || draft.schedule}
-              </span>
-            </span>
-            <span className="rounded-md border border-border px-2 py-1">
-              {draft.enabled ? "Enabled" : "Paused"}
-            </span>
-            <span className="rounded-md border border-border px-2 py-1">
-              Last run {relativeTime(automation.lastRun?.endedAt ?? automation.lastRun?.updatedAt)}
-            </span>
-          </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button
@@ -497,6 +624,113 @@ function AutomationDetail({
           >
             {saving ? "Saving…" : "Save"}
           </Button>
+          <Menu>
+            <MenuTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Actions for ${automation.name}`}
+                  className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground data-[popup-open]:bg-muted data-[popup-open]:text-foreground"
+                />
+              }
+            >
+              <EllipsisIcon className="size-4" />
+            </MenuTrigger>
+            <MenuContent align="end">
+              <MenuItem
+                onClick={() => {
+                  const nextEnabled = !draft.enabled;
+                  setDraft((next) => ({ ...next, enabled: nextEnabled }));
+                  onSetEnabled(nextEnabled);
+                }}
+              >
+                {draft.enabled ? <PauseCircleIcon /> : <PowerIcon />}
+                {draft.enabled ? "Disable" : "Enable"}
+              </MenuItem>
+              <div className="my-1 h-px bg-border" />
+              <MenuItem
+                onClick={onDelete}
+                className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
+              >
+                <Trash2Icon />
+                Delete
+              </MenuItem>
+            </MenuContent>
+          </Menu>
+        </div>
+      </div>
+
+      <div className="grid gap-2 rounded-xl border border-border bg-card p-2 sm:grid-cols-3">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setScheduleOpen((open) => !open)}
+            className="flex h-full min-h-16 w-full flex-col items-start justify-center rounded-lg px-3 py-2 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
+              <CalendarDaysIcon className="size-3.5" />
+              Schedule
+            </span>
+            <span className="mt-1 line-clamp-2 text-sm font-medium">
+              {scheduleStatus.ok
+                ? scheduleStatus.text
+                : automation.scheduleDescription || draft.schedule}
+            </span>
+          </button>
+          {scheduleOpen && (
+            <div className="absolute left-0 top-[calc(100%+8px)] z-20 w-[min(420px,calc(100vw-3rem))] rounded-xl border border-border bg-popover p-3 shadow-xl">
+              <ScheduleBuilder
+                value={scheduleValue}
+                onChange={updateSchedule}
+                compact
+              />
+              <div className="mt-3 flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setScheduleOpen(false)}
+                >
+                  Done
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            const nextEnabled = !draft.enabled;
+            setDraft((next) => ({ ...next, enabled: nextEnabled }));
+            onSetEnabled(nextEnabled);
+          }}
+          className="flex min-h-16 flex-col items-start justify-center rounded-lg px-3 py-2 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
+            Status
+          </span>
+          <span className="mt-1 flex items-center gap-2 text-sm font-medium">
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                draft.enabled ? "bg-emerald-500" : "bg-muted-foreground/40",
+              )}
+            />
+            {draft.enabled ? "Enabled" : "Paused"}
+          </span>
+        </button>
+        <div className="flex min-h-16 flex-col items-start justify-center rounded-lg px-3 py-2">
+          <span className="text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
+            Last run
+          </span>
+          <span className="mt-1 flex min-w-0 items-center gap-2 text-sm font-medium">
+            <span
+              className={cn("size-2 shrink-0 rounded-full", statusTone(automation.lastRun))}
+            />
+            <span className="truncate">
+              {automation.lastRun ? runStatus(automation.lastRun) : "No runs yet"}
+            </span>
+          </span>
         </div>
       </div>
 
@@ -506,31 +740,29 @@ function AutomationDetail({
         </div>
       )}
 
-      <section className="rounded-xl border border-border bg-card p-3">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold">Schedule</h3>
-            <p className="text-xs text-muted-foreground">
-              Runs in your local time.
-            </p>
-          </div>
-        </div>
-        <ScheduleBuilder value={scheduleValue} onChange={updateSchedule} compact />
-      </section>
-
       <label className="flex min-h-[220px] flex-1 flex-col gap-1.5 text-sm font-medium">
         Prompt
-        <textarea
-          value={draft.prompt}
-          onChange={(event) =>
-            setDraft((next) => ({ ...next, prompt: event.target.value }))
-          }
-          className="min-h-[220px] flex-1 resize-none rounded-lg border bg-background p-3 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        <AutomationPromptComposer
+          draft={draft}
+          onChange={setDraft}
+          minRows={10}
         />
       </label>
 
       <section className="flex flex-col gap-2">
-        <h3 className="text-sm font-semibold">Recent runs</h3>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Recent runs</h3>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={automation.validationError !== undefined}
+            onClick={onRunNow}
+          >
+            <PlayIcon />
+            Run now
+          </Button>
+        </div>
         {runs.length === 0 ? (
           <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
             No runs yet.
@@ -622,40 +854,14 @@ function NewAutomationDialog({
 
           <label className="flex flex-col gap-1.5 text-sm font-medium">
             Prompt
-            <div className="overflow-hidden rounded-xl border bg-background focus-within:ring-2 focus-within:ring-ring">
-              <textarea
-                value={draft.prompt}
-                onChange={(event) =>
-                  setDraft((next) => ({ ...next, prompt: event.target.value }))
-                }
-                spellCheck={false}
-                rows={6}
-                className="block min-h-32 w-full resize-y bg-transparent px-3.5 py-3 font-mono text-[13px] leading-relaxed outline-none placeholder:text-muted-foreground"
-                placeholder="Describe exactly what the agent should do each time this automation runs."
-              />
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t px-2.5 py-2">
-                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                  <span className="inline-flex h-7 items-center gap-1.5 rounded-md bg-muted px-2 text-xs font-medium">
-                    <HarnessIcon harness="codex" className="size-4" />
-                    Codex
-                  </span>
-                  <span className="inline-flex h-7 items-center rounded-md bg-muted px-2 text-xs text-muted-foreground">
-                    {draft.model ?? "gpt-5.5"}
-                  </span>
-                  <span className="inline-flex h-7 items-center gap-1.5 rounded-md bg-muted px-2 text-xs text-muted-foreground">
-                    <GaugeIcon className="size-3.5" />
-                    {draft.effort ?? "medium"}
-                  </span>
-                </div>
-              </div>
-            </div>
+            <AutomationPromptComposer draft={draft} onChange={setDraft} />
           </label>
 
           <section className="rounded-xl border border-border bg-card p-3">
             <div className="mb-3">
               <h3 className="text-sm font-semibold">Schedule</h3>
               <p className="text-xs text-muted-foreground">
-                Presets compile to cron and run in your local time.
+                Presets compile to cron. Runs use your local timezone.
               </p>
             </div>
             <ScheduleBuilder value={scheduleValue} onChange={updateSchedule} />
@@ -821,6 +1027,13 @@ export function AutomationsView({
               actions.updateAutomation(effectiveSelected.automationPath, draft)
             }
             onRunNow={() => void actions.runNow(effectiveSelected.automationPath)}
+            onSetEnabled={(enabled) =>
+              void actions.setEnabled(effectiveSelected.automationPath, enabled)
+            }
+            onDelete={() => {
+              setSelectedPath(null);
+              void actions.deleteAutomation(effectiveSelected.automationPath);
+            }}
           />
         ) : (
           <div className="flex min-h-[40vh] flex-1 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
