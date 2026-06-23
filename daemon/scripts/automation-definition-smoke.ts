@@ -90,7 +90,7 @@ enabled: true
 schedule: "0 9 * * *"
 timezone: UTC
 ---
-   
+${"   "}
 `,
   deleted: false,
   now: baseTime,
