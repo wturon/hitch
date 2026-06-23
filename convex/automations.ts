@@ -10,6 +10,36 @@ import {
 import { nextRunForScheduleState } from "./automationSchedules";
 
 type Automation = Doc<"automations">;
+type Harness = "claude-code" | "codex";
+
+const DEFAULT_COMMAND_TTL_MS = 5 * 60 * 1000;
+const MAX_RUN_LIMIT = 50;
+
+function launchId() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `automation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function commandExpiry(now: number): number {
+  return now + DEFAULT_COMMAND_TTL_MS;
+}
+
+function normalizeTitle(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim() || "Automation run";
+  if (normalized.length <= 72) return normalized;
+  return `${normalized.slice(0, 69).trimEnd()}...`;
+}
+
+function supportedHarness(value: string): value is Harness {
+  return value === "claude-code" || value === "codex";
+}
+
+function runLimit(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value)) return 10;
+  return Math.max(1, Math.min(MAX_RUN_LIMIT, Math.floor(value)));
+}
 
 function withoutUndefined<T extends Record<string, unknown>>(value: T) {
   return Object.fromEntries(
@@ -163,13 +193,21 @@ export const listAutomations = query({
       .query("automations")
       .withIndex("by_project", (q) => q.eq("projectId", access.project._id))
       .collect();
-    return automations
+    const visible = automations
       .filter((automation) => args.includeDeleted || !automation.deleted)
       .filter(
         (automation) =>
           args.includeInvalid || automation.validationError === undefined,
       )
       .sort((a, b) => a.name.localeCompare(b.name));
+    return await Promise.all(
+      visible.map(async (automation) => ({
+        ...automation,
+        lastRun: automation.lastRunId
+          ? await ctx.db.get(automation.lastRunId as Id<"automationRuns">)
+          : null,
+      })),
+    );
   },
 });
 
@@ -222,6 +260,150 @@ export const getAutomation = query({
           .eq("automationPath", args.automationPath),
       )
       .unique();
+  },
+});
+
+export const listRuns = query({
+  args: {
+    projectId: v.id("projects"),
+    automationPath: v.string(),
+    limit: v.optional(v.number()),
+    deviceToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectAccess(
+      ctx,
+      args.projectId,
+      args.deviceToken,
+    );
+    if (!access.project) throw new Error("Project does not exist");
+    const automation = await ctx.db
+      .query("automations")
+      .withIndex("by_key", (q) =>
+        q
+          .eq("projectId", access.project._id)
+          .eq("automationPath", args.automationPath),
+      )
+      .unique();
+    if (!automation) return [];
+    const runs = await ctx.db
+      .query("automationRuns")
+      .withIndex("by_automation", (q) => q.eq("automationId", automation._id))
+      .order("desc")
+      .take(runLimit(args.limit));
+    return await Promise.all(
+      runs.map(async (run) => ({
+        ...run,
+        chat: run.chatId ? await ctx.db.get(run.chatId) : null,
+      })),
+    );
+  },
+});
+
+export const runNow = mutation({
+  args: {
+    projectId: v.id("projects"),
+    automationPath: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectMemberById(ctx, args.projectId);
+    const automation = await automationByPath(
+      ctx,
+      access.project._id,
+      args.automationPath,
+    );
+    if (!automation || automation.deleted) {
+      throw new Error("Automation not found");
+    }
+    if (automation.validationError) {
+      throw new Error(`Automation definition is invalid: ${automation.validationError}`);
+    }
+
+    const now = Date.now();
+    const active = await ctx.db
+      .query("automationRuns")
+      .withIndex("by_automation_status", (q) =>
+        q.eq("automationId", automation._id).eq("status", "running"),
+      )
+      .first();
+    if (active) {
+      const runId = await ctx.db.insert("automationRuns", {
+        projectId: automation.projectId,
+        automationId: automation._id,
+        automationPath: automation.automationPath,
+        trigger: "manual",
+        scheduledFor: now,
+        endedAt: now,
+        status: "skipped",
+        skipReason: "overlap",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.patch(automation._id, {
+        lastRunId: runId,
+        updatedAt: now,
+      });
+      return { runId, skipped: true, reason: "overlap" };
+    }
+
+    if (!supportedHarness(automation.harness)) {
+      throw new Error(`unsupported automation harness: ${automation.harness}`);
+    }
+
+    const id = launchId();
+    const title = normalizeTitle(automation.name);
+    const chatId = await ctx.db.insert("chats", {
+      projectId: automation.projectId,
+      launchId: id,
+      harness: automation.harness,
+      pending: true,
+      status: "working",
+      title,
+      cwd: "",
+      host: "unknown",
+      linkedType: "automation",
+      linkedPath: automation.automationPath,
+      resumeKind: "open-chat-command",
+      resumePayload: {},
+      firstObservedAt: now,
+      lastEventAt: now,
+      lastStatusAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const runId = await ctx.db.insert("automationRuns", {
+      projectId: automation.projectId,
+      automationId: automation._id,
+      automationPath: automation.automationPath,
+      trigger: "manual",
+      scheduledFor: now,
+      startedAt: now,
+      chatId,
+      launchId: id,
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const commandId = await ctx.db.insert("commands", {
+      projectId: automation.projectId,
+      kind: "start-chat",
+      harness: automation.harness,
+      launchId: id,
+      automationRunId: runId,
+      linkedType: "automation",
+      linkedPath: automation.automationPath,
+      initialPrompt: automation.prompt,
+      title,
+      model: automation.model,
+      effort: automation.effort,
+      status: "pending",
+      expiresAt: commandExpiry(now),
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.patch(runId, { commandId, updatedAt: now });
+    await ctx.db.patch(automation._id, { lastRunId: runId, updatedAt: now });
+    return { runId, commandId, chatId, launchId: id, skipped: false };
   },
 });
 
