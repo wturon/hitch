@@ -9,4 +9,11 @@ crons.interval(
   internal.commands.expireStaleCommandsForAllProjects,
 );
 
+crons.interval(
+  "enqueue due automation runs",
+  { minutes: 1 },
+  internal.automationScheduler.tickDueAutomations,
+  {},
+);
+
 export default crons;

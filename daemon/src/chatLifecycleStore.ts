@@ -74,7 +74,7 @@ export interface LocalChatInput {
   cwd: string;
   host: string;
   environment: string | null;
-  linkedType: "task" | "note" | null;
+  linkedType: "task" | "note" | "automation" | null;
   linkedPath: string | null;
   resumeKind: "open-chat-command" | "external";
   resumePayload?: Record<string, unknown>;
@@ -748,7 +748,9 @@ export class ChatLifecycleStore {
     const environment =
       optionalString(event.metadata.environment) ?? existing?.environment ?? null;
     const linkedType =
-      event.metadata.linkedType === "task" || event.metadata.linkedType === "note"
+      event.metadata.linkedType === "task" ||
+      event.metadata.linkedType === "note" ||
+      event.metadata.linkedType === "automation"
         ? event.metadata.linkedType
         : existing?.linkedType ?? null;
     const linkedPath =
@@ -899,7 +901,10 @@ export class ChatLifecycleStore {
       cwd: String(value.cwd),
       host: String(value.host),
       environment: value.environment === null ? null : String(value.environment),
-      linkedType: value.linked_type === null ? null : (String(value.linked_type) as "task" | "note"),
+      linkedType:
+        value.linked_type === null
+          ? null
+          : (String(value.linked_type) as "task" | "note" | "automation"),
       linkedPath: value.linked_path === null ? null : String(value.linked_path),
       resumeKind: String(value.resume_kind) as "open-chat-command" | "external",
       resumePayload: jsonObject(String(value.resume_payload_json)),

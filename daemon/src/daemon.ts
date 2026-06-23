@@ -119,7 +119,7 @@ interface CommandDoc {
   launchId?: string;
   sessionId?: string;
   path?: string;
-  linkedType?: "task" | "note";
+  linkedType?: "task" | "note" | "automation";
   linkedPath?: string;
   initialPrompt?: string;
   title?: string;
