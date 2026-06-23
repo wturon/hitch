@@ -65,6 +65,19 @@ export function defaultAutomationContent(name: string, timezone = localTimezone(
   ].join("\n");
 }
 
+export function defaultAutomationDraft(name: string): AutomationDefinitionDraft {
+  return {
+    name: name.trim() || "Untitled automation",
+    enabled: true,
+    schedule: "0 9 * * *",
+    timezone: localTimezone(),
+    harness: "codex",
+    model: "gpt-5.5",
+    effort: "medium",
+    prompt: "",
+  };
+}
+
 export function draftFromContent(content: string): AutomationDefinitionDraft {
   const { frontmatter, body } = parseFrontmatter(content);
   return {
