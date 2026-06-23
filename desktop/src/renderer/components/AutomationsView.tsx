@@ -77,6 +77,9 @@ function AutomationRow({
   onSetEnabled: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
+  const status = automation.validationError
+    ? automation.validationError
+    : `${automation.enabled ? automation.scheduleDescription : "paused"} · ${runStatus(lastRun)}`;
   return (
     <button
       type="button"
@@ -101,8 +104,7 @@ function AutomationRow({
             <span className="size-1.5 shrink-0 rounded-full bg-[#F59E0B]" />
           )}
           <span className="truncate">
-            {automation.enabled ? automation.scheduleDescription : "paused"} ·{" "}
-            {runStatus(lastRun)}
+            {status}
           </span>
         </span>
       </span>
@@ -122,6 +124,7 @@ function AutomationRow({
         </MenuTrigger>
         <MenuContent align="end">
           <MenuItem
+            disabled={automation.validationError !== undefined}
             onClick={(event) => {
               event.stopPropagation();
               onRunNow();
@@ -258,7 +261,13 @@ function AutomationDetail({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={onRunNow}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={automation.validationError !== undefined}
+            onClick={onRunNow}
+          >
             <PlayIcon />
             Run now
           </Button>
@@ -272,6 +281,12 @@ function AutomationDetail({
           </Button>
         </div>
       </div>
+
+      {automation.validationError && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+          {automation.validationError}
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
