@@ -9,6 +9,7 @@ import {
   automationFileForPath,
   automationPath,
   contentFromDraft,
+  defaultAutomationDraft,
   defaultAutomationContent,
   draftFromContent,
   nextAutomationSlug,
@@ -108,11 +109,20 @@ export function useAutomationActions(
 
   return useMemo(
     () => ({
-      createAutomation: async (name: string) => {
-        const cleanName = name.trim() || "Untitled automation";
+      createAutomation: async (
+        name: string,
+        draft?: Partial<AutomationDefinitionDraft>,
+      ) => {
+        const baseDraft = { ...defaultAutomationDraft(name), ...draft };
+        const cleanName = baseDraft.name.trim() || "Untitled automation";
         const slug = nextAutomationSlug(files, cleanName);
         const path = automationPath(slug);
-        const content = defaultAutomationContent(cleanName);
+        const content = draft
+          ? contentFromDraft(defaultAutomationContent(cleanName, baseDraft.timezone), {
+              ...baseDraft,
+              name: cleanName,
+            })
+          : defaultAutomationContent(cleanName);
         await upsertFile({
           projectId,
           path,
