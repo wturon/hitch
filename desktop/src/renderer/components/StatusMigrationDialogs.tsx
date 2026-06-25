@@ -48,9 +48,18 @@ export type DeleteStatusMigrationRequest = {
   onConfirm: (destinationStatusId: string) => Promise<void>;
 };
 
+export type MoveStatusMigrationRequest = {
+  kind: "move";
+  status: ProjectStatus;
+  cardCount: number;
+  statuses: ProjectStatus[];
+  onConfirm: (destinationStatusId: string) => Promise<void>;
+};
+
 export type StatusMigrationRequest =
   | RenameStatusMigrationRequest
-  | DeleteStatusMigrationRequest;
+  | DeleteStatusMigrationRequest
+  | MoveStatusMigrationRequest;
 
 const ARCHIVE_DESTINATION = "archived";
 
@@ -142,7 +151,12 @@ export function StatusMigrationDialog({
   }, [draftName, request]);
 
   const destinationStatus = useMemo(() => {
-    if (request?.kind !== "delete" || destinationStatusId === null) return null;
+    if (
+      (request?.kind !== "delete" && request?.kind !== "move") ||
+      destinationStatusId === null
+    ) {
+      return null;
+    }
     return (
       request.statuses.find((status) => status.id === destinationStatusId) ??
       null
@@ -161,6 +175,10 @@ export function StatusMigrationDialog({
   const confirmLabel =
     activeRequest.kind === "rename"
       ? `Rename & update ${statusCardCountLabel(activeRequest.cardCount)}`
+      : activeRequest.kind === "move"
+        ? destinationStatusId === ARCHIVE_DESTINATION
+          ? `Archive ${statusCardCountLabel(activeRequest.cardCount)}`
+          : `Move ${statusCardCountLabel(activeRequest.cardCount)}`
       : destinationStatusId === ARCHIVE_DESTINATION
         ? `Delete & archive ${statusCardCountLabel(activeRequest.cardCount)}`
         : `Delete & move ${statusCardCountLabel(activeRequest.cardCount)}`;
@@ -189,11 +207,15 @@ export function StatusMigrationDialog({
           <DialogTitle>
             {request.kind === "rename"
               ? "Rename status"
-              : `Delete "${request.status.name}"?`}
+              : request.kind === "move"
+                ? "Move cards from unknown status"
+                : `Delete "${request.status.name}"?`}
           </DialogTitle>
           <DialogDescription>
             {request.kind === "rename"
               ? "Rename the status and update every card that uses its current id."
+              : request.kind === "move"
+                ? "Choose a configured status for these cards."
               : "Choose where the cards go before the status is removed."}
           </DialogDescription>
         </DialogHeader>
@@ -240,13 +262,14 @@ export function StatusMigrationDialog({
         ) : (
           <div className="grid gap-3">
             <p className="text-sm leading-5">
-              {request.cardCount === 1
-                ? "1 card uses"
-                : `${request.cardCount} cards use`}{" "}
+              {request.cardCount === 1 ? "1 card uses" : `${request.cardCount} cards use`}{" "}
               <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
                 {statusFrontmatterLine(request.status.id)}
               </code>
-              . Hitch will not move cards on its own.
+              .{" "}
+              {request.kind === "move"
+                ? "Choose where it should go."
+                : "Hitch will not move cards on its own."}
             </p>
 
             <label className="grid gap-1.5">
@@ -278,7 +301,11 @@ export function StatusMigrationDialog({
                 </SelectTrigger>
                 <SelectContent className="min-w-[18rem]">
                   {request.statuses
-                    .filter((status) => status.id !== request.status.id)
+                    .filter(
+                      (status) =>
+                        request.kind !== "delete" ||
+                        status.id !== request.status.id,
+                    )
                     .map((status) => (
                       <SelectItem key={status.id} value={status.id}>
                         <span className="min-w-0 flex-1 truncate">

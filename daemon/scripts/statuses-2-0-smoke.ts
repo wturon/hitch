@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   countTaskStatuses,
   deleteStatusMigrationPlan,
+  moveCardsWithStatusPlan,
   normalizeStatuses,
   renameStatusMigrationPlan,
   taskContentWithStatus,
@@ -201,5 +202,41 @@ assert.deepEqual(
   ["todo", "in-review", "review-ready"],
 );
 assert.deepEqual(emptyDeletePlan.repoints, []);
+
+const unknownMoveFiles = [
+  ...migrationFiles,
+  {
+    path: "tasks/unknown/task.md",
+    deleted: false,
+    content: "---\nstatus: blocked\n---\nUnknown\n",
+  },
+];
+const unknownMovePlan = moveCardsWithStatusPlan(
+  migrationStatuses,
+  unknownMoveFiles,
+  { statusId: "blocked", destinationStatusId: "todo" },
+);
+assert.deepEqual(
+  unknownMovePlan.map((repoint) => ({
+    path: repoint.file.path,
+    nextStatusId: repoint.nextStatusId,
+    statusId: taskStatusId(repoint.nextContent),
+  })),
+  [
+    {
+      path: "tasks/unknown/task.md",
+      nextStatusId: "todo",
+      statusId: "todo",
+    },
+  ],
+);
+assert.throws(
+  () =>
+    moveCardsWithStatusPlan(migrationStatuses, unknownMoveFiles, {
+      statusId: "blocked",
+      destinationStatusId: "missing",
+    }),
+  /Destination status does not exist/,
+);
 
 console.log("statuses-2-0 smoke passed");

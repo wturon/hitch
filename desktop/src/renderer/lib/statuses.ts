@@ -13,6 +13,14 @@ export function statusesForProject(
   return statuses?.length ? statuses : [...DEFAULT_STATUSES];
 }
 
+export function isKnownStatusId(
+  statusId: string | undefined | null,
+  statuses: readonly ProjectStatus[],
+) {
+  if (!statusId) return false;
+  return statuses.some((status) => status.id === statusId);
+}
+
 export function statusIdFromName(input: string) {
   return input
     .trim()
@@ -41,4 +49,15 @@ export function statusCardCountLabel(count: number | null) {
 
 export function statusFrontmatterLine(id: string) {
   return `status: ${id}`;
+}
+
+export function statusNameFromId(id: string) {
+  const words = id
+    .trim()
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean);
+  if (words.length === 0) return "Status";
+  return words
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
 }
