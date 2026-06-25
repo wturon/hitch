@@ -1,11 +1,12 @@
 import { mutation, query, type MutationCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
   projectMembershipForUser,
   requireProjectMember,
   requireProjectMemberById,
   requireProjectOwnerById,
+  sha256,
   requireUser,
 } from "./authz";
 
@@ -142,6 +143,79 @@ export function taskStatusId(content: string): string | null {
   }
 
   return null;
+}
+
+export function taskContentWithStatus(
+  content: string,
+  nextStatusId: string,
+): string | null {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return null;
+
+  const fullBlock = match[0];
+  const opening = fullBlock.match(/^---(\r?\n)/);
+  if (!opening) return null;
+
+  const eol = opening[1];
+  const lines = match[1].split(/\r?\n/);
+  const nextLines = [...lines];
+  let changed = false;
+
+  for (let index = 0; index < nextLines.length; index++) {
+    const line = nextLines[index];
+    const delimiter = line.indexOf(":");
+    if (delimiter === -1 || line.slice(0, delimiter).trim() !== "status") {
+      continue;
+    }
+    nextLines[index] = `status: ${nextStatusId}`;
+    changed = true;
+    break;
+  }
+
+  if (!changed) return null;
+
+  const nextBlock = `---${eol}${nextLines.join(eol)}${eol}---`;
+  return `${nextBlock}${content.slice(fullBlock.length)}`;
+}
+
+type TaskStatusMigration = {
+  projectId: Id<"projects">;
+  fromStatusId: string;
+  toStatusId: string | null;
+};
+
+async function migrateTaskStatusFiles(
+  ctx: MutationCtx,
+  migration: TaskStatusMigration,
+) {
+  const files = await ctx.db
+    .query("files")
+    .withIndex("by_project", (q) => q.eq("projectId", migration.projectId))
+    .collect();
+  let migratedCount = 0;
+
+  for (const file of files) {
+    if (file.deleted || !TASK_BODY_RE.test(file.path)) continue;
+    if (taskStatusId(file.content) !== migration.fromStatusId) continue;
+
+    migratedCount++;
+    if (migration.toStatusId === null) continue;
+
+    const nextContent = taskContentWithStatus(
+      file.content,
+      migration.toStatusId,
+    );
+    if (nextContent === null || nextContent === file.content) continue;
+
+    await ctx.db.patch(file._id, {
+      content: nextContent,
+      hash: await sha256(nextContent),
+      deleted: false,
+      updatedAt: Date.now(),
+    });
+  }
+
+  return migratedCount;
 }
 
 export function countTaskStatuses(
@@ -478,6 +552,88 @@ export const updateStatuses = mutation({
       args.statuses,
       normalizeStatuses(access.project.statuses),
     );
+
+    await ctx.db.patch(access.project._id, { statuses });
+    const project = await ctx.db.get(access.project._id);
+    if (project) await upsertProjectConfigFile(ctx, project, statuses);
+    return project;
+  },
+});
+
+export const renameStatusWithMigration = mutation({
+  args: {
+    projectId: v.id("projects"),
+    statusId: v.string(),
+    name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectOwnerById(ctx, args.projectId);
+    const currentStatuses = normalizeStatuses(access.project.statuses);
+    const statusIndex = currentStatuses.findIndex(
+      (status) => status.id === args.statusId,
+    );
+    if (statusIndex === -1) throw new Error("Status does not exist");
+
+    const statuses = normalizeStatuses(
+      currentStatuses.map((status, index) =>
+        index === statusIndex ? { name: args.name } : status,
+      ),
+      currentStatuses,
+    );
+    const nextStatus = statuses[statusIndex];
+    if (!nextStatus) throw new Error("Status migration failed");
+
+    await migrateTaskStatusFiles(ctx, {
+      projectId: access.project._id,
+      fromStatusId: args.statusId,
+      toStatusId: nextStatus.id,
+    });
+    await ctx.db.patch(access.project._id, { statuses });
+    const project = await ctx.db.get(access.project._id);
+    if (project) await upsertProjectConfigFile(ctx, project, statuses);
+    return project;
+  },
+});
+
+export const deleteStatusWithMigration = mutation({
+  args: {
+    projectId: v.id("projects"),
+    statusId: v.string(),
+    destinationStatusId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectOwnerById(ctx, args.projectId);
+    const currentStatuses = normalizeStatuses(access.project.statuses);
+    const statusIndex = currentStatuses.findIndex(
+      (status) => status.id === args.statusId,
+    );
+    if (statusIndex === -1) throw new Error("Status does not exist");
+
+    const destinationStatusId = args.destinationStatusId ?? null;
+    if (destinationStatusId === args.statusId) {
+      throw new Error("Destination status must be different");
+    }
+    if (
+      destinationStatusId !== null &&
+      destinationStatusId !== "archived" &&
+      !currentStatuses.some((status) => status.id === destinationStatusId)
+    ) {
+      throw new Error("Destination status does not exist");
+    }
+
+    const migratedCount = await migrateTaskStatusFiles(ctx, {
+      projectId: access.project._id,
+      fromStatusId: args.statusId,
+      toStatusId: destinationStatusId,
+    });
+    if (destinationStatusId === null && migratedCount > 0) {
+      throw new Error("Destination status is required");
+    }
+
+    const statuses = currentStatuses.filter(
+      (status) => status.id !== args.statusId,
+    );
+    if (statuses.length === 0) throw new Error("At least one status is required");
 
     await ctx.db.patch(access.project._id, { statuses });
     const project = await ctx.db.get(access.project._id);

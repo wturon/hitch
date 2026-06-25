@@ -37,8 +37,3 @@ the test instance just logs a benign "port in use" and skips sign-in.
 These are **one-off checks, not a maintained suite** — write a throwaway script,
 run it, read the screenshots in `/tmp/hitch-e2e/`, delete it. Confine any edits
 to a scratch task you create and delete.
-
----
-
-## Source control
-- No branching. Push everything straight to `main`

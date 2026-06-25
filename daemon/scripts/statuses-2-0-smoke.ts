@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   countTaskStatuses,
   normalizeStatuses,
+  taskContentWithStatus,
+  taskStatusId,
 } from "../../convex/projects";
 
 const suffixed = normalizeStatuses([
@@ -65,5 +67,25 @@ assert.deepEqual(counts, [
   { statusId: "review", count: 1, configured: true },
   { statusId: "blocked", count: 1, configured: false },
 ]);
+
+const renamedTask = taskContentWithStatus(
+  "---\ntitle: Rename me\nstatus: in-review\nchat-status: waiting\n---\nBody\n",
+  "review-ready",
+);
+assert.equal(
+  renamedTask,
+  "---\ntitle: Rename me\nstatus: review-ready\nchat-status: waiting\n---\nBody\n",
+);
+assert.equal(taskStatusId(renamedTask ?? ""), "review-ready");
+
+const windowsNewlineTask = taskContentWithStatus(
+  "---\r\ntitle: Delete me\r\nstatus: blocked\r\n---\r\nBody\r\n",
+  "archived",
+);
+assert.equal(
+  windowsNewlineTask,
+  "---\r\ntitle: Delete me\r\nstatus: archived\r\n---\r\nBody\r\n",
+);
+assert.equal(taskStatusId(windowsNewlineTask ?? ""), "archived");
 
 console.log("statuses-2-0 smoke passed");
