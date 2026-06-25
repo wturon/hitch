@@ -71,6 +71,10 @@ import {
   uniqueStatusId,
 } from "@/lib/statuses";
 import { cn } from "@/lib/utils";
+import {
+  StatusMigrationDialog,
+  type StatusMigrationRequest,
+} from "@/components/StatusMigrationDialogs";
 
 const projectDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -419,6 +423,8 @@ function ProjectDetailsForm({
   const [statusBusy, setStatusBusy] = useState(false);
   const [activeStatusId, setActiveStatusId] = useState<string | null>(null);
   const [copiedStatusId, setCopiedStatusId] = useState<string | null>(null);
+  const [statusMigrationRequest, setStatusMigrationRequest] =
+    useState<StatusMigrationRequest | null>(null);
   const [setupBusy, setSetupBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -541,6 +547,35 @@ function ProjectDetailsForm({
 
     const cardCount = statusCountsById.get(id) ?? 0;
     setStatusError(null);
+    if (draftStatusId !== id && cardCount > 0) {
+      setStatusMigrationRequest({
+        kind: "rename",
+        status: currentStatus,
+        initialName: trimmed,
+        cardCount,
+        statuses: previousStatuses,
+        onConfirm: async (name) => {
+          setStatusBusy(true);
+          setStatusError(null);
+          try {
+            const next = await renameStatusWithMigration({
+              projectId,
+              statusId: id,
+              name,
+            });
+            setStatuses(statusesForProject(next?.statuses));
+            setDraftStatusId(null);
+          } catch (err) {
+            setStatusError(err instanceof Error ? err.message : String(err));
+            throw err;
+          } finally {
+            setStatusBusy(false);
+          }
+        },
+      });
+      return;
+    }
+
     setStatusBusy(true);
     try {
       if (draftStatusId === id || cardCount === 0) {
@@ -548,17 +583,6 @@ function ProjectDetailsForm({
           status.id === id ? { ...status, name: trimmed } : status,
         );
         const next = await updateStatuses({ projectId, statuses: nextStatuses });
-        setStatuses(statusesForProject(next?.statuses));
-      } else {
-        const confirmed = window.confirm(
-          `Rename "${currentStatus.name}" to "${trimmed}" and update ${statusCardCountLabel(cardCount)}?`,
-        );
-        if (!confirmed) return;
-        const next = await renameStatusWithMigration({
-          projectId,
-          statusId: id,
-          name: trimmed,
-        });
         setStatuses(statusesForProject(next?.statuses));
       }
       setDraftStatusId(null);
@@ -596,22 +620,42 @@ function ProjectDetailsForm({
     }
 
     const cardCount = statusCountsById.get(id) ?? 0;
-    const confirmed = window.confirm(
-      cardCount > 0
-        ? `Delete "${currentStatus.name}" and choose where to move ${statusCardCountLabel(cardCount)}?`
-        : `Delete "${currentStatus.name}"?`,
-    );
+    if (cardCount > 0) {
+      setStatusError(null);
+      setStatusMigrationRequest({
+        kind: "delete",
+        status: currentStatus,
+        cardCount,
+        statuses: previousStatuses,
+        onConfirm: async (destinationStatusId) => {
+          setStatusBusy(true);
+          setStatusError(null);
+          try {
+            const next = await deleteStatusWithMigration({
+              projectId,
+              statusId: id,
+              destinationStatusId,
+            });
+            setStatuses(statusesForProject(next?.statuses));
+            if (draftStatusId === id) setDraftStatusId(null);
+          } catch (err) {
+            setStatuses(previousStatuses);
+            setStatusError(err instanceof Error ? err.message : String(err));
+            throw err;
+          } finally {
+            setStatusBusy(false);
+          }
+        },
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${currentStatus.name}"?`);
     if (!confirmed) return;
 
     setStatusBusy(true);
     setStatusError(null);
     try {
-      if (cardCount > 0) {
-        setStatusError(
-          "Delete migration is ready, but the destination picker ships in the next Statuses task.",
-        );
-        return;
-      }
       const next = await deleteStatusWithMigration({ projectId, statusId: id });
       setStatuses(statusesForProject(next?.statuses));
       if (draftStatusId === id) setDraftStatusId(null);
@@ -1093,6 +1137,10 @@ function ProjectDetailsForm({
           )}
         </div>
       </form>
+      <StatusMigrationDialog
+        request={statusMigrationRequest}
+        onClose={() => setStatusMigrationRequest(null)}
+      />
     </div>
   );
 }
