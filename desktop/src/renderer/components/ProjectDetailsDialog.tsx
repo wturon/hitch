@@ -3,9 +3,11 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -34,9 +36,12 @@ import {
   AlertCircleIcon,
   CalendarIcon,
   CheckCircle2Icon,
+  CheckIcon,
+  CopyIcon,
   FolderOpenIcon,
   GripVerticalIcon,
   HashIcon,
+  InfoIcon,
   ListChecksIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -183,6 +188,15 @@ function uniqueStatusId(name: string, existing: ProjectStatus[]) {
   return id;
 }
 
+function statusCardCountLabel(count: number | null) {
+  if (count === null) return "Loading";
+  return `${count} card${count === 1 ? "" : "s"}`;
+}
+
+function nextDraftStatus(statuses: ProjectStatus[]): ProjectStatus {
+  return { id: uniqueStatusId("New status", statuses), name: "New status" };
+}
+
 function reorderStatuses(
   statuses: ProjectStatus[],
   activeId: string,
@@ -199,23 +213,31 @@ function reorderStatuses(
 
 function StatusRow({
   status,
-  index,
   canEdit,
   disabled,
   canRemove,
   isActive,
-  onNameChange,
+  cardCount,
+  autoFocus,
+  copied,
+  onNameCommit,
+  onCopy,
   onRemove,
 }: {
   status: ProjectStatus;
-  index: number;
   canEdit: boolean;
   disabled: boolean;
   canRemove: boolean;
   isActive: boolean;
-  onNameChange: (id: string, name: string) => void;
+  cardCount: number | null;
+  autoFocus?: boolean;
+  copied: boolean;
+  onNameCommit: (id: string, name: string) => void;
+  onCopy: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
+  const [name, setName] = useState(status.name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const {
     attributes,
     listeners,
@@ -226,19 +248,51 @@ function StatusRow({
     isOver,
   } = useSortable({
     id: status.id,
-    disabled: disabled || !canEdit,
+    disabled: disabled || !canEdit || autoFocus === true,
   });
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
   };
 
+  useEffect(() => {
+    setName(status.name);
+  }, [status.id, status.name]);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [autoFocus]);
+
+  function commitName() {
+    const trimmed = name.trim().replace(/\s+/g, " ");
+    if (!trimmed) {
+      setName(status.name);
+      return;
+    }
+    onNameCommit(status.id, trimmed);
+  }
+
+  function onNameKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "Escape") {
+      setName(status.name);
+      event.currentTarget.blur();
+    }
+  }
+
   return (
     <div
       ref={setNodeRef}
       style={style}
       className={cn(
-        "flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 transition-shadow",
+        "flex min-h-12 items-center gap-2 rounded-md border bg-background px-2.5 py-2 transition-shadow",
         isOver && !isActive && "ring-2 ring-ring",
         isDragging && "opacity-40",
       )}
@@ -253,15 +307,35 @@ function StatusRow({
       >
         <GripVerticalIcon className="size-4" />
       </button>
-      <span className="w-5 shrink-0 text-center text-xs text-muted-foreground">
-        {index + 1}
-      </span>
       <input
-        value={status.name}
-        onChange={(event) => onNameChange(status.id, event.target.value)}
+        ref={inputRef}
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        onBlur={commitName}
+        onKeyDown={onNameKeyDown}
         disabled={!canEdit || disabled}
-        className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+        aria-label={`Status name: ${status.name}`}
+        className="h-8 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 text-sm font-medium outline-none transition-shadow hover:border-border hover:bg-background focus-visible:border-border focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
       />
+      <span className="w-20 shrink-0 text-right text-xs text-muted-foreground">
+        {statusCardCountLabel(cardCount)}
+      </span>
+      <button
+        type="button"
+        disabled={disabled || autoFocus === true}
+        onClick={() => onCopy(status.id)}
+        aria-label={`Copy status id ${status.id}`}
+        className="flex h-7 w-36 shrink-0 items-center justify-between gap-1 rounded-sm bg-secondary py-1 pl-2 pr-1 font-mono text-xs text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span className="min-w-0 truncate">{status.id}</span>
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-[4px]">
+          {copied ? (
+            <CheckIcon className="size-3.5" />
+          ) : (
+            <CopyIcon className="size-3.5" />
+          )}
+        </span>
+      </button>
       <Button
         type="button"
         variant="ghost"
@@ -294,7 +368,7 @@ export function ProjectDetailsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[600px] max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-3xl">
+      <DialogContent className="flex h-[min(820px,calc(100vh-2rem))] max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>Project details</DialogTitle>
           <DialogDescription>
@@ -341,7 +415,16 @@ function ProjectDetailsForm({
       : undefined;
   const updateDetails = useMutation(api.projects.updateDetails);
   const updateStatuses = useMutation(api.projects.updateStatuses);
+  const renameStatusWithMigration = useMutation(
+    api.projects.renameStatusWithMigration,
+  );
+  const deleteStatusWithMigration = useMutation(
+    api.projects.deleteStatusWithMigration,
+  );
   const ensureProjectConfig = useMutation(api.projects.ensureProjectConfig);
+  const statusCardCounts = useQuery(api.projects.statusCardCounts, {
+    projectId,
+  });
   const projectConfigFile = useQuery(api.files.getFile, {
     projectId,
     path: PROJECT_CONFIG_PATH,
@@ -362,11 +445,13 @@ function ProjectDetailsForm({
   const [statuses, setStatuses] = useState<ProjectStatus[]>(
     statusesForProject(configuredStatuses),
   );
+  const [draftStatusId, setDraftStatusId] = useState<string | null>(null);
   const [setup, setSetup] = useState<ProjectSetupStatus | null>(null);
   const [localPath, setLocalPath] = useState("");
   const [saving, setSaving] = useState(false);
-  const [savingStatuses, setSavingStatuses] = useState(false);
+  const [statusBusy, setStatusBusy] = useState(false);
   const [activeStatusId, setActiveStatusId] = useState<string | null>(null);
+  const [copiedStatusId, setCopiedStatusId] = useState<string | null>(null);
   const [setupBusy, setSetupBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -375,9 +460,13 @@ function ProjectDetailsForm({
   const trimmedName = name.trim();
   const hasNameChange = trimmedName !== details.project.name;
   const savedStatuses = statusesForProject(configuredStatuses);
-  const hasStatusChange =
-    statusFingerprint(statuses) !== statusFingerprint(savedStatuses);
-  const hasInvalidStatus = statuses.some((status) => !status.name.trim());
+  const statusCountsById = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of statusCardCounts ?? []) {
+      if (item.configured) counts.set(item.statusId, item.count);
+    }
+    return counts;
+  }, [statusCardCounts]);
   const statusSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
@@ -391,7 +480,14 @@ function ProjectDetailsForm({
 
   useEffect(() => {
     setStatuses(statusesForProject(configuredStatuses));
+    setDraftStatusId(null);
   }, [configuredStatuses, details.project._id]);
+
+  useEffect(() => {
+    if (!copiedStatusId) return;
+    const timeout = window.setTimeout(() => setCopiedStatusId(null), 1600);
+    return () => window.clearTimeout(timeout);
+  }, [copiedStatusId]);
 
   useEffect(() => {
     if (projectConfigFile === undefined) return;
@@ -434,42 +530,130 @@ function ProjectDetailsForm({
     }
   }
 
-  async function saveStatuses() {
-    if (!canEdit || !hasStatusChange || hasInvalidStatus) return;
+  async function persistStatuses(
+    nextStatuses: ProjectStatus[],
+    previousStatuses: ProjectStatus[] = statuses,
+  ) {
+    if (!canEdit) return;
+    if (statusFingerprint(nextStatuses) === statusFingerprint(previousStatuses)) {
+      return;
+    }
 
-    setSavingStatuses(true);
+    setStatusBusy(true);
     setStatusError(null);
     try {
-      const next = await updateStatuses({ projectId, statuses });
+      const next = await updateStatuses({ projectId, statuses: nextStatuses });
       setStatuses(statusesForProject(next?.statuses));
+      setDraftStatusId(null);
     } catch (err) {
+      setStatuses(previousStatuses);
       setStatusError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSavingStatuses(false);
+      setStatusBusy(false);
     }
   }
 
-  function updateStatusName(id: string, nextName: string) {
-    setStatuses((current) =>
-      current.map((status) =>
-        status.id === id ? { ...status, name: nextName } : status,
-      ),
-    );
-  }
-
   function addStatus() {
-    setStatuses((current) => [
-      ...current,
-      { id: uniqueStatusId("New status", current), name: "New status" },
-    ]);
+    if (!canEdit || statusBusy || draftStatusId) return;
+    setStatusError(null);
+    setStatuses((current) => {
+      const draft = nextDraftStatus(current);
+      setDraftStatusId(draft.id);
+      return [...current, draft];
+    });
   }
 
-  function removeStatus(id: string) {
-    setStatuses((current) =>
-      current.length <= 1
-        ? current
-        : current.filter((status) => status.id !== id),
+  async function commitStatusName(id: string, nextName: string) {
+    const trimmed = nextName.trim().replace(/\s+/g, " ");
+    if (!canEdit || statusBusy || !trimmed) return;
+
+    const previousStatuses = statuses;
+    const currentStatus = previousStatuses.find((status) => status.id === id);
+    if (!currentStatus) return;
+    if (currentStatus.name === trimmed && draftStatusId !== id) return;
+
+    const cardCount = statusCountsById.get(id) ?? 0;
+    setStatusError(null);
+    setStatusBusy(true);
+    try {
+      if (draftStatusId === id || cardCount === 0) {
+        const nextStatuses = previousStatuses.map((status) =>
+          status.id === id ? { ...status, name: trimmed } : status,
+        );
+        const next = await updateStatuses({ projectId, statuses: nextStatuses });
+        setStatuses(statusesForProject(next?.statuses));
+      } else {
+        const confirmed = window.confirm(
+          `Rename "${currentStatus.name}" to "${trimmed}" and update ${statusCardCountLabel(cardCount)}?`,
+        );
+        if (!confirmed) return;
+        const next = await renameStatusWithMigration({
+          projectId,
+          statusId: id,
+          name: trimmed,
+        });
+        setStatuses(statusesForProject(next?.statuses));
+      }
+      setDraftStatusId(null);
+    } catch (err) {
+      setStatuses(previousStatuses);
+      setStatusError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStatusBusy(false);
+    }
+  }
+
+  async function copyStatusId(id: string) {
+    const text = `status: ${id}`;
+    setStatusError(null);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedStatusId(id);
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeStatus(id: string) {
+    if (!canEdit || statusBusy || statuses.length <= 1) return;
+
+    const previousStatuses = statuses;
+    const currentStatus = previousStatuses.find((status) => status.id === id);
+    if (!currentStatus) return;
+
+    if (draftStatusId === id) {
+      setStatuses(previousStatuses.filter((status) => status.id !== id));
+      setDraftStatusId(null);
+      setStatusError(null);
+      return;
+    }
+
+    const cardCount = statusCountsById.get(id) ?? 0;
+    const confirmed = window.confirm(
+      cardCount > 0
+        ? `Delete "${currentStatus.name}" and choose where to move ${statusCardCountLabel(cardCount)}?`
+        : `Delete "${currentStatus.name}"?`,
     );
+    if (!confirmed) return;
+
+    setStatusBusy(true);
+    setStatusError(null);
+    try {
+      if (cardCount > 0) {
+        setStatusError(
+          "Delete migration is ready, but the destination picker ships in the next Statuses task.",
+        );
+        return;
+      }
+      const next = await deleteStatusWithMigration({ projectId, statusId: id });
+      setStatuses(statusesForProject(next?.statuses));
+      if (draftStatusId === id) setDraftStatusId(null);
+    } catch (err) {
+      setStatuses(previousStatuses);
+      setStatusError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStatusBusy(false);
+    }
   }
 
   function onStatusDragStart(event: DragStartEvent) {
@@ -479,10 +663,12 @@ function ProjectDetailsForm({
   function onStatusDragEnd(event: DragEndEvent) {
     setActiveStatusId(null);
     const { active, over } = event;
-    if (!over) return;
+    if (!over || draftStatusId !== null) return;
     const activeId = String(active.id);
     const overId = String(over.id);
-    setStatuses((current) => reorderStatuses(current, activeId, overId));
+    const nextStatuses = reorderStatuses(statuses, activeId, overId);
+    setStatuses(nextStatuses);
+    void persistStatuses(nextStatuses, statuses);
   }
 
   async function chooseFolder() {
@@ -636,15 +822,25 @@ function ProjectDetailsForm({
           )}
 
           {tab === "statuses" && (
-            <section className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
-              <div className="flex items-center justify-between gap-2">
+            <section className="flex flex-col gap-3">
+              <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <h3 className="text-sm font-medium">Statuses</h3>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Configure this project's Kanban columns.
+                  <h3 className="text-lg font-semibold leading-6">Statuses</h3>
+                  <p className="mt-1 max-w-xl text-sm leading-5 text-muted-foreground">
+                    Your board columns, in order. Drag to reorder. Each status
+                    has an id that agents read from task files, and it updates
+                    automatically when you rename.
                   </p>
                 </div>
-                <ListChecksIcon className="size-4 shrink-0 text-muted-foreground" />
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!canEdit || statusBusy || draftStatusId !== null}
+                  onClick={addStatus}
+                >
+                  <PlusIcon />
+                  Add status
+                </Button>
               </div>
 
               <DndContext
@@ -659,16 +855,28 @@ function ProjectDetailsForm({
                   strategy={verticalListSortingStrategy}
                 >
                   <div className="flex flex-col gap-2">
-                    {statuses.map((status, index) => (
+                    {statuses.map((status) => (
                       <StatusRow
                         key={status.id}
                         status={status}
-                        index={index}
                         canEdit={canEdit}
-                        disabled={savingStatuses}
+                        disabled={
+                          statusBusy ||
+                          (draftStatusId !== null && draftStatusId !== status.id)
+                        }
                         canRemove={statuses.length > 1}
                         isActive={activeStatusId === status.id}
-                        onNameChange={updateStatusName}
+                        cardCount={
+                          statusCountsById.has(status.id)
+                            ? (statusCountsById.get(status.id) ?? 0)
+                            : null
+                        }
+                        autoFocus={draftStatusId === status.id}
+                        copied={copiedStatusId === status.id}
+                        onNameCommit={(id, nextName) =>
+                          void commitStatusName(id, nextName)
+                        }
+                        onCopy={(id) => void copyStatusId(id)}
                         onRemove={removeStatus}
                       />
                     ))}
@@ -678,10 +886,13 @@ function ProjectDetailsForm({
                   ? createPortal(
                       <DragOverlay dropAnimation={null}>
                         {activeStatus ? (
-                          <div className="flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 shadow-lg ring-foreground/20">
+                          <div className="flex min-h-12 w-[320px] items-center gap-2 rounded-md border bg-background px-2.5 py-2 shadow-lg ring-foreground/20">
                             <GripVerticalIcon className="size-4 text-muted-foreground" />
                             <span className="min-w-0 flex-1 truncate text-sm font-medium">
                               {activeStatus.name}
+                            </span>
+                            <span className="rounded-sm bg-secondary px-2 py-1 font-mono text-xs text-muted-foreground">
+                              {activeStatus.id}
                             </span>
                           </div>
                         ) : null}
@@ -691,35 +902,21 @@ function ProjectDetailsForm({
                   : null}
               </DndContext>
 
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={!canEdit || savingStatuses}
-                  onClick={addStatus}
-                >
-                  <PlusIcon />
-                  Add status
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={
-                    !canEdit ||
-                    savingStatuses ||
-                    !hasStatusChange ||
-                    hasInvalidStatus
-                  }
-                  onClick={() => void saveStatuses()}
-                >
-                  {savingStatuses ? "Saving..." : "Save statuses"}
-                </Button>
+              <div className="flex items-start gap-2 pt-1 text-xs leading-5 text-muted-foreground">
+                <InfoIcon className="mt-0.5 size-3.5 shrink-0" />
+                <p className="max-w-2xl">
+                  Reordering applies right away. Renaming or removing a status
+                  that has cards will ask where those cards should go before
+                  anything changes.{" "}
+                  <span className="font-mono text-[0.72rem]">archived</span> is
+                  a reserved system status and is not shown here.
+                </p>
               </div>
 
-              {hasInvalidStatus && (
-                <p className="text-sm text-destructive">
-                  Status names cannot be blank.
+              {copiedStatusId && (
+                <p className="text-sm text-muted-foreground">
+                  Copied{" "}
+                  <span className="font-mono">status: {copiedStatusId}</span>
                 </p>
               )}
               {statusError && (
