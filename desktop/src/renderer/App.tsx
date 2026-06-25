@@ -971,6 +971,8 @@ function DroppableColumn({
   onCopyStatusId,
   onManageStatuses,
   onDeleteStatus,
+  onArchiveAll,
+  onDeleteAll,
   children,
 }: {
   status: ProjectStatus;
@@ -983,10 +985,13 @@ function DroppableColumn({
   onCopyStatusId: () => void;
   onManageStatuses: () => void;
   onDeleteStatus: () => void;
+  onArchiveAll: () => void;
+  onDeleteAll: () => void;
   children: ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status.id });
   const [renameValue, setRenameValue] = useState(status.name);
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
   const cancelledRename = useRef(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1079,7 +1084,11 @@ function DroppableColumn({
             </TooltipTrigger>
             <TooltipContent>add task… (C)</TooltipContent>
           </Tooltip>
-          <Menu>
+          <Menu
+            onOpenChange={(open) => {
+              if (!open) setConfirmingDeleteAll(false);
+            }}
+          >
             <MenuTrigger
               render={
                 <Button
@@ -1113,8 +1122,33 @@ function DroppableColumn({
                 className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
               >
                 <Trash2Icon />
-                Delete
+                Delete status
               </MenuItem>
+              {count > 0 && (
+                <>
+                  <MenuSeparator />
+                  <MenuItem onClick={onArchiveAll}>
+                    <ArchiveIcon />
+                    Archive all cards · {count}
+                  </MenuItem>
+                  <MenuItem
+                    closeOnClick={confirmingDeleteAll}
+                    onClick={() => {
+                      if (!confirmingDeleteAll) {
+                        setConfirmingDeleteAll(true);
+                        return;
+                      }
+                      onDeleteAll();
+                    }}
+                    className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
+                  >
+                    <Trash2Icon />
+                    {confirmingDeleteAll
+                      ? `Click again to delete ${count} cards`
+                      : `Delete all cards · ${count}`}
+                  </MenuItem>
+                </>
+              )}
             </MenuContent>
           </Menu>
         </div>
@@ -1823,6 +1857,45 @@ function BoardContent({
     );
   }
 
+  // Archive every card in one column at once. Same frontmatter rewrite as the
+  // archive branch of `setArchived` (status → "archived", remembering the source
+  // column in `archivedFrom` so Unarchive restores it), fired concurrently so
+  // the column empties immediately via the optimistic update.
+  async function archiveAllInColumn(columnCards: Card[]) {
+    await Promise.all(
+      columnCards.map(async (card) => {
+        const nextContent = setFrontmatterKeys(card.content, {
+          status: "archived",
+          archivedFrom: card.column,
+        });
+        await upsertFile({
+          projectId,
+          path: card.path,
+          content: nextContent,
+          hash: await sha256(nextContent),
+          deleted: false,
+        });
+      }),
+    );
+  }
+
+  // Permanently delete every card in one column. Mirrors `deleteAllArchived`,
+  // sliced to a single column — the tombstone path each card already uses.
+  async function deleteAllInColumn(columnCards: Card[]) {
+    await Promise.all(
+      columnCards.map(async (card) => {
+        await cascadeDeleteAttachments(card.slug);
+        await upsertFile({
+          projectId,
+          path: card.path,
+          content: "",
+          hash: "",
+          deleted: true,
+        });
+      }),
+    );
+  }
+
   // Move a card to another column by rewriting just its `status` frontmatter.
   // Chat lifecycle fields are owned by the harness hooks, so a board move
   // should never reset or replay them from this card snapshot.
@@ -2147,6 +2220,8 @@ function BoardContent({
                 onCopyStatusId={() => copyStatusId(col.id)}
                 onManageStatuses={() => openProjectDetails("statuses")}
                 onDeleteStatus={() => void deleteStatus(col)}
+                onArchiveAll={() => void archiveAllInColumn(byColumn[col.id])}
+                onDeleteAll={() => void deleteAllInColumn(byColumn[col.id])}
               >
                 {composingCol === col.id && (
                   <TaskComposer
