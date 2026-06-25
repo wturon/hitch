@@ -64,6 +64,12 @@ import {
   PROJECT_CONFIG_PATH,
   type ProjectStatus,
 } from "@/lib/projectConfig";
+import {
+  statusCardCountLabel,
+  statusFrontmatterLine,
+  statusesForProject,
+  uniqueStatusId,
+} from "@/lib/statuses";
 import { cn } from "@/lib/utils";
 
 const projectDateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -88,13 +94,6 @@ const TABS = [
   label: string;
   icon: typeof Settings2Icon;
 }>;
-
-const DEFAULT_STATUSES = [
-  { id: "todo", name: "To Do" },
-  { id: "in-progress", name: "In Progress" },
-  { id: "review", name: "Review" },
-  { id: "done", name: "Done" },
-] as const satisfies ProjectStatus[];
 
 interface HitchBinding {
   projectId: Id<"projects">;
@@ -159,38 +158,6 @@ function initials(name: string) {
 
 function statusFingerprint(statuses: ProjectStatus[]) {
   return JSON.stringify(statuses.map((status) => [status.id, status.name]));
-}
-
-function statusesForProject(
-  statuses: ProjectStatus[] | undefined,
-): ProjectStatus[] {
-  return statuses?.length ? statuses : [...DEFAULT_STATUSES];
-}
-
-function statusIdFromName(input: string) {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-}
-
-function uniqueStatusId(name: string, existing: ProjectStatus[]) {
-  const root = statusIdFromName(name) || "status";
-  const taken = new Set(existing.map((status) => status.id));
-  let id = root === "archived" ? "status" : root;
-  let suffix = 2;
-  while (taken.has(id) || id === "archived") {
-    id = `${root}-${suffix}`;
-    suffix += 1;
-  }
-  return id;
-}
-
-function statusCardCountLabel(count: number | null) {
-  if (count === null) return "Loading";
-  return `${count} card${count === 1 ? "" : "s"}`;
 }
 
 function nextDraftStatus(statuses: ProjectStatus[]): ProjectStatus {
@@ -604,7 +571,7 @@ function ProjectDetailsForm({
   }
 
   async function copyStatusId(id: string) {
-    const text = `status: ${id}`;
+    const text = statusFrontmatterLine(id);
     setStatusError(null);
     try {
       await navigator.clipboard.writeText(text);

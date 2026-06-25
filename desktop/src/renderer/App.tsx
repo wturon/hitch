@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type FormEvent,
   type ReactNode,
+  type KeyboardEvent as ReactKeyboardEvent,
   type SyntheticEvent,
 } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
@@ -46,6 +47,7 @@ import {
   MonitorIcon,
   MoonIcon,
   PanelLeftIcon,
+  PencilIcon,
   PlusIcon,
   PowerIcon,
   SettingsIcon,
@@ -66,6 +68,11 @@ import {
   PROJECT_CONFIG_PATH,
   type ProjectStatus,
 } from "@/lib/projectConfig";
+import {
+  statusCardCountLabel,
+  statusFrontmatterLine,
+  statusesForProject,
+} from "@/lib/statuses";
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
@@ -124,7 +131,13 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
+import {
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "@/components/ui/menu";
 import {
   Sheet,
   SheetContent,
@@ -132,22 +145,6 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-
-// Default status columns for old projects and for new projects before custom
-// statuses are saved. Task files still store the normalized status id string in
-// `status` frontmatter.
-const DEFAULT_STATUSES = [
-  { id: "todo", name: "To Do" },
-  { id: "in-progress", name: "In Progress" },
-  { id: "review", name: "Review" },
-  { id: "done", name: "Done" },
-] as const satisfies ProjectStatus[];
-
-function statusesForProject(
-  statuses: ProjectStatus[] | undefined,
-): ProjectStatus[] {
-  return statuses?.length ? statuses : [...DEFAULT_STATUSES];
-}
 
 function columnFor(
   status: string | undefined,
@@ -967,6 +964,13 @@ function DroppableColumn({
   status,
   count,
   onAdd,
+  isRenaming,
+  onTitleClick,
+  onRename,
+  onRenameCommit,
+  onCopyStatusId,
+  onManageStatuses,
+  onDeleteStatus,
   onArchiveAll,
   onDeleteAll,
   children,
@@ -974,16 +978,64 @@ function DroppableColumn({
   status: ProjectStatus;
   count: number;
   onAdd: () => void;
+  isRenaming: boolean;
+  onTitleClick: () => void;
+  onRename: () => void;
+  onRenameCommit: (name: string) => void;
+  onCopyStatusId: () => void;
+  onManageStatuses: () => void;
+  onDeleteStatus: () => void;
   onArchiveAll: () => void;
   onDeleteAll: () => void;
   children: ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status.id });
-  // "Delete all" arms on first click (the menu item swaps to a confirm label)
-  // and fires on the second — mirroring the per-card archive shortcut and the
-  // archived sheet's delete-all. Reset whenever the menu closes so a half-armed
-  // column never lingers.
+  const [renameValue, setRenameValue] = useState(status.name);
   const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
+  const cancelledRename = useRef(false);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setRenameValue(status.name);
+  }, [status.id, status.name]);
+
+  useEffect(() => {
+    if (!isRenaming) return;
+    const input = renameInputRef.current;
+    if (!input) return;
+    cancelledRename.current = false;
+    input.focus();
+    input.select();
+  }, [isRenaming]);
+
+  function commitRename() {
+    if (cancelledRename.current) {
+      setRenameValue(status.name);
+      onRenameCommit(status.name);
+      return;
+    }
+    const trimmed = renameValue.trim().replace(/\s+/g, " ");
+    if (!trimmed) {
+      setRenameValue(status.name);
+      onRenameCommit(status.name);
+      return;
+    }
+    onRenameCommit(trimmed);
+  }
+
+  function onRenameKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelledRename.current = true;
+      setRenameValue(status.name);
+      event.currentTarget.blur();
+    }
+  }
 
   return (
     <section
@@ -991,9 +1043,30 @@ function DroppableColumn({
       className="relative flex w-[18rem] shrink-0 flex-col gap-3 rounded-[12px] bg-muted/60 p-3 transition-colors dark:bg-muted"
     >
       <div className="relative z-20 flex items-center justify-between px-1">
-        <h2 className="flex items-center gap-2 text-[13px] font-medium text-foreground/80">
-          {status.name}
-          <span className="font-normal text-muted-foreground">{count}</span>
+        <h2 className="min-w-0 flex-1">
+          {isRenaming ? (
+            <input
+              ref={renameInputRef}
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              onBlur={commitRename}
+              onKeyDown={onRenameKeyDown}
+              aria-label={`Rename status ${status.name}`}
+              spellCheck={false}
+              className="h-7 w-full rounded-md border border-border bg-background px-2 text-[13px] font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={onTitleClick}
+              className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[13px] font-medium text-foreground/80 outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="min-w-0 truncate">{status.name}</span>
+              <span className="shrink-0 font-normal text-muted-foreground">
+                {count}
+              </span>
+            </button>
+          )}
         </h2>
         <div className="flex items-center gap-0.5">
           <Tooltip>
@@ -1011,47 +1084,73 @@ function DroppableColumn({
             </TooltipTrigger>
             <TooltipContent>add task… (C)</TooltipContent>
           </Tooltip>
-          {count > 0 && (
-            <Menu
-              onOpenChange={(open) => {
-                if (!open) setConfirmingDeleteAll(false);
-              }}
+          <Menu
+            onOpenChange={(open) => {
+              if (!open) setConfirmingDeleteAll(false);
+            }}
+          >
+            <MenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Column actions"
+                />
+              }
             >
-              <MenuTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label="Column actions"
-                  />
-                }
+              <EllipsisIcon />
+            </MenuTrigger>
+            <MenuContent align="end" className="min-w-52">
+              <MenuItem onClick={onRename}>
+                <PencilIcon />
+                Rename
+              </MenuItem>
+              <MenuItem onClick={onCopyStatusId}>
+                <CopyIcon />
+                <span className="min-w-0 flex-1">Copy id</span>
+                <span className="ml-2 max-w-24 truncate font-mono text-xs text-muted-foreground">
+                  {status.id}
+                </span>
+              </MenuItem>
+              <MenuItem onClick={onManageStatuses}>
+                <SettingsIcon />
+                Manage statuses…
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem
+                onClick={onDeleteStatus}
+                className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
               >
-                <EllipsisIcon />
-              </MenuTrigger>
-              <MenuContent align="end">
-                <MenuItem onClick={onArchiveAll}>
-                  <ArchiveIcon />
-                  Archive all · {count}
-                </MenuItem>
-                <MenuItem
-                  closeOnClick={confirmingDeleteAll}
-                  onClick={() => {
-                    if (!confirmingDeleteAll) {
-                      setConfirmingDeleteAll(true);
-                      return;
-                    }
-                    onDeleteAll();
-                  }}
-                  className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
-                >
-                  <Trash2Icon />
-                  {confirmingDeleteAll
-                    ? `Click again to delete ${count}`
-                    : `Delete all · ${count}`}
-                </MenuItem>
-              </MenuContent>
-            </Menu>
-          )}
+                <Trash2Icon />
+                Delete status
+              </MenuItem>
+              {count > 0 && (
+                <>
+                  <MenuSeparator />
+                  <MenuItem onClick={onArchiveAll}>
+                    <ArchiveIcon />
+                    Archive all cards · {count}
+                  </MenuItem>
+                  <MenuItem
+                    closeOnClick={confirmingDeleteAll}
+                    onClick={() => {
+                      if (!confirmingDeleteAll) {
+                        setConfirmingDeleteAll(true);
+                        return;
+                      }
+                      onDeleteAll();
+                    }}
+                    className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
+                  >
+                    <Trash2Icon />
+                    {confirmingDeleteAll
+                      ? `Click again to delete ${count} cards`
+                      : `Delete all cards · ${count}`}
+                  </MenuItem>
+                </>
+              )}
+            </MenuContent>
+          </Menu>
         </div>
       </div>
       <div className="-m-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-1">
@@ -1103,6 +1202,13 @@ function BoardContent({
   )?.project;
   const files = useQuery(api.files.listFiles, { projectId });
   const ensureProjectConfig = useMutation(api.projects.ensureProjectConfig);
+  const updateStatuses = useMutation(api.projects.updateStatuses);
+  const renameStatusWithMigration = useMutation(
+    api.projects.renameStatusWithMigration,
+  );
+  const deleteStatusWithMigration = useMutation(
+    api.projects.deleteStatusWithMigration,
+  );
   // Optimistically patch the cached file so a drag/archive/delete — and a brand
   // new task — reflects instantly instead of waiting on the frontmatter →
   // daemon → Convex round trip. Bumping updatedAt lands the card at the top of
@@ -1172,6 +1278,7 @@ function BoardContent({
   const [projectDetailsTab, setProjectDetailsTab] =
     useState<ProjectDetailsTab>("general");
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
+  const [renamingStatusId, setRenamingStatusId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   // Which column, if any, has its inline "new task" composer open.
   const [composingCol, setComposingCol] = useState<string | null>(null);
@@ -1291,6 +1398,15 @@ function BoardContent({
     projectConfigFile,
     projectId,
   ]);
+
+  useEffect(() => {
+    if (
+      renamingStatusId !== null &&
+      !boardStatuses.some((status) => status.id === renamingStatusId)
+    ) {
+      setRenamingStatusId(null);
+    }
+  }, [boardStatuses, renamingStatusId]);
 
   async function toggleKeepAwake() {
     const bridge = keepAwakeBridge();
@@ -1537,6 +1653,64 @@ function BoardContent({
     id: column.id,
     cardIds: byColumn[column.id].map((card) => card.id),
   }));
+
+  function copyStatusId(statusId: string) {
+    void navigator.clipboard.writeText(statusFrontmatterLine(statusId)).catch(() => {
+      // Clipboard failures are non-fatal; the menu displays the bare id.
+    });
+  }
+
+  async function commitStatusRename(status: ProjectStatus, nextName: string) {
+    const trimmed = nextName.trim().replace(/\s+/g, " ");
+    setRenamingStatusId(null);
+    if (!trimmed || trimmed === status.name) return;
+
+    const cardCount = byColumn[status.id]?.length ?? 0;
+    try {
+      if (cardCount === 0) {
+        await updateStatuses({
+          projectId,
+          statuses: boardStatuses.map((item) =>
+            item.id === status.id ? { ...item, name: trimmed } : item,
+          ),
+        });
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Rename "${status.name}" to "${trimmed}" and update ${statusCardCountLabel(cardCount)}?`,
+      );
+      if (!confirmed) return;
+      await renameStatusWithMigration({
+        projectId,
+        statusId: status.id,
+        name: trimmed,
+      });
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function deleteStatus(status: ProjectStatus) {
+    if (boardStatuses.length <= 1) return;
+    const cardCount = byColumn[status.id]?.length ?? 0;
+
+    if (cardCount > 0) {
+      window.alert(
+        `Delete migration for ${statusCardCountLabel(cardCount)} will be handled by the migration modal in the next Statuses task.`,
+      );
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${status.name}"?`);
+    if (!confirmed) return;
+
+    try {
+      await deleteStatusWithMigration({ projectId, statusId: status.id });
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   const selected = selectedPath
     ? (cards.find((card) => card.path === selectedPath) ?? null)
@@ -2039,6 +2213,13 @@ function BoardContent({
                 status={col}
                 count={byColumn[col.id].length}
                 onAdd={() => setComposingCol(col.id)}
+                isRenaming={renamingStatusId === col.id}
+                onTitleClick={() => openProjectDetails("statuses")}
+                onRename={() => setRenamingStatusId(col.id)}
+                onRenameCommit={(name) => void commitStatusRename(col, name)}
+                onCopyStatusId={() => copyStatusId(col.id)}
+                onManageStatuses={() => openProjectDetails("statuses")}
+                onDeleteStatus={() => void deleteStatus(col)}
                 onArchiveAll={() => void archiveAllInColumn(byColumn[col.id])}
                 onDeleteAll={() => void deleteAllInColumn(byColumn[col.id])}
               >
