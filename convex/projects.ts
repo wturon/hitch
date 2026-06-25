@@ -23,6 +23,12 @@ type ProjectStatus = {
   name: string;
 };
 
+export type StatusCardCount = {
+  statusId: string;
+  count: number;
+  configured: boolean;
+};
+
 type ProjectDoc = Pick<Doc<"projects">, "_id" | "name" | "statuses">;
 
 function slugify(input: string): string {
@@ -38,26 +44,137 @@ function normalizeStatusId(input: string): string {
   return slugify(input).slice(0, 40);
 }
 
-function normalizeStatuses(
-  statuses:
-    | Array<{
-        id?: string;
-        name?: string;
-      }>
-    | undefined,
-) {
-  const seen = new Set<string>();
-  const normalized = [];
+type StatusInput = {
+  id?: string;
+  name?: string;
+};
 
-  for (const status of statuses ?? []) {
+function uniqueStatusId(baseId: string, usedIds: Set<string>): string {
+  if (!usedIds.has(baseId)) return baseId;
+
+  for (let suffix = 2; ; suffix++) {
+    const suffixText = `-${suffix}`;
+    const prefix = baseId
+      .slice(0, Math.max(1, 40 - suffixText.length))
+      .replace(/-+$/g, "");
+    const candidate = `${prefix}${suffixText}`;
+    if (!usedIds.has(candidate)) return candidate;
+  }
+}
+
+export function normalizeStatuses(
+  statuses: StatusInput[] | undefined,
+  existingStatuses: readonly ProjectStatus[] = [],
+): ProjectStatus[] {
+  if (!statuses || statuses.length === 0) return [...DEFAULT_STATUSES];
+
+  const existingById = new Map(
+    existingStatuses.map((status) => [status.id, status]),
+  );
+  const existingIds = new Set(existingStatuses.map((status) => status.id));
+  const seenExistingIds = new Set<string>();
+  const usedOutputIds = new Set<string>();
+  const inputs = statuses.map((status) => {
     const name = (status.name ?? "").trim().replace(/\s+/g, " ");
-    const id = normalizeStatusId(status.id ?? name);
-    if (!name || !id || id === "archived" || seen.has(id)) continue;
-    seen.add(id);
-    normalized.push({ id, name: name.slice(0, 40) });
+    const inputId = normalizeStatusId(status.id ?? "");
+    const existing = inputId ? existingById.get(inputId) : undefined;
+    const unchangedExisting =
+      existing !== undefined &&
+      existing.name.trim().replace(/\s+/g, " ") === name;
+    return { name, inputId, unchangedExisting };
+  });
+
+  for (const input of inputs) {
+    if (input.unchangedExisting) usedOutputIds.add(input.inputId);
   }
 
-  return normalized.length > 0 ? normalized : [...DEFAULT_STATUSES];
+  const normalized: ProjectStatus[] = [];
+
+  for (const input of inputs) {
+    if (!input.name) throw new Error("Status name is required");
+
+    if (input.inputId && existingIds.has(input.inputId)) {
+      if (seenExistingIds.has(input.inputId)) {
+        throw new Error(`Status id "${input.inputId}" appears more than once`);
+      }
+      seenExistingIds.add(input.inputId);
+    }
+
+    const baseId = input.unchangedExisting
+      ? input.inputId
+      : normalizeStatusId(input.name);
+    if (!baseId) {
+      throw new Error(`Status "${input.name}" must include a letter or number`);
+    }
+    if (baseId === "archived") {
+      throw new Error('"archived" is a reserved status id');
+    }
+
+    const id = input.unchangedExisting
+      ? input.inputId
+      : uniqueStatusId(baseId, usedOutputIds);
+    usedOutputIds.add(id);
+    normalized.push({ id, name: input.name.slice(0, 40) });
+  }
+
+  if (normalized.length === 0) throw new Error("At least one status is required");
+  return normalized;
+}
+
+// Task bodies live at `tasks/<slug>/task.md`; other files in a task folder
+// aren't cards. Mirrors desktop/src/renderer/App.tsx task parsing.
+const TASK_BODY_RE = /^tasks\/[^/]+\/task\.md$/;
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
+
+export function taskStatusId(content: string): string | null {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return null;
+
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx === -1 || line.slice(0, idx).trim() !== "status") continue;
+    const value = line
+      .slice(idx + 1)
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .toLowerCase();
+    return value || null;
+  }
+
+  return null;
+}
+
+export function countTaskStatuses(
+  files: Array<{ path: string; content: string; deleted: boolean }>,
+  statuses: readonly ProjectStatus[],
+): StatusCardCount[] {
+  const configuredStatuses = statuses.length > 0 ? statuses : DEFAULT_STATUSES;
+  const configuredIds = new Set(configuredStatuses.map((status) => status.id));
+  const counts = new Map<string, number>();
+
+  for (const status of configuredStatuses) counts.set(status.id, 0);
+
+  for (const file of files) {
+    if (file.deleted || !TASK_BODY_RE.test(file.path)) continue;
+    const statusId = taskStatusId(file.content) ?? configuredStatuses[0].id;
+    counts.set(statusId, (counts.get(statusId) ?? 0) + 1);
+  }
+
+  const configuredCounts = configuredStatuses.map((status) => ({
+    statusId: status.id,
+    count: counts.get(status.id) ?? 0,
+    configured: true,
+  }));
+  const unknownCounts = [...counts.entries()]
+    .filter(([statusId]) => !configuredIds.has(statusId))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([statusId, count]) => ({
+      statusId,
+      count,
+      configured: false,
+    }));
+
+  return [...configuredCounts, ...unknownCounts];
 }
 
 function projectConfigContent(project: ProjectDoc, statuses?: ProjectStatus[]) {
@@ -332,6 +449,19 @@ export const ensureProjectConfig = mutation({
   },
 });
 
+export const statusCardCounts = query({
+  args: { projectId: v.id("projects") },
+  handler: async (ctx, args): Promise<StatusCardCount[]> => {
+    const access = await requireProjectMemberById(ctx, args.projectId);
+    const files = await ctx.db
+      .query("files")
+      .withIndex("by_project", (q) => q.eq("projectId", access.project._id))
+      .collect();
+
+    return countTaskStatuses(files, normalizeStatuses(access.project.statuses));
+  },
+});
+
 export const updateStatuses = mutation({
   args: {
     projectId: v.id("projects"),
@@ -344,7 +474,10 @@ export const updateStatuses = mutation({
   },
   handler: async (ctx, args) => {
     const access = await requireProjectOwnerById(ctx, args.projectId);
-    const statuses = normalizeStatuses(args.statuses);
+    const statuses = normalizeStatuses(
+      args.statuses,
+      normalizeStatuses(access.project.statuses),
+    );
 
     await ctx.db.patch(access.project._id, { statuses });
     const project = await ctx.db.get(access.project._id);
