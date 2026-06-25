@@ -69,8 +69,11 @@ import {
   type ProjectStatus,
 } from "@/lib/projectConfig";
 import {
+  isKnownStatusId,
+  statusNameFromId,
   statusFrontmatterLine,
   statusesForProject,
+  uniqueStatusId,
 } from "@/lib/statuses";
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
@@ -146,10 +149,17 @@ function columnFor(
   statuses: ProjectStatus[],
 ): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "blocked" && statuses.some((col) => col.id === "review")) {
-    return "review";
-  }
-  return statuses.some((col) => col.id === s) ? s : statuses[0].id;
+  // Restore paths need a safe configured fallback when the remembered status
+  // is stale; the board grouping path below preserves explicit unknown ids.
+  return isKnownStatusId(s, statuses) ? s : statuses[0].id;
+}
+
+function boardColumnFor(
+  status: string | undefined,
+  statuses: ProjectStatus[],
+): string {
+  const s = (status ?? "").toLowerCase();
+  return s || statuses[0].id;
 }
 
 interface HitchBinding {
@@ -1174,6 +1184,64 @@ function DroppableColumn({
   );
 }
 
+function UnknownStatusColumn({
+  statusId,
+  count,
+  onAddAsStatus,
+  onMoveCards,
+  children,
+}: {
+  statusId: string;
+  count: number;
+  onAddAsStatus: () => void;
+  onMoveCards: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className="relative flex w-[18rem] shrink-0 flex-col gap-3 rounded-[12px] border border-dashed border-amber-300/80 bg-amber-50/70 p-3 text-amber-950 dark:border-amber-400/40 dark:bg-amber-950/20 dark:text-amber-100">
+      <div className="flex items-center justify-between gap-3 px-1">
+        <h2 className="flex min-w-0 items-center gap-2 text-[13px] font-semibold">
+          <AlertCircleIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-300" />
+          <span className="min-w-0 truncate">Unknown</span>
+          <span className="shrink-0 font-normal text-amber-700 dark:text-amber-300">
+            {count}
+          </span>
+        </h2>
+        <code className="max-w-28 truncate rounded bg-amber-100 px-1.5 py-1 font-mono text-[11px] text-amber-800 dark:bg-amber-900/60 dark:text-amber-200">
+          {statusId}
+        </code>
+      </div>
+
+      <div className="rounded-md border border-amber-200/80 bg-background/75 p-2.5 text-xs leading-5 text-foreground shadow-sm dark:border-amber-400/30 dark:bg-background/80">
+        <p>
+          These cards use{" "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
+            {statusFrontmatterLine(statusId)}
+          </code>
+          , which isn't a status in this project.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button type="button" size="sm" onClick={onAddAsStatus}>
+            Add "{statusId}" as a status
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onMoveCards}
+          >
+            Move cards to…
+          </Button>
+        </div>
+      </div>
+
+      <div className="-m-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-1">
+        {children}
+      </div>
+    </section>
+  );
+}
+
 function BoardContent({
   projectId,
   projects,
@@ -1204,6 +1272,7 @@ function BoardContent({
   const deleteStatusWithMigration = useMutation(
     api.projects.deleteStatusWithMigration,
   );
+  const moveCardsWithStatus = useMutation(api.projects.moveCardsWithStatus);
   // Optimistically patch the cached file so a drag/archive/delete — and a brand
   // new task — reflects instantly instead of waiting on the frontmatter →
   // daemon → Convex round trip. Bumping updatedAt lands the card at the top of
@@ -1619,7 +1688,7 @@ function BoardContent({
         chatStatus: parseChatStatus(frontmatter),
         chatOpenState: parseChatOpenState(frontmatter),
         sourceNote: frontmatter["source-note"] || undefined,
-        column: columnFor(status, boardStatuses),
+        column: boardColumnFor(status, boardStatuses),
         archived: status === "archived",
         updatedAt: f.updatedAt,
       });
@@ -1640,15 +1709,24 @@ function BoardContent({
       : workspaceView === "notes"
         ? archivedNoteCount
         : 0;
+  const unknownStatusIds = [...new Set(
+    activeCards
+      .map((card) => card.column)
+      .filter((statusId) => !isKnownStatusId(statusId, boardStatuses)),
+  )].sort((a, b) => a.localeCompare(b));
+  const boardColumnIds = [
+    ...boardStatuses.map((status) => status.id),
+    ...unknownStatusIds,
+  ];
   const byColumn = Object.fromEntries(
-    boardStatuses.map((c) => [
-      c.id,
-      activeCards.filter((card) => card.column === c.id),
+    boardColumnIds.map((statusId) => [
+      statusId,
+      activeCards.filter((card) => card.column === statusId),
     ]),
   ) as Record<string, Card[]>;
-  boardFocusColumnsRef.current = boardStatuses.map((column) => ({
-    id: column.id,
-    cardIds: byColumn[column.id].map((card) => card.id),
+  boardFocusColumnsRef.current = boardColumnIds.map((statusId) => ({
+    id: statusId,
+    cardIds: byColumn[statusId].map((card) => card.id),
   }));
 
   function copyStatusId(statusId: string) {
@@ -1691,6 +1769,45 @@ function BoardContent({
     } catch (err) {
       window.alert(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function addUnknownStatus(statusId: string) {
+    if (isKnownStatusId(statusId, boardStatuses)) return;
+    const name = statusNameFromId(statusId);
+    const adoptedStatusId = uniqueStatusId(name, boardStatuses);
+    try {
+      await updateStatuses({
+        projectId,
+        statuses: [...boardStatuses, { id: statusId, name }],
+      });
+      if (adoptedStatusId !== statusId) {
+        await moveCardsWithStatus({
+          projectId,
+          statusId,
+          destinationStatusId: adoptedStatusId,
+        });
+      }
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function moveUnknownStatusCards(statusId: string) {
+    const cardCount = byColumn[statusId]?.length ?? 0;
+    if (cardCount === 0) return;
+    setStatusMigrationRequest({
+      kind: "move",
+      status: { id: statusId, name: "Unknown" },
+      cardCount,
+      statuses: boardStatuses,
+      onConfirm: async (destinationStatusId) => {
+        await moveCardsWithStatus({
+          projectId,
+          statusId,
+          destinationStatusId,
+        });
+      },
+    });
   }
 
   async function deleteStatus(status: ProjectStatus) {
@@ -2257,6 +2374,31 @@ function BoardContent({
                   />
                 ))}
               </DroppableColumn>
+            ))}
+            {unknownStatusIds.map((statusId) => (
+              <UnknownStatusColumn
+                key={statusId}
+                statusId={statusId}
+                count={byColumn[statusId].length}
+                onAddAsStatus={() => void addUnknownStatus(statusId)}
+                onMoveCards={() => moveUnknownStatusCards(statusId)}
+              >
+                {byColumn[statusId].map((card) => (
+                  <DraggableCard
+                    key={card.id}
+                    card={card}
+                    projectId={projectId}
+                    pending={pendingCardId === card.id}
+                    registerCardNode={registerBoardCardNode}
+                    onOpen={(card) => setSelectedPath(card.path)}
+                    onArchiveToggle={(c, archived) =>
+                      void setArchived(c, archived)
+                    }
+                    onDuplicate={(c) => void duplicateTask(c)}
+                    onDelete={(c) => void deleteCard(c)}
+                  />
+                ))}
+              </UnknownStatusColumn>
             ))}
           </div>
 
