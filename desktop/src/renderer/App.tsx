@@ -73,6 +73,7 @@ import {
   statusNameFromId,
   statusFrontmatterLine,
   statusesForProject,
+  uniqueStatusId,
 } from "@/lib/statuses";
 import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
@@ -148,6 +149,8 @@ function columnFor(
   statuses: ProjectStatus[],
 ): string {
   const s = (status ?? "").toLowerCase();
+  // Restore paths need a safe configured fallback when the remembered status
+  // is stale; the board grouping path below preserves explicit unknown ids.
   return isKnownStatusId(s, statuses) ? s : statuses[0].id;
 }
 
@@ -156,8 +159,7 @@ function boardColumnFor(
   statuses: ProjectStatus[],
 ): string {
   const s = (status ?? "").toLowerCase();
-  if (!s) return statuses[0].id;
-  return isKnownStatusId(s, statuses) ? s : s;
+  return s || statuses[0].id;
 }
 
 interface HitchBinding {
@@ -1771,14 +1773,20 @@ function BoardContent({
 
   async function addUnknownStatus(statusId: string) {
     if (isKnownStatusId(statusId, boardStatuses)) return;
+    const name = statusNameFromId(statusId);
+    const adoptedStatusId = uniqueStatusId(name, boardStatuses);
     try {
       await updateStatuses({
         projectId,
-        statuses: [
-          ...boardStatuses,
-          { id: statusId, name: statusNameFromId(statusId) },
-        ],
+        statuses: [...boardStatuses, { id: statusId, name }],
       });
+      if (adoptedStatusId !== statusId) {
+        await moveCardsWithStatus({
+          projectId,
+          statusId,
+          destinationStatusId: adoptedStatusId,
+        });
+      }
     } catch (err) {
       window.alert(err instanceof Error ? err.message : String(err));
     }
