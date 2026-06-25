@@ -6,6 +6,7 @@ import {
   requireProjectMember,
   requireProjectMemberById,
   requireProjectOwnerById,
+  sha256,
   requireUser,
 } from "./authz";
 
@@ -142,6 +143,164 @@ export function taskStatusId(content: string): string | null {
   }
 
   return null;
+}
+
+export function taskContentWithStatus(
+  content: string,
+  nextStatusId: string,
+): string | null {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return null;
+
+  const fullBlock = match[0];
+  const opening = fullBlock.match(/^---(\r?\n)/);
+  if (!opening) return null;
+
+  const eol = opening[1];
+  const lines = match[1].split(/\r?\n/);
+  const nextLines = [...lines];
+  let changed = false;
+
+  for (let index = 0; index < nextLines.length; index++) {
+    const line = nextLines[index];
+    const delimiter = line.indexOf(":");
+    if (delimiter === -1 || line.slice(0, delimiter).trim() !== "status") {
+      continue;
+    }
+    nextLines[index] = `status: ${nextStatusId}`;
+    changed = true;
+    break;
+  }
+
+  if (!changed) return null;
+
+  const nextBlock = `---${eol}${nextLines.join(eol)}${eol}---`;
+  return `${nextBlock}${content.slice(fullBlock.length)}`;
+}
+
+type TaskStatusFile = {
+  path: string;
+  content: string;
+  deleted: boolean;
+};
+
+export type StatusMigrationRepoint<TFile extends TaskStatusFile> = {
+  file: TFile;
+  nextStatusId: string;
+  nextContent: string;
+};
+
+export type StatusMigrationPlan<TFile extends TaskStatusFile> = {
+  statuses: ProjectStatus[];
+  repoints: Array<StatusMigrationRepoint<TFile>>;
+};
+
+function taskFilesWithStatus<TFile extends TaskStatusFile>(
+  files: readonly TFile[],
+  statusId: string,
+): TFile[] {
+  return files.filter(
+    (file) =>
+      !file.deleted &&
+      TASK_BODY_RE.test(file.path) &&
+      taskStatusId(file.content) === statusId,
+  );
+}
+
+function taskStatusRepoints<TFile extends TaskStatusFile>(
+  files: readonly TFile[],
+  fromStatusId: string,
+  toStatusId: string,
+): Array<StatusMigrationRepoint<TFile>> {
+  const repoints: Array<StatusMigrationRepoint<TFile>> = [];
+
+  for (const file of taskFilesWithStatus(files, fromStatusId)) {
+    const nextContent = taskContentWithStatus(file.content, toStatusId);
+    if (nextContent === null || nextContent === file.content) continue;
+    repoints.push({ file, nextStatusId: toStatusId, nextContent });
+  }
+
+  return repoints;
+}
+
+export function renameStatusMigrationPlan<TFile extends TaskStatusFile>(
+  currentStatuses: readonly ProjectStatus[],
+  files: readonly TFile[],
+  args: { statusId: string; name: string },
+): StatusMigrationPlan<TFile> {
+  const statusIndex = currentStatuses.findIndex(
+    (status) => status.id === args.statusId,
+  );
+  if (statusIndex === -1) throw new Error("Status does not exist");
+
+  const statuses = normalizeStatuses(
+    currentStatuses.map((status, index) =>
+      index === statusIndex ? { name: args.name } : status,
+    ),
+    currentStatuses,
+  );
+  const nextStatus = statuses[statusIndex];
+  if (!nextStatus) throw new Error("Status migration failed");
+
+  return {
+    statuses,
+    repoints: taskStatusRepoints(files, args.statusId, nextStatus.id),
+  };
+}
+
+export function deleteStatusMigrationPlan<TFile extends TaskStatusFile>(
+  currentStatuses: readonly ProjectStatus[],
+  files: readonly TFile[],
+  args: { statusId: string; destinationStatusId?: string },
+): StatusMigrationPlan<TFile> {
+  const statusIndex = currentStatuses.findIndex(
+    (status) => status.id === args.statusId,
+  );
+  if (statusIndex === -1) throw new Error("Status does not exist");
+
+  const destinationStatusId = args.destinationStatusId ?? null;
+  if (destinationStatusId === args.statusId) {
+    throw new Error("Destination status must be different");
+  }
+  if (
+    destinationStatusId !== null &&
+    destinationStatusId !== "archived" &&
+    !currentStatuses.some((status) => status.id === destinationStatusId)
+  ) {
+    throw new Error("Destination status does not exist");
+  }
+
+  const affectedFiles = taskFilesWithStatus(files, args.statusId);
+  if (destinationStatusId === null && affectedFiles.length > 0) {
+    throw new Error("Destination status is required");
+  }
+
+  const statuses = currentStatuses.filter(
+    (status) => status.id !== args.statusId,
+  );
+  if (statuses.length === 0) throw new Error("At least one status is required");
+
+  return {
+    statuses,
+    repoints:
+      destinationStatusId === null
+        ? []
+        : taskStatusRepoints(affectedFiles, args.statusId, destinationStatusId),
+  };
+}
+
+async function patchStatusMigrationFiles<TFile extends TaskStatusFile & Doc<"files">>(
+  ctx: MutationCtx,
+  repoints: ReadonlyArray<StatusMigrationRepoint<TFile>>,
+) {
+  for (const repoint of repoints) {
+    await ctx.db.patch(repoint.file._id, {
+      content: repoint.nextContent,
+      hash: await sha256(repoint.nextContent),
+      deleted: false,
+      updatedAt: Date.now(),
+    });
+  }
 }
 
 export function countTaskStatuses(
@@ -479,6 +638,60 @@ export const updateStatuses = mutation({
       normalizeStatuses(access.project.statuses),
     );
 
+    await ctx.db.patch(access.project._id, { statuses });
+    const project = await ctx.db.get(access.project._id);
+    if (project) await upsertProjectConfigFile(ctx, project, statuses);
+    return project;
+  },
+});
+
+export const renameStatusWithMigration = mutation({
+  args: {
+    projectId: v.id("projects"),
+    statusId: v.string(),
+    name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectOwnerById(ctx, args.projectId);
+    const currentStatuses = normalizeStatuses(access.project.statuses);
+    const files = await ctx.db
+      .query("files")
+      .withIndex("by_project", (q) => q.eq("projectId", access.project._id))
+      .collect();
+    const { statuses, repoints } = renameStatusMigrationPlan(
+      currentStatuses,
+      files,
+      args,
+    );
+
+    await patchStatusMigrationFiles(ctx, repoints);
+    await ctx.db.patch(access.project._id, { statuses });
+    const project = await ctx.db.get(access.project._id);
+    if (project) await upsertProjectConfigFile(ctx, project, statuses);
+    return project;
+  },
+});
+
+export const deleteStatusWithMigration = mutation({
+  args: {
+    projectId: v.id("projects"),
+    statusId: v.string(),
+    destinationStatusId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectOwnerById(ctx, args.projectId);
+    const currentStatuses = normalizeStatuses(access.project.statuses);
+    const files = await ctx.db
+      .query("files")
+      .withIndex("by_project", (q) => q.eq("projectId", access.project._id))
+      .collect();
+    const { statuses, repoints } = deleteStatusMigrationPlan(
+      currentStatuses,
+      files,
+      args,
+    );
+
+    await patchStatusMigrationFiles(ctx, repoints);
     await ctx.db.patch(access.project._id, { statuses });
     const project = await ctx.db.get(access.project._id);
     if (project) await upsertProjectConfigFile(ctx, project, statuses);
