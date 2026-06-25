@@ -69,7 +69,6 @@ import {
   type ProjectStatus,
 } from "@/lib/projectConfig";
 import {
-  statusCardCountLabel,
   statusFrontmatterLine,
   statusesForProject,
 } from "@/lib/statuses";
@@ -107,18 +106,14 @@ import {
 } from "@/components/ProjectDetailsDialog";
 import { AppSidebar, CreateProjectDialog } from "@/components/AppSidebar";
 import { ProjectConflictDialog } from "@/components/ProjectConflictDialog";
+import {
+  StatusMigrationDialog,
+  type StatusMigrationRequest,
+} from "@/components/StatusMigrationDialogs";
 import type { KeepAwakeState, ProjectNavEntry } from "@/lib/types";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { getStoredTheme, setTheme } from "@/lib/theme";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Tooltip,
   TooltipContent,
@@ -1277,6 +1272,8 @@ function BoardContent({
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [projectDetailsTab, setProjectDetailsTab] =
     useState<ProjectDetailsTab>("general");
+  const [statusMigrationRequest, setStatusMigrationRequest] =
+    useState<StatusMigrationRequest | null>(null);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [renamingStatusId, setRenamingStatusId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -1677,14 +1674,19 @@ function BoardContent({
         return;
       }
 
-      const confirmed = window.confirm(
-        `Rename "${status.name}" to "${trimmed}" and update ${statusCardCountLabel(cardCount)}?`,
-      );
-      if (!confirmed) return;
-      await renameStatusWithMigration({
-        projectId,
-        statusId: status.id,
-        name: trimmed,
+      setStatusMigrationRequest({
+        kind: "rename",
+        status,
+        initialName: trimmed,
+        cardCount,
+        statuses: boardStatuses,
+        onConfirm: async (name) => {
+          await renameStatusWithMigration({
+            projectId,
+            statusId: status.id,
+            name,
+          });
+        },
       });
     } catch (err) {
       window.alert(err instanceof Error ? err.message : String(err));
@@ -1696,9 +1698,19 @@ function BoardContent({
     const cardCount = byColumn[status.id]?.length ?? 0;
 
     if (cardCount > 0) {
-      window.alert(
-        `Delete migration for ${statusCardCountLabel(cardCount)} will be handled by the migration modal in the next Statuses task.`,
-      );
+      setStatusMigrationRequest({
+        kind: "delete",
+        status,
+        cardCount,
+        statuses: boardStatuses,
+        onConfirm: async (destinationStatusId) => {
+          await deleteStatusWithMigration({
+            projectId,
+            statusId: status.id,
+            destinationStatusId,
+          });
+        },
+      });
       return;
     }
 
@@ -2303,6 +2315,11 @@ function BoardContent({
           onDelete={selected ? () => void deleteCard(selected) : undefined}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
           onManageHarnesses={() => openGlobalSettings("harnesses")}
+        />
+
+        <StatusMigrationDialog
+          request={statusMigrationRequest}
+          onClose={() => setStatusMigrationRequest(null)}
         />
 
         <CommandPalette
