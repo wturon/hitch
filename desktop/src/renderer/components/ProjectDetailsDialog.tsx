@@ -4,24 +4,32 @@ import {
   useEffect,
   useMemo,
   useState,
+  type CSSProperties,
   type FormEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import {
+  closestCenter,
   DndContext,
   DragOverlay,
   PointerSensor,
-  useDraggable,
-  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   AlertCircleIcon,
   CalendarIcon,
@@ -186,10 +194,7 @@ function reorderStatuses(
     return statuses;
   }
 
-  const next = [...statuses];
-  const [moved] = next.splice(activeIndex, 1);
-  next.splice(overIndex, 0, moved);
-  return next;
+  return arrayMove(statuses, activeIndex, overIndex);
 }
 
 function StatusRow({
@@ -214,24 +219,24 @@ function StatusRow({
   const {
     attributes,
     listeners,
-    setNodeRef: setDraggableNodeRef,
+    setNodeRef,
+    transform,
+    transition,
     isDragging,
-  } = useDraggable({
+    isOver,
+  } = useSortable({
     id: status.id,
     disabled: disabled || !canEdit,
   });
-  const { setNodeRef: setDroppableNodeRef, isOver } = useDroppable({
-    id: status.id,
-  });
-
-  function setNodeRef(node: HTMLDivElement | null) {
-    setDraggableNodeRef(node);
-    setDroppableNodeRef(node);
-  }
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
 
   return (
     <div
       ref={setNodeRef}
+      style={style}
       className={cn(
         "flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 transition-shadow",
         isOver && !isActive && "ring-2 ring-ring",
@@ -379,6 +384,10 @@ function ProjectDetailsForm({
   const activeStatus = activeStatusId
     ? (statuses.find((status) => status.id === activeStatusId) ?? null)
     : null;
+  const statusIds = useMemo(
+    () => statuses.map((status) => status.id),
+    [statuses],
+  );
 
   useEffect(() => {
     setStatuses(statusesForProject(configuredStatuses));
@@ -640,35 +649,46 @@ function ProjectDetailsForm({
 
               <DndContext
                 sensors={statusSensors}
+                collisionDetection={closestCenter}
                 onDragStart={onStatusDragStart}
                 onDragEnd={onStatusDragEnd}
                 onDragCancel={() => setActiveStatusId(null)}
               >
-                <div className="flex flex-col gap-2">
-                  {statuses.map((status, index) => (
-                    <StatusRow
-                      key={status.id}
-                      status={status}
-                      index={index}
-                      canEdit={canEdit}
-                      disabled={savingStatuses}
-                      canRemove={statuses.length > 1}
-                      isActive={activeStatusId === status.id}
-                      onNameChange={updateStatusName}
-                      onRemove={removeStatus}
-                    />
-                  ))}
-                </div>
-                <DragOverlay dropAnimation={null}>
-                  {activeStatus ? (
-                    <div className="flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 shadow-lg ring-foreground/20">
-                      <GripVerticalIcon className="size-4 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                        {activeStatus.name}
-                      </span>
-                    </div>
-                  ) : null}
-                </DragOverlay>
+                <SortableContext
+                  items={statusIds}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <div className="flex flex-col gap-2">
+                    {statuses.map((status, index) => (
+                      <StatusRow
+                        key={status.id}
+                        status={status}
+                        index={index}
+                        canEdit={canEdit}
+                        disabled={savingStatuses}
+                        canRemove={statuses.length > 1}
+                        isActive={activeStatusId === status.id}
+                        onNameChange={updateStatusName}
+                        onRemove={removeStatus}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+                {typeof document !== "undefined"
+                  ? createPortal(
+                      <DragOverlay dropAnimation={null}>
+                        {activeStatus ? (
+                          <div className="flex min-h-10 items-center gap-2 rounded-md border bg-background px-2 py-1.5 shadow-lg ring-foreground/20">
+                            <GripVerticalIcon className="size-4 text-muted-foreground" />
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                              {activeStatus.name}
+                            </span>
+                          </div>
+                        ) : null}
+                      </DragOverlay>,
+                      document.body,
+                    )
+                  : null}
               </DndContext>
 
               <div className="flex flex-wrap items-center justify-between gap-2">
