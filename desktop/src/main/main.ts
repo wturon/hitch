@@ -1676,16 +1676,6 @@ function globalCodexHookCommand(): string {
 const HITCH_CODEX_TOML_START = "# Hitch Codex chat status hooks: begin";
 const HITCH_CODEX_TOML_END = "# Hitch Codex chat status hooks: end";
 
-function tomlString(value: string): string {
-  return JSON.stringify(value);
-}
-
-function codexConfigHasInlineHooks(): boolean {
-  const path = globalCodexConfigTomlPath();
-  if (!existsSync(path)) return false;
-  return /^\s*\[\[?hooks[.\]]/m.test(readFileSync(path, "utf8"));
-}
-
 function removeHitchCodexTomlBlock(content: string): string {
   const start = content.indexOf(HITCH_CODEX_TOML_START);
   if (start === -1) return content;
@@ -1695,57 +1685,6 @@ function removeHitchCodexTomlBlock(content: string): string {
   const before = content.slice(0, start).replace(/\n{2,}$/u, "\n");
   const after = content.slice(afterEnd).replace(/^\n{1,2}/u, "");
   return `${before}${after}`.replace(/\n?$/u, "\n");
-}
-
-function hitchCodexTomlBlock(command: string): string {
-  const quotedCommand = tomlString(command);
-  return [
-    HITCH_CODEX_TOML_START,
-    "[[hooks.UserPromptSubmit]]",
-    "",
-    "[[hooks.UserPromptSubmit.hooks]]",
-    'type = "command"',
-    `command = ${quotedCommand}`,
-    "timeout = 30",
-    'statusMessage = "Updating Hitch chat status"',
-    "",
-    "[[hooks.PermissionRequest]]",
-    "",
-    "[[hooks.PermissionRequest.hooks]]",
-    'type = "command"',
-    `command = ${quotedCommand}`,
-    "timeout = 30",
-    'statusMessage = "Updating Hitch chat status"',
-    "",
-    "[[hooks.PreToolUse]]",
-    "",
-    "[[hooks.PreToolUse.hooks]]",
-    'type = "command"',
-    `command = ${quotedCommand}`,
-    "timeout = 30",
-    'statusMessage = "Updating Hitch chat status"',
-    "",
-    "[[hooks.Stop]]",
-    "",
-    "[[hooks.Stop.hooks]]",
-    'type = "command"',
-    `command = ${quotedCommand}`,
-    "timeout = 30",
-    'statusMessage = "Updating Hitch chat status"',
-    HITCH_CODEX_TOML_END,
-    "",
-  ].join("\n");
-}
-
-function ensureCodexTomlHook(command: string): void {
-  const path = globalCodexConfigTomlPath();
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const withoutHitchBlock = removeHitchCodexTomlBlock(current).trimEnd();
-  const next = [withoutHitchBlock, hitchCodexTomlBlock(command)]
-    .filter(Boolean)
-    .join("\n\n");
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${next.trimEnd()}\n`, "utf8");
 }
 
 function removeHookCommand(
@@ -1870,20 +1809,44 @@ function installGlobalCodexHooks(): GlobalHarnessSetupStatus {
   mkdirSync(dirname(scriptPath), { recursive: true });
   writeFileSync(scriptPath, globalCodexChatStatusHook(), "utf8");
 
-  if (existsSync(globalCodexHooksJsonPath()) || !codexConfigHasInlineHooks()) {
-    const configPath = globalCodexHooksJsonPath();
-    mkdirSync(dirname(configPath), { recursive: true });
-    const config = readJsonObject(configPath);
-    for (const { event, matcher } of hookEvents("codex")) {
-      ensureHookCommand(config, event, command, matcher);
+  // Codex treats ~/.codex/hooks.json as the first-class hook representation and
+  // warns ("loading hooks from both …") when hooks ALSO live in config.toml. So
+  // always install into hooks.json — merge-safe via ensureHookCommand, which
+  // preserves any other hooks already there (e.g. cmux's) — and migrate any
+  // legacy inline Hitch block out of config.toml so there's a single
+  // representation. This is independent of cmux: every Codex user gets it.
+  const hooksJsonPath = globalCodexHooksJsonPath();
+  mkdirSync(dirname(hooksJsonPath), { recursive: true });
+  const config = readJsonObject(hooksJsonPath);
+  for (const { event, matcher } of hookEvents("codex")) {
+    ensureHookCommand(config, event, command, matcher);
+  }
+  writeFileSync(hooksJsonPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const tomlPath = globalCodexConfigTomlPath();
+  if (existsSync(tomlPath)) {
+    const current = readFileSync(tomlPath, "utf8");
+    const migrated = removeHitchCodexTomlBlock(current);
+    if (migrated !== current) {
+      writeFileSync(tomlPath, migrated, "utf8");
+      addLog("system", "Migrated Codex hooks from config.toml to hooks.json");
     }
-    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  } else {
-    ensureCodexTomlHook(command);
   }
 
   addLog("system", "Installed global Codex lifecycle hooks");
   return globalHarnessSetupStatus();
+}
+
+// One-time, cmux-independent migration: older installs wrote Hitch's Codex
+// hooks inline into ~/.codex/config.toml. Codex now prefers hooks.json and warns
+// when both carry hooks, so on startup we move any legacy block over. Gated on
+// the block actually being present, so users who never had Codex hooks don't get
+// a hooks.json created for them.
+function migrateCodexHooksRepresentation(): void {
+  const tomlPath = globalCodexConfigTomlPath();
+  if (!existsSync(tomlPath)) return;
+  if (!readFileSync(tomlPath, "utf8").includes(HITCH_CODEX_TOML_START)) return;
+  installGlobalCodexHooks();
 }
 
 function removeGlobalCodexHooks(): GlobalHarnessSetupStatus {
@@ -2725,6 +2688,10 @@ app.whenReady().then(async () => {
   await createWindow();
   startAuthLoopback();
   if (readKeepAwakeEnabled()) startKeepAwake(false);
+  // Move any legacy config.toml Codex hooks to hooks.json before the daemon can
+  // launch Codex, so there's a single hook representation (avoids Codex's
+  // dual-loading warning and keeps cmux's hook from colliding).
+  migrateCodexHooksRepresentation();
   startDaemon();
   configureAutoUpdates();
 
