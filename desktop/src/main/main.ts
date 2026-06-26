@@ -216,7 +216,8 @@ function globalChatLifecycleHook(harness: Harness): string {
 // captures normalized lifecycle events into Hitch's local SQLite inbox.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 
@@ -224,8 +225,11 @@ const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
 const HITCH_APP_SUPPORT_DIR = ${JSON.stringify(appSupportDir)};
 const HITCH_DB_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.sqlite";
 const HITCH_BUMP_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.bump";
+const HITCH_CODEX_CMUX_CLAIMS_PATH = HITCH_APP_SUPPORT_DIR + "/codex-cmux-launch-claims.json";
 const HARNESS = ${JSON.stringify(harness)};
 const PRODUCER = ${JSON.stringify(harness === "codex" ? "codex-hook" : "claude-code-hook")};
+const CODEX_BIN = ${JSON.stringify(codexBin())};
+const CMUX_BIN = ${JSON.stringify(cmuxBin())};
 
 const EVENT_PLAN_BY_HARNESS = {
   codex: {
@@ -258,6 +262,10 @@ function readStdin() {
 
 function hash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function hashText(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function isInside(root, cwd) {
@@ -321,6 +329,9 @@ function chatId(payload) {
 
 function metadata(payload, providerEvent) {
   const out = {};
+  if (process.env.HITCH_CHAT_ENVIRONMENT) {
+    out.environment = process.env.HITCH_CHAT_ENVIRONMENT;
+  }
   if (typeof payload.tool_name === "string") out.toolName = payload.tool_name;
   if (typeof payload.toolName === "string") out.toolName = payload.toolName;
   if (typeof payload.notification_type === "string") {
@@ -341,6 +352,122 @@ function metadata(payload, providerEvent) {
     out.sessionCronCount = payload.session_crons.length;
   }
   return out;
+}
+
+function promptText(payload) {
+  for (const value of [
+    payload.prompt,
+    payload.user_prompt,
+    payload.userPrompt,
+    payload.input,
+  ]) {
+    if (typeof value === "string") return value;
+  }
+  return null;
+}
+
+function readCodexCmuxClaims() {
+  try {
+    const parsed = JSON.parse(readFileSync(HITCH_CODEX_CMUX_CLAIMS_PATH, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCodexCmuxClaims(claims) {
+  try {
+    mkdirSync(dirname(HITCH_CODEX_CMUX_CLAIMS_PATH), { recursive: true });
+    const tmpPath =
+      HITCH_CODEX_CMUX_CLAIMS_PATH + "." + process.pid + "." + Date.now() + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(claims, null, 2) + "\\n", "utf8");
+    renameSync(tmpPath, HITCH_CODEX_CMUX_CLAIMS_PATH);
+  } catch {
+    // Claim cleanup is best-effort; never interrupt the hook.
+  }
+}
+
+function consumeCodexCmuxLaunchClaim(payload, event) {
+  if (HARNESS !== "codex" || event.providerEvent !== "UserPromptSubmit") {
+    return null;
+  }
+  const prompt = promptText(payload);
+  if (typeof prompt !== "string") return null;
+
+  const now = Date.now();
+  const promptHash = hashText(prompt);
+  const cwd = resolve(event.cwd);
+  const claims = readCodexCmuxClaims();
+  const freshClaims = claims.filter((claim) => {
+    return (
+      claim &&
+      typeof claim.createdAt === "number" &&
+      now - claim.createdAt <= 10 * 60 * 1000
+    );
+  });
+  const matches = freshClaims
+    .map((claim, index) => ({ claim, index }))
+    .filter(({ claim }) => {
+      return (
+        claim &&
+        claim.claimedAt === undefined &&
+        claim.ambiguousAt === undefined &&
+        claim.environment === "cmux" &&
+        typeof claim.launchId === "string" &&
+        typeof claim.cwd === "string" &&
+        typeof claim.promptHash === "string" &&
+        resolve(claim.cwd) === cwd &&
+        claim.promptHash === promptHash
+      );
+    });
+  if (matches.length !== 1) {
+    if (matches.length > 1) {
+      for (const { index } of matches) {
+        freshClaims[index] = {
+          ...freshClaims[index],
+          ambiguousAt: now,
+          ambiguousMatchCount: matches.length,
+        };
+      }
+    }
+    if (matches.length > 1 || freshClaims.length !== claims.length) {
+      writeCodexCmuxClaims(freshClaims);
+    }
+    if (matches.length > 1) {
+      event.metadata.cmuxLaunchClaimAmbiguous = matches.length;
+    }
+    return null;
+  }
+
+  const { claim, index } = matches[0];
+  freshClaims[index] = {
+    ...claim,
+    claimedAt: now,
+    chatId: event.chatId,
+  };
+  writeCodexCmuxClaims(freshClaims);
+  return claim;
+}
+
+function codexCmuxClaimForChat(event) {
+  if (HARNESS !== "codex" || !event.chatId) return null;
+  const now = Date.now();
+  const claims = readCodexCmuxClaims().filter((claim) => {
+    return (
+      claim &&
+      typeof claim.createdAt === "number" &&
+      now - claim.createdAt <= 10 * 60 * 1000
+    );
+  });
+  return (
+    claims.find((claim) => {
+      return (
+        claim &&
+        claim.environment === "cmux" &&
+        claim.chatId === event.chatId
+      );
+    }) ?? null
+  );
 }
 
 function turnId(payload) {
@@ -387,7 +514,11 @@ function normalize(payload) {
     projectId: project.projectId,
     projectLocalPath: project.localPath,
     chatId: id,
-    launchId: null,
+    launchId:
+      typeof process.env.HITCH_LAUNCH_ID === "string" &&
+      process.env.HITCH_LAUNCH_ID.trim()
+        ? process.env.HITCH_LAUNCH_ID.trim()
+        : null,
     turnId: turnId(payload),
     cwd: resolve(cwd),
     host: hostname(),
@@ -396,6 +527,17 @@ function normalize(payload) {
     rawPayloadRef: null,
     metadata: metadata(payload, providerEvent),
   };
+  const launchClaim =
+    consumeCodexCmuxLaunchClaim(payload, event) ?? codexCmuxClaimForChat(event);
+  if (!event.launchId && launchClaim?.launchId) {
+    event.launchId = launchClaim.launchId;
+  }
+  if (launchClaim?.environment && !event.metadata.environment) {
+    event.metadata.environment = launchClaim.environment;
+  }
+  if (launchClaim?.surfaceId && !event.metadata.cmuxSurfaceId) {
+    event.metadata.cmuxSurfaceId = launchClaim.surfaceId;
+  }
   event.eventId = hash({
     source: event.source,
     producer: event.producer,
@@ -409,6 +551,49 @@ function normalize(payload) {
     rawPayloadHash,
   });
   return event;
+}
+
+function maybeBindCmuxResume(event) {
+  if (HARNESS !== "codex" || event.metadata?.environment !== "cmux") {
+    return;
+  }
+  const surfaceId =
+    typeof event.metadata.cmuxSurfaceId === "string"
+      ? event.metadata.cmuxSurfaceId
+      : process.env.CMUX_SURFACE_ID;
+  if (!event.chatId || !surfaceId) return;
+
+  try {
+    execFileSync(
+      CMUX_BIN,
+      [
+        "surface",
+        "resume",
+        "set",
+        "--kind",
+        "codex",
+        "--name",
+        "Codex",
+        "--source",
+        "hitch",
+        "--checkpoint",
+        event.chatId,
+        "--surface",
+        surfaceId,
+        "--cwd",
+        event.cwd,
+        "--",
+        CODEX_BIN,
+        "resume",
+        "-C",
+        event.cwd,
+        event.chatId,
+      ],
+      { stdio: "ignore" },
+    );
+  } catch {
+    // Never let cmux binding failures interrupt Codex hooks.
+  }
 }
 
 async function openDb() {
@@ -511,7 +696,10 @@ async function main() {
   }
 
   const event = normalize(payload);
-  if (event) await insertEvent(event);
+  if (event) {
+    await insertEvent(event);
+    maybeBindCmuxResume(event);
+  }
 }
 
 main().catch(() => {
@@ -1549,6 +1737,15 @@ function globalCodexHookStatus(): HarnessHookStatus {
   const configTomlPath = globalCodexConfigTomlPath();
   const scriptPath = globalCodexHookScriptPath();
   const scriptExists = existsSync(scriptPath);
+  const scriptCurrent =
+    scriptExists &&
+    (() => {
+      try {
+        return readFileSync(scriptPath, "utf8") === globalCodexChatStatusHook();
+      } catch {
+        return false;
+      }
+    })();
   const jsonExists = existsSync(hooksJsonPath);
   const tomlExists = existsSync(configTomlPath);
   let jsonWired = false;
@@ -1598,7 +1795,7 @@ function globalCodexHookStatus(): HarnessHookStatus {
 
   return {
     harness: "codex",
-    installed: scriptExists && (jsonWired || tomlWired),
+    installed: scriptCurrent && (jsonWired || tomlWired),
     configPath,
     scriptPath,
     configExists: jsonExists || tomlExists,

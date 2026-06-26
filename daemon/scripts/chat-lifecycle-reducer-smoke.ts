@@ -139,6 +139,47 @@ try {
   assert.equal(endedChat?.status, "idle");
   assert.equal(endedChat?.endedAt, 1_800_000_000_700);
 
+  const cmuxCreated = store.insertLifecycleEvent(
+    event("cmux-created", {
+      launchId: "launch-2",
+      metadata: {
+        environment: "cmux",
+        linkedType: "task",
+        linkedPath: "tasks/codex-cmux/task.md",
+        title: "Codex cmux task",
+      },
+      observedAt: 1_800_000_000_900,
+    }),
+  );
+  result = store.reduceLifecycleEvents({ now: 1_800_000_001_000 });
+  assert.equal(result.eventsReduced, 1);
+  assert.equal(result.chatsChanged, 1);
+  assert.equal(result.cursor, cmuxCreated.seq);
+  assert.equal(store.getLocalChat("launch:launch-2")?.pending, true);
+
+  const cmuxHookBound = store.insertLifecycleEvent(
+    event("cmux-hook-bound", {
+      source: "hook",
+      producer: "codex-hook",
+      providerEvent: "UserPromptSubmit",
+      lifecycle: "turn.started",
+      launchId: "launch-2",
+      chatId: "thread-2",
+      metadata: { environment: "cmux" },
+      observedAt: 1_800_000_001_100,
+    }),
+  );
+  result = store.reduceLifecycleEvents({ now: 1_800_000_001_200 });
+  assert.equal(result.eventsReduced, 1);
+  assert.equal(result.chatsChanged, 1);
+  assert.equal(result.cursor, cmuxHookBound.seq);
+  assert.equal(store.getLocalChat("launch:launch-2"), null);
+  const cmuxBound = store.getLocalChat("chat:codex:host-1:thread-2");
+  assert.equal(cmuxBound?.launchId, "launch-2");
+  assert.equal(cmuxBound?.pending, false);
+  assert.equal(cmuxBound?.environment, "cmux");
+  assert.equal(cmuxBound?.linkedPath, "tasks/codex-cmux/task.md");
+
   store.close();
   console.log("chat lifecycle reducer smoke passed");
 } finally {

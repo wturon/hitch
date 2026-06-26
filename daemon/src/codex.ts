@@ -15,7 +15,7 @@ const CODEX_CANDIDATES = [
   "codex",
 ].filter((p): p is string => Boolean(p));
 
-function codexBin(): string {
+export function codexBin(): string {
   for (const p of CODEX_CANDIDATES) {
     if (p === "codex" || existsSync(p)) return p;
   }

@@ -423,7 +423,10 @@ export function projectedChatFrontmatter(
     "chat-open-state": chat.pending ? "pending" : undefined,
   };
 
-  if (chat.harness === "claude-code") {
+  if (
+    chat.harness === "claude-code" ||
+    (chat.harness === "codex" && chat.environment === "cmux")
+  ) {
     updates["chat-cwd"] = chat.cwd || undefined;
     updates["chat-env"] = chat.environment ?? undefined;
   } else {
@@ -793,14 +796,20 @@ async function startHitchBinding({
     return join(root.hitchPath, rel.split("/").join(sep));
   }
 
-  async function linkCodexThread(path: string, threadId: string) {
+  async function linkCodexThread(
+    path: string,
+    threadId: string,
+    cwd: string,
+    environment: Environment,
+  ) {
     const absPath = toAbs(path);
     const current = await readFile(absPath, "utf8");
     const next = setFrontmatterKeys(current, {
       "chat-harness": "codex",
       "chat-id": threadId,
-      "chat-cwd": undefined,
-      "chat-open-state": "pending",
+      "chat-cwd": environment === "cmux" ? cwd : undefined,
+      "chat-env": environment === "cmux" ? environment : undefined,
+      "chat-open-state": environment === "cmux" ? undefined : "pending",
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${projectLabel}] linked codex thread ${threadId} → ${path}`);
@@ -1292,7 +1301,14 @@ async function startHitchBinding({
                     }),
                   `codex bound ${threadId}`,
                 );
-                if (isTaskLinked) await linkCodexThread(linkedPath, threadId);
+                if (isTaskLinked) {
+                  await linkCodexThread(
+                    linkedPath,
+                    threadId,
+                    launchCwd,
+                    launcher.environment,
+                  );
+                }
                 await bindPendingChat(
                   cmd,
                   harness,
@@ -1363,6 +1379,7 @@ async function startHitchBinding({
               }
             : undefined;
         const { result } = await launcher.startNew({
+          launchId: cmd.launchId,
           taskKey: launchKey,
           prompt: cmd.initialPrompt,
           cwd: launchCwd,
