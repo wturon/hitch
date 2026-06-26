@@ -26,7 +26,8 @@ import {
   stopClaudeSessionLinker,
 } from "./launchers/claudeSessionLinker.js";
 import type { Environment, Harness } from "./launchers/types.js";
-import type { LocalChatRow } from "./chatLifecycleStore.js";
+import type { ChatLifecycleStore, LocalChatRow } from "./chatLifecycleStore.js";
+import { createDebugApi, type DebugApi } from "./debugApi.js";
 
 if (!globalThis.WebSocket) {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
@@ -83,6 +84,10 @@ export interface HitchDaemonHandle {
   hitchPath: string;
   hitches: ResolvedHitch[];
   conflicts: ProjectConflict[];
+  // Read-only local debug surface (cmux reconciliation + trace) for the
+  // desktop's debug screen. Null when no binding has an open store (all
+  // conflicted) — the desktop treats that as "no data".
+  debug: DebugApi | null;
   stop: () => Promise<void>;
 }
 
@@ -522,6 +527,9 @@ interface HitchBindingHandle {
   // Set when this folder's project.json belongs to a different project, in which
   // case the binding does NOT sync (no subscription, no push) until resolved.
   conflict?: ProjectConflict;
+  // The binding's local store, surfaced so startHitchDaemon can build the debug
+  // API over it. Absent on a conflicted binding (it never opens one).
+  chatLifecycleStore?: ChatLifecycleStore;
 }
 
 async function startHitchBinding({
@@ -1474,6 +1482,7 @@ async function startHitchBinding({
 
   let stopped = false;
   return {
+    chatLifecycleStore,
     stop: async () => {
       if (stopped) return;
       stopped = true;
@@ -1543,6 +1552,14 @@ export async function startHitchDaemon(
     .map((binding) => binding.conflict)
     .filter((conflict): conflict is ProjectConflict => Boolean(conflict));
 
+  // All bindings open the same local DB, so any one store can serve the debug
+  // reads; reconciliation hits cmux globally regardless. Null only if every
+  // binding is conflicted (none opened a store).
+  const debugStore = bindingHandles.find(
+    (binding) => binding.chatLifecycleStore,
+  )?.chatLifecycleStore;
+  const debug = debugStore ? createDebugApi(debugStore) : null;
+
   let stopped = false;
   async function stop(): Promise<void> {
     if (stopped) return;
@@ -1560,6 +1577,7 @@ export async function startHitchDaemon(
     hitchPath: primaryHitch.hitchPath,
     hitches: config.hitches,
     conflicts,
+    debug,
     stop,
   };
 }

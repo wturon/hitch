@@ -53,7 +53,14 @@ export interface PaletteAction {
   onRun: () => void;
 }
 
-export type WorkspaceView = "board" | "notes" | "chats" | "automations";
+// "debug" is intentionally NOT in WORKSPACE_VIEWS below — it's an internal
+// surface reached from the account menu, not a per-project tab or ⌘K target.
+export type WorkspaceView =
+  | "board"
+  | "notes"
+  | "chats"
+  | "automations"
+  | "debug";
 
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in

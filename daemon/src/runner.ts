@@ -4,7 +4,19 @@ interface StopMessage {
   type: "stop";
 }
 
-type RunnerMessage = StopMessage;
+// A request/response call into the daemon's debug API, correlated by `id`. The
+// desktop main process forwards these from the renderer's debug screen and
+// awaits the matching debug-response.
+interface DebugRequestMessage {
+  type: "debug-request";
+  id: string;
+  op: "listCmuxChats" | "reconcileCmux" | "readCmuxTrace";
+  projectId?: string | null;
+  filter?: { chatId?: string | null; launchId?: string | null };
+  limit?: number;
+}
+
+type RunnerMessage = StopMessage | DebugRequestMessage;
 
 function send(message: Record<string, unknown>): void {
   if (process.send) {
@@ -60,8 +72,38 @@ async function main(): Promise<void> {
   }
 }
 
+async function handleDebugRequest(message: DebugRequestMessage): Promise<void> {
+  const reply = (payload: Record<string, unknown>) =>
+    send({ type: "debug-response", id: message.id, ...payload });
+  try {
+    const debug = daemon?.debug;
+    if (!debug) {
+      reply({ ok: false, error: "debug api unavailable" });
+      return;
+    }
+    if (message.op === "listCmuxChats") {
+      reply({ ok: true, data: debug.listCmuxChats(message.projectId ?? null) });
+    } else if (message.op === "reconcileCmux") {
+      reply({ ok: true, data: await debug.reconcileCmux(message.projectId ?? null) });
+    } else if (message.op === "readCmuxTrace") {
+      reply({
+        ok: true,
+        data: debug.readCmuxTrace(message.filter ?? {}, message.limit),
+      });
+    } else {
+      reply({ ok: false, error: `unknown debug op` });
+    }
+  } catch (err) {
+    reply({ ok: false, error: String(err) });
+  }
+}
+
 process.on("message", (message: RunnerMessage) => {
-  if (message?.type === "stop") void stopAndExit(0);
+  if (message?.type === "stop") {
+    void stopAndExit(0);
+  } else if (message?.type === "debug-request") {
+    void handleDebugRequest(message);
+  }
 });
 
 process.on("SIGINT", () => void stopAndExit(0));
