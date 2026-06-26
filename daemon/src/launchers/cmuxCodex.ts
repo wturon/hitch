@@ -2,12 +2,7 @@
 // Hitch's Codex hook: the daemon records an exact cwd+prompt launch claim before
 // spawning Codex, and the hook consumes it when Codex reports the real session id.
 
-import {
-  ensureCmuxCodexHook,
-  openChat,
-  setResumeBinding,
-  startCommand,
-} from "../cmux.js";
+import { openChat, setResumeBinding, startCommand } from "../cmux.js";
 import {
   recordCodexCmuxLaunchClaim,
   updateCodexCmuxLaunchClaim,
@@ -93,7 +88,6 @@ export const cmuxCodexLauncher: Launcher = {
   },
 
   async reopen(ctx) {
-    await ensureCmuxCodexHook();
     const command = codexResumeCommand({
       threadId: ctx.sessionId,
       cwd: ctx.cwd,
@@ -122,7 +116,6 @@ export const cmuxCodexLauncher: Launcher = {
   },
 
   async startNew(ctx) {
-    await ensureCmuxCodexHook();
     recordCodexCmuxLaunchClaim({
       launchId: ctx.launchId,
       cwd: ctx.cwd,
