@@ -7,6 +7,7 @@
 // Everything shells out to the `cmux` binary. We don't assume it's on PATH (a
 // daemon launched outside cmux may not have it), so we probe known locations.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { platform } from "node:os";
@@ -33,12 +34,113 @@ export function setCmuxLogger(l: CmuxLogger): void {
   logger = l;
 }
 
+// A single structured cmux interaction, for the chat-lifecycle debug screen.
+// `kind` is "io" for an actual `cmux` invocation (command + how it resolved),
+// or "decision"/"warn" for the human-readable lines we already emit (which path
+// a resume took, ambiguous-binding warnings). chatId/launchId come from the
+// ambient context (see withCmuxContext) so every nested call is attributed to
+// the chat that triggered it without threading an id through every helper.
+export interface CmuxTraceEvent {
+  ts: number;
+  chatId: string | null;
+  launchId: string | null;
+  kind: "io" | "decision" | "warn";
+  command: string | null;
+  args: string[] | null;
+  durationMs: number | null;
+  ok: boolean | null;
+  errorCode: string | null;
+  message: string | null;
+}
+
+let traceSink: ((event: CmuxTraceEvent) => void) | null = null;
+
+// Wire the structured trace to its persistent sink (the daemon points this at
+// the local chat-lifecycle SQLite store). Separate from setCmuxLogger because
+// the human log stream and the queryable per-chat trace are different concerns
+// with different lifetimes — and the store isn't constructed until after the
+// logger is.
+export function setCmuxTraceSink(sink: (event: CmuxTraceEvent) => void): void {
+  traceSink = sink;
+}
+
+interface CmuxContext {
+  chatId: string | null;
+  launchId: string | null;
+}
+
+const traceContext = new AsyncLocalStorage<CmuxContext>();
+
+// Run `fn` with the chat identity that should tag every cmux call it makes.
+// openChat/startChat/startCommand wrap their bodies in this; placeChat and the
+// low-level helpers inherit it through the async context, so they stay
+// id-free. On a codex launch the session id isn't known yet, so only launchId
+// is set — the store reconciles the two when the hook binds the thread.
+export function withCmuxContext<T>(
+  context: Partial<CmuxContext>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return traceContext.run(
+    { chatId: context.chatId ?? null, launchId: context.launchId ?? null },
+    fn,
+  );
+}
+
+// Each arg is capped so a seed prompt or long --shell command can't bloat the
+// trace table; the full command still rides in the daemon's text log.
+const TRACE_ARG_MAX = 300;
+
+function emitTrace(
+  event: Omit<CmuxTraceEvent, "ts" | "chatId" | "launchId">,
+): void {
+  if (!traceSink) return;
+  const ctx = traceContext.getStore();
+  try {
+    traceSink({
+      ts: Date.now(),
+      chatId: ctx?.chatId ?? null,
+      launchId: ctx?.launchId ?? null,
+      ...event,
+      args: event.args?.map((a) =>
+        a.length > TRACE_ARG_MAX ? `${a.slice(0, TRACE_ARG_MAX)}…` : a,
+      ) ?? null,
+    });
+  } catch {
+    // Tracing must never break a real cmux operation.
+  }
+}
+
+// A short, scannable label for an invocation: "rpc surface.focus", "tree",
+// "new-workspace" — the verb, not the full argv.
+function cmdLabel(args: string[]): string {
+  if (args[0] === "rpc" && args[1]) return `rpc ${args[1]}`;
+  return args[0] ?? "cmux";
+}
+
 function log(message: string): void {
   logger?.info(`[cmux] ${message}`);
+  emitTrace({
+    kind: "decision",
+    command: null,
+    args: null,
+    durationMs: null,
+    ok: null,
+    errorCode: null,
+    message,
+  });
 }
 
 function warn(message: string): void {
   (logger?.error ?? logger?.info)?.(`[cmux] ⚠ ${message}`);
+  emitTrace({
+    kind: "warn",
+    command: null,
+    args: null,
+    durationMs: null,
+    ok: null,
+    errorCode: null,
+    message,
+  });
 }
 
 function cmuxDebug(): boolean {
@@ -132,15 +234,35 @@ function classifyCmuxError(err: unknown): CmuxError {
 }
 
 async function cmux(args: string[]): Promise<string> {
+  const startedAt = Date.now();
   try {
     const { stdout } = await run(cmuxBin(), args, {
       timeout: 10_000,
       // A daemon outside cmux may need the socket password; pass it through if set.
       env: process.env,
     });
+    emitTrace({
+      kind: "io",
+      command: cmdLabel(args),
+      args,
+      durationMs: Date.now() - startedAt,
+      ok: true,
+      errorCode: null,
+      message: null,
+    });
     return stdout;
   } catch (err) {
-    throw classifyCmuxError(err);
+    const classified = classifyCmuxError(err);
+    emitTrace({
+      kind: "io",
+      command: cmdLabel(args),
+      args,
+      durationMs: Date.now() - startedAt,
+      ok: false,
+      errorCode: classified.code,
+      message: classified.message,
+    });
+    throw classified;
   }
 }
 
@@ -419,6 +541,8 @@ export interface OpenSpec {
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
+  // Optional, for the debug trace only — correlates cmux calls to this launch.
+  launchId?: string | null;
 }
 
 export type OpenResult = "focused" | "spawned";
@@ -434,6 +558,13 @@ const SPAWN_GRACE_MS = 45_000;
 // Bring the chat forward: focus its existing surface, or spawn a workspace that
 // resumes the session from its on-disk transcript. Returns which path ran.
 export async function openChat(spec: OpenSpec): Promise<OpenResult> {
+  return withCmuxContext(
+    { chatId: spec.sessionId, launchId: spec.launchId ?? null },
+    () => openChatInner(spec),
+  );
+}
+
+async function openChatInner(spec: OpenSpec): Promise<OpenResult> {
   // 1. Open and bound → select the tab and raise the app.
   const uuid = await findSurfaceUuid(spec.sessionId);
   if (uuid) {
@@ -511,6 +642,8 @@ export interface StartSpec {
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
+  // Optional, for the debug trace only — correlates cmux calls to this launch.
+  launchId?: string | null;
 }
 
 export interface StartCommandSpec {
@@ -522,6 +655,10 @@ export interface StartCommandSpec {
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
+  // Optional, for the debug trace only — correlates cmux calls to this launch.
+  // Codex doesn't know its thread id at launch, so this is the only id its
+  // launch-time calls can be tagged with until the hook binds the thread.
+  launchId?: string | null;
 }
 
 function memoRecentSpawn(key: string, workspace: string | null): void {
@@ -545,6 +682,13 @@ function memoRecentSpawn(key: string, workspace: string | null): void {
 // selected in-app); the user pulls it forward later via the "open" button, which
 // routes through openChat and does raise the app.
 export async function startChat(spec: StartSpec): Promise<OpenResult> {
+  return withCmuxContext(
+    { chatId: spec.sessionId, launchId: spec.launchId ?? null },
+    () => startChatInner(spec),
+  );
+}
+
+async function startChatInner(spec: StartSpec): Promise<OpenResult> {
   // We spawned for this task moments ago (agent may still be booting) → don't
   // spawn a duplicate. Select the workspace in-app, but stay in the background.
   const memo = recentSpawns.get(spec.taskKey);
@@ -592,6 +736,13 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
 export async function startCommand(
   spec: StartCommandSpec,
 ): Promise<OpenResult> {
+  return withCmuxContext(
+    { chatId: spec.sessionId ?? null, launchId: spec.launchId ?? null },
+    () => startCommandInner(spec),
+  );
+}
+
+async function startCommandInner(spec: StartCommandSpec): Promise<OpenResult> {
   const memo = recentSpawns.get(spec.taskKey);
   if (memo && Date.now() - memo.at < SPAWN_GRACE_MS) {
     try {

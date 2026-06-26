@@ -14,7 +14,7 @@ import chokidar, { type FSWatcher } from "chokidar";
 import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { CmuxError, setCmuxLogger } from "./cmux.js";
+import { CmuxError, setCmuxLogger, setCmuxTraceSink } from "./cmux.js";
 import { closeCodexAppServer, latestCodexThread } from "./codex.js";
 import { openChatLifecycleStore } from "./chatLifecycleStore.js";
 import { DaemonLifecycleProducer } from "./chatLifecycleProducers.js";
@@ -565,6 +565,10 @@ async function startHitchBinding({
   const lastHash = new Map<string, string>();
   const subscriptions: Unsubscribe[] = [];
   const chatLifecycleStore = openChatLifecycleStore({ env });
+  // Persist the structured cmux trace into the same local store the harness
+  // hooks write to (a sibling table, never synced to Convex). Wired here rather
+  // than at setCmuxLogger above because the store isn't open until now.
+  setCmuxTraceSink((event) => chatLifecycleStore.appendCmuxTrace(event));
   const lifecycleProducer = new DaemonLifecycleProducer({
     store: chatLifecycleStore,
     projectId,
@@ -724,6 +728,7 @@ async function startHitchBinding({
         const projected = await projectReducedTaskFrontmatter();
         if (totalReduced > 0 || titlesRefreshed > 0 || synced > 0 || projected > 0) {
           chatLifecycleStore.cleanupReducedEvents();
+          chatLifecycleStore.pruneCmuxTrace();
           logger.info(
             `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), refreshed ${titlesRefreshed} title(s), synced ${synced} chat(s), projected ${projected} task(s) (${reason})`,
           );
