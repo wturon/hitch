@@ -122,7 +122,6 @@ export function recordCodexCmuxLaunchClaim(input: {
     .filter(({ claim }) => {
       return (
         claim.claimedAt === undefined &&
-        claim.ambiguousAt === undefined &&
         claim.environment === nextClaim.environment &&
         claim.cwd === nextClaim.cwd &&
         claim.promptHash === nextClaim.promptHash

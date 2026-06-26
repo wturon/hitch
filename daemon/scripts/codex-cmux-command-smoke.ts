@@ -99,6 +99,30 @@ try {
   assert.equal(duplicateClaims[1].ambiguousMatchCount, 2);
   assert.equal(duplicateClaims[0].claimedAt, undefined);
   assert.equal(duplicateClaims[1].claimedAt, undefined);
+
+  recordCodexCmuxLaunchClaim({
+    launchId: "duplicate-3",
+    cwd: "/tmp/my project",
+    prompt: "same prompt",
+    env: { HITCH_APP_SUPPORT_DIR: tempDir } as NodeJS.ProcessEnv,
+  });
+  const thirdDuplicateClaims = JSON.parse(
+    readFileSync(join(tempDir, "codex-cmux-launch-claims.json"), "utf8"),
+  ).filter((claim: { launchId?: string }) =>
+    claim.launchId?.startsWith("duplicate-"),
+  );
+  assert.equal(thirdDuplicateClaims.length, 3);
+  assert.deepEqual(
+    thirdDuplicateClaims
+      .map((claim: { launchId: string }) => claim.launchId)
+      .sort(),
+    ["duplicate-1", "duplicate-2", "duplicate-3"],
+  );
+  for (const claim of thirdDuplicateClaims) {
+    assert.equal(typeof claim.ambiguousAt, "number");
+    assert.equal(claim.ambiguousMatchCount, 3);
+    assert.equal(claim.claimedAt, undefined);
+  }
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }
