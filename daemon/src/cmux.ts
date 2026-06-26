@@ -326,13 +326,18 @@ async function focusSurface(surfaceId: string): Promise<void> {
 // into the project dir itself before launching. `send` types the command and
 // the trailing escape submits it — multi-line prompts survive because they're
 // single-quoted (the shell reads them via its quote-continuation).
-async function addChatTab(workspaceId: string, cwd: string | undefined, command: string): Promise<void> {
+async function addChatTab(
+  workspaceId: string,
+  cwd: string | undefined,
+  command: string,
+): Promise<string> {
   const out = await cmux(["rpc", "surface.create", JSON.stringify({ workspace_id: workspaceId })]);
   const surfaceId = (JSON.parse(out) as { surface_id?: string }).surface_id;
   if (!surfaceId) throw new Error("surface.create returned no surface_id");
   const line = cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
   await cmux(["send", "--workspace", workspaceId, "--surface", surfaceId, `${line}\\n`]);
   await focusSurface(surfaceId);
+  return surfaceId;
 }
 
 export interface PlaceSpec {
@@ -342,15 +347,36 @@ export interface PlaceSpec {
   command: string;
 }
 
+export interface Placement {
+  workspace: string | null;
+  surface: string | null;
+}
+
+async function selectedSurface(workspaceId: string): Promise<string | null> {
+  const out = await cmux([
+    "list-pane-surfaces",
+    "--workspace",
+    workspaceId,
+    "--id-format",
+    "both",
+  ]).catch(() => "");
+  const selectedLine =
+    out
+      .split(/\r?\n/)
+      .find((line) => line.trim().startsWith("* surface:")) ??
+    out.split(/\r?\n/).find((line) => line.includes("surface:"));
+  const match = selectedLine?.match(/\bsurface:\d+\s+([0-9a-f-]{36})\b/i);
+  return match?.[1] ?? null;
+}
+
 // Put a chat into cmux deterministically: as a new tab in this project's
 // workspace if one already exists, otherwise as a fresh workspace that we tag
-// so every later chat for the project consolidates into it. Returns the UUID of
-// the workspace the chat landed in (for the recentSpawns memo), or null.
-async function placeChat(spec: PlaceSpec): Promise<string | null> {
+// so every later chat for the project consolidates into it.
+async function placeChat(spec: PlaceSpec): Promise<Placement> {
   const existing = await findProjectWorkspace(spec.projectId);
   if (existing) {
-    await addChatTab(existing, spec.cwd, spec.command);
-    return existing;
+    const surface = await addChatTab(existing, spec.cwd, spec.command);
+    return { workspace: existing, surface };
   }
   const before = await workspaceUuids();
   const args = ["new-workspace", "--command", spec.command, "--focus", "true"];
@@ -358,7 +384,10 @@ async function placeChat(spec: PlaceSpec): Promise<string | null> {
   await cmux(args);
   const created = [...(await workspaceUuids())].find((w) => !before.has(w)) ?? null;
   if (created) await tagWorkspace(created, spec.projectName, spec.projectId);
-  return created;
+  return {
+    workspace: created,
+    surface: created ? await selectedSurface(created) : null,
+  };
 }
 
 // Bring the cmux app to the foreground at the OS level (the macOS equivalent of
@@ -386,6 +415,7 @@ export interface OpenSpec {
   cwd?: string;
   // The command to run when spawning fresh. Defaults to a plain resume.
   command?: string;
+  onSpawned?: (placement: Placement) => void | Promise<void>;
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
@@ -449,12 +479,14 @@ export async function openChat(spec: OpenSpec): Promise<OpenResult> {
   spawning.add(spec.sessionId);
   try {
     const command = spec.command ?? `claude --resume ${spec.sessionId}`;
-    const workspace = await placeChat({
+    const placement = await placeChat({
       projectId: spec.projectId,
       projectName: spec.projectName,
       cwd: spec.cwd,
       command,
     });
+    await spec.onSpawned?.(placement);
+    const workspace = placement.workspace;
     if (workspace) {
       recentSpawns.set(spec.sessionId, { workspace, at: Date.now() });
     }
@@ -486,6 +518,7 @@ export interface StartCommandSpec {
   command: string;
   sessionId?: string;
   cwd?: string;
+  onPlaced?: (placement: Placement) => void | Promise<void>;
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
@@ -538,12 +571,13 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
     if (spec.effort) flags.push("--effort", spec.effort);
     const flagStr = flags.length ? `${flags.join(" ")} ` : "";
     const command = `claude --session-id ${spec.sessionId} ${flagStr}${shellQuote(spec.prompt)}`;
-    const workspace = await placeChat({
+    const placement = await placeChat({
       projectId: spec.projectId,
       projectName: spec.projectName,
       cwd: spec.cwd,
       command,
     });
+    const workspace = placement.workspace;
     memoRecentSpawn(spec.taskKey, workspace);
     memoRecentSpawn(spec.sessionId, workspace);
     return "spawned";
@@ -574,12 +608,14 @@ export async function startCommand(
 
   spawning.add(spec.taskKey);
   try {
-    const workspace = await placeChat({
+    const placement = await placeChat({
       projectId: spec.projectId,
       projectName: spec.projectName,
       cwd: spec.cwd,
       command: spec.command,
     });
+    await spec.onPlaced?.(placement);
+    const workspace = placement.workspace;
     memoRecentSpawn(spec.taskKey, workspace);
     if (spec.sessionId) memoRecentSpawn(spec.sessionId, workspace);
     return "spawned";
@@ -592,4 +628,37 @@ export async function startCommand(
 // prompt survives intact as one argument when cmux runs `--command` via a shell.
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+export interface ResumeBindingSpec {
+  surfaceId: string;
+  workspaceId?: string | null;
+  checkpointId: string;
+  cwd?: string;
+  kind: string;
+  name: string;
+  source: string;
+  command: string;
+}
+
+export async function setResumeBinding(spec: ResumeBindingSpec): Promise<void> {
+  const args = [
+    "surface",
+    "resume",
+    "set",
+    "--kind",
+    spec.kind,
+    "--name",
+    spec.name,
+    "--source",
+    spec.source,
+    "--checkpoint",
+    spec.checkpointId,
+    "--surface",
+    spec.surfaceId,
+  ];
+  if (spec.workspaceId) args.push("--workspace", spec.workspaceId);
+  if (spec.cwd) args.push("--cwd", spec.cwd);
+  args.push("--shell", spec.command);
+  await cmux(args);
 }

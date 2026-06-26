@@ -1,8 +1,12 @@
 // Codex CLI running in cmux. New sessions are linked deterministically through
-// Hitch's Codex hook: this launcher injects HITCH_LAUNCH_ID into the Codex
-// process, and the hook records that launch id with Codex's real session id.
+// Hitch's Codex hook: the daemon records an exact cwd+prompt launch claim before
+// spawning Codex, and the hook consumes it when Codex reports the real session id.
 
-import { openChat, startCommand } from "../cmux.js";
+import { openChat, setResumeBinding, startCommand } from "../cmux.js";
+import {
+  recordCodexCmuxLaunchClaim,
+  updateCodexCmuxLaunchClaim,
+} from "../codexCmuxLaunchClaims.js";
 import { codexBin } from "../codex.js";
 import type { Launcher } from "./types.js";
 
@@ -84,13 +88,27 @@ export const cmuxCodexLauncher: Launcher = {
   },
 
   async reopen(ctx) {
+    const command = codexResumeCommand({
+      threadId: ctx.sessionId,
+      cwd: ctx.cwd,
+    });
     const result = await openChat({
       sessionId: ctx.sessionId,
       cwd: ctx.cwd,
-      command: codexResumeCommand({
-        threadId: ctx.sessionId,
-        cwd: ctx.cwd,
-      }),
+      command,
+      onSpawned: async (placement) => {
+        if (!placement.surface) return;
+        await setResumeBinding({
+          surfaceId: placement.surface,
+          workspaceId: placement.workspace,
+          checkpointId: ctx.sessionId,
+          cwd: ctx.cwd,
+          kind: "codex",
+          name: "Codex",
+          source: "hitch",
+          command,
+        });
+      },
       projectId: ctx.project.projectId,
       projectName: ctx.project.projectName,
     });
@@ -98,6 +116,11 @@ export const cmuxCodexLauncher: Launcher = {
   },
 
   async startNew(ctx) {
+    recordCodexCmuxLaunchClaim({
+      launchId: ctx.launchId,
+      cwd: ctx.cwd,
+      prompt: ctx.prompt,
+    });
     const result = await startCommand({
       taskKey: ctx.taskKey,
       cwd: ctx.cwd,
@@ -108,6 +131,13 @@ export const cmuxCodexLauncher: Launcher = {
         model: ctx.model,
         effort: ctx.effort,
       }),
+      onPlaced: (placement) => {
+        updateCodexCmuxLaunchClaim({
+          launchId: ctx.launchId,
+          workspaceId: placement.workspace,
+          surfaceId: placement.surface,
+        });
+      },
       projectId: ctx.project.projectId,
       projectName: ctx.project.projectName,
     });

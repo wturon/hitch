@@ -217,7 +217,7 @@ function globalChatLifecycleHook(harness: Harness): string {
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 
@@ -225,6 +225,7 @@ const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
 const HITCH_APP_SUPPORT_DIR = ${JSON.stringify(appSupportDir)};
 const HITCH_DB_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.sqlite";
 const HITCH_BUMP_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.bump";
+const HITCH_CODEX_CMUX_CLAIMS_PATH = HITCH_APP_SUPPORT_DIR + "/codex-cmux-launch-claims.json";
 const HARNESS = ${JSON.stringify(harness)};
 const PRODUCER = ${JSON.stringify(harness === "codex" ? "codex-hook" : "claude-code-hook")};
 const CODEX_BIN = ${JSON.stringify(codexBin())};
@@ -261,6 +262,10 @@ function readStdin() {
 
 function hash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function hashText(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function isInside(root, cwd) {
@@ -349,6 +354,105 @@ function metadata(payload, providerEvent) {
   return out;
 }
 
+function promptText(payload) {
+  for (const value of [
+    payload.prompt,
+    payload.user_prompt,
+    payload.userPrompt,
+    payload.input,
+  ]) {
+    if (typeof value === "string") return value;
+  }
+  return null;
+}
+
+function readCodexCmuxClaims() {
+  try {
+    const parsed = JSON.parse(readFileSync(HITCH_CODEX_CMUX_CLAIMS_PATH, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCodexCmuxClaims(claims) {
+  try {
+    mkdirSync(dirname(HITCH_CODEX_CMUX_CLAIMS_PATH), { recursive: true });
+    const tmpPath =
+      HITCH_CODEX_CMUX_CLAIMS_PATH + "." + process.pid + "." + Date.now() + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(claims, null, 2) + "\\n", "utf8");
+    renameSync(tmpPath, HITCH_CODEX_CMUX_CLAIMS_PATH);
+  } catch {
+    // Claim cleanup is best-effort; never interrupt the hook.
+  }
+}
+
+function consumeCodexCmuxLaunchClaim(payload, event) {
+  if (HARNESS !== "codex" || event.providerEvent !== "UserPromptSubmit") {
+    return null;
+  }
+  const prompt = promptText(payload);
+  if (typeof prompt !== "string") return null;
+
+  const now = Date.now();
+  const promptHash = hashText(prompt);
+  const cwd = resolve(event.cwd);
+  const claims = readCodexCmuxClaims();
+  const freshClaims = claims.filter((claim) => {
+    return (
+      claim &&
+      typeof claim.createdAt === "number" &&
+      now - claim.createdAt <= 10 * 60 * 1000
+    );
+  });
+  const matchIndex = freshClaims.findIndex((claim) => {
+    return (
+      claim &&
+      claim.claimedAt === undefined &&
+      claim.environment === "cmux" &&
+      typeof claim.launchId === "string" &&
+      typeof claim.cwd === "string" &&
+      typeof claim.promptHash === "string" &&
+      resolve(claim.cwd) === cwd &&
+      claim.promptHash === promptHash
+    );
+  });
+  if (matchIndex < 0) {
+    if (freshClaims.length !== claims.length) writeCodexCmuxClaims(freshClaims);
+    return null;
+  }
+
+  const claim = freshClaims[matchIndex];
+  freshClaims[matchIndex] = {
+    ...claim,
+    claimedAt: now,
+    chatId: event.chatId,
+  };
+  writeCodexCmuxClaims(freshClaims);
+  return claim;
+}
+
+function codexCmuxClaimForChat(event) {
+  if (HARNESS !== "codex" || !event.chatId) return null;
+  const now = Date.now();
+  const claims = readCodexCmuxClaims().filter((claim) => {
+    return (
+      claim &&
+      typeof claim.createdAt === "number" &&
+      now - claim.createdAt <= 10 * 60 * 1000
+    );
+  });
+  return (
+    claims.find((claim) => {
+      return (
+        claim &&
+        claim.environment === "cmux" &&
+        claim.chatId === event.chatId
+      );
+    }) ?? null
+  );
+}
+
 function turnId(payload) {
   const id = payload.turn_id || payload.turnId;
   return typeof id === "string" && id.trim() ? id.trim() : null;
@@ -406,6 +510,17 @@ function normalize(payload) {
     rawPayloadRef: null,
     metadata: metadata(payload, providerEvent),
   };
+  const launchClaim =
+    consumeCodexCmuxLaunchClaim(payload, event) ?? codexCmuxClaimForChat(event);
+  if (!event.launchId && launchClaim?.launchId) {
+    event.launchId = launchClaim.launchId;
+  }
+  if (launchClaim?.environment && !event.metadata.environment) {
+    event.metadata.environment = launchClaim.environment;
+  }
+  if (launchClaim?.surfaceId && !event.metadata.cmuxSurfaceId) {
+    event.metadata.cmuxSurfaceId = launchClaim.surfaceId;
+  }
   event.eventId = hash({
     source: event.source,
     producer: event.producer,
@@ -422,10 +537,14 @@ function normalize(payload) {
 }
 
 function maybeBindCmuxResume(event) {
-  if (HARNESS !== "codex" || process.env.HITCH_CHAT_ENVIRONMENT !== "cmux") {
+  if (HARNESS !== "codex" || event.metadata?.environment !== "cmux") {
     return;
   }
-  if (!event.chatId || !process.env.CMUX_SURFACE_ID) return;
+  const surfaceId =
+    typeof event.metadata.cmuxSurfaceId === "string"
+      ? event.metadata.cmuxSurfaceId
+      : process.env.CMUX_SURFACE_ID;
+  if (!event.chatId || !surfaceId) return;
 
   try {
     execFileSync(
@@ -442,6 +561,8 @@ function maybeBindCmuxResume(event) {
         "hitch",
         "--checkpoint",
         event.chatId,
+        "--surface",
+        surfaceId,
         "--cwd",
         event.cwd,
         "--",
