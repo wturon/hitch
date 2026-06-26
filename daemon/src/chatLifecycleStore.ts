@@ -466,6 +466,22 @@ export class ChatLifecycleStore {
       .map((row) => this.localChatFromRow(row));
   }
 
+  // cmux-environment chats for the debug screen, newest activity first. Scoped
+  // to a project when given (matches the rest of the app's project context),
+  // or all cmux chats when null.
+  listCmuxChats(projectId: string | null, limit = 200): LocalChatRow[] {
+    const base = `SELECT * FROM local_chats
+         WHERE environment = 'cmux'
+           AND deleted_at IS NULL`;
+    const stmt = projectId
+      ? this.db.prepare(
+          `${base} AND project_id = ? ORDER BY last_event_at DESC LIMIT ?`,
+        )
+      : this.db.prepare(`${base} ORDER BY last_event_at DESC LIMIT ?`);
+    const rows = projectId ? stmt.all(projectId, limit) : stmt.all(limit);
+    return rows.map((row) => this.localChatFromRow(row));
+  }
+
   listChatsForTitleRefresh(
     projectId: string,
     harness: ChatLifecycleHarness,

@@ -21,6 +21,7 @@ import {
   CheckCircle2Icon,
   ChevronDownIcon,
   ChevronRightIcon,
+  BugIcon,
   ChevronUpIcon,
   CoffeeIcon,
   LoaderCircleIcon,
@@ -387,6 +388,7 @@ export function AppSidebar({
   keepAwake,
   onToggleKeepAwake,
   onShowGlobalSettings,
+  onShowDebug,
   onSignOut,
   onOpenPalette,
 }: {
@@ -401,6 +403,7 @@ export function AppSidebar({
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
+  onShowDebug?: () => void;
   onSignOut: () => void;
   // Open the global command palette (⌘K). The sidebar's search bar is just a
   // discoverable, clickable entry point to it.
@@ -663,6 +666,7 @@ export function AppSidebar({
           keepAwake={keepAwake}
           onToggleKeepAwake={onToggleKeepAwake}
           onShowGlobalSettings={onShowGlobalSettings}
+          onShowDebug={onShowDebug}
           onSignOut={onSignOut}
         />
       </div>
@@ -681,12 +685,14 @@ function AccountFooter({
   keepAwake,
   onToggleKeepAwake,
   onShowGlobalSettings,
+  onShowDebug,
   onSignOut,
 }: {
   harnessSetup: GlobalHarnessSetupStatus | null;
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
+  onShowDebug?: () => void;
   onSignOut: () => void;
 }) {
   const viewer = useQuery(api.users.viewer);
@@ -799,6 +805,12 @@ function AccountFooter({
           <SettingsIcon />
           Settings
         </MenuItem>
+        {onShowDebug ? (
+          <MenuItem onClick={onShowDebug}>
+            <BugIcon />
+            Debug
+          </MenuItem>
+        ) : null}
         <MenuItem onClick={onSignOut}>
           <LogOutIcon />
           Sign out

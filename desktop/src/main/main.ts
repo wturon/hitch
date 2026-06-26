@@ -153,6 +153,11 @@ interface RunnerMessage {
   hitchPath?: unknown;
   hitches?: unknown;
   conflicts?: unknown;
+  // debug-response correlation fields
+  id?: unknown;
+  ok?: unknown;
+  data?: unknown;
+  error?: unknown;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -711,6 +716,34 @@ main().catch(() => {
 let mainWindow: BrowserWindow | null = null;
 let daemon: ChildProcess | null = null;
 let status: DaemonStatus = "stopped";
+
+// In-flight debug API calls into the daemon child, keyed by request id. The
+// renderer's debug screen calls these via the preload bridge; we forward over
+// the child's Node IPC and resolve when the matching debug-response arrives.
+const pendingDebugRequests = new Map<
+  string,
+  { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
+>();
+let debugRequestSeq = 0;
+
+function callDaemonDebug(
+  op: string,
+  payload: Record<string, unknown>,
+): Promise<unknown> {
+  const child = daemon;
+  if (!child || !child.connected) {
+    return Promise.reject(new Error("Daemon is not running."));
+  }
+  const id = `dbg-${++debugRequestSeq}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingDebugRequests.delete(id);
+      reject(new Error(`Daemon debug request timed out (${op}).`));
+    }, 15_000);
+    pendingDebugRequests.set(id, { resolve, reject, timer });
+    child.send({ type: "debug-request", id, op, ...payload });
+  });
+}
 let nextLogId = 1;
 const logs: LogEntry[] = [];
 const maxLogs = 500;
@@ -2179,6 +2212,18 @@ function handleRunnerMessage(message: RunnerMessage): void {
     return;
   }
 
+  if (message.type === "debug-response") {
+    const id = typeof message.id === "string" ? message.id : null;
+    if (!id) return;
+    const pending = pendingDebugRequests.get(id);
+    if (!pending) return;
+    pendingDebugRequests.delete(id);
+    clearTimeout(pending.timer);
+    if (message.ok) pending.resolve(message.data);
+    else pending.reject(new Error(String(message.error ?? "Debug request failed.")));
+    return;
+  }
+
   if (message.type === "stopped") {
     addLog("system", "Daemon runtime stopped");
   }
@@ -2556,6 +2601,20 @@ ipcMain.handle(
 ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>
   setStartingPrompts(prompts),
+);
+ipcMain.handle("debug:list-cmux-chats", (_event, projectId: string | null) =>
+  callDaemonDebug("listCmuxChats", { projectId: projectId ?? null }),
+);
+ipcMain.handle("debug:reconcile-cmux", (_event, projectId: string | null) =>
+  callDaemonDebug("reconcileCmux", { projectId: projectId ?? null }),
+);
+ipcMain.handle(
+  "debug:read-cmux-trace",
+  (
+    _event,
+    filter: { chatId?: string | null; launchId?: string | null } | undefined,
+    limit?: number,
+  ) => callDaemonDebug("readCmuxTrace", { filter: filter ?? {}, limit }),
 );
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());

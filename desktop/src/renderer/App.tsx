@@ -80,6 +80,7 @@ import { cn } from "@/lib/utils";
 import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
 import { ChatsView } from "@/components/ChatsView";
+import { DebugView } from "@/components/DebugView";
 import { AutomationsView } from "@/components/AutomationsView";
 import {
   CommandPalette,
@@ -380,6 +381,7 @@ function AppShell({
   keepAwake,
   onToggleKeepAwake,
   onShowGlobalSettings,
+  onShowDebug,
   onSignOut,
   onOpenPalette,
   children,
@@ -394,6 +396,7 @@ function AppShell({
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
+  onShowDebug?: () => void;
   onSignOut: () => void;
   onOpenPalette: () => void;
   children: ReactNode;
@@ -440,6 +443,7 @@ function AppShell({
         keepAwake={keepAwake}
         onToggleKeepAwake={onToggleKeepAwake}
         onShowGlobalSettings={onShowGlobalSettings}
+        onShowDebug={onShowDebug}
         onSignOut={onSignOut}
         onOpenPalette={onOpenPalette}
       />
@@ -2218,6 +2222,7 @@ function BoardContent({
       keepAwake={keepAwake}
       onToggleKeepAwake={() => void toggleKeepAwake()}
       onShowGlobalSettings={openGlobalSettings}
+      onShowDebug={() => setWorkspaceView("debug")}
       onSignOut={() => void signOut()}
       onOpenPalette={() => setShowPalette(true)}
     >
@@ -2324,6 +2329,11 @@ function BoardContent({
             files={files}
             intent={automationIntent}
             onIntentHandled={() => setAutomationIntent(null)}
+            onExit={() => setWorkspaceView("board")}
+          />
+        ) : workspaceView === "debug" ? (
+          <DebugView
+            projectId={projectId}
             onExit={() => setWorkspaceView("board")}
           />
         ) : (

@@ -333,6 +333,25 @@ async function findSurfaceUuid(sessionId: string): Promise<string | null> {
   return matches[0]?.surface ?? null;
 }
 
+export interface CmuxSurfaceBinding {
+  surface: string;
+  checkpoint: string | null;
+}
+
+// Every surface across every window and the session id (checkpoint) bound to
+// it — the raw material for reconciliation. One tree scan + a resume.get per
+// surface, the same primitives findSurfaceUuid uses, but returning the whole
+// picture instead of one match so the debug screen can spot 0- or >1-binding
+// drift per chat.
+export async function scanCmuxBindings(): Promise<CmuxSurfaceBinding[]> {
+  const surfaces = matchAll(await tree(), SURFACE_LINE_RE);
+  const bindings: CmuxSurfaceBinding[] = [];
+  for (const surface of surfaces) {
+    bindings.push({ surface, checkpoint: await checkpointOf(surface) });
+  }
+  return bindings;
+}
+
 async function workspaceUuids(): Promise<Set<string>> {
   return new Set(matchAll(await tree(), WORKSPACE_LINE_RE));
 }
