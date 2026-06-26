@@ -46,6 +46,7 @@ export const cmuxClaudeLauncher: Launcher = {
       effort: ctx.effort,
       projectId: ctx.project.projectId,
       projectName: ctx.project.projectName,
+      launchId: ctx.launchId,
     });
     return { result };
   },

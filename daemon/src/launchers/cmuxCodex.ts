@@ -140,6 +140,7 @@ export const cmuxCodexLauncher: Launcher = {
       },
       projectId: ctx.project.projectId,
       projectName: ctx.project.projectName,
+      launchId: ctx.launchId,
     });
     return { result };
   },

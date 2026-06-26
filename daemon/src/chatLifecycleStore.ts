@@ -102,6 +102,29 @@ export interface ChatLifecycleReductionResult {
   cursor: number;
 }
 
+// Raw cmux command/response trace. Unlike lifecycle events, these are NOT
+// reduced and never sync to Convex — they're a local-only debug record of what
+// Hitch asked cmux to do (and how it responded) so the chat-lifecycle debug
+// screen can replay why a resume focused the wrong surface or spawned a dupe.
+// `chatId` is the session/thread id when known; codex launches only know their
+// `launchId` until the hook binds the thread, so a per-chat view ORs on both.
+export interface CmuxTraceInput {
+  ts: number;
+  chatId: string | null;
+  launchId: string | null;
+  kind: "io" | "decision" | "warn";
+  command: string | null;
+  args: string[] | null;
+  durationMs: number | null;
+  ok: boolean | null;
+  errorCode: string | null;
+  message: string | null;
+}
+
+export interface CmuxTraceRow extends CmuxTraceInput {
+  seq: number;
+}
+
 export interface ChatLifecyclePaths {
   appSupportDir: string;
   databasePath: string;
@@ -118,6 +141,9 @@ export interface ChatLifecycleStoreOptions {
 const SCHEMA_VERSION = 1;
 const REDUCER_CURSOR_KEY = "reducer_cursor";
 const DEFAULT_REDUCED_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// cmux trace is high-volume debug data, so it ages out faster than lifecycle
+// events and is capped per-write to bound the table.
+const DEFAULT_CMUX_TRACE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
 function appSupportDirFromEnv(env: NodeJS.ProcessEnv): string {
   if (env.HITCH_APP_SUPPORT_DIR) return resolve(env.HITCH_APP_SUPPORT_DIR);
@@ -176,6 +202,24 @@ function jsonObject(value: string): Record<string, unknown> {
 
 function booleanInt(value: boolean | undefined, fallback: boolean): number {
   return value ?? fallback ? 1 : 0;
+}
+
+function cmuxTraceFromRow(row: unknown): CmuxTraceRow {
+  const v = row as Record<string, unknown>;
+  const argsJson = v.args_json;
+  return {
+    seq: numberFromSqlite(v.seq),
+    ts: numberFromSqlite(v.ts),
+    chatId: (v.chat_id as string | null) ?? null,
+    launchId: (v.launch_id as string | null) ?? null,
+    kind: v.kind as CmuxTraceInput["kind"],
+    command: (v.command as string | null) ?? null,
+    args: typeof argsJson === "string" ? (JSON.parse(argsJson) as string[]) : null,
+    durationMs: v.duration_ms === null ? null : numberFromSqlite(v.duration_ms),
+    ok: v.ok === null ? null : bool(v.ok),
+    errorCode: (v.error_code as string | null) ?? null,
+    message: (v.message as string | null) ?? null,
+  };
 }
 
 function bool(value: unknown): boolean {
@@ -498,6 +542,71 @@ export class ChatLifecycleStore {
     return numberFromSqlite(result.changes);
   }
 
+  appendCmuxTrace(event: CmuxTraceInput): void {
+    this.db
+      .prepare(
+        `INSERT INTO cmux_trace (
+          ts,
+          chat_id,
+          launch_id,
+          kind,
+          command,
+          args_json,
+          duration_ms,
+          ok,
+          error_code,
+          message
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        event.ts,
+        event.chatId,
+        event.launchId,
+        event.kind,
+        event.command,
+        event.args ? JSON.stringify(event.args) : null,
+        event.durationMs,
+        event.ok === null ? null : event.ok ? 1 : 0,
+        event.errorCode,
+        event.message,
+      );
+  }
+
+  // Most-recent trace rows, newest first. With no filter this is the global
+  // firehose; pass chatId and/or launchId to scope to one chat (OR-matched, so a
+  // codex chat's launch-time rows surface alongside its post-bind rows).
+  readCmuxTrace(
+    filter: { chatId?: string | null; launchId?: string | null } = {},
+    limit = 500,
+  ): CmuxTraceRow[] {
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    if (filter.chatId) {
+      clauses.push("chat_id = ?");
+      params.push(filter.chatId);
+    }
+    if (filter.launchId) {
+      clauses.push("launch_id = ?");
+      params.push(filter.launchId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" OR ")}` : "";
+    params.push(limit);
+    return this.db
+      .prepare(`SELECT * FROM cmux_trace ${where} ORDER BY seq DESC LIMIT ?`)
+      .all(...params)
+      .map((row) => cmuxTraceFromRow(row));
+  }
+
+  pruneCmuxTrace(options: { now?: number; retentionMs?: number } = {}): number {
+    const cutoff =
+      (options.now ?? Date.now()) -
+      (options.retentionMs ?? DEFAULT_CMUX_TRACE_RETENTION_MS);
+    const result = this.db
+      .prepare(`DELETE FROM cmux_trace WHERE ts < ?`)
+      .run(cutoff);
+    return numberFromSqlite(result.changes);
+  }
+
   private configure(): void {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 1000");
@@ -590,6 +699,33 @@ export class ChatLifecycleStore {
             WHERE launch_id IS NOT NULL;
         `);
       }
+
+      // Local-only cmux debug trace. Created unconditionally (IF NOT EXISTS)
+      // rather than behind the schema_version gate, because SCHEMA_VERSION also
+      // stamps lifecycle-event rows — bumping it just to add this side table
+      // would mislabel those events.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS cmux_trace (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          chat_id TEXT,
+          launch_id TEXT,
+          kind TEXT NOT NULL,
+          command TEXT,
+          args_json TEXT,
+          duration_ms INTEGER,
+          ok INTEGER,
+          error_code TEXT,
+          message TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS cmux_trace_by_chat
+          ON cmux_trace(chat_id, seq);
+        CREATE INDEX IF NOT EXISTS cmux_trace_by_launch
+          ON cmux_trace(launch_id, seq);
+        CREATE INDEX IF NOT EXISTS cmux_trace_by_ts
+          ON cmux_trace(ts);
+      `);
 
       this.db
         .prepare(
