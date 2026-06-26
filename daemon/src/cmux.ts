@@ -60,7 +60,7 @@ const CMUX_CANDIDATES = [
   "cmux", // PATH fallback
 ].filter((p): p is string => Boolean(p));
 
-function cmuxBin(): string {
+export function cmuxBin(): string {
   for (const p of CMUX_CANDIDATES) {
     if (p === "cmux" || existsSync(p)) return p;
   }
@@ -481,6 +481,22 @@ export interface StartSpec {
   projectName: string;
 }
 
+export interface StartCommandSpec {
+  taskKey: string;
+  command: string;
+  sessionId?: string;
+  cwd?: string;
+  // Identifies the project workspace to consolidate this chat into.
+  projectId: string;
+  projectName: string;
+}
+
+function memoRecentSpawn(key: string, workspace: string | null): void {
+  if (workspace) {
+    recentSpawns.set(key, { workspace, at: Date.now() });
+  }
+}
+
 // Launch a BRAND-NEW Claude Code session seeded with `prompt`, in a fresh cmux
 // workspace. The prompt rides as claude's positional argument — NOT `-p` — so it
 // stays an interactive session on subscription auth (the user drives it); claude
@@ -528,9 +544,44 @@ export async function startChat(spec: StartSpec): Promise<OpenResult> {
       cwd: spec.cwd,
       command,
     });
-    if (workspace) {
-      recentSpawns.set(spec.taskKey, { workspace, at: Date.now() });
+    memoRecentSpawn(spec.taskKey, workspace);
+    memoRecentSpawn(spec.sessionId, workspace);
+    return "spawned";
+  } finally {
+    spawning.delete(spec.taskKey);
+  }
+}
+
+// Launch a caller-built command in the same cmux project workspace/tab placement
+// path as Claude Code. Used by harnesses that cannot share Claude's exact CLI
+// flags but still want cmux's dedupe and workspace consolidation.
+export async function startCommand(
+  spec: StartCommandSpec,
+): Promise<OpenResult> {
+  const memo = recentSpawns.get(spec.taskKey);
+  if (memo && Date.now() - memo.at < SPAWN_GRACE_MS) {
+    try {
+      await cmux(["select-workspace", "--workspace", memo.workspace]);
+      return "focused";
+    } catch {
+      recentSpawns.delete(spec.taskKey);
     }
+  }
+
+  if (spawning.has(spec.taskKey)) {
+    return "focused";
+  }
+
+  spawning.add(spec.taskKey);
+  try {
+    const workspace = await placeChat({
+      projectId: spec.projectId,
+      projectName: spec.projectName,
+      cwd: spec.cwd,
+      command: spec.command,
+    });
+    memoRecentSpawn(spec.taskKey, workspace);
+    if (spec.sessionId) memoRecentSpawn(spec.sessionId, workspace);
     return "spawned";
   } finally {
     spawning.delete(spec.taskKey);

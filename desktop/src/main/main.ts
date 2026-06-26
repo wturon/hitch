@@ -216,6 +216,7 @@ function globalChatLifecycleHook(harness: Harness): string {
 // captures normalized lifecycle events into Hitch's local SQLite inbox.
 
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
@@ -226,6 +227,8 @@ const HITCH_DB_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.sqlite";
 const HITCH_BUMP_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.bump";
 const HARNESS = ${JSON.stringify(harness)};
 const PRODUCER = ${JSON.stringify(harness === "codex" ? "codex-hook" : "claude-code-hook")};
+const CODEX_BIN = ${JSON.stringify(codexBin())};
+const CMUX_BIN = ${JSON.stringify(cmuxBin())};
 
 const EVENT_PLAN_BY_HARNESS = {
   codex: {
@@ -321,6 +324,9 @@ function chatId(payload) {
 
 function metadata(payload, providerEvent) {
   const out = {};
+  if (process.env.HITCH_CHAT_ENVIRONMENT) {
+    out.environment = process.env.HITCH_CHAT_ENVIRONMENT;
+  }
   if (typeof payload.tool_name === "string") out.toolName = payload.tool_name;
   if (typeof payload.toolName === "string") out.toolName = payload.toolName;
   if (typeof payload.notification_type === "string") {
@@ -387,7 +393,11 @@ function normalize(payload) {
     projectId: project.projectId,
     projectLocalPath: project.localPath,
     chatId: id,
-    launchId: null,
+    launchId:
+      typeof process.env.HITCH_LAUNCH_ID === "string" &&
+      process.env.HITCH_LAUNCH_ID.trim()
+        ? process.env.HITCH_LAUNCH_ID.trim()
+        : null,
     turnId: turnId(payload),
     cwd: resolve(cwd),
     host: hostname(),
@@ -409,6 +419,43 @@ function normalize(payload) {
     rawPayloadHash,
   });
   return event;
+}
+
+function maybeBindCmuxResume(event) {
+  if (HARNESS !== "codex" || process.env.HITCH_CHAT_ENVIRONMENT !== "cmux") {
+    return;
+  }
+  if (!event.chatId || !process.env.CMUX_SURFACE_ID) return;
+
+  try {
+    execFileSync(
+      CMUX_BIN,
+      [
+        "surface",
+        "resume",
+        "set",
+        "--kind",
+        "codex",
+        "--name",
+        "Codex",
+        "--source",
+        "hitch",
+        "--checkpoint",
+        event.chatId,
+        "--cwd",
+        event.cwd,
+        "--",
+        CODEX_BIN,
+        "resume",
+        "-C",
+        event.cwd,
+        event.chatId,
+      ],
+      { stdio: "ignore" },
+    );
+  } catch {
+    // Never let cmux binding failures interrupt Codex hooks.
+  }
 }
 
 async function openDb() {
@@ -511,7 +558,10 @@ async function main() {
   }
 
   const event = normalize(payload);
-  if (event) await insertEvent(event);
+  if (event) {
+    await insertEvent(event);
+    maybeBindCmuxResume(event);
+  }
 }
 
 main().catch(() => {
@@ -1549,6 +1599,15 @@ function globalCodexHookStatus(): HarnessHookStatus {
   const configTomlPath = globalCodexConfigTomlPath();
   const scriptPath = globalCodexHookScriptPath();
   const scriptExists = existsSync(scriptPath);
+  const scriptCurrent =
+    scriptExists &&
+    (() => {
+      try {
+        return readFileSync(scriptPath, "utf8") === globalCodexChatStatusHook();
+      } catch {
+        return false;
+      }
+    })();
   const jsonExists = existsSync(hooksJsonPath);
   const tomlExists = existsSync(configTomlPath);
   let jsonWired = false;
@@ -1598,7 +1657,7 @@ function globalCodexHookStatus(): HarnessHookStatus {
 
   return {
     harness: "codex",
-    installed: scriptExists && (jsonWired || tomlWired),
+    installed: scriptCurrent && (jsonWired || tomlWired),
     configPath,
     scriptPath,
     configExists: jsonExists || tomlExists,

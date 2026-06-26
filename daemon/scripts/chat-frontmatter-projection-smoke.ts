@@ -60,6 +60,16 @@ assert.deepEqual(projectedChatFrontmatter(openTask, working), {
   "chat-env": undefined,
 });
 
+const codexCmux = chat({ environment: "cmux", cwd: "/tmp/project" });
+assert.deepEqual(projectedChatFrontmatter(openTask, codexCmux), {
+  "chat-harness": "codex",
+  "chat-id": "thread-1",
+  "chat-status": "waiting",
+  "chat-open-state": undefined,
+  "chat-cwd": "/tmp/project",
+  "chat-env": "cmux",
+});
+
 const alreadyWaiting = chat({ status: "waiting" });
 assert.equal(projectedChatStatus(openTask, alreadyWaiting), "waiting");
 assert.equal(

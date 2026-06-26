@@ -39,6 +39,7 @@ export interface ReopenCtx {
 // daemon can't link the task before the launch call returns — the launcher fires
 // these as identity becomes known.
 export interface StartCtx {
+  launchId?: string;
   taskKey: string;
   prompt: string;
   cwd?: string;

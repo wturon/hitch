@@ -55,6 +55,7 @@ export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
   ],
   codex: [
     { id: "codex-app", label: "Codex app" },
+    { id: "cmux", label: "cmux (TUI)" },
     { id: "vscode", label: "VS Code extension" },
     { id: "cursor", label: "Cursor extension" },
   ],
@@ -162,8 +163,8 @@ export const MODELS_BY_HARNESS: Record<Harness, ModelOption[]> = {
   ].map((model) => ({ ...model, reasoning: CODEX_REASONING })),
 };
 
-// Reasoning/effort ladders. Claude maps to `claude --effort`; Codex maps to the
-// app-server `turn/start` effort (ReasoningEffort) field.
+// Reasoning/effort ladders. Claude maps to `claude --effort`; Codex maps to
+// app-server `turn/start` effort or CLI `model_reasoning_effort`.
 export const REASONING_BY_HARNESS: Record<Harness, LaunchOption[]> = {
   "claude-code": CLAUDE_REASONING,
   codex: CODEX_REASONING,
