@@ -333,6 +333,33 @@ async function findSurfaceUuid(sessionId: string): Promise<string | null> {
   return matches[0]?.surface ?? null;
 }
 
+// cmux auto-injects its Claude hook (via its Claude wrapper) but NOT its Codex
+// hook. Without it, Codex's resume command reaches cmux over the public/socket
+// path, which is "manual restore by default" — so cmux pops the "Allow Resume
+// Command?" dialog, and because that approval stores the full command (thread
+// id included) it re-prompts on every new session. Installing cmux's Codex hook
+// routes Codex through the same sanitized agent-hook path as Claude → silent
+// auto-resume, no dialog.
+//
+// `cmux hooks codex install` is verified safe to run repeatedly: it MERGES
+// (preserves existing user hooks in hooks.json, only appends its own) and is a
+// no-op when already current. It also leaves Hitch's own Codex hooks alone
+// (those live in ~/.codex/config.toml; cmux's live in hooks.json). Best-effort
+// and once per process: a failure just means the dialog may appear; the launch
+// itself is unaffected.
+let codexHookEnsured = false;
+export async function ensureCmuxCodexHook(): Promise<void> {
+  if (codexHookEnsured) return;
+  codexHookEnsured = true;
+  try {
+    await cmux(["hooks", "codex", "install", "--yes"]);
+    log("ensured cmux codex hook (resume registers silently)");
+  } catch (err) {
+    warn(`could not install cmux codex hook (resume dialog may appear): ${errMsg(err)}`);
+    codexHookEnsured = false; // let a later launch retry
+  }
+}
+
 export interface CmuxSurfaceBinding {
   surface: string;
   checkpoint: string | null;
