@@ -307,16 +307,22 @@ function ChatRail({
         ) : (
           entries.map((e) => {
             const active = e.chatId === selectedChatId;
+            const selectable = Boolean(e.chatId);
             return (
               <button
                 key={e.chatId ?? e.launchId ?? e.title}
                 type="button"
-                onClick={() => onSelect(active ? null : e.chatId)}
+                disabled={!selectable}
+                title={selectable ? undefined : "Not bound to a session yet"}
+                onClick={() => {
+                  if (selectable) onSelect(active ? null : e.chatId);
+                }}
                 className={cn(
                   "flex w-full items-start gap-2.5 border-b border-l-2 border-border px-3.5 py-3 text-left",
                   active
                     ? "border-l-foreground bg-secondary"
                     : "border-l-transparent hover:bg-muted",
+                  !selectable && "cursor-default opacity-60 hover:bg-transparent",
                 )}
               >
                 <StatusDot status={e.status} />

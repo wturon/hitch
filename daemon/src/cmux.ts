@@ -345,10 +345,25 @@ export interface CmuxSurfaceBinding {
 // drift per chat.
 export async function scanCmuxBindings(): Promise<CmuxSurfaceBinding[]> {
   const surfaces = matchAll(await tree(), SURFACE_LINE_RE);
-  const bindings: CmuxSurfaceBinding[] = [];
-  for (const surface of surfaces) {
-    bindings.push({ surface, checkpoint: await checkpointOf(surface) });
+  // Resolve checkpoints with bounded concurrency rather than serially: each
+  // resume.get can take up to the per-call timeout, and the desktop awaits this
+  // whole scan under a 15s IPC budget, so N serial surfaces would blow it.
+  const CONCURRENCY = 8;
+  const bindings: CmuxSurfaceBinding[] = new Array(surfaces.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (let i = next++; i < surfaces.length; i = next++) {
+      bindings[i] = {
+        surface: surfaces[i],
+        checkpoint: await checkpointOf(surfaces[i]),
+      };
+    }
   }
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, surfaces.length) }, () =>
+      worker(),
+    ),
+  );
   return bindings;
 }
 

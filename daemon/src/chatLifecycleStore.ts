@@ -142,8 +142,14 @@ const SCHEMA_VERSION = 1;
 const REDUCER_CURSOR_KEY = "reducer_cursor";
 const DEFAULT_REDUCED_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 // cmux trace is high-volume debug data, so it ages out faster than lifecycle
-// events and is capped per-write to bound the table.
+// events (time-based pruneCmuxTrace), AND is hard-capped by row count on write.
+// The row cap is what bounds the table while the debug screen polls an idle
+// project — pruneCmuxTrace only runs on the reduce cycle, which may not fire.
 const DEFAULT_CMUX_TRACE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+const CMUX_TRACE_MAX_ROWS = 5000;
+// How often (in writes) to enforce the row cap, so we don't run a DELETE on
+// every single cmux call.
+const CMUX_TRACE_CAP_EVERY = 250;
 
 function appSupportDirFromEnv(env: NodeJS.ProcessEnv): string {
   if (env.HITCH_APP_SUPPORT_DIR) return resolve(env.HITCH_APP_SUPPORT_DIR);
@@ -244,6 +250,7 @@ function runInTransaction(db: DatabaseSync, fn: () => void): void {
 export class ChatLifecycleStore {
   readonly paths: ChatLifecyclePaths;
   private readonly db: DatabaseSync;
+  private cmuxTraceWrites = 0;
 
   constructor(options: ChatLifecycleStoreOptions = {}) {
     this.paths = resolveChatLifecyclePaths(options);
@@ -586,6 +593,21 @@ export class ChatLifecycleStore {
         event.errorCode,
         event.message,
       );
+
+    // Hard row cap, enforced periodically: delete everything older than the
+    // newest CMUX_TRACE_MAX_ROWS. The OFFSET subquery yields the cutoff seq (or
+    // nothing when under the cap, in which case `<= NULL` deletes nothing). This
+    // bounds the table independent of the time-based prune.
+    if (++this.cmuxTraceWrites % CMUX_TRACE_CAP_EVERY === 0) {
+      this.db
+        .prepare(
+          `DELETE FROM cmux_trace
+           WHERE seq <= (
+             SELECT seq FROM cmux_trace ORDER BY seq DESC LIMIT 1 OFFSET ?
+           )`,
+        )
+        .run(CMUX_TRACE_MAX_ROWS);
+    }
   }
 
   // Most-recent trace rows, newest first. With no filter this is the global

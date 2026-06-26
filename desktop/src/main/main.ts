@@ -726,6 +726,17 @@ const pendingDebugRequests = new Map<
 >();
 let debugRequestSeq = 0;
 
+// Fail every in-flight debug request at once — called when the daemon child
+// dies so the renderer's poll rejects immediately with a truthful reason
+// instead of stalling for the full 15s timeout on each request.
+function rejectAllPendingDebug(reason: string): void {
+  for (const [, pending] of pendingDebugRequests) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
+  }
+  pendingDebugRequests.clear();
+}
+
 function callDaemonDebug(
   op: string,
   payload: Record<string, unknown>,
@@ -741,7 +752,15 @@ function callDaemonDebug(
       reject(new Error(`Daemon debug request timed out (${op}).`));
     }, 15_000);
     pendingDebugRequests.set(id, { resolve, reject, timer });
-    child.send({ type: "debug-request", id, op, ...payload });
+    try {
+      child.send({ type: "debug-request", id, op, ...payload });
+    } catch (err) {
+      // Channel closed between the connected check and send (EPIPE etc.): clean
+      // up this entry's timer so it can't fire later, and reject now.
+      clearTimeout(timer);
+      pendingDebugRequests.delete(id);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
   });
 }
 let nextLogId = 1;
@@ -2285,6 +2304,7 @@ function startDaemon(): DaemonState {
   child.once("error", (error) => {
     addLog("stderr", `Failed to start daemon: ${error.message}`);
     daemon = null;
+    rejectAllPendingDebug("Daemon failed to start.");
     setStatus("stopped");
   });
   child.once("exit", (code, signal) => {
@@ -2297,6 +2317,7 @@ function startDaemon(): DaemonState {
       stopTimer = null;
     }
     daemon = null;
+    rejectAllPendingDebug("Daemon stopped.");
     setStatus("stopped");
     if (quitAfterDaemonStops) app.quit();
   });
