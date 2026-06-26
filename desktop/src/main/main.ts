@@ -405,25 +405,42 @@ function consumeCodexCmuxLaunchClaim(payload, event) {
       now - claim.createdAt <= 10 * 60 * 1000
     );
   });
-  const matchIndex = freshClaims.findIndex((claim) => {
-    return (
-      claim &&
-      claim.claimedAt === undefined &&
-      claim.environment === "cmux" &&
-      typeof claim.launchId === "string" &&
-      typeof claim.cwd === "string" &&
-      typeof claim.promptHash === "string" &&
-      resolve(claim.cwd) === cwd &&
-      claim.promptHash === promptHash
-    );
-  });
-  if (matchIndex < 0) {
-    if (freshClaims.length !== claims.length) writeCodexCmuxClaims(freshClaims);
+  const matches = freshClaims
+    .map((claim, index) => ({ claim, index }))
+    .filter(({ claim }) => {
+      return (
+        claim &&
+        claim.claimedAt === undefined &&
+        claim.ambiguousAt === undefined &&
+        claim.environment === "cmux" &&
+        typeof claim.launchId === "string" &&
+        typeof claim.cwd === "string" &&
+        typeof claim.promptHash === "string" &&
+        resolve(claim.cwd) === cwd &&
+        claim.promptHash === promptHash
+      );
+    });
+  if (matches.length !== 1) {
+    if (matches.length > 1) {
+      for (const { index } of matches) {
+        freshClaims[index] = {
+          ...freshClaims[index],
+          ambiguousAt: now,
+          ambiguousMatchCount: matches.length,
+        };
+      }
+    }
+    if (matches.length > 1 || freshClaims.length !== claims.length) {
+      writeCodexCmuxClaims(freshClaims);
+    }
+    if (matches.length > 1) {
+      event.metadata.cmuxLaunchClaimAmbiguous = matches.length;
+    }
     return null;
   }
 
-  const claim = freshClaims[matchIndex];
-  freshClaims[matchIndex] = {
+  const { claim, index } = matches[0];
+  freshClaims[index] = {
     ...claim,
     claimedAt: now,
     chatId: event.chatId,

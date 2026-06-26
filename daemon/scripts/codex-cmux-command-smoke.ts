@@ -70,6 +70,35 @@ try {
   );
   assert.equal(updatedClaims[0].workspaceId, "workspace-1");
   assert.equal(updatedClaims[0].surfaceId, "surface-1");
+
+  recordCodexCmuxLaunchClaim({
+    launchId: "duplicate-1",
+    cwd: "/tmp/my project",
+    prompt: "same prompt",
+    env: { HITCH_APP_SUPPORT_DIR: tempDir } as NodeJS.ProcessEnv,
+  });
+  recordCodexCmuxLaunchClaim({
+    launchId: "duplicate-2",
+    cwd: "/tmp/my project",
+    prompt: "same prompt",
+    env: { HITCH_APP_SUPPORT_DIR: tempDir } as NodeJS.ProcessEnv,
+  });
+  const duplicateClaims = JSON.parse(
+    readFileSync(join(tempDir, "codex-cmux-launch-claims.json"), "utf8"),
+  ).filter((claim: { launchId?: string }) =>
+    claim.launchId?.startsWith("duplicate-"),
+  );
+  assert.equal(duplicateClaims.length, 2);
+  assert.deepEqual(
+    duplicateClaims.map((claim: { launchId: string }) => claim.launchId).sort(),
+    ["duplicate-1", "duplicate-2"],
+  );
+  assert.equal(typeof duplicateClaims[0].ambiguousAt, "number");
+  assert.equal(duplicateClaims[0].ambiguousAt, duplicateClaims[1].ambiguousAt);
+  assert.equal(duplicateClaims[0].ambiguousMatchCount, 2);
+  assert.equal(duplicateClaims[1].ambiguousMatchCount, 2);
+  assert.equal(duplicateClaims[0].claimedAt, undefined);
+  assert.equal(duplicateClaims[1].claimedAt, undefined);
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

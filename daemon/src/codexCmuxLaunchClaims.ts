@@ -21,6 +21,8 @@ interface CodexCmuxLaunchClaim {
   surfaceId?: string;
   claimedAt?: number;
   chatId?: string;
+  ambiguousAt?: number;
+  ambiguousMatchCount?: number;
 }
 
 function appSupportDirFromEnv(env: NodeJS.ProcessEnv): string {
@@ -108,12 +110,38 @@ export function recordCodexCmuxLaunchClaim(input: {
   const freshClaims = readClaims(path).filter(
     (claim) => now - claim.createdAt <= CLAIM_TTL_MS,
   );
-  freshClaims.push({
+  const nextClaim: CodexCmuxLaunchClaim = {
     launchId: input.launchId,
     cwd: resolve(input.cwd || process.cwd()),
     promptHash: promptHash(input.prompt),
     environment: "cmux",
     createdAt: now,
-  });
+  };
+  const duplicateIndexes = freshClaims
+    .map((claim, index) => ({ claim, index }))
+    .filter(({ claim }) => {
+      return (
+        claim.claimedAt === undefined &&
+        claim.ambiguousAt === undefined &&
+        claim.environment === nextClaim.environment &&
+        claim.cwd === nextClaim.cwd &&
+        claim.promptHash === nextClaim.promptHash
+      );
+    })
+    .map(({ index }) => index);
+  if (duplicateIndexes.length > 0) {
+    const ambiguousAt = now;
+    const ambiguousMatchCount = duplicateIndexes.length + 1;
+    for (const index of duplicateIndexes) {
+      freshClaims[index] = {
+        ...freshClaims[index],
+        ambiguousAt,
+        ambiguousMatchCount,
+      };
+    }
+    nextClaim.ambiguousAt = ambiguousAt;
+    nextClaim.ambiguousMatchCount = ambiguousMatchCount;
+  }
+  freshClaims.push(nextClaim);
   writeClaims(path, freshClaims);
 }
