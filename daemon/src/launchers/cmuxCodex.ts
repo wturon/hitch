@@ -2,7 +2,7 @@
 // Hitch's Codex hook: the daemon records an exact cwd+prompt launch claim before
 // spawning Codex, and the hook consumes it when Codex reports the real session id.
 
-import { ensureCmuxCodexHook, openChat, setResumeBinding, startCommand } from "../cmux.js";
+import { openChat, setResumeBinding, startCommand } from "../cmux.js";
 import {
   recordCodexCmuxLaunchClaim,
   updateCodexCmuxLaunchClaim,
@@ -88,9 +88,6 @@ export const cmuxCodexLauncher: Launcher = {
   },
 
   async reopen(ctx) {
-    // Make sure cmux's Codex hook is in place so resume registers silently
-    // (no "Allow Resume Command?" dialog). Idempotent + once per process.
-    await ensureCmuxCodexHook();
     const command = codexResumeCommand({
       threadId: ctx.sessionId,
       cwd: ctx.cwd,
@@ -119,10 +116,6 @@ export const cmuxCodexLauncher: Launcher = {
   },
 
   async startNew(ctx) {
-    // Install cmux's Codex hook before launching so Codex registers its resume
-    // command through cmux's silent agent-hook path instead of triggering the
-    // approval dialog. Verified merge-safe; runs at most once per daemon process.
-    await ensureCmuxCodexHook();
     recordCodexCmuxLaunchClaim({
       launchId: ctx.launchId,
       cwd: ctx.cwd,
