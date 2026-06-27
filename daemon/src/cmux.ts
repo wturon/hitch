@@ -552,14 +552,25 @@ async function placeChat(spec: PlaceSpec): Promise<Placement> {
   // beforeCommand can fire ahead of launch. Otherwise keep the atomic
   // `new-workspace --command` form, which Claude and the resume path use.
   if (spec.beforeCommand) {
-    const before = await workspaceUuids();
-    const args = ["new-workspace", "--focus", "true"];
-    if (spec.cwd) args.push("--cwd", spec.cwd);
-    await cmux(args);
-    const created = [...(await workspaceUuids())].find((w) => !before.has(w)) ?? null;
+    // workspace.create returns the exact workspace + surface it just made, so we
+    // never have to guess "which workspace is new" from a before/after snapshot.
+    // That matters here because the command is sent based on this lookup: two
+    // concurrent first-launches each get their own ids and can't be sent to the
+    // same/wrong surface (the --command path below keeps the snapshot only for
+    // best-effort tagging, where a misidentification is cosmetic).
+    const out = await cmux([
+      "rpc",
+      "workspace.create",
+      JSON.stringify(spec.cwd ? { cwd: spec.cwd } : {}),
+    ]);
+    const ids = JSON.parse(out) as {
+      workspace_id?: string;
+      surface_id?: string;
+    };
+    const created = ids.workspace_id ?? null;
+    const surface = ids.surface_id ?? null;
     if (!created) return { workspace: null, surface: null };
     await tagWorkspace(created, spec.projectName, spec.projectId);
-    const surface = await selectedSurface(created);
     const line = spec.cwd
       ? `cd ${shellQuote(spec.cwd)} && ${spec.command}`
       : spec.command;
@@ -568,9 +579,9 @@ async function placeChat(spec: PlaceSpec): Promise<Placement> {
       await cmux(["send", "--workspace", created, "--surface", surface, `${line}\\n`]);
       await focusSurface(surface);
     } else {
-      // Surface didn't resolve (rare; create succeeded but the listing lagged).
-      // Still launch — send to the workspace's active surface — so the chat
-      // always starts; we just couldn't pre-bind it.
+      // create returned no surface (shouldn't happen). Still launch — send to the
+      // workspace's active surface — so the chat always starts; we just couldn't
+      // pre-bind it.
       await cmux(["send", "--workspace", created, `${line}\\n`]);
     }
     return { workspace: created, surface };
