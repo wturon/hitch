@@ -413,7 +413,37 @@ function consumeCodexCmuxLaunchClaim(event) {
         claim.surfaceId.toLowerCase() === wanted
       );
     });
-  if (matches.length !== 1) {
+
+  // Exact surface match is the steady state. But the daemon stamps surfaceId at
+  // placement (onPlaced), and on the fresh-workspace path the launch command runs
+  // as part of new-workspace --command, so Codex can boot and fire this
+  // UserPromptSubmit before that write lands, leaving the claim surfaceless.
+  // Because consume only runs for UserPromptSubmit, missing this first event is
+  // unrecoverable (later events can't re-bind), so fall back: if exactly one
+  // just-created claim is still unclaimed AND surfaceless, it must be this
+  // launch. The tight recency window keeps a stale failed-launch claim
+  // (surfaceless because its placement never produced a surface) from being
+  // mis-adopted, and the single-match requirement refuses to guess if two
+  // surfaceless launches somehow overlap.
+  let chosen = matches.length === 1 ? matches[0] : null;
+  if (!chosen && matches.length === 0) {
+    const FALLBACK_WINDOW_MS = 60 * 1000;
+    const pending = freshClaims
+      .map((claim, index) => ({ claim, index }))
+      .filter(({ claim }) => {
+        return (
+          claim &&
+          claim.claimedAt === undefined &&
+          claim.environment === "cmux" &&
+          typeof claim.launchId === "string" &&
+          claim.surfaceId === undefined &&
+          now - claim.createdAt <= FALLBACK_WINDOW_MS
+        );
+      });
+    if (pending.length === 1) chosen = pending[0];
+  }
+
+  if (!chosen) {
     // Prune expired claims if we dropped any; never guess when ambiguous.
     if (freshClaims.length !== claims.length) {
       writeCodexCmuxClaims(freshClaims);
@@ -421,11 +451,14 @@ function consumeCodexCmuxLaunchClaim(event) {
     return null;
   }
 
-  const { claim, index } = matches[0];
+  const { claim, index } = chosen;
   freshClaims[index] = {
     ...claim,
     claimedAt: now,
     chatId: event.chatId,
+    // Record the surface for this thread so any later event resolves directly
+    // (and so the daemon's onPlaced write is a no-op rather than a conflict).
+    surfaceId: claim.surfaceId ?? surfaceId,
   };
   writeCodexCmuxClaims(freshClaims);
   return claim;
