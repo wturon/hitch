@@ -1730,6 +1730,294 @@ function globalHarnessSetupStatus(): GlobalHarnessSetupStatus {
   };
 }
 
+type IntegrationLevel = "harness" | "environment";
+type IntegrationOwner = "hitch" | "delegated";
+type IntegrationState = "ok" | "missing" | "drifted" | "broken" | "quiet";
+type IntegrationId =
+  | "codex.hitch-lifecycle-hooks"
+  | "claude.hitch-lifecycle-hooks"
+  | "cmux.socket-automation"
+  | "cmux.codex-hooks";
+
+interface IntegrationStatus {
+  id: IntegrationId;
+  label: string;
+  group: "Codex" | "Claude Code" | "cmux";
+  level: IntegrationLevel;
+  owner: IntegrationOwner;
+  applies: boolean;
+  state: IntegrationState;
+  reason: string;
+  targetPaths: string[];
+  canRepair: boolean;
+  repairLabel: string;
+}
+
+interface IntegrationHealth {
+  checkedAt: string;
+  integrations: IntegrationStatus[];
+}
+
+function effectiveHarnessEnvironments(): Record<"claude-code" | "codex", string> {
+  const stored = readHarnessEnvironments();
+  return {
+    "claude-code": stored["claude-code"] || "cmux",
+    codex: stored.codex || "codex-app",
+  };
+}
+
+function cmuxCliAvailable(): boolean {
+  try {
+    execFileSync(cmuxBin(), ["--version"], {
+      stdio: "ignore",
+      timeout: 3_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cmuxCodexHookInstalled(): boolean {
+  const hooksJsonPath = globalCodexHooksJsonPath();
+  if (!existsSync(hooksJsonPath)) return false;
+  try {
+    const content = readFileSync(hooksJsonPath, "utf8");
+    return (
+      content.includes("cmux hooks codex") ||
+      content.includes("cmux-codex-hook") ||
+      content.includes("cmuxterm")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function harnessHookIntegrationStatus(
+  id: Extract<
+    IntegrationId,
+    "codex.hitch-lifecycle-hooks" | "claude.hitch-lifecycle-hooks"
+  >,
+  label: string,
+  group: "Codex" | "Claude Code",
+  status: HarnessHookStatus,
+): IntegrationStatus {
+  const hasFootprint = status.scriptExists || status.configHasHook;
+  const state: IntegrationState = status.installed
+    ? "ok"
+    : hasFootprint
+      ? "drifted"
+      : "quiet";
+  const reason = status.installed
+    ? "Lifecycle hooks match Hitch's current desired state."
+    : hasFootprint
+      ? "Hitch-owned hook files or config entries are present but incomplete or stale."
+      : "Lifecycle hooks are not installed. Install them to show live chat status on task cards.";
+  return {
+    id,
+    label,
+    group,
+    level: "harness",
+    owner: "hitch",
+    applies: hasFootprint || status.installed,
+    state,
+    reason,
+    targetPaths: [status.configPath, status.scriptPath].filter(
+      (path): path is string => Boolean(path),
+    ),
+    canRepair: true,
+    repairLabel: status.installed ? "Repair" : hasFootprint ? "Heal" : "Install",
+  };
+}
+
+function cmuxSocketIntegrationStatus(): IntegrationStatus {
+  const envs = effectiveHarnessEnvironments();
+  const applies = envs["claude-code"] === "cmux" || envs.codex === "cmux";
+  const configPath = cmuxConfigPath();
+  if (!applies) {
+    return {
+      id: "cmux.socket-automation",
+      label: "Socket permissions",
+      group: "cmux",
+      level: "environment",
+      owner: "hitch",
+      applies: false,
+      state: "quiet",
+      reason: "No harness is configured to run in cmux.",
+      targetPaths: [configPath],
+      canRepair: false,
+      repairLabel: "Enable",
+    };
+  }
+  if (!existsSync(configPath)) {
+    return {
+      id: "cmux.socket-automation",
+      label: "Socket permissions",
+      group: "cmux",
+      level: "environment",
+      owner: "hitch",
+      applies: true,
+      state: "missing",
+      reason: "cmux automation socket mode is not configured.",
+      targetPaths: [configPath],
+      canRepair: true,
+      repairLabel: "Enable",
+    };
+  }
+  try {
+    const parsed = parseJsonc(readFileSync(configPath, "utf8")) as
+      | { automation?: { socketControlMode?: string } }
+      | undefined;
+    const mode = parsed?.automation?.socketControlMode;
+    const ok = mode === CMUX_SOCKET_MODE;
+    return {
+      id: "cmux.socket-automation",
+      label: "Socket permissions",
+      group: "cmux",
+      level: "environment",
+      owner: "hitch",
+      applies: true,
+      state: ok ? "ok" : "drifted",
+      reason: ok
+        ? "cmux automation socket mode is enabled."
+        : `cmux socket mode is ${mode ? `"${mode}"` : "unset"}; Hitch needs "${CMUX_SOCKET_MODE}".`,
+      targetPaths: [configPath],
+      canRepair: true,
+      repairLabel: ok ? "Repair" : "Enable",
+    };
+  } catch (err) {
+    return {
+      id: "cmux.socket-automation",
+      label: "Socket permissions",
+      group: "cmux",
+      level: "environment",
+      owner: "hitch",
+      applies: true,
+      state: "broken",
+      reason: `Could not read cmux config: ${err instanceof Error ? err.message : String(err)}`,
+      targetPaths: [configPath],
+      canRepair: false,
+      repairLabel: "Repair",
+    };
+  }
+}
+
+function cmuxCodexHooksIntegrationStatus(): IntegrationStatus {
+  const envs = effectiveHarnessEnvironments();
+  const applies = envs.codex === "cmux";
+  const targets = [globalCodexHooksJsonPath(), globalCodexConfigTomlPath()];
+  if (!applies) {
+    return {
+      id: "cmux.codex-hooks",
+      label: "Codex hooks",
+      group: "cmux",
+      level: "environment",
+      owner: "delegated",
+      applies: false,
+      state: "quiet",
+      reason: "Codex is not configured to run in cmux.",
+      targetPaths: targets,
+      canRepair: false,
+      repairLabel: "Install",
+    };
+  }
+  if (!cmuxCliAvailable()) {
+    return {
+      id: "cmux.codex-hooks",
+      label: "Codex hooks",
+      group: "cmux",
+      level: "environment",
+      owner: "delegated",
+      applies: true,
+      state: "broken",
+      reason: "cmux CLI is not available, so Hitch cannot check or install cmux's Codex hooks.",
+      targetPaths: targets,
+      canRepair: false,
+      repairLabel: "Install",
+    };
+  }
+  const installed = cmuxCodexHookInstalled();
+  return {
+    id: "cmux.codex-hooks",
+    label: "Codex hooks",
+    group: "cmux",
+    level: "environment",
+    owner: "delegated",
+    applies: true,
+    state: installed ? "ok" : "missing",
+    reason: installed
+      ? "cmux's Codex hooks are present in Codex hook config."
+      : "Codex is configured for cmux, but cmux's Codex hooks are not installed.",
+    targetPaths: targets,
+    canRepair: true,
+    repairLabel: "Install",
+  };
+}
+
+function integrationHealth(): IntegrationHealth {
+  const setup = globalHarnessSetupStatus();
+  return {
+    checkedAt: new Date().toISOString(),
+    integrations: [
+      harnessHookIntegrationStatus(
+        "codex.hitch-lifecycle-hooks",
+        "Hitch lifecycle hooks",
+        "Codex",
+        setup.codex,
+      ),
+      harnessHookIntegrationStatus(
+        "claude.hitch-lifecycle-hooks",
+        "Hitch lifecycle hooks",
+        "Claude Code",
+        setup.claudeCode,
+      ),
+      cmuxSocketIntegrationStatus(),
+      cmuxCodexHooksIntegrationStatus(),
+    ],
+  };
+}
+
+function repairIntegration(id: IntegrationId): IntegrationHealth {
+  switch (id) {
+    case "codex.hitch-lifecycle-hooks":
+      installGlobalCodexHooks();
+      break;
+    case "claude.hitch-lifecycle-hooks":
+      installGlobalClaudeHooks();
+      break;
+    case "cmux.socket-automation":
+      void enableCmuxAutomation();
+      break;
+    case "cmux.codex-hooks":
+      installCmuxCodexHook();
+      break;
+  }
+  return integrationHealth();
+}
+
+async function repairIntegrationAsync(id: IntegrationId): Promise<IntegrationHealth> {
+  if (id === "cmux.socket-automation") {
+    await enableCmuxAutomation();
+    return integrationHealth();
+  }
+  return repairIntegration(id);
+}
+
+async function repairAllIntegrations(): Promise<IntegrationHealth> {
+  let health = integrationHealth();
+  for (const integration of health.integrations) {
+    if (
+      integration.applies &&
+      integration.canRepair &&
+      integration.state !== "ok" &&
+      integration.state !== "quiet"
+    ) {
+      health = await repairIntegrationAsync(integration.id);
+    }
+  }
+  return integrationHealth();
+}
+
 function installGlobalCodexHooks(): GlobalHarnessSetupStatus {
   const scriptPath = globalCodexHookScriptPath();
   const command = globalCodexHookCommand();
@@ -2524,6 +2812,11 @@ ipcMain.handle("config:ensure-gitignore", (_event, projectId: ProjectId) =>
 ipcMain.handle("config:get-global-harness-setup", () =>
   globalHarnessSetupStatus(),
 );
+ipcMain.handle("integrations:check", () => integrationHealth());
+ipcMain.handle("integrations:repair", (_event, id: IntegrationId) =>
+  repairIntegrationAsync(id),
+);
+ipcMain.handle("integrations:repair-all", () => repairAllIntegrations());
 ipcMain.handle("config:install-global-codex-hooks", () =>
   installGlobalCodexHooks(),
 );
@@ -2662,10 +2955,10 @@ app.whenReady().then(async () => {
   // launch Codex, so there's a single hook representation (avoids Codex's
   // dual-loading warning and keeps cmux's hook from colliding).
   migrateCodexHooksRepresentation();
-  // After Hitch's hook is settled in hooks.json, hand the Codex resume binding
-  // to cmux's own hook (parity with how cmux owns Claude's). Must run before the
-  // daemon can launch Codex so freshly-launched chats are cmux-bound.
-  installCmuxCodexHook();
+  // If Codex is configured to run in cmux, hand the Codex resume binding to
+  // cmux's own hook before the daemon can launch Codex. Other users see this as
+  // an available integration in Settings, but we don't silently install it.
+  if (effectiveHarnessEnvironments().codex === "cmux") installCmuxCodexHook();
   startDaemon();
   configureAutoUpdates();
 

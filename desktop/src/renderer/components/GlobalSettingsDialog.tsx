@@ -76,8 +76,30 @@ export interface GlobalHarnessSetupStatus {
   claudeCode: HarnessHookStatus;
 }
 
+export type IntegrationState = "ok" | "missing" | "drifted" | "broken" | "quiet";
+
+export interface IntegrationStatus {
+  id: string;
+  label: string;
+  group: "Codex" | "Claude Code" | "cmux";
+  level: "harness" | "environment";
+  owner: "hitch" | "delegated";
+  applies: boolean;
+  state: IntegrationState;
+  reason: string;
+  targetPaths: string[];
+  canRepair: boolean;
+  repairLabel: string;
+}
+
+export interface IntegrationHealth {
+  checkedAt: string;
+  integrations: IntegrationStatus[];
+}
+
 export type GlobalSettingsTab =
   | "harnesses"
+  | "integrations"
   | "appearance"
   | "starting-prompts"
   | "local-sync"
@@ -86,6 +108,7 @@ export type GlobalSettingsTab =
 
 const TABS = [
   { id: "harnesses", label: "Harness settings", icon: Code2Icon },
+  { id: "integrations", label: "Integrations", icon: WrenchIcon },
   { id: "appearance", label: "Appearance", icon: SunMoonIcon },
   { id: "starting-prompts", label: "Starting prompts", icon: MessageSquareIcon },
   { id: "local-sync", label: "Local sync logs", icon: FolderSyncIcon },
@@ -99,6 +122,9 @@ const TABS = [
 
 interface HitchDaemonApi {
   getGlobalHarnessSetup: () => Promise<GlobalHarnessSetupStatus>;
+  checkIntegrations: () => Promise<IntegrationHealth>;
+  repairIntegration: (id: string) => Promise<IntegrationHealth>;
+  repairAllIntegrations: () => Promise<IntegrationHealth>;
   installGlobalCodexHooks: () => Promise<GlobalHarnessSetupStatus>;
   removeGlobalCodexHooks: () => Promise<GlobalHarnessSetupStatus>;
   installGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
@@ -150,12 +176,14 @@ export function GlobalSettingsDialog({
   initialTab = "harnesses",
   onLocalConfigChange,
   onHarnessSetupChange,
+  onIntegrationHealthChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialTab?: GlobalSettingsTab;
   onLocalConfigChange?: (config: LocalHitchConfig) => void;
   onHarnessSetupChange?: (setup: GlobalHarnessSetupStatus) => void;
+  onIntegrationHealthChange?: (health: IntegrationHealth) => void;
 }) {
   const bridge =
     typeof window !== "undefined"
@@ -163,6 +191,8 @@ export function GlobalSettingsDialog({
       : undefined;
   const [tab, setTab] = useState<GlobalSettingsTab>(initialTab);
   const [setup, setSetup] = useState<GlobalHarnessSetupStatus | null>(null);
+  const [integrationHealth, setIntegrationHealth] =
+    useState<IntegrationHealth | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // T3Code remains visibly listed below, but is hard-locked off until the
@@ -192,12 +222,22 @@ export function GlobalSettingsDialog({
     onHarnessSetupChange?.(next);
   }
 
+  function receiveIntegrationHealth(next: IntegrationHealth) {
+    setIntegrationHealth(next);
+    onIntegrationHealthChange?.(next);
+  }
+
   async function refresh() {
     if (!bridge) return;
     setRefreshing(true);
     setError(null);
     try {
-      receiveSetup(await bridge.getGlobalHarnessSetup());
+      const [nextSetup, nextIntegrations] = await Promise.all([
+        bridge.getGlobalHarnessSetup(),
+        bridge.checkIntegrations(),
+      ]);
+      receiveSetup(nextSetup);
+      receiveIntegrationHealth(nextIntegrations);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -291,6 +331,17 @@ export function GlobalSettingsDialog({
                   </>
                 )}
               </div>
+            )}
+
+            {tab === "integrations" && (
+              <IntegrationsSection
+                bridge={bridge}
+                health={integrationHealth}
+                refreshing={refreshing}
+                onRefresh={() => void refresh()}
+                onResult={receiveIntegrationHealth}
+                onError={setError}
+              />
             )}
 
             {tab === "appearance" && <AppearanceSection />}
@@ -399,6 +450,261 @@ function AppearanceSection() {
       </div>
     </div>
   );
+}
+
+const INTEGRATION_GROUPS: Array<IntegrationStatus["group"]> = [
+  "Codex",
+  "Claude Code",
+  "cmux",
+];
+
+function IntegrationsSection({
+  bridge,
+  health,
+  refreshing,
+  onRefresh,
+  onResult,
+  onError,
+}: {
+  bridge: HitchDaemonApi | undefined;
+  health: IntegrationHealth | null;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onResult: (health: IntegrationHealth) => void;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const disabled = refreshing || busy !== null || !bridge;
+  const actionable =
+    health?.integrations.filter(
+      (integration) =>
+        integration.applies &&
+        integration.canRepair &&
+        integration.state !== "ok" &&
+        integration.state !== "quiet",
+    ) ?? [];
+
+  async function repair(id: string) {
+    if (!bridge) return;
+    setBusy(id);
+    onError("");
+    try {
+      const next = await bridge.repairIntegration(id);
+      onResult(next);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+      onRefresh();
+    }
+  }
+
+  async function repairAll() {
+    if (!bridge) return;
+    setBusy("all");
+    onError("");
+    try {
+      const next = await bridge.repairAllIntegrations();
+      onResult(next);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+      onRefresh();
+    }
+  }
+
+  if (!bridge) {
+    return (
+      <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+        Integration health is only available inside Hitch Desktop.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-medium">Integration health</h3>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            Hitch compares expected setup against this machine and repairs only
+            the pieces it owns or delegates to the owning tool.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled || actionable.length === 0}
+            onClick={() => void repairAll()}
+          >
+            <WrenchIcon />
+            {busy === "all" ? "Repairing..." : "Repair all"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            disabled={disabled}
+            onClick={onRefresh}
+            aria-label="Refresh integrations"
+          >
+            <RefreshCwIcon />
+          </Button>
+        </div>
+      </div>
+
+      {!health ? (
+        <div className="rounded-lg border bg-card p-3 text-sm text-muted-foreground">
+          Checking integrations...
+        </div>
+      ) : (
+        INTEGRATION_GROUPS.map((group) => {
+          const integrations = health.integrations.filter(
+            (integration) => integration.group === group,
+          );
+          if (integrations.length === 0) return null;
+          const issues = integrations.filter(
+            (integration) =>
+              integration.applies &&
+              integration.state !== "ok" &&
+              integration.state !== "quiet",
+          ).length;
+          return (
+            <section
+              key={group}
+              className="flex flex-col overflow-hidden rounded-xl border bg-card"
+            >
+              <div className="flex items-center justify-between gap-3 border-b bg-muted/30 px-3.5 py-3">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold leading-tight">{group}</h3>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {group === "cmux"
+                      ? "Environment-specific setup for cmux runs."
+                      : "Harness-level status hooks and local setup."}
+                  </p>
+                </div>
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-xs font-medium",
+                    issues > 0
+                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                      : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                  )}
+                >
+                  {issues > 0 ? `${issues} issue${issues === 1 ? "" : "s"}` : "No issues"}
+                </span>
+              </div>
+              <div className="divide-y">
+                {integrations.map((integration) => (
+                  <IntegrationRow
+                    key={integration.id}
+                    integration={integration}
+                    busy={busy === integration.id}
+                    disabled={disabled}
+                    onRepair={() => void repair(integration.id)}
+                  />
+                ))}
+              </div>
+            </section>
+          );
+        })
+      )}
+
+      {health?.checkedAt ? (
+        <p className="text-xs text-muted-foreground">
+          Last checked {new Date(health.checkedAt).toLocaleTimeString()}.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function IntegrationRow({
+  integration,
+  busy,
+  disabled,
+  onRepair,
+}: {
+  integration: IntegrationStatus;
+  busy: boolean;
+  disabled: boolean;
+  onRepair: () => void;
+}) {
+  const tone = integrationTone(integration.state);
+  const canClick = integration.canRepair && !disabled;
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-3.5 py-3">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={cn(
+              "size-2 rounded-full",
+              tone === "ok"
+                ? "bg-emerald-500"
+                : tone === "warn"
+                  ? "bg-amber-500"
+                  : tone === "bad"
+                    ? "bg-destructive"
+                    : "bg-muted-foreground/45",
+            )}
+          />
+          <p className="text-[0.8rem] font-medium">{integration.label}</p>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[0.7rem] font-medium text-muted-foreground">
+            {integrationStateLabel(integration.state)}
+          </span>
+          <span className="rounded-full bg-muted/60 px-2 py-0.5 text-[0.7rem] text-muted-foreground">
+            {integration.owner === "delegated" ? "delegated" : integration.level}
+          </span>
+        </div>
+        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+          {integration.reason}
+        </p>
+        {integration.targetPaths.length > 0 && (
+          <div className="mt-2 flex flex-col gap-1 rounded-md bg-muted/40 px-3 py-2">
+            {integration.targetPaths.map((path) => (
+              <PathLine key={path} label="Target" value={path} />
+            ))}
+          </div>
+        )}
+      </div>
+      <Button
+        type="button"
+        variant={integration.state === "ok" ? "outline" : "default"}
+        size="sm"
+        className="shrink-0 self-start"
+        disabled={!canClick}
+        onClick={onRepair}
+      >
+        <WrenchIcon />
+        {busy ? "Working..." : integration.repairLabel}
+      </Button>
+    </div>
+  );
+}
+
+function integrationTone(state: IntegrationState): "ok" | "warn" | "bad" | "quiet" {
+  if (state === "ok") return "ok";
+  if (state === "broken") return "bad";
+  if (state === "missing" || state === "drifted") return "warn";
+  return "quiet";
+}
+
+function integrationStateLabel(state: IntegrationState): string {
+  switch (state) {
+    case "ok":
+      return "Ok";
+    case "missing":
+      return "Missing";
+    case "drifted":
+      return "Needs repair";
+    case "broken":
+      return "Broken";
+    default:
+      return "Not enabled";
+  }
 }
 
 function UpdatesSection() {

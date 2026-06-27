@@ -102,6 +102,7 @@ import {
 import {
   GlobalSettingsDialog,
   type GlobalHarnessSetupStatus,
+  type IntegrationHealth,
   type GlobalSettingsTab,
 } from "@/components/GlobalSettingsDialog";
 import {
@@ -183,6 +184,7 @@ interface DeviceAuthState {
 
 interface HarnessSettingsApi {
   getGlobalHarnessSetup: () => Promise<GlobalHarnessSetupStatus>;
+  checkIntegrations: () => Promise<IntegrationHealth>;
 }
 
 interface KeepAwakeApi {
@@ -378,6 +380,7 @@ function AppShell({
   onCreateProject,
   onOpenProjectSettings,
   harnessSetup,
+  integrationHealth,
   keepAwake,
   onToggleKeepAwake,
   onShowGlobalSettings,
@@ -393,6 +396,7 @@ function AppShell({
   onCreateProject: (name: string) => Promise<void>;
   onOpenProjectSettings: (projectId: Id<"projects">) => void;
   harnessSetup: GlobalHarnessSetupStatus | null;
+  integrationHealth: IntegrationHealth | null;
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
@@ -440,6 +444,7 @@ function AppShell({
         onCreateProject={onCreateProject}
         onOpenProjectSettings={onOpenProjectSettings}
         harnessSetup={harnessSetup}
+        integrationHealth={integrationHealth}
         keepAwake={keepAwake}
         onToggleKeepAwake={onToggleKeepAwake}
         onShowGlobalSettings={onShowGlobalSettings}
@@ -1341,6 +1346,8 @@ function BoardContent({
     useState<GlobalSettingsTab>("harnesses");
   const [globalHarnessSetup, setGlobalHarnessSetup] =
     useState<GlobalHarnessSetupStatus | null>(null);
+  const [integrationHealth, setIntegrationHealth] =
+    useState<IntegrationHealth | null>(null);
   const [keepAwake, setKeepAwake] = useState<KeepAwakeState | null>(null);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [projectDetailsTab, setProjectDetailsTab] =
@@ -1423,6 +1430,12 @@ function BoardContent({
       .then(setGlobalHarnessSetup)
       .catch(() => {
         setGlobalHarnessSetup(null);
+      });
+    void bridge
+      .checkIntegrations()
+      .then(setIntegrationHealth)
+      .catch(() => {
+        setIntegrationHealth(null);
       });
   }, []);
 
@@ -1645,6 +1658,7 @@ function BoardContent({
         onCreateProject={onCreateProject}
         onOpenProjectSettings={openProjectSettingsFor}
         harnessSetup={globalHarnessSetup}
+        integrationHealth={integrationHealth}
         keepAwake={keepAwake}
         onToggleKeepAwake={() => void toggleKeepAwake()}
         onShowGlobalSettings={openGlobalSettings}
@@ -1660,6 +1674,7 @@ function BoardContent({
           initialTab={globalSettingsTab}
           onLocalConfigChange={onLocalConfigChange}
           onHarnessSetupChange={setGlobalHarnessSetup}
+          onIntegrationHealthChange={setIntegrationHealth}
         />
         <ProjectDetailsDialog
           projectId={projectId}
@@ -2219,6 +2234,7 @@ function BoardContent({
       onCreateProject={onCreateProject}
       onOpenProjectSettings={openProjectSettingsFor}
       harnessSetup={globalHarnessSetup}
+      integrationHealth={integrationHealth}
       keepAwake={keepAwake}
       onToggleKeepAwake={() => void toggleKeepAwake()}
       onShowGlobalSettings={openGlobalSettings}
@@ -2448,6 +2464,7 @@ function BoardContent({
           initialTab={globalSettingsTab}
           onLocalConfigChange={onLocalConfigChange}
           onHarnessSetupChange={setGlobalHarnessSetup}
+          onIntegrationHealthChange={setIntegrationHealth}
         />
 
         <ProjectDetailsDialog
