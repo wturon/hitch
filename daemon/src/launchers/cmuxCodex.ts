@@ -35,8 +35,8 @@ function codexBaseArgv(input: {
 
 // No `env HITCH_LAUNCH_ID=… HITCH_CHAT_ENVIRONMENT=cmux` prefix: the hook infers
 // the cmux environment from CMUX_SURFACE_ID (cmux injects it per pane) and
-// correlates the launch via the surface-keyed claim (recorded at onPlaced), so
-// the command is just plain Codex.
+// correlates the launch via the surface-keyed claim (the surface is stamped onto
+// the claim before this command runs), so the command is just plain Codex.
 export function codexStartCommand(input: {
   cwd?: string;
   prompt: string;
@@ -115,10 +115,16 @@ export const cmuxCodexLauncher: Launcher = {
         model: ctx.model,
         effort: ctx.effort,
       }),
-      onPlaced: (placement) => {
+      // Stamp the surface onto the claim BEFORE Codex runs (not after, via
+      // onPlaced). Codex's hook can fire UserPromptSubmit before a post-launch
+      // stamp lands, and since the hook only consumes the claim on that first
+      // event, a miss is unrecoverable — so the join key must exist up front.
+      // record/update are synchronous file writes, so concurrent launches each
+      // stamp their own surface without racing.
+      beforeCommand: (surfaceId) => {
         updateCodexCmuxLaunchClaim({
           launchId: ctx.launchId,
-          surfaceId: placement.surface,
+          surfaceId,
         });
       },
       projectId: ctx.project.projectId,

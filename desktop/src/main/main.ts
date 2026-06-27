@@ -384,10 +384,12 @@ function consumeCodexCmuxLaunchClaim(event) {
     return null;
   }
   // cmux gives each pane a unique CMUX_SURFACE_ID; the daemon stamps the same id
-  // onto the launch claim at placement time (onPlaced). Joining on it ties this
-  // freshly-discovered thread back to its launch with no ambiguity — unlike the
-  // old cwd+promptHash match, two identical-prompt launches in one repo can't
-  // collide because they land on different surfaces.
+  // onto the launch claim BEFORE the Codex command runs (cmuxCodex.startNew ->
+  // beforeCommand), so by the time Codex fires this UserPromptSubmit the join key
+  // is already on disk. Match on it deterministically — no timing fallback and no
+  // guessing: each launch owns a distinct surface, so concurrent launches resolve
+  // independently, and two identical-prompt launches no longer collide the way
+  // the old cwd+promptHash match did.
   const surfaceId = process.env.CMUX_SURFACE_ID;
   if (!surfaceId) return null;
   const wanted = surfaceId.toLowerCase();
@@ -413,37 +415,7 @@ function consumeCodexCmuxLaunchClaim(event) {
         claim.surfaceId.toLowerCase() === wanted
       );
     });
-
-  // Exact surface match is the steady state. But the daemon stamps surfaceId at
-  // placement (onPlaced), and on the fresh-workspace path the launch command runs
-  // as part of new-workspace --command, so Codex can boot and fire this
-  // UserPromptSubmit before that write lands, leaving the claim surfaceless.
-  // Because consume only runs for UserPromptSubmit, missing this first event is
-  // unrecoverable (later events can't re-bind), so fall back: if exactly one
-  // just-created claim is still unclaimed AND surfaceless, it must be this
-  // launch. The tight recency window keeps a stale failed-launch claim
-  // (surfaceless because its placement never produced a surface) from being
-  // mis-adopted, and the single-match requirement refuses to guess if two
-  // surfaceless launches somehow overlap.
-  let chosen = matches.length === 1 ? matches[0] : null;
-  if (!chosen && matches.length === 0) {
-    const FALLBACK_WINDOW_MS = 60 * 1000;
-    const pending = freshClaims
-      .map((claim, index) => ({ claim, index }))
-      .filter(({ claim }) => {
-        return (
-          claim &&
-          claim.claimedAt === undefined &&
-          claim.environment === "cmux" &&
-          typeof claim.launchId === "string" &&
-          claim.surfaceId === undefined &&
-          now - claim.createdAt <= FALLBACK_WINDOW_MS
-        );
-      });
-    if (pending.length === 1) chosen = pending[0];
-  }
-
-  if (!chosen) {
+  if (matches.length !== 1) {
     // Prune expired claims if we dropped any; never guess when ambiguous.
     if (freshClaims.length !== claims.length) {
       writeCodexCmuxClaims(freshClaims);
@@ -451,14 +423,11 @@ function consumeCodexCmuxLaunchClaim(event) {
     return null;
   }
 
-  const { claim, index } = chosen;
+  const { claim, index } = matches[0];
   freshClaims[index] = {
     ...claim,
     claimedAt: now,
     chatId: event.chatId,
-    // Record the surface for this thread so any later event resolves directly
-    // (and so the daemon's onPlaced write is a no-op rather than a conflict).
-    surfaceId: claim.surfaceId ?? surfaceId,
   };
   writeCodexCmuxClaims(freshClaims);
   return claim;

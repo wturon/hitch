@@ -12,9 +12,10 @@ const CLAIM_TTL_MS = 10 * 60 * 1000;
 
 // Correlates a Codex launch (which has no --session-id to pin up front) to the
 // thread the hook later discovers. The daemon records the claim at launch, then
-// stamps the cmux surface id onto it at placement (onPlaced); the hook joins on
-// that surface id (CMUX_SURFACE_ID) when Codex first reports its thread. Surface
-// ids are unique per pane, so the join is unambiguous — no prompt/cwd fingerprint.
+// stamps the cmux surface id onto it just before sending the command (so it's on
+// disk before Codex can emit a hook event); the hook joins on that surface id
+// (CMUX_SURFACE_ID) when Codex first reports its thread. Surface ids are unique
+// per pane, so the join is unambiguous — no prompt/cwd fingerprint, no race.
 interface CodexCmuxLaunchClaim {
   launchId: string;
   environment: "cmux";
