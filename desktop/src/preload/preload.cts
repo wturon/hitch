@@ -76,6 +76,27 @@ export interface ProjectSetupStatus {
   gitignoreHasHitch: boolean;
 }
 
+export type IntegrationState = "ok" | "missing" | "drifted" | "broken" | "quiet";
+
+export interface IntegrationStatus {
+  id: string;
+  label: string;
+  group: "Codex" | "Claude Code" | "cmux";
+  level: "harness" | "environment";
+  owner: "hitch" | "delegated";
+  applies: boolean;
+  state: IntegrationState;
+  reason: string;
+  targetPaths: string[];
+  canRepair: boolean;
+  repairLabel: string;
+}
+
+export interface IntegrationHealth {
+  checkedAt: string;
+  integrations: IntegrationStatus[];
+}
+
 export type Harness = "codex" | "claude-code";
 
 export interface HarnessHookStatus {
@@ -193,6 +214,9 @@ export interface HitchDaemonApi {
   ensureHitchDirectory: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   ensureGitignore: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   getGlobalHarnessSetup: () => Promise<GlobalHarnessSetupStatus>;
+  checkIntegrations: () => Promise<IntegrationHealth>;
+  repairIntegration: (id: string) => Promise<IntegrationHealth>;
+  repairAllIntegrations: () => Promise<IntegrationHealth>;
   installGlobalCodexHooks: () => Promise<GlobalHarnessSetupStatus>;
   removeGlobalCodexHooks: () => Promise<GlobalHarnessSetupStatus>;
   installGlobalClaudeHooks: () => Promise<GlobalHarnessSetupStatus>;
@@ -254,6 +278,9 @@ const api: HitchDaemonApi = {
   ensureHitchDirectory: (projectId) => ipcRenderer.invoke("config:ensure-hitch-directory", projectId),
   ensureGitignore: (projectId) => ipcRenderer.invoke("config:ensure-gitignore", projectId),
   getGlobalHarnessSetup: () => ipcRenderer.invoke("config:get-global-harness-setup"),
+  checkIntegrations: () => ipcRenderer.invoke("integrations:check"),
+  repairIntegration: (id) => ipcRenderer.invoke("integrations:repair", id),
+  repairAllIntegrations: () => ipcRenderer.invoke("integrations:repair-all"),
   installGlobalCodexHooks: () =>
     ipcRenderer.invoke("config:install-global-codex-hooks"),
   removeGlobalCodexHooks: () =>

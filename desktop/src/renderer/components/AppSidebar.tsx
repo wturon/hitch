@@ -36,6 +36,8 @@ import { harnessLabel } from "@/lib/chat";
 import { cn } from "@/lib/utils";
 import type { KeepAwakeState, ProjectNavEntry, Viewer } from "@/lib/types";
 import {
+  type IntegrationHealth,
+  type IntegrationStatus,
   type GlobalHarnessSetupStatus,
   type GlobalSettingsTab,
   type HarnessHookStatus,
@@ -194,6 +196,18 @@ function harnessesNeedingRepair(
   if (!setup) return [];
   return [setup.codex, setup.claudeCode].filter(
     (status) => harnessStatusText(status) === "Needs repair",
+  );
+}
+
+function integrationsNeedingAttention(
+  health: IntegrationHealth | null,
+): IntegrationStatus[] {
+  if (!health) return [];
+  return health.integrations.filter(
+    (integration) =>
+      integration.applies &&
+      integration.state !== "ok" &&
+      integration.state !== "quiet",
   );
 }
 
@@ -385,6 +399,7 @@ export function AppSidebar({
   onCreateProject,
   onOpenProjectSettings,
   harnessSetup,
+  integrationHealth,
   keepAwake,
   onToggleKeepAwake,
   onShowGlobalSettings,
@@ -400,6 +415,7 @@ export function AppSidebar({
   onCreateProject: (name: string) => Promise<void>;
   onOpenProjectSettings: (projectId: Id<"projects">) => void;
   harnessSetup: GlobalHarnessSetupStatus | null;
+  integrationHealth: IntegrationHealth | null;
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
@@ -663,6 +679,7 @@ export function AppSidebar({
         <UpdateBanner />
         <AccountFooter
           harnessSetup={harnessSetup}
+          integrationHealth={integrationHealth}
           keepAwake={keepAwake}
           onToggleKeepAwake={onToggleKeepAwake}
           onShowGlobalSettings={onShowGlobalSettings}
@@ -682,6 +699,7 @@ export function AppSidebar({
 // needs repair.
 function AccountFooter({
   harnessSetup,
+  integrationHealth,
   keepAwake,
   onToggleKeepAwake,
   onShowGlobalSettings,
@@ -689,6 +707,7 @@ function AccountFooter({
   onSignOut,
 }: {
   harnessSetup: GlobalHarnessSetupStatus | null;
+  integrationHealth: IntegrationHealth | null;
   keepAwake: KeepAwakeState | null;
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
@@ -696,8 +715,11 @@ function AccountFooter({
   onSignOut: () => void;
 }) {
   const viewer = useQuery(api.users.viewer);
-  const repairs = harnessesNeedingRepair(harnessSetup);
+  const repairs = integrationsNeedingAttention(integrationHealth);
+  const legacyRepairs =
+    integrationHealth === null ? harnessesNeedingRepair(harnessSetup) : [];
   const needsRepair = repairs.length > 0;
+  const needsLegacyRepair = legacyRepairs.length > 0;
   const awakeOn = keepAwake?.enabled === true;
   const awakeUnavailable = keepAwake === null;
   const name = viewer?.name || viewer?.email || "Account";
@@ -713,7 +735,11 @@ function AccountFooter({
           />
         }
       >
-        <UserAvatar viewer={viewer} sizeClass="size-6.5" dot={needsRepair} />
+        <UserAvatar
+          viewer={viewer}
+          sizeClass="size-6.5"
+          dot={needsRepair || needsLegacyRepair}
+        />
         <span className="hidden min-w-0 flex-1 truncate text-[13px] font-medium md:inline">
           {name}
         </span>
@@ -747,8 +773,29 @@ function AccountFooter({
         {needsRepair ? (
           repairs.map((status) => (
             <MenuItem
+              key={status.id}
+              onClick={() => onShowGlobalSettings("integrations")}
+              className="h-auto items-center border border-amber-500/30 bg-amber-500/10 py-1.5 text-amber-700 data-highlighted:bg-amber-500/15 data-highlighted:text-amber-800 dark:text-amber-300 dark:data-highlighted:text-amber-200"
+            >
+              <AlertCircleIcon className="text-amber-600 dark:text-amber-400" />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="text-[13px] font-medium">
+                  {status.group}
+                </span>
+                <span className="text-[11.5px] opacity-80">
+                  {status.label} needs repair
+                </span>
+              </div>
+              <span className="shrink-0 rounded-md border border-amber-500/40 bg-background px-2 py-0.5 text-[11.5px] font-semibold">
+                Fix
+              </span>
+            </MenuItem>
+          ))
+        ) : needsLegacyRepair ? (
+          legacyRepairs.map((status) => (
+            <MenuItem
               key={status.harness}
-              onClick={() => onShowGlobalSettings("harnesses")}
+              onClick={() => onShowGlobalSettings("integrations")}
               className="h-auto items-center border border-amber-500/30 bg-amber-500/10 py-1.5 text-amber-700 data-highlighted:bg-amber-500/15 data-highlighted:text-amber-800 dark:text-amber-300 dark:data-highlighted:text-amber-200"
             >
               <AlertCircleIcon className="text-amber-600 dark:text-amber-400" />
@@ -766,11 +813,11 @@ function AccountFooter({
             </MenuItem>
           ))
         ) : (
-          <MenuItem onClick={() => onShowGlobalSettings("harnesses")}>
+          <MenuItem onClick={() => onShowGlobalSettings("integrations")}>
             <CheckCircle2Icon className="text-emerald-500" />
-            <span className="flex-1 text-popover-foreground/80">Harnesses</span>
+            <span className="flex-1 text-popover-foreground/80">Integrations</span>
             <span className="text-[11.5px] text-muted-foreground">
-              All configured
+              Healthy
             </span>
           </MenuItem>
         )}
