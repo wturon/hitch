@@ -1766,27 +1766,41 @@ function effectiveHarnessEnvironments(): Record<"claude-code" | "codex", string>
   };
 }
 
-function cmuxCliAvailable(): boolean {
+async function cmuxCliAvailable(): Promise<boolean> {
   try {
-    execFileSync(cmuxBin(), ["--version"], {
-      stdio: "ignore",
-      timeout: 3_000,
-    });
+    await run(cmuxBin(), ["--version"], { timeout: 3_000 });
     return true;
   } catch {
     return false;
   }
 }
 
+function commandIncludes(config: Record<string, unknown>, event: string, needle: string): boolean {
+  const hooks = isRecord(config.hooks) ? config.hooks : {};
+  const blocks = Array.isArray(hooks[event]) ? hooks[event] : [];
+  return blocks.some((block) => {
+    if (!isRecord(block) || !Array.isArray(block.hooks)) return false;
+    return block.hooks.some(
+      (hook) =>
+        isRecord(hook) &&
+        hook.type === "command" &&
+        typeof hook.command === "string" &&
+        hook.command.includes(needle),
+    );
+  });
+}
+
 function cmuxCodexHookInstalled(): boolean {
   const hooksJsonPath = globalCodexHooksJsonPath();
   if (!existsSync(hooksJsonPath)) return false;
   try {
-    const content = readFileSync(hooksJsonPath, "utf8");
+    const config = readJsonObject(hooksJsonPath);
     return (
-      content.includes("cmux hooks codex") ||
-      content.includes("cmux-codex-hook") ||
-      content.includes("cmuxterm")
+      commandIncludes(config, "SessionStart", "hooks codex session-start") &&
+      commandIncludes(config, "UserPromptSubmit", "hooks codex prompt-submit") &&
+      commandIncludes(config, "Stop", "hooks codex stop") &&
+      commandIncludes(config, "PreToolUse", "hooks feed --source codex") &&
+      commandIncludes(config, "PermissionRequest", "hooks feed --source codex")
     );
   } catch {
     return false;
@@ -1902,7 +1916,7 @@ function cmuxSocketIntegrationStatus(): IntegrationStatus {
   }
 }
 
-function cmuxCodexHooksIntegrationStatus(): IntegrationStatus {
+async function cmuxCodexHooksIntegrationStatus(): Promise<IntegrationStatus> {
   const envs = effectiveHarnessEnvironments();
   const applies = envs.codex === "cmux";
   const targets = [globalCodexHooksJsonPath(), globalCodexConfigTomlPath()];
@@ -1921,7 +1935,7 @@ function cmuxCodexHooksIntegrationStatus(): IntegrationStatus {
       repairLabel: "Install",
     };
   }
-  if (!cmuxCliAvailable()) {
+  if (!(await cmuxCliAvailable())) {
     return {
       id: "cmux.codex-hooks",
       label: "Codex hooks",
@@ -1954,7 +1968,7 @@ function cmuxCodexHooksIntegrationStatus(): IntegrationStatus {
   };
 }
 
-function integrationHealth(): IntegrationHealth {
+async function integrationHealth(): Promise<IntegrationHealth> {
   const setup = globalHarnessSetupStatus();
   return {
     checkedAt: new Date().toISOString(),
@@ -1972,12 +1986,12 @@ function integrationHealth(): IntegrationHealth {
         setup.claudeCode,
       ),
       cmuxSocketIntegrationStatus(),
-      cmuxCodexHooksIntegrationStatus(),
+      await cmuxCodexHooksIntegrationStatus(),
     ],
   };
 }
 
-function repairIntegration(id: IntegrationId): IntegrationHealth {
+async function repairIntegration(id: IntegrationId): Promise<IntegrationHealth> {
   switch (id) {
     case "codex.hitch-lifecycle-hooks":
       installGlobalCodexHooks();
@@ -1986,7 +2000,7 @@ function repairIntegration(id: IntegrationId): IntegrationHealth {
       installGlobalClaudeHooks();
       break;
     case "cmux.socket-automation":
-      void enableCmuxAutomation();
+      await enableCmuxAutomation();
       break;
     case "cmux.codex-hooks":
       installCmuxCodexHook();
@@ -1995,16 +2009,8 @@ function repairIntegration(id: IntegrationId): IntegrationHealth {
   return integrationHealth();
 }
 
-async function repairIntegrationAsync(id: IntegrationId): Promise<IntegrationHealth> {
-  if (id === "cmux.socket-automation") {
-    await enableCmuxAutomation();
-    return integrationHealth();
-  }
-  return repairIntegration(id);
-}
-
 async function repairAllIntegrations(): Promise<IntegrationHealth> {
-  let health = integrationHealth();
+  const health = await integrationHealth();
   for (const integration of health.integrations) {
     if (
       integration.applies &&
@@ -2012,7 +2018,7 @@ async function repairAllIntegrations(): Promise<IntegrationHealth> {
       integration.state !== "ok" &&
       integration.state !== "quiet"
     ) {
-      health = await repairIntegrationAsync(integration.id);
+      await repairIntegration(integration.id);
     }
   }
   return integrationHealth();
@@ -2814,7 +2820,7 @@ ipcMain.handle("config:get-global-harness-setup", () =>
 );
 ipcMain.handle("integrations:check", () => integrationHealth());
 ipcMain.handle("integrations:repair", (_event, id: IntegrationId) =>
-  repairIntegrationAsync(id),
+  repairIntegration(id),
 );
 ipcMain.handle("integrations:repair-all", () => repairAllIntegrations());
 ipcMain.handle("config:install-global-codex-hooks", () =>

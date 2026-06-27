@@ -495,7 +495,6 @@ function IntegrationsSection({
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
-      onRefresh();
     }
   }
 
@@ -510,7 +509,6 @@ function IntegrationsSection({
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
-      onRefresh();
     }
   }
 
