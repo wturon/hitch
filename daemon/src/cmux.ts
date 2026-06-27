@@ -571,7 +571,6 @@ export interface OpenSpec {
   cwd?: string;
   // The command to run when spawning fresh. Defaults to a plain resume.
   command?: string;
-  onSpawned?: (placement: Placement) => void | Promise<void>;
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
@@ -650,7 +649,6 @@ async function openChatInner(spec: OpenSpec): Promise<OpenResult> {
       cwd: spec.cwd,
       command,
     });
-    await spec.onSpawned?.(placement);
     const workspace = placement.workspace;
     if (workspace) {
       recentSpawns.set(spec.sessionId, { workspace, at: Date.now() });
@@ -815,35 +813,3 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-export interface ResumeBindingSpec {
-  surfaceId: string;
-  workspaceId?: string | null;
-  checkpointId: string;
-  cwd?: string;
-  kind: string;
-  name: string;
-  source: string;
-  command: string;
-}
-
-export async function setResumeBinding(spec: ResumeBindingSpec): Promise<void> {
-  const args = [
-    "surface",
-    "resume",
-    "set",
-    "--kind",
-    spec.kind,
-    "--name",
-    spec.name,
-    "--source",
-    spec.source,
-    "--checkpoint",
-    spec.checkpointId,
-    "--surface",
-    spec.surfaceId,
-  ];
-  if (spec.workspaceId) args.push("--workspace", spec.workspaceId);
-  if (spec.cwd) args.push("--cwd", spec.cwd);
-  args.push("--shell", spec.command);
-  await cmux(args);
-}
