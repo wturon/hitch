@@ -1,11 +1,13 @@
 import {
   execFile,
+  execFileSync,
   spawn,
   type ChildProcess,
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -221,7 +223,6 @@ function globalChatLifecycleHook(harness: Harness): string {
 // captures normalized lifecycle events into Hitch's local SQLite inbox.
 
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
@@ -233,8 +234,6 @@ const HITCH_BUMP_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.bump";
 const HITCH_CODEX_CMUX_CLAIMS_PATH = HITCH_APP_SUPPORT_DIR + "/codex-cmux-launch-claims.json";
 const HARNESS = ${JSON.stringify(harness)};
 const PRODUCER = ${JSON.stringify(harness === "codex" ? "codex-hook" : "claude-code-hook")};
-const CODEX_BIN = ${JSON.stringify(codexBin())};
-const CMUX_BIN = ${JSON.stringify(cmuxBin())};
 
 const EVENT_PLAN_BY_HARNESS = {
   codex: {
@@ -267,10 +266,6 @@ function readStdin() {
 
 function hash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function hashText(value) {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function isInside(root, cwd) {
@@ -334,8 +329,12 @@ function chatId(payload) {
 
 function metadata(payload, providerEvent) {
   const out = {};
-  if (process.env.HITCH_CHAT_ENVIRONMENT) {
-    out.environment = process.env.HITCH_CHAT_ENVIRONMENT;
+  // cmux injects CMUX_SURFACE_ID into every pane it runs, so its presence means
+  // this Codex session is running inside cmux — no HITCH_CHAT_ENVIRONMENT needed
+  // on the launch command. (Claude's environment is known to the daemon at
+  // launch via --session-id, so it doesn't rely on this.)
+  if (HARNESS === "codex" && process.env.CMUX_SURFACE_ID) {
+    out.environment = "cmux";
   }
   if (typeof payload.tool_name === "string") out.toolName = payload.tool_name;
   if (typeof payload.toolName === "string") out.toolName = payload.toolName;
@@ -359,18 +358,6 @@ function metadata(payload, providerEvent) {
   return out;
 }
 
-function promptText(payload) {
-  for (const value of [
-    payload.prompt,
-    payload.user_prompt,
-    payload.userPrompt,
-    payload.input,
-  ]) {
-    if (typeof value === "string") return value;
-  }
-  return null;
-}
-
 function readCodexCmuxClaims() {
   try {
     const parsed = JSON.parse(readFileSync(HITCH_CODEX_CMUX_CLAIMS_PATH, "utf8"));
@@ -392,16 +379,22 @@ function writeCodexCmuxClaims(claims) {
   }
 }
 
-function consumeCodexCmuxLaunchClaim(payload, event) {
+function consumeCodexCmuxLaunchClaim(event) {
   if (HARNESS !== "codex" || event.providerEvent !== "UserPromptSubmit") {
     return null;
   }
-  const prompt = promptText(payload);
-  if (typeof prompt !== "string") return null;
+  // cmux gives each pane a unique CMUX_SURFACE_ID; the daemon stamps the same id
+  // onto the launch claim BEFORE the Codex command runs (cmuxCodex.startNew ->
+  // beforeCommand), so by the time Codex fires this UserPromptSubmit the join key
+  // is already on disk. Match on it deterministically — no timing fallback and no
+  // guessing: each launch owns a distinct surface, so concurrent launches resolve
+  // independently, and two identical-prompt launches no longer collide the way
+  // the old cwd+promptHash match did.
+  const surfaceId = process.env.CMUX_SURFACE_ID;
+  if (!surfaceId) return null;
+  const wanted = surfaceId.toLowerCase();
 
   const now = Date.now();
-  const promptHash = hashText(prompt);
-  const cwd = resolve(event.cwd);
   const claims = readCodexCmuxClaims();
   const freshClaims = claims.filter((claim) => {
     return (
@@ -416,30 +409,16 @@ function consumeCodexCmuxLaunchClaim(payload, event) {
       return (
         claim &&
         claim.claimedAt === undefined &&
-        claim.ambiguousAt === undefined &&
         claim.environment === "cmux" &&
         typeof claim.launchId === "string" &&
-        typeof claim.cwd === "string" &&
-        typeof claim.promptHash === "string" &&
-        resolve(claim.cwd) === cwd &&
-        claim.promptHash === promptHash
+        typeof claim.surfaceId === "string" &&
+        claim.surfaceId.toLowerCase() === wanted
       );
     });
   if (matches.length !== 1) {
-    if (matches.length > 1) {
-      for (const { index } of matches) {
-        freshClaims[index] = {
-          ...freshClaims[index],
-          ambiguousAt: now,
-          ambiguousMatchCount: matches.length,
-        };
-      }
-    }
-    if (matches.length > 1 || freshClaims.length !== claims.length) {
+    // Prune expired claims if we dropped any; never guess when ambiguous.
+    if (freshClaims.length !== claims.length) {
       writeCodexCmuxClaims(freshClaims);
-    }
-    if (matches.length > 1) {
-      event.metadata.cmuxLaunchClaimAmbiguous = matches.length;
     }
     return null;
   }
@@ -519,11 +498,9 @@ function normalize(payload) {
     projectId: project.projectId,
     projectLocalPath: project.localPath,
     chatId: id,
-    launchId:
-      typeof process.env.HITCH_LAUNCH_ID === "string" &&
-      process.env.HITCH_LAUNCH_ID.trim()
-        ? process.env.HITCH_LAUNCH_ID.trim()
-        : null,
+    // Codex has no --session-id to pin, so the launch is correlated out-of-band
+    // via the surface-keyed claim below — not an env var on the command.
+    launchId: null,
     turnId: turnId(payload),
     cwd: resolve(cwd),
     host: hostname(),
@@ -533,15 +510,9 @@ function normalize(payload) {
     metadata: metadata(payload, providerEvent),
   };
   const launchClaim =
-    consumeCodexCmuxLaunchClaim(payload, event) ?? codexCmuxClaimForChat(event);
+    consumeCodexCmuxLaunchClaim(event) ?? codexCmuxClaimForChat(event);
   if (!event.launchId && launchClaim?.launchId) {
     event.launchId = launchClaim.launchId;
-  }
-  if (launchClaim?.environment && !event.metadata.environment) {
-    event.metadata.environment = launchClaim.environment;
-  }
-  if (launchClaim?.surfaceId && !event.metadata.cmuxSurfaceId) {
-    event.metadata.cmuxSurfaceId = launchClaim.surfaceId;
   }
   event.eventId = hash({
     source: event.source,
@@ -556,49 +527,6 @@ function normalize(payload) {
     rawPayloadHash,
   });
   return event;
-}
-
-function maybeBindCmuxResume(event) {
-  if (HARNESS !== "codex" || event.metadata?.environment !== "cmux") {
-    return;
-  }
-  const surfaceId =
-    typeof event.metadata.cmuxSurfaceId === "string"
-      ? event.metadata.cmuxSurfaceId
-      : process.env.CMUX_SURFACE_ID;
-  if (!event.chatId || !surfaceId) return;
-
-  try {
-    execFileSync(
-      CMUX_BIN,
-      [
-        "surface",
-        "resume",
-        "set",
-        "--kind",
-        "codex",
-        "--name",
-        "Codex",
-        "--source",
-        "hitch",
-        "--checkpoint",
-        event.chatId,
-        "--surface",
-        surfaceId,
-        "--cwd",
-        event.cwd,
-        "--",
-        CODEX_BIN,
-        "resume",
-        "-C",
-        event.cwd,
-        event.chatId,
-      ],
-      { stdio: "ignore" },
-    );
-  } catch {
-    // Never let cmux binding failures interrupt Codex hooks.
-  }
 }
 
 async function openDb() {
@@ -703,7 +631,6 @@ async function main() {
   const event = normalize(payload);
   if (event) {
     await insertEvent(event);
-    maybeBindCmuxResume(event);
   }
 }
 
@@ -1849,6 +1776,49 @@ function migrateCodexHooksRepresentation(): void {
   installGlobalCodexHooks();
 }
 
+// Install cmux's own Codex lifecycle hook so cmux — not Hitch — owns the Codex
+// resume binding, exactly as cmux's native Claude wrapper owns it for Claude. On
+// session start cmux's hook records the per-surface session binding
+// (surface.resume.get → checkpoint_id) that openChat's findSurfaceUuid reads to
+// focus-vs-spawn, and it resumes Codex on app relaunch via `codex resume <id>`.
+// That lets Hitch stop hand-writing resume commands — which carried a per-thread
+// prefix that never matched a prior approval, so cmux popped "Allow Resume
+// Command?" every session.
+//
+// `cmux hooks codex install` MERGES into ~/.codex/hooks.json (appends cmux's
+// block, leaves Hitch's lifecycle hook at index 0 with its existing trust) and
+// self-trusts only cmux's hook in config.toml. It's idempotent — no-ops when
+// already current — so we call it unconditionally at startup, after the
+// migration that guarantees Hitch's hook sits in hooks.json first. If cmux is
+// absent or refuses the call it's non-fatal: Codex still launches; only
+// cmux-owned resume is unavailable until cmux is present.
+function installCmuxCodexHook(): void {
+  // Back up hooks.json once before cmux first touches it. The merge is
+  // test-verified, not doc-guaranteed, so keep a one-time safety copy.
+  try {
+    const hooksJsonPath = globalCodexHooksJsonPath();
+    const backupPath = `${hooksJsonPath}.pre-cmux-hook.bak`;
+    if (existsSync(hooksJsonPath) && !existsSync(backupPath)) {
+      copyFileSync(hooksJsonPath, backupPath);
+      addLog("system", `Backed up Codex hooks.json before cmux hook install: ${backupPath}`);
+    }
+  } catch {
+    // Best-effort backup; never block the install.
+  }
+  try {
+    execFileSync(cmuxBin(), ["hooks", "codex", "install", "--yes"], {
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+    addLog("system", "Installed cmux Codex hook (cmux owns the Codex resume binding)");
+  } catch (err) {
+    addLog(
+      "system",
+      `Skipped cmux Codex hook install: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 function removeGlobalCodexHooks(): GlobalHarnessSetupStatus {
   const command = globalCodexHookCommand();
   const hooksJsonPath = globalCodexHooksJsonPath();
@@ -2692,6 +2662,10 @@ app.whenReady().then(async () => {
   // launch Codex, so there's a single hook representation (avoids Codex's
   // dual-loading warning and keeps cmux's hook from colliding).
   migrateCodexHooksRepresentation();
+  // After Hitch's hook is settled in hooks.json, hand the Codex resume binding
+  // to cmux's own hook (parity with how cmux owns Claude's). Must run before the
+  // daemon can launch Codex so freshly-launched chats are cmux-bound.
+  installCmuxCodexHook();
   startDaemon();
   configureAutoUpdates();
 

@@ -486,10 +486,15 @@ async function addChatTab(
   workspaceId: string,
   cwd: string | undefined,
   command: string,
+  beforeCommand?: (surfaceId: string) => void | Promise<void>,
 ): Promise<string> {
   const out = await cmux(["rpc", "surface.create", JSON.stringify({ workspace_id: workspaceId })]);
   const surfaceId = (JSON.parse(out) as { surface_id?: string }).surface_id;
   if (!surfaceId) throw new Error("surface.create returned no surface_id");
+  // The surface exists now but the command hasn't run yet — the only moment a
+  // caller can bind state to this surface *before* the agent can emit a hook
+  // event (see PlaceSpec.beforeCommand).
+  if (beforeCommand) await beforeCommand(surfaceId);
   const line = cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
   await cmux(["send", "--workspace", workspaceId, "--surface", surfaceId, `${line}\\n`]);
   await focusSurface(surfaceId);
@@ -501,6 +506,13 @@ export interface PlaceSpec {
   projectName: string;
   cwd?: string;
   command: string;
+  // Invoked with the surface id once the surface exists but before the command
+  // runs. Codex discovers its session id only after launch and correlates the
+  // launch by surface id; its hook can fire before any post-launch stamp lands,
+  // so the binding must be written here, ahead of the command. When set, the
+  // fresh-workspace path creates the workspace empty and sends the command (so
+  // the surface is known first) instead of the atomic `new-workspace --command`.
+  beforeCommand?: (surfaceId: string) => void | Promise<void>;
 }
 
 export interface Placement {
@@ -531,9 +543,50 @@ async function selectedSurface(workspaceId: string): Promise<string | null> {
 async function placeChat(spec: PlaceSpec): Promise<Placement> {
   const existing = await findProjectWorkspace(spec.projectId);
   if (existing) {
-    const surface = await addChatTab(existing, spec.cwd, spec.command);
+    const surface = await addChatTab(existing, spec.cwd, spec.command, spec.beforeCommand);
     return { workspace: existing, surface };
   }
+
+  // When the caller needs the surface id before the command runs, create the
+  // workspace empty and send the command into its surface (like addChatTab), so
+  // beforeCommand can fire ahead of launch. Otherwise keep the atomic
+  // `new-workspace --command` form, which Claude and the resume path use.
+  if (spec.beforeCommand) {
+    // workspace.create returns the exact workspace + surface it just made, so we
+    // never have to guess "which workspace is new" from a before/after snapshot.
+    // That matters here because the command is sent based on this lookup: two
+    // concurrent first-launches each get their own ids and can't be sent to the
+    // same/wrong surface (the --command path below keeps the snapshot only for
+    // best-effort tagging, where a misidentification is cosmetic).
+    const out = await cmux([
+      "rpc",
+      "workspace.create",
+      JSON.stringify(spec.cwd ? { cwd: spec.cwd } : {}),
+    ]);
+    const ids = JSON.parse(out) as {
+      workspace_id?: string;
+      surface_id?: string;
+    };
+    const created = ids.workspace_id ?? null;
+    const surface = ids.surface_id ?? null;
+    if (!created) return { workspace: null, surface: null };
+    await tagWorkspace(created, spec.projectName, spec.projectId);
+    const line = spec.cwd
+      ? `cd ${shellQuote(spec.cwd)} && ${spec.command}`
+      : spec.command;
+    if (surface) {
+      await spec.beforeCommand(surface);
+      await cmux(["send", "--workspace", created, "--surface", surface, `${line}\\n`]);
+      await focusSurface(surface);
+    } else {
+      // create returned no surface (shouldn't happen). Still launch — send to the
+      // workspace's active surface — so the chat always starts; we just couldn't
+      // pre-bind it.
+      await cmux(["send", "--workspace", created, `${line}\\n`]);
+    }
+    return { workspace: created, surface };
+  }
+
   const before = await workspaceUuids();
   const args = ["new-workspace", "--command", spec.command, "--focus", "true"];
   if (spec.cwd) args.push("--cwd", spec.cwd);
@@ -571,7 +624,6 @@ export interface OpenSpec {
   cwd?: string;
   // The command to run when spawning fresh. Defaults to a plain resume.
   command?: string;
-  onSpawned?: (placement: Placement) => void | Promise<void>;
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
@@ -650,7 +702,6 @@ async function openChatInner(spec: OpenSpec): Promise<OpenResult> {
       cwd: spec.cwd,
       command,
     });
-    await spec.onSpawned?.(placement);
     const workspace = placement.workspace;
     if (workspace) {
       recentSpawns.set(spec.sessionId, { workspace, at: Date.now() });
@@ -685,7 +736,10 @@ export interface StartCommandSpec {
   command: string;
   sessionId?: string;
   cwd?: string;
-  onPlaced?: (placement: Placement) => void | Promise<void>;
+  // Fired with the surface id once the surface exists but before the command
+  // runs (see PlaceSpec.beforeCommand). Codex uses it to bind its launch to the
+  // surface ahead of the agent's first hook event, closing the relink race.
+  beforeCommand?: (surfaceId: string) => void | Promise<void>;
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;
   projectName: string;
@@ -798,8 +852,8 @@ async function startCommandInner(spec: StartCommandSpec): Promise<OpenResult> {
       projectName: spec.projectName,
       cwd: spec.cwd,
       command: spec.command,
+      beforeCommand: spec.beforeCommand,
     });
-    await spec.onPlaced?.(placement);
     const workspace = placement.workspace;
     memoRecentSpawn(spec.taskKey, workspace);
     if (spec.sessionId) memoRecentSpawn(spec.sessionId, workspace);
@@ -815,35 +869,3 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-export interface ResumeBindingSpec {
-  surfaceId: string;
-  workspaceId?: string | null;
-  checkpointId: string;
-  cwd?: string;
-  kind: string;
-  name: string;
-  source: string;
-  command: string;
-}
-
-export async function setResumeBinding(spec: ResumeBindingSpec): Promise<void> {
-  const args = [
-    "surface",
-    "resume",
-    "set",
-    "--kind",
-    spec.kind,
-    "--name",
-    spec.name,
-    "--source",
-    spec.source,
-    "--checkpoint",
-    spec.checkpointId,
-    "--surface",
-    spec.surfaceId,
-  ];
-  if (spec.workspaceId) args.push("--workspace", spec.workspaceId);
-  if (spec.cwd) args.push("--cwd", spec.cwd);
-  args.push("--shell", spec.command);
-  await cmux(args);
-}
