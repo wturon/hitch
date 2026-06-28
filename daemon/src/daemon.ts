@@ -634,12 +634,18 @@ async function startHitchBinding({
     return synced;
   }
 
-  async function projectReducedTaskFrontmatter(): Promise<number> {
+  async function projectReducedFileFrontmatter(): Promise<number> {
     let projected = 0;
-    const chats = chatLifecycleStore.listTaskLinkedChats(projectId);
+    const chats = chatLifecycleStore.listFileLinkedChats(projectId);
     for (const chat of chats) {
       const linkedPath = chat.linkedPath;
-      if (!linkedPath || !/^tasks\/[^/]+\/task\.md$/.test(linkedPath)) continue;
+      // Only the canonical doc bodies carry chat frontmatter: a task's task.md
+      // or a note's index.md.
+      const isLinkedDoc =
+        !!linkedPath &&
+        (/^tasks\/[^/]+\/task\.md$/.test(linkedPath) ||
+          /^notes\/[^/]+\/index\.md$/.test(linkedPath));
+      if (!linkedPath || !isLinkedDoc) continue;
 
       const absPath = toAbs(linkedPath);
       let content: string;
@@ -733,12 +739,12 @@ async function startHitchBinding({
             ? (await refreshCodexThreadTitles()) + refreshClaudeChatTitles()
             : 0;
         const synced = await syncReducedChats();
-        const projected = await projectReducedTaskFrontmatter();
+        const projected = await projectReducedFileFrontmatter();
         if (totalReduced > 0 || titlesRefreshed > 0 || synced > 0 || projected > 0) {
           chatLifecycleStore.cleanupReducedEvents();
           chatLifecycleStore.pruneCmuxTrace();
           logger.info(
-            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), refreshed ${titlesRefreshed} title(s), synced ${synced} chat(s), projected ${projected} task(s) (${reason})`,
+            `[hitch:${projectLabel}] reduced ${totalReduced} chat event(s), changed ${totalChanged} chat(s), refreshed ${titlesRefreshed} title(s), synced ${synced} chat(s), projected ${projected} doc(s) (${reason})`,
           );
         }
         if (totalReduced > 0 && !isDelayedTitleRefresh) {
@@ -1110,16 +1116,27 @@ async function startHitchBinding({
   // hook/app-server driven; polling durable turn history can see the previous
   // completed turn during a live resumed turn, so don't reconcile Codex here.
   async function reconcileChatStatus(): Promise<void> {
-    const tasksDir = join(root.hitchPath, "tasks");
+    // Tasks (task.md) and notes (index.md) both stamp a chat-status, so a dead
+    // cmux Claude process on either must be reconciled or it hangs in "working".
+    await reconcileChatStatusInDir("tasks", "task.md");
+    await reconcileChatStatusInDir("notes", "index.md");
+  }
+
+  async function reconcileChatStatusInDir(
+    dir: string,
+    filename: string,
+  ): Promise<void> {
+    const baseDir = join(root.hitchPath, dir);
     let entries;
     try {
-      entries = await readdir(tasksDir, { withFileTypes: true });
+      entries = await readdir(baseDir, { withFileTypes: true });
     } catch {
-      return; // no tasks dir yet
+      return; // dir doesn't exist yet
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const absPath = join(tasksDir, entry.name, "task.md");
+      const linkedPath = `${dir}/${entry.name}/${filename}`;
+      const absPath = join(baseDir, entry.name, filename);
       let content: string;
       try {
         content = await readFile(absPath, "utf8");
@@ -1168,7 +1185,7 @@ async function startHitchBinding({
                 harness: "claude-code",
                 environment: env ?? null,
                 cwd: frontmatterValue(content, "chat-cwd") ?? root.localPath,
-                linkedPath: `tasks/${entry.name}/task.md`,
+                linkedPath,
                 chatId,
                 pid,
               }),
@@ -1177,7 +1194,7 @@ async function startHitchBinding({
         }
 
         logger.info(
-          `[hitch:${projectLabel}] recorded ended claude session (pid ${pid} gone) → tasks/${entry.name}/task.md`,
+          `[hitch:${projectLabel}] recorded ended claude session (pid ${pid} gone) → ${linkedPath}`,
         );
         continue;
       }
@@ -1277,6 +1294,13 @@ async function startHitchBinding({
         const linkedType = cmd.linkedType ?? (cmd.path ? "task" : undefined);
         const linkedPath = cmd.linkedPath ?? cmd.path;
         const isTaskLinked = linkedType === "task" && linkedPath !== undefined;
+        // Tasks AND notes carry their on-disk location in linkedPath and want
+        // their linked file (task.md / index.md) stamped with chat metadata on
+        // bind — and projected / pid-healed below. Automations link a path too
+        // but aren't editable docs, so they keep the old "not stamped" behavior.
+        const stampsLinkedFile =
+          (linkedType === "task" || linkedType === "note") &&
+          linkedPath !== undefined;
         if (!isTaskLinked && !cmd.launchId) {
           throw new Error("start-chat requires path or launchId");
         }
@@ -1314,7 +1338,7 @@ async function startHitchBinding({
                     }),
                   `codex bound ${threadId}`,
                 );
-                if (isTaskLinked) {
+                if (stampsLinkedFile) {
                   await linkCodexThread(
                     linkedPath,
                     threadId,
@@ -1345,7 +1369,7 @@ async function startHitchBinding({
                     }),
                   `claude bound ${sessionId}`,
                 );
-                if (isTaskLinked) {
+                if (stampsLinkedFile) {
                   await linkClaudeSession(
                     linkedPath,
                     sessionId,

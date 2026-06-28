@@ -117,8 +117,9 @@ function ChatStatusLine({
 // to the harness). On hover/focus it fills light-gray and reveals plain
 // "Resume ↗" text — no button border, since the row itself is the target. A
 // pending chat (just started, not yet bound to a real session) can't resume yet,
-// so its row is inert until the daemon binds it.
-function ChatRow({
+// so its row is inert until the daemon binds it. Exported so the note foot can
+// dock the identical bar over a note's linked chat.
+export function ChatRow({
   chat,
   archived,
   onResume,
@@ -268,10 +269,12 @@ function ChatRow({
 // effort picker and a Send button. Reuses the delegate-to-agent control logic
 // from the task dialog's DelegationBand, minus the preset row and (per the PRD)
 // any link control: chats started here are always standalone.
-function ChatComposer({
+export function ChatComposer({
   onStart,
   onManageHarnesses,
   wide,
+  defaultPrompt,
+  label = "Start a chat",
 }: {
   onStart: (params: {
     harness: Harness;
@@ -281,14 +284,23 @@ function ChatComposer({
   }) => Promise<void> | void;
   onManageHarnesses?: () => void;
   wide?: boolean;
+  // Prefill the textarea (e.g. the note launcher's "I need your help in …").
+  // When set, the caret lands at the END of the text on mount so the user keeps
+  // typing after it rather than overwriting it.
+  defaultPrompt?: string;
+  // The small heading above the box. Defaults to "Start a chat"; pass null to
+  // drop it where the surrounding surface already frames the action (the note
+  // foot), or a string to override it.
+  label?: string | null;
 }) {
   const [harness, setHarness] = useState<Harness>("codex");
   const [model, setModel] = useState(() => defaultModel("codex"));
   const [effort, setEffort] = useState(() =>
     defaultReasoning("codex", defaultModel("codex")),
   );
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(defaultPrompt ?? "");
   const [starting, setStarting] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Per-harness run environment, read from the local daemon bridge. Claude in an
   // editor extension can't take model/effort at launch, so those controls are
   // disabled for that case (same rule the DelegationBand follows).
@@ -310,6 +322,18 @@ function ChatComposer({
       .getHarnessEnvironments()
       .then((map) => setHarnessEnvs(map ?? {}))
       .catch(() => {});
+  }, []);
+
+  // Prefilled prompts (the note launcher) land the caret at the end, not
+  // selected, so the user continues the sentence. Once on mount.
+  useEffect(() => {
+    if (!defaultPrompt) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    const end = el.value.length;
+    el.setSelectionRange(end, end);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // The combined agent dropdown picks a (harness, model) pair at once; switching
@@ -350,14 +374,17 @@ function ChatComposer({
 
   return (
     <div className={cn("mx-auto w-full", wide ? "max-w-[760px]" : "max-w-[720px]")}>
-      <label
-        htmlFor="chat-composer-input"
-        className="mb-2 block text-sm font-semibold text-foreground"
-      >
-        Start a chat
-      </label>
+      {label && (
+        <label
+          htmlFor="chat-composer-input"
+          className="mb-2 block text-sm font-semibold text-foreground"
+        >
+          {label}
+        </label>
+      )}
       <div className="overflow-hidden rounded-xl border border-border bg-background shadow-sm">
         <textarea
+          ref={textareaRef}
           id="chat-composer-input"
           aria-label="Start a chat"
           value={prompt}

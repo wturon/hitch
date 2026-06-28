@@ -459,12 +459,15 @@ export class ChatLifecycleStore {
       .map((row) => this.localChatFromRow(row));
   }
 
-  listTaskLinkedChats(projectId: string, limit = 500): LocalChatRow[] {
+  // Chats linked to an editable doc (a task's task.md or a note's index.md),
+  // whose frontmatter the daemon keeps stamped/projected. Automations link a
+  // path too but aren't projected, so they're excluded.
+  listFileLinkedChats(projectId: string, limit = 500): LocalChatRow[] {
     return this.db
       .prepare(
         `SELECT * FROM local_chats
          WHERE project_id = ?
-           AND linked_type = 'task'
+           AND linked_type IN ('task', 'note')
            AND linked_path IS NOT NULL
          ORDER BY updated_at ASC
          LIMIT ?`,
