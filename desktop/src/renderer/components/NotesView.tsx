@@ -11,7 +11,6 @@ import {
   CopyIcon,
   EllipsisIcon,
   LoaderCircle,
-  MessageSquareIcon,
   PaperclipIcon,
   PlusIcon,
   SearchIcon,
@@ -33,10 +32,7 @@ import {
   MarkdownEditor,
   type MarkdownEditorHandle,
 } from "@/components/MarkdownEditor";
-import { ChatComposer, ChatRow } from "@/components/ChatsView";
-import { useChatActions, useChatsHome } from "@/hooks/useChats";
-import type { ChatRowViewModel } from "@/lib/chats";
-import type { Harness } from "@/lib/chat";
+import { NoteChatDock } from "@/components/NoteChatDock";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -182,12 +178,6 @@ export function NotesView({
   const tombstoneAttachment = useMutation(api.attachments.tombstoneAttachment);
   const attachments = useQuery(api.attachments.listAttachments, { projectId });
 
-  // The project's active chats (same query the Chats tab home uses). The open
-  // note's linked chat is resolved from here by linkedType/linkedPath, and the
-  // foot's resume/pin/archive/delete reuse the exact Chats-tab actions.
-  const chatsHome = useChatsHome(projectId);
-  const chatActions = useChatActions();
-
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [pendingSlug, setPendingSlug] = useState<string | null>(null);
   // The open editor registers its draft-flush here; we call it before swapping
@@ -215,67 +205,6 @@ export function NotesView({
   const selected = selectedSlug
     ? (docs.find((d) => d.slug === selectedSlug && !d.archived) ?? null)
     : null;
-
-  // The open note's linked chat, if any: the newest active (non-archived,
-  // non-deleted) chat whose link points back at this note. One chat per note —
-  // archiving/deleting it (or having none) drops the foot back to the launcher.
-  // listHome already excludes archived/deleted; the guards are belt-and-braces.
-  const linkedChat = useMemo(() => {
-    if (!selected) return null;
-    const home = chatsHome.data;
-    if (!home) return null;
-    return (
-      [...home.pinned, ...home.recent]
-        .filter(
-          (c) =>
-            !c.archived &&
-            !c.deleted &&
-            c.linkedType === "note" &&
-            c.linkedPath === selected.path,
-        )
-        .sort((a, b) => b.sortTime - a.sortTime)[0] ?? null
-    );
-  }, [chatsHome.data, selected]);
-
-  // Start a note-linked chat from the foot composer: same startChat the Chats
-  // tab and TaskDialog use, with linkedType "note" and the note's index.md path.
-  // No title (default naming) and no cwd (the daemon resolves the project cwd).
-  async function startNoteChat(
-    note: NoteDoc,
-    params: { harness: Harness; model: string; effort: string; prompt: string },
-  ) {
-    await chatActions.startChat({
-      projectId,
-      harness: params.harness,
-      initialPrompt: params.prompt,
-      model: params.model,
-      effort: params.effort,
-      linkedType: "note",
-      linkedPath: note.path,
-    });
-  }
-
-  // Resume/pin/archive/delete for the foot's ChatRow — identical to the Chats
-  // tab's row handlers, so a note's docked chat behaves exactly like one there.
-  const chatRowHandlers = useMemo(
-    () => ({
-      onResume: (chat: ChatRowViewModel) =>
-        void Promise.resolve(
-          chatActions.resumeChat({ projectId, id: chat.id }),
-        ).catch(() => {}),
-      onPin: (chat: ChatRowViewModel) =>
-        void chatActions.pinChat({ projectId, id: chat.id }),
-      onUnpin: (chat: ChatRowViewModel) =>
-        void chatActions.unpinChat({ projectId, id: chat.id }),
-      onArchive: (chat: ChatRowViewModel) =>
-        void chatActions.archiveChat({ projectId, id: chat.id }),
-      onUnarchive: (chat: ChatRowViewModel) =>
-        void chatActions.unarchiveChat({ projectId, id: chat.id }),
-      onDelete: (chat: ChatRowViewModel) =>
-        void chatActions.deleteChat({ projectId, id: chat.id }),
-    }),
-    [chatActions, projectId],
-  );
 
   // If the open note disappears from the active list (archived or deleted, here
   // or remotely), fall back to the index rather than a dangling editor.
@@ -471,9 +400,6 @@ export function NotesView({
           projectId={projectId}
           slug={selected.slug}
           content={selected.content}
-          linkedChat={linkedChat}
-          chatRowHandlers={chatRowHandlers}
-          onStartChat={(params) => startNoteChat(selected, params)}
           onSave={saveDoc}
           onFlush={flushDoc}
           registerFlush={(fn) => {
@@ -893,9 +819,6 @@ function NoteEditor({
   projectId,
   slug,
   content,
-  linkedChat,
-  chatRowHandlers,
-  onStartChat,
   onSave,
   onFlush,
   registerFlush,
@@ -906,24 +829,6 @@ function NoteEditor({
   projectId: Id<"projects">;
   slug: string;
   content: string;
-  // The note's linked chat for the foot, or null → launcher/composer.
-  linkedChat: ChatRowViewModel | null;
-  // Resume/pin/archive/delete handlers for the docked ChatRow (the Chats-tab set).
-  chatRowHandlers: {
-    onResume: (chat: ChatRowViewModel) => void;
-    onPin: (chat: ChatRowViewModel) => void;
-    onUnpin: (chat: ChatRowViewModel) => void;
-    onArchive: (chat: ChatRowViewModel) => void;
-    onUnarchive: (chat: ChatRowViewModel) => void;
-    onDelete: (chat: ChatRowViewModel) => void;
-  };
-  // Start a chat linked to this note from the foot composer.
-  onStartChat: (params: {
-    harness: Harness;
-    model: string;
-    effort: string;
-    prompt: string;
-  }) => Promise<void> | void;
   onSave: (slug: string, content: string) => Promise<void>;
   onFlush: (slug: string, content: string) => Promise<void>;
   registerFlush: (fn: () => void) => void;
@@ -935,11 +840,6 @@ function NoteEditor({
   const attachments = useAttachments({ projectId, slug, base: "notes" });
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
-  // The foot dock's launcher→composer toggle. Local to this (slug-keyed) editor,
-  // so it resets when you switch notes. Once a chat is linked, `linkedChat` wins
-  // the three-way regardless; the effect below clears this so archiving the chat
-  // drops back to the launcher (not the composer).
-  const [composing, setComposing] = useState(false);
   const editorRef = useRef<MarkdownEditorHandle>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const rawRef = useRef<HTMLTextAreaElement>(null);
@@ -948,13 +848,6 @@ function NoteEditor({
   const [draggingFile, setDraggingFile] = useState(false);
   const viewRef = useRef(view);
   viewRef.current = view;
-
-  // Once the started chat lands in the query, collapse the composer so the foot
-  // shows the ChatRow bar. Keeping `composing` false here means a later archive/
-  // delete (linkedChat → null) returns to the launcher, never the composer.
-  useEffect(() => {
-    if (linkedChat) setComposing(false);
-  }, [linkedChat]);
 
   // The floating "ask dock" at the foot (launcher or linked-task card) is pinned
   // over the bottom of the scroll area, so the scroll viewport must reserve its
@@ -1369,32 +1262,17 @@ function NoteEditor({
       </div>
 
       {/* Floating "ask dock", pinned over the bottom of the note and centered on
-          the document column. Three states (the locked Notes-chat design): no
-          chat → a calm launcher pill; clicking it expands the real Chats-tab
-          composer in place (prefilled "I need your help in <path>"); a linked
-          chat → the real ChatRow bar, identical to the Chats tab. It hangs here
-          as the user scrolls — see the marginBottom note. */}
+          the document column. NoteChatDock owns the launcher → composer → linked
+          chat row states (the locked Notes-chat design); this just positions and
+          measures it. It hangs here as the user scrolls — see the marginBottom
+          note. The wrapper centers the launcher pill while letting the composer/
+          row fill the 680px column. */}
       <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-6">
         <div
           ref={dockWrapRef}
           className="pointer-events-auto flex w-full max-w-[680px] justify-center"
         >
-          {linkedChat ? (
-            <div className="w-full">
-              <ChatRow chat={linkedChat} {...chatRowHandlers} />
-            </div>
-          ) : composing ? (
-            <div className="w-full">
-              <ChatComposer
-                defaultPrompt={`I need your help in ${noteBodyPath(slug)} `}
-                label={null}
-                wide
-                onStart={onStartChat}
-              />
-            </div>
-          ) : (
-            <NoteLauncher onLaunch={() => setComposing(true)} />
-          )}
+          <NoteChatDock projectId={projectId} notePath={noteBodyPath(slug)} />
         </div>
       </div>
 
@@ -1414,24 +1292,6 @@ function NoteEditor({
         </div>
       )}
     </div>
-  );
-}
-
-// The resting foot of a note with no chat linked: a calm pill that expands the
-// real Chats-tab composer in place (no modal, no navigation). Once a chat is
-// linked, this is replaced by the ChatRow bar; archiving/deleting it returns here.
-function NoteLauncher({ onLaunch }: { onLaunch: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onLaunch}
-      className="group inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3.5 py-2 text-[13px] text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
-    >
-      <MessageSquareIcon className="size-4 shrink-0 text-muted-foreground" />
-      <span className="font-medium text-foreground/80 group-hover:text-foreground">
-        Chat with or edit this note
-      </span>
-    </button>
   );
 }
 

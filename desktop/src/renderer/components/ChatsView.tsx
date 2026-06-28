@@ -386,7 +386,7 @@ export function ChatComposer({
         <textarea
           ref={textareaRef}
           id="chat-composer-input"
-          aria-label="Start a chat"
+          aria-label={label ?? "Start a chat"}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {

@@ -22,6 +22,11 @@ import { titleFromInitialPrompt } from "./chatTitles.js";
 import { closeT3Code, setT3Logger } from "./t3code.js";
 import { resolveLauncher } from "./launchers/registry.js";
 import {
+  LINKED_DOC_KINDS,
+  isLinkedDocPath,
+  isLinkedDocType,
+} from "./linkedDocs.js";
+import {
   readClaudeAiTitle,
   stopClaudeSessionLinker,
 } from "./launchers/claudeSessionLinker.js";
@@ -639,13 +644,8 @@ async function startHitchBinding({
     const chats = chatLifecycleStore.listFileLinkedChats(projectId);
     for (const chat of chats) {
       const linkedPath = chat.linkedPath;
-      // Only the canonical doc bodies carry chat frontmatter: a task's task.md
-      // or a note's index.md.
-      const isLinkedDoc =
-        !!linkedPath &&
-        (/^tasks\/[^/]+\/task\.md$/.test(linkedPath) ||
-          /^notes\/[^/]+\/index\.md$/.test(linkedPath));
-      if (!linkedPath || !isLinkedDoc) continue;
+      // Only the canonical doc bodies carry chat frontmatter (task.md/index.md).
+      if (!linkedPath || !isLinkedDocPath(linkedPath)) continue;
 
       const absPath = toAbs(linkedPath);
       let content: string;
@@ -1116,10 +1116,12 @@ async function startHitchBinding({
   // hook/app-server driven; polling durable turn history can see the previous
   // completed turn during a live resumed turn, so don't reconcile Codex here.
   async function reconcileChatStatus(): Promise<void> {
-    // Tasks (task.md) and notes (index.md) both stamp a chat-status, so a dead
-    // cmux Claude process on either must be reconciled or it hangs in "working".
-    await reconcileChatStatusInDir("tasks", "task.md");
-    await reconcileChatStatusInDir("notes", "index.md");
+    // Every linked doc kind (tasks/task.md, notes/index.md) stamps a chat-status,
+    // so a dead cmux Claude process on any must be reconciled or it hangs in
+    // "working". Walk each kind's dir from the shared LINKED_DOC_KINDS list.
+    for (const kind of LINKED_DOC_KINDS) {
+      await reconcileChatStatusInDir(kind.dir, kind.file);
+    }
   }
 
   async function reconcileChatStatusInDir(
@@ -1293,17 +1295,16 @@ async function startHitchBinding({
         if (!cmd.initialPrompt) throw new Error("start-chat requires initialPrompt");
         const linkedType = cmd.linkedType ?? (cmd.path ? "task" : undefined);
         const linkedPath = cmd.linkedPath ?? cmd.path;
-        const isTaskLinked = linkedType === "task" && linkedPath !== undefined;
+        // A start-chat must be keyable: either a linked doc/path or a launchId.
+        if (linkedPath === undefined && !cmd.launchId) {
+          throw new Error("start-chat requires linkedPath or launchId");
+        }
         // Tasks AND notes carry their on-disk location in linkedPath and want
         // their linked file (task.md / index.md) stamped with chat metadata on
         // bind — and projected / pid-healed below. Automations link a path too
         // but aren't editable docs, so they keep the old "not stamped" behavior.
         const stampsLinkedFile =
-          (linkedType === "task" || linkedType === "note") &&
-          linkedPath !== undefined;
-        if (!isTaskLinked && !cmd.launchId) {
-          throw new Error("start-chat requires path or launchId");
-        }
+          linkedPath !== undefined && isLinkedDocType(linkedType);
         const launchKey = linkedPath ?? cmd.launchId ?? cmd._id;
         const launchCwd = cmd.cwd ?? root.localPath;
         const title = cmd.title ?? titleFromInitialPrompt(cmd.initialPrompt, harness);

@@ -331,6 +331,42 @@ export const listHome = query({
   },
 });
 
+// The single chat linked to a given doc (a note's index.md or a task's task.md),
+// or null. Backed by the `by_link` index so the note foot can ask exactly "does
+// this doc own a chat?" without scraping a recency-truncated home list — the
+// answer must hold for an idle chat that fell off the recent window, or the
+// one-chat-per-note invariant breaks. Returns the newest active (non-deleted,
+// non-archived) match.
+export const getChatByLink = query({
+  args: {
+    projectId: v.id("projects"),
+    linkedType: linkedTypeValidator,
+    linkedPath: v.string(),
+    deviceToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectAccess(
+      ctx,
+      args.projectId,
+      args.deviceToken,
+    );
+    if (!access.project) throw new Error("Project does not exist");
+    const rows = await ctx.db
+      .query("chats")
+      .withIndex("by_link", (q) =>
+        q
+          .eq("projectId", access.project._id)
+          .eq("linkedType", args.linkedType)
+          .eq("linkedPath", args.linkedPath),
+      )
+      .collect();
+    const active = rows
+      .filter((chat) => !isDeleted(chat) && !isArchived(chat))
+      .sort((a, b) => eventTime(b) - eventTime(a));
+    return active[0] ?? null;
+  },
+});
+
 export const listHistory = query({
   args: {
     projectId: v.id("projects"),
