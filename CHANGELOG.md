@@ -8,6 +8,35 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+Large release: chats become a first-class primitive and the harness
+integration layer is rebuilt. Summarized rather than exhaustive.
+
+- **Chats as a first-class primitive.** A new Chats tab tracks agent sessions
+  (Claude Code & Codex) as their own entities, with live lifecycle status
+  (started / working / needs-input / done) projected onto task cards. Chats
+  carry auto-generated titles and can be resumed from the UI.
+- **Rebuilt harness integration layer.** Per-harness/per-environment launchers
+  for cmux, the Codex app, and the VS Code / Cursor extensions, covering both
+  new-chat and resume flows. Codex-in-cmux now resumes silently via cmux's own
+  hook.
+- **Lifecycle hooks + health manager.** Claude Code and Codex lifecycle hooks
+  feed a local store; an Integration Health panel in Settings detects drifted
+  or missing hooks and offers one-click heal. Drifted hooks now also auto-heal
+  on startup. Codex hooks migrated to `hooks.json`.
+- **Statuses 2.0.** Manage board statuses directly — add/remove/reorder via a
+  status manager, an "unknown status" column for un-migrated cards, and guided
+  migration modals.
+- **Notes primitive.** The former Knowledge primitive is now Notes: a
+  search-led index ⇄ focused editor, create-on-type, and a footer launcher to
+  hand a note directly to an agent.
+- **⌘K command palette.** Switch views/projects, run settings actions, and jump
+  around from the keyboard; ⌘1/⌘2 and Ctrl+Tab tab switching.
+- **Task editor.** Image paste / context menu in the markdown editor and
+  attachment copying when duplicating tasks.
+- **Fixes & polish.** Dark-mode rendering, sidebar/titlebar spacing, editor
+  popup layering, throttled device-token writes, and assorted lifecycle
+  reporting fixes.
+
 ## [0.1.15] - 2026-06-16
 
 - **Dark mode for the task editor.** The MDXEditor-based task dialog now follows
