@@ -75,7 +75,11 @@ export const WORKSPACE_VIEWS: {
   { view: "board", title: "Tasks", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
   { view: "chats", title: "Chats", Icon: MessageCircleIcon },
-  { view: "automations", title: "Automations", Icon: BotIcon },
+  // Automations is hidden for the release — it stays a valid WorkspaceView (the
+  // view, component, and App routing are intact) but is omitted here so it drops
+  // out of the header pills, ⌘-number jumps, Ctrl+Tab cycle, and ⌘K palette.
+  // Re-add this entry to bring the tab back.
+  // { view: "automations", title: "Automations", Icon: BotIcon },
 ];
 
 // Rank by searchable text: prefix > substring. Ties keep input order (already
