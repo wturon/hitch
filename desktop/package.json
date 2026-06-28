@@ -1,6 +1,6 @@
 {
   "name": "@hitch/desktop",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "private": true,
   "type": "module",
   "description": "Hitch Desktop — live Kanban board over git-ignored .hitch/ folders, supervising the local sync daemon.",
