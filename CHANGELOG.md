@@ -8,6 +8,8 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-06-28
+
 Large release: chats become a first-class primitive and the harness
 integration layer is rebuilt. Summarized rather than exhaustive.
 
