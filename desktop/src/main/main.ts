@@ -2024,6 +2024,55 @@ async function repairAllIntegrations(): Promise<IntegrationHealth> {
   return integrationHealth();
 }
 
+// On upgrade, a prior Hitch version's lifecycle-hook script can drift from what
+// this build expects (the embedded hook script content changed across versions).
+// Settings surfaces that as "drifted" and offers a manual "Heal", but a user who
+// never opens Settings would silently get stale/absent chat status on their task
+// cards. So heal drifted harness hooks automatically at startup — but ONLY when
+// there's an existing Hitch footprint that's stale ("drifted"). We never silently
+// install hooks for someone who never had them ("quiet"); that stays an opt-in via
+// Settings. Reuses harnessHookIntegrationStatus so "drifted" means exactly what the
+// Settings panel shows. Runs before the daemon so status flows on the first
+// post-upgrade launch instead of waiting for a Settings visit.
+function healDriftedHarnessHooks(): void {
+  const setup = globalHarnessSetupStatus();
+  const targets: Array<{ status: IntegrationStatus; install: () => unknown }> = [
+    {
+      status: harnessHookIntegrationStatus(
+        "claude.hitch-lifecycle-hooks",
+        "Hitch lifecycle hooks",
+        "Claude Code",
+        setup.claudeCode,
+      ),
+      install: installGlobalClaudeHooks,
+    },
+    {
+      status: harnessHookIntegrationStatus(
+        "codex.hitch-lifecycle-hooks",
+        "Hitch lifecycle hooks",
+        "Codex",
+        setup.codex,
+      ),
+      install: installGlobalCodexHooks,
+    },
+  ];
+  for (const { status, install } of targets) {
+    if (status.state !== "drifted") continue;
+    try {
+      install();
+      addLog(
+        "system",
+        `Auto-healed drifted ${status.group} lifecycle hooks on startup`,
+      );
+    } catch (err) {
+      addLog(
+        "system",
+        `Failed to auto-heal ${status.group} lifecycle hooks: ${String(err)}`,
+      );
+    }
+  }
+}
+
 function installGlobalCodexHooks(): GlobalHarnessSetupStatus {
   const scriptPath = globalCodexHookScriptPath();
   const command = globalCodexHookCommand();
@@ -2961,6 +3010,10 @@ app.whenReady().then(async () => {
   // launch Codex, so there's a single hook representation (avoids Codex's
   // dual-loading warning and keeps cmux's hook from colliding).
   migrateCodexHooksRepresentation();
+  // Re-install lifecycle hooks left stale by a prior Hitch version so live chat
+  // status works on the first post-upgrade launch (drifted-only; never installs
+  // for users who never had them — see healDriftedHarnessHooks).
+  healDriftedHarnessHooks();
   // If Codex is configured to run in cmux, hand the Codex resume binding to
   // cmux's own hook before the daemon can launch Codex. Other users see this as
   // an available integration in Settings, but we don't silently install it.
