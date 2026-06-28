@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
@@ -59,6 +59,10 @@ import { cn } from "@/lib/utils";
 // Sentinel value for the dropdown's footer action. It's not a real preset id —
 // selecting it jumps to the Settings prompt manager instead of picking a prompt.
 const MANAGE_PROMPTS_VALUE = "__manage_prompts__";
+const CODEX_LINKING_GRACE_MS = 6_000;
+const STARTING_GRACE_MS = 1_500;
+
+type LaunchPhase = "starting" | "linking";
 
 // The calm live status shown next to a linked agent. Monochrome by design:
 // working/idle stay muted; amber is reserved for the one "your turn" moment
@@ -142,9 +146,27 @@ export function DelegationBand({
   const [prompt, setPrompt] = useState(() =>
     buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }),
   );
-  const [starting, setStarting] = useState(false);
+  const [launchPhase, setLaunchPhase] = useState<LaunchPhase | null>(null);
+  const launchPhaseTimerRef = useRef<number | null>(null);
   // Whether the prompt editor is revealed. Minimized is the default calm state.
   const [expanded, setExpanded] = useState(false);
+
+  const clearLaunchPhaseTimer = useCallback(() => {
+    if (launchPhaseTimerRef.current === null) return;
+    window.clearTimeout(launchPhaseTimerRef.current);
+    launchPhaseTimerRef.current = null;
+  }, []);
+
+  const clearLaunchPhaseSoon = useCallback(
+    (delayMs: number) => {
+      clearLaunchPhaseTimer();
+      launchPhaseTimerRef.current = window.setTimeout(() => {
+        launchPhaseTimerRef.current = null;
+        setLaunchPhase(null);
+      }, delayMs);
+    },
+    [clearLaunchPhaseTimer],
+  );
 
   // (Re)load the custom prompts and reset the selection to the first built-in
   // ("Ship it") whenever the dialog switches to a different task — the band isn't
@@ -164,6 +186,16 @@ export function DelegationBand({
       active = false;
     };
   }, [title, path]);
+
+  useEffect(() => {
+    if (!chat) return;
+    clearLaunchPhaseTimer();
+    setLaunchPhase(null);
+  }, [chat, clearLaunchPhaseTimer]);
+
+  useEffect(() => {
+    return () => clearLaunchPhaseTimer();
+  }, [clearLaunchPhaseTimer]);
 
   // Read the per-harness environment preference once, so we know whether the
   // selected harness honors launch params (Claude in vscode/cursor does not).
@@ -216,16 +248,39 @@ export function DelegationBand({
   }
 
   const start = useCallback(async () => {
-    if (starting) return;
-    setStarting(true);
+    if (launchPhase) return;
+    clearLaunchPhaseTimer();
+    setLaunchPhase("starting");
     try {
       await onStart({ harness, model, effort, prompt });
-    } finally {
-      // The daemon spawn is async; the band only flips to "linked" once the
-      // agent writes its id back, so keep the button busy briefly.
-      setTimeout(() => setStarting(false), 1500);
+      if (harness === "codex" && !chat) {
+        setLaunchPhase("linking");
+        clearLaunchPhaseSoon(CODEX_LINKING_GRACE_MS);
+      } else {
+        clearLaunchPhaseSoon(STARTING_GRACE_MS);
+      }
+    } catch (error) {
+      setLaunchPhase(null);
+      throw error;
     }
-  }, [effort, harness, model, onStart, prompt, starting]);
+  }, [
+    chat,
+    clearLaunchPhaseSoon,
+    clearLaunchPhaseTimer,
+    effort,
+    harness,
+    launchPhase,
+    model,
+    onStart,
+    prompt,
+  ]);
+
+  const launchPhaseLabel =
+    launchPhase === "starting"
+      ? "Starting..."
+      : launchPhase === "linking"
+        ? "Linking Codex chat..."
+        : null;
 
   // While the task dialog is open and no chat is linked yet, Cmd+Enter sends
   // the current delegation prompt from anywhere in the dialog.
@@ -479,30 +534,41 @@ export function DelegationBand({
           </Select>
         </div>
 
-        {/* Send — the primary one-click trigger. Black rounded square, up-arrow,
-            no text. */}
-        <Tooltip>
-          <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
-            <Button
-              onClick={start}
-              disabled={starting}
-              aria-label="Delegate to agent"
-              className="size-8 shrink-0 rounded-lg p-0"
+        <div className="flex min-w-0 shrink-0 items-center gap-2">
+          {launchPhaseLabel && (
+            <span
+              className="min-w-0 max-w-36 truncate text-xs font-medium text-muted-foreground"
+              aria-live="polite"
             >
-              {starting ? (
-                <LoaderCircle className="animate-spin" />
-              ) : (
-                <ArrowUp className="size-4" strokeWidth={2.5} />
-              )}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <KbdGroup>
-              <Kbd>⌘</Kbd>
-              <Kbd>Enter</Kbd>
-            </KbdGroup>
-          </TooltipContent>
-        </Tooltip>
+              {launchPhaseLabel}
+            </span>
+          )}
+
+          {/* Send — the primary one-click trigger. Black rounded square, up-arrow,
+              no text. */}
+          <Tooltip>
+            <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
+              <Button
+                onClick={start}
+                disabled={launchPhase !== null}
+                aria-label="Delegate to agent"
+                className="size-8 shrink-0 rounded-lg p-0"
+              >
+                {launchPhase ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <ArrowUp className="size-4" strokeWidth={2.5} />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <KbdGroup>
+                <Kbd>⌘</Kbd>
+                <Kbd>Enter</Kbd>
+              </KbdGroup>
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       {!paramsHonored && (
