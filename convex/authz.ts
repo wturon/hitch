@@ -4,6 +4,16 @@ import type { DataModel, Id } from "./_generated/dataModel";
 
 type Ctx = GenericQueryCtx<DataModel> | GenericMutationCtx<DataModel>;
 
+// `lastUsedAt` on a device token is purely informational (shown in the device
+// token UI). But the token row sits in the read-set of the daemon's standing
+// listFiles / listAttachments / pendingCommands subscriptions, so writing it on
+// every authenticated mutation — above all the 15s heartbeat — invalidated and
+// re-ran all three, re-shipping the full file corpus each time (the dominant
+// driver of our Convex bill). Stamp it only when it has gone stale so the
+// reactive storm collapses without losing the field. See task:
+// to-investigate-my-convex-usage-seems-abnormally-high.
+const LAST_USED_THROTTLE_MS = 5 * 60 * 1000;
+
 export async function sha256(text: string): Promise<string> {
   const bytes = new TextEncoder().encode(text);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -99,7 +109,10 @@ export async function requireDeviceToken(
   if (!user) throw new Error("Device token user not found");
 
   if ("patch" in ctx.db) {
-    await ctx.db.patch(tokenDoc._id, { lastUsedAt: Date.now() });
+    const now = Date.now();
+    if (now - (tokenDoc.lastUsedAt ?? 0) > LAST_USED_THROTTLE_MS) {
+      await ctx.db.patch(tokenDoc._id, { lastUsedAt: now });
+    }
   }
 
   return { user, token: tokenDoc };
