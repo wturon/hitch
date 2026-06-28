@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { normalizeChatTitle } from "./chatTitles.js";
+import { LINKED_DOC_TYPES_SQL } from "./linkedDocs.js";
 
 export type ChatLifecycleStatus =
   | "working"
@@ -459,12 +460,16 @@ export class ChatLifecycleStore {
       .map((row) => this.localChatFromRow(row));
   }
 
-  listTaskLinkedChats(projectId: string, limit = 500): LocalChatRow[] {
+  // Chats linked to an editable doc (a task's task.md or a note's index.md),
+  // whose frontmatter the daemon keeps stamped/projected. The accepted kinds
+  // come from LINKED_DOC_KINDS so this stays in lockstep with the bind/reconcile
+  // paths; automations link a path too but aren't projected, so they're excluded.
+  listFileLinkedChats(projectId: string, limit = 500): LocalChatRow[] {
     return this.db
       .prepare(
         `SELECT * FROM local_chats
          WHERE project_id = ?
-           AND linked_type = 'task'
+           AND linked_type IN (${LINKED_DOC_TYPES_SQL})
            AND linked_path IS NOT NULL
          ORDER BY updated_at ASC
          LIMIT ?`,

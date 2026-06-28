@@ -1706,7 +1706,6 @@ function BoardContent({
         chat: parseChatRef(frontmatter),
         chatStatus: parseChatStatus(frontmatter),
         chatOpenState: parseChatOpenState(frontmatter),
-        sourceNote: frontmatter["source-note"] || undefined,
         column: boardColumnFor(status, boardStatuses),
         archived: status === "archived",
         updatedAt: f.updatedAt,
@@ -1884,28 +1883,6 @@ function BoardContent({
       hash: await sha256(content),
       deleted: false,
     });
-  }
-
-  // Hand a note to an agent as an ordinary task: write a fresh task whose
-  // frontmatter carries the machine link (`source-note`) back to the note and
-  // whose body opens with a human-readable `Source note:` link (for the agent +
-  // honesty). The agent's job is to edit the note file in place. Same upsert path
-  // as createTask, then open the task dialog on it (pre-populated) — the
-  // optimistic insert means the card is already in `cards` when we select it.
-  async function createTaskFromNote(note: { title: string; path: string }) {
-    const taken = new Set(cards.map((card) => card.slug));
-    const title = `re: ${note.title}`;
-    const slug = uniqueSlug(title, taken);
-    const path = taskBodyPath(slug);
-    const body = `Source note: [${note.title}](${note.path})\n\n`;
-    const content = setFrontmatterKeys(body, {
-      title,
-      status: boardStatuses[0].id,
-      "source-note": note.path,
-    });
-    const hash = await sha256(content);
-    void upsertFile({ projectId, path, content, hash, deleted: false });
-    setSelectedPath(path);
   }
 
   // Duplicate a task: write a fresh `tasks/<slug>/task.md` that keeps the
@@ -2322,14 +2299,9 @@ function BoardContent({
           <NotesView
             projectId={projectId}
             files={files}
-            cards={cards}
             showArchived={showNotesArchived}
             onShowArchivedChange={setShowNotesArchived}
             onExit={() => setWorkspaceView("board")}
-            onCreateTaskFromNote={(note) => void createTaskFromNote(note)}
-            onOpenTask={(card) => setSelectedPath(card.path)}
-            onArchiveTask={(card) => void setArchived(card, true)}
-            onDeleteTask={(card) => void deleteCard(card)}
             intent={noteIntent}
             onIntentHandled={() => setNoteIntent(null)}
           />

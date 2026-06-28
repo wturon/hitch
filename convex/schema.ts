@@ -238,5 +238,6 @@ export default defineSchema({
     .index("by_project_pinned", ["projectId", "pinned", "pinnedAt"])
     .index("by_project_archived", ["projectId", "archivedAt"])
     .index("by_project_launch", ["projectId", "launchId"])
-    .index("by_project_chat", ["projectId", "harness", "chatId", "host"]),
+    .index("by_project_chat", ["projectId", "harness", "chatId", "host"])
+    .index("by_link", ["projectId", "linkedType", "linkedPath"]),
 });

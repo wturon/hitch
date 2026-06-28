@@ -11,7 +11,6 @@ import {
   CopyIcon,
   EllipsisIcon,
   LoaderCircle,
-  MessageSquareIcon,
   PaperclipIcon,
   PlusIcon,
   SearchIcon,
@@ -33,7 +32,7 @@ import {
   MarkdownEditor,
   type MarkdownEditorHandle,
 } from "@/components/MarkdownEditor";
-import { LinkedTaskCard, type Card } from "@/components/TaskCard";
+import { NoteChatDock } from "@/components/NoteChatDock";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -119,23 +118,14 @@ export function noteDocs(files: FileDoc[]): NoteDoc[] {
 export function NotesView({
   projectId,
   files,
-  cards,
   showArchived,
   onShowArchivedChange,
   onExit,
-  onCreateTaskFromNote,
-  onOpenTask,
-  onArchiveTask,
-  onDeleteTask,
   intent,
   onIntentHandled,
 }: {
   projectId: Id<"projects">;
   files: FileDoc[];
-  // Every task card (active + archived), so an open note can find the task(s)
-  // launched from it (`source-note` === the note's path) and dock the board card
-  // at its foot. The note never writes tasks itself — the parent owns that.
-  cards: Card[];
   // The Archived sheet is opened from the shared workspace header (top-right),
   // so its open state is owned by the parent and threaded back in here.
   showArchived: boolean;
@@ -143,13 +133,6 @@ export function NotesView({
   // Esc on the index (with no query) leaves Notes for the Board — the parent owns
   // the Board/Notes tab.
   onExit: () => void;
-  // Hand the open note to an agent as an ordinary task (creates it + opens the
-  // pre-populated task dialog); the note-foot card's open/archive/delete reuse
-  // the board's own task operations.
-  onCreateTaskFromNote: (note: NoteDoc) => void;
-  onOpenTask: (card: Card) => void;
-  onArchiveTask: (card: Card) => void;
-  onDeleteTask: (card: Card) => void;
   // Open/create request from the command palette, consumed once then acked.
   intent: NoteIntent | null;
   onIntentHandled: () => void;
@@ -222,18 +205,6 @@ export function NotesView({
   const selected = selectedSlug
     ? (docs.find((d) => d.slug === selectedSlug && !d.archived) ?? null)
     : null;
-
-  // The open note's active linked task, if any: a task whose `source-note` points
-  // back at this note. Most-recent non-archived wins; archiving/deleting it (or
-  // having none) leaves the foot showing the launcher instead.
-  const linkedTask = useMemo(() => {
-    if (!selected) return null;
-    return (
-      cards
-        .filter((c) => !c.archived && c.sourceNote === selected.path)
-        .sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null
-    );
-  }, [cards, selected]);
 
   // If the open note disappears from the active list (archived or deleted, here
   // or remotely), fall back to the index rather than a dangling editor.
@@ -429,11 +400,6 @@ export function NotesView({
           projectId={projectId}
           slug={selected.slug}
           content={selected.content}
-          linkedTask={linkedTask}
-          onLaunchTask={() => onCreateTaskFromNote(selected)}
-          onOpenTask={onOpenTask}
-          onArchiveTask={onArchiveTask}
-          onDeleteTask={onDeleteTask}
           onSave={saveDoc}
           onFlush={flushDoc}
           registerFlush={(fn) => {
@@ -853,11 +819,6 @@ function NoteEditor({
   projectId,
   slug,
   content,
-  linkedTask,
-  onLaunchTask,
-  onOpenTask,
-  onArchiveTask,
-  onDeleteTask,
   onSave,
   onFlush,
   registerFlush,
@@ -868,12 +829,6 @@ function NoteEditor({
   projectId: Id<"projects">;
   slug: string;
   content: string;
-  // The note's active linked task (board card) for the foot, or null → launcher.
-  linkedTask: Card | null;
-  onLaunchTask: () => void;
-  onOpenTask: (card: Card) => void;
-  onArchiveTask: (card: Card) => void;
-  onDeleteTask: (card: Card) => void;
   onSave: (slug: string, content: string) => Promise<void>;
   onFlush: (slug: string, content: string) => Promise<void>;
   registerFlush: (fn: () => void) => void;
@@ -1307,25 +1262,17 @@ function NoteEditor({
       </div>
 
       {/* Floating "ask dock", pinned over the bottom of the note and centered on
-          the document column. Hand the note to an agent: with no active linked
-          task, a subtle launcher pill (→ the real, pre-populated task dialog);
-          once delegated, the same kanban board card (board width), live status
-          and all. It hangs here as the user scrolls — see the marginBottom note. */}
+          the document column. NoteChatDock owns the launcher → composer → linked
+          chat row states (the locked Notes-chat design); this just positions and
+          measures it. It hangs here as the user scrolls — see the marginBottom
+          note. The wrapper centers the launcher pill while letting the composer/
+          row fill the 680px column. */}
       <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-6">
-        <div ref={dockWrapRef} className="pointer-events-auto">
-          {linkedTask ? (
-            <div className="w-72">
-              <LinkedTaskCard
-                card={linkedTask}
-                projectId={projectId}
-                onOpen={onOpenTask}
-                onArchive={onArchiveTask}
-                onDelete={onDeleteTask}
-              />
-            </div>
-          ) : (
-            <NoteLauncher onLaunch={onLaunchTask} />
-          )}
+        <div
+          ref={dockWrapRef}
+          className="pointer-events-auto flex w-full max-w-[680px] justify-center"
+        >
+          <NoteChatDock projectId={projectId} notePath={noteBodyPath(slug)} />
         </div>
       </div>
 
@@ -1345,26 +1292,6 @@ function NoteEditor({
         </div>
       )}
     </div>
-  );
-}
-
-// The resting foot of a note with no active linked task: a subtle pill that
-// hands the note to an agent. Clicking opens the real, pre-populated task dialog
-// (the note context rides in the task body) — no bespoke composer. Once a task
-// is delegated, this is replaced by the board card (LinkedTaskCard).
-function NoteLauncher({ onLaunch }: { onLaunch: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onLaunch}
-      className="group inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3.5 py-2 text-[13px] text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
-    >
-      <MessageSquareIcon className="size-4 shrink-0 text-muted-foreground" />
-      <span className="font-medium text-foreground/80 group-hover:text-foreground">
-        Chat with or edit this note
-      </span>
-      <span className="text-muted-foreground/70">· opens a task</span>
-    </button>
   );
 }
 
