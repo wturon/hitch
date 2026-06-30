@@ -33,6 +33,7 @@ import {
 import type { Environment, Harness } from "./launchers/types.js";
 import type { ChatLifecycleStore, LocalChatRow } from "./chatLifecycleStore.js";
 import { createDebugApi, type DebugApi } from "./debugApi.js";
+import { ChatStateObserver } from "./observer/index.js";
 
 if (!globalThis.WebSocket) {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
@@ -628,6 +629,11 @@ async function startHitchBinding({
         linkedPath: chat.linkedPath ?? undefined,
         resumeKind: chat.resumeKind,
         resumePayload: chat.resumePayload,
+        observedStatus: chat.observedStatus ?? undefined,
+        observedExistence: chat.observedExistence ?? undefined,
+        observedActivity: chat.observedActivity ?? undefined,
+        observedSource: chat.observedSource ?? undefined,
+        observedAt: chat.observedAt ?? undefined,
         firstObservedAt: chat.firstObservedAt,
         lastEventAt: chat.lastEventAt,
         lastStatusAt: chat.lastStatusAt,
@@ -1585,10 +1591,30 @@ export async function startHitchDaemon(
   )?.chatLifecycleStore;
   const debug = debugStore ? createDebugApi(debugStore) : null;
 
+  // The chat-state observer runs once per machine (not per binding): it
+  // discovers Claude + Codex chats across every hitched project, maps each by
+  // cwd, and writes observed state into the shared store's shadow columns. The
+  // per-binding reduce/sync poll then carries those shadow fields to Convex. It
+  // shares any binding's store connection (all open the same DB file).
+  let observer: ChatStateObserver | null = null;
+  if (debugStore && config.hitches.length > 0) {
+    observer = new ChatStateObserver({
+      store: debugStore,
+      projects: config.hitches.map((hitch) => ({
+        projectId: hitch.projectId,
+        localPath: hitch.localPath,
+      })),
+      host,
+      logger,
+    });
+    observer.start();
+  }
+
   let stopped = false;
   async function stop(): Promise<void> {
     if (stopped) return;
     stopped = true;
+    await observer?.stop();
     await Promise.all(bindingHandles.map((binding) => binding.stop()));
     await closeCodexAppServer();
     await closeT3Code();
