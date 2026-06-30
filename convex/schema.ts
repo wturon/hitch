@@ -221,6 +221,25 @@ export default defineSchema({
     linkedPath: v.optional(v.string()),
     resumeKind: v.union(v.literal("open-chat-command"), v.literal("external")),
     resumePayload: v.optional(v.any()),
+    // Shadow state from the level-triggered chat-state observer, written
+    // alongside the hook-derived `status` while the observer runs dark (P0–P3).
+    // Lets the UI/debug surface compare the two sources before the flip (P2).
+    observedStatus: v.optional(
+      v.union(
+        v.literal("working"),
+        v.literal("needs-input"),
+        v.literal("waiting"),
+        v.literal("idle"),
+      ),
+    ),
+    observedExistence: v.optional(
+      v.union(v.literal("running"), v.literal("dormant"), v.literal("gone")),
+    ),
+    observedActivity: v.optional(
+      v.union(v.literal("working"), v.literal("idle"), v.literal("unknown")),
+    ),
+    observedSource: v.optional(v.string()),
+    observedAt: v.optional(v.number()),
     firstObservedAt: v.number(),
     lastEventAt: v.number(),
     lastStatusAt: v.number(),
