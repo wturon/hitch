@@ -332,17 +332,24 @@ export class ChatStateObserver {
       source: thread.source,
     };
 
+    // Only tail plausibly-running threads. A dormant thread's status is `idle`
+    // regardless of its last turn, so re-reading its rollout every reconcile is
+    // wasted I/O — without this gate a heavy user pays ~200×128KB reads per tick
+    // for the whole recent-thread catalog. I/O now scales with active chats.
     let rawActivity: ObservedActivity = "unknown";
-    const fileChanged = this.tail("codex", thread.id, thread.rolloutPath, (lines) => {
-      const derived = deriveCodexRolloutActivity(lines);
-      rawActivity = derived.activity;
-      evidence.marker = derived.marker;
-    });
+    let fileChanged = false;
+    if (existence === "running") {
+      fileChanged = this.tail("codex", thread.id, thread.rolloutPath, (lines) => {
+        const derived = deriveCodexRolloutActivity(lines);
+        rawActivity = derived.activity;
+        evidence.marker = derived.marker;
+      });
+    }
 
     const activity =
       existence === "running"
         ? this.debounceActivity("codex", thread.id, rawActivity, fileChanged, now)
-        : rawActivity;
+        : "idle";
 
     return {
       harness: "codex",
