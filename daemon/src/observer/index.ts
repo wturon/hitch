@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 
@@ -14,9 +13,9 @@ import type {
 import {
   activityFromPidfileStatus,
   claudeHome,
-  claudeTranscriptPath,
   deriveClaudeTranscriptActivity,
   discoverClaudeSessions,
+  findClaudeTranscript,
   sessionsDir,
   type ClaudeSession,
 } from "./claudeObserver.js";
@@ -34,7 +33,7 @@ import {
   type ProcessInfo,
 } from "./liveness.js";
 import { projectForCwd, type ObserverProject } from "./projects.js";
-import { tailFile, type TailCursor } from "./tail.js";
+import { readLatestTail, type TailCursor } from "./tail.js";
 import type {
   Observation,
   ObservedActivity,
@@ -257,7 +256,9 @@ export class ChatStateObserver {
   ): Observation | null {
     const project = this.resolveProject(session.cwd, "claude-code", session.sessionId);
     if (!project) return null; // unknown project — don't tail unrelated transcripts
-    const transcriptPath = claudeTranscriptPath(session.cwd, session.sessionId);
+    // Glob the transcript by session id — never reconstruct it from cwd (the
+    // munge is lossy). null when persistence is off or it ran on another host.
+    const transcriptPath = findClaudeTranscript(session.sessionId);
 
     // Prefer the harness's own self-report; fall back to the transcript tail
     // (vscode reports null). Either way feed it through the asymmetric debounce.
@@ -270,13 +271,18 @@ export class ChatStateObserver {
       pid: session.pid,
     };
 
-    const fileChanged = this.tail("claude-code", session.sessionId, transcriptPath, (lines) => {
-      if (rawActivity === "unknown") {
-        const derived = deriveClaudeTranscriptActivity(lines);
-        rawActivity = derived.activity;
-        evidence.lastStopReason = derived.lastStopReason;
-      }
-    });
+    // Level-triggered: re-derive from the *current* tail every reconcile, so a
+    // long silent tool stays `working` until the transcript gains a terminal
+    // marker — not just until a settle timer fires.
+    const fileChanged = transcriptPath
+      ? this.tail("claude-code", session.sessionId, transcriptPath, (lines) => {
+          if (rawActivity === "unknown") {
+            const derived = deriveClaudeTranscriptActivity(lines);
+            rawActivity = derived.activity;
+            evidence.lastStopReason = derived.lastStopReason;
+          }
+        })
+      : false;
 
     const activity = this.debounceActivity(
       "claude-code",
@@ -357,9 +363,11 @@ export class ChatStateObserver {
 
   // --- shared helpers --------------------------------------------------------
 
-  // Incrementally tail a log from the persisted cursor, hand the new complete
-  // lines to `consume`, and persist the advanced cursor. Returns whether the
-  // file changed at all since last tick (the leading-edge "working" trigger).
+  // Level-triggered tail: re-read the *current* bounded tail window every tick
+  // and hand its complete lines to `consume`, so derivation reflects the present
+  // latest-turn state rather than only newly-appended bytes. The persisted
+  // cursor (size/mtime/identity) is used only to report whether the file changed
+  // since last tick — the leading-edge "working" trigger. Returns that flag.
   private tail(
     harness: ChatLifecycleHarness,
     chatId: string,
@@ -376,7 +384,7 @@ export class ChatStateObserver {
           mtimeMs: prior.fileMtimeMs,
         }
       : null;
-    const result = tailFile(path, priorCursor);
+    const result = readLatestTail(path, priorCursor);
     if (!result) return false;
     if (result.lines.length > 0) consume(result.lines);
     this.store.setObservedFile({
@@ -490,8 +498,9 @@ export class ChatStateObserver {
       // Absence is only proof of death for a *persisted* session: if its
       // transcript isn't on disk we can't observe it (--no-session-persistence,
       // a relocated CLAUDE_CONFIG_DIR), so we never heal it — leave it to the
-      // hooks. A normal crashed/stale chat has a transcript and heals.
-      if (!existsSync(claudeTranscriptPath(chat.cwd, chat.chatId))) {
+      // hooks. Globbed by session id (not the lossy cwd munge) so the guard
+      // checks the real path. A normal crashed/stale chat has a transcript and heals.
+      if (!findClaudeTranscript(chat.chatId)) {
         rt.deadMisses = 0;
         this.runtime.set(key, rt);
         continue;

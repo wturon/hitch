@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 
 import {
-  deriveChatStatus,
   deriveStatusFromObservation,
+  resolveChatStatus,
   statusesDisagree,
 } from "../src/observer/derive.js";
 import {
@@ -56,39 +56,52 @@ assert.equal(
   "a gone process can never be working",
 );
 
-// --- deriveChatStatus (the flip seam) --------------------------------------
+// --- resolveChatStatus (the single ownership seam) -------------------------
+// Observer-only row (no events) is owned entirely by the observation.
+assert.deepEqual(
+  resolveChatStatus({
+    eventStatus: null,
+    observedStatus: "working",
+    observedExistence: "running",
+  }),
+  { status: "working", source: "observer" },
+);
 // Dark (default): the event status always wins, observation is shadow-only.
 assert.deepEqual(
-  deriveChatStatus({
+  resolveChatStatus({
     eventStatus: "working",
-    observation: obs({ existence: "gone" }),
+    observedStatus: "idle",
+    observedExistence: "gone",
   }),
   { status: "working", source: "events" },
-  "dark mode never lets the observation override events",
+  "dark mode never lets the observation override events (heal flows via events)",
 );
 // Flipped: observation drives, but needs-input (event-only) is preserved.
 assert.deepEqual(
-  deriveChatStatus({
+  resolveChatStatus({
     eventStatus: "needs-input",
-    observation: obs({ activity: "working" }),
+    observedStatus: "working",
+    observedExistence: "running",
     preferObserver: true,
   }),
   { status: "needs-input", source: "events" },
 );
 // Flipped: a dead process heals a stuck "working" event.
 assert.deepEqual(
-  deriveChatStatus({
+  resolveChatStatus({
     eventStatus: "working",
-    observation: obs({ existence: "gone" }),
+    observedStatus: "idle",
+    observedExistence: "gone",
     preferObserver: true,
   }),
   { status: "idle", source: "observer" },
 );
 // Flipped: leading-edge working bias — either source seeing a turn wins.
 assert.equal(
-  deriveChatStatus({
+  resolveChatStatus({
     eventStatus: "waiting",
-    observation: obs({ activity: "working" }),
+    observedStatus: "working",
+    observedExistence: "running",
     preferObserver: true,
   }).status,
   "working",

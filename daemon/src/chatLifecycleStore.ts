@@ -4,6 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { normalizeChatTitle } from "./chatTitles.js";
 import { LINKED_DOC_TYPES_SQL } from "./linkedDocs.js";
+import { resolveChatStatus } from "./observer/derive.js";
+import type { ObservedExistence } from "./observer/types.js";
 
 export type ChatLifecycleStatus =
   | "working"
@@ -982,15 +984,17 @@ export class ChatLifecycleStore {
       );
   }
 
-  // Write one observer snapshot onto the chat's `local_chats` row. Two modes:
-  //   - the row already exists (hook/daemon-bound): only the observed_* shadow
-  //     columns are touched; `status` is left to the reducer. The row is marked
-  //     dirty only when the shadow state actually changed, so we don't churn
-  //     Convex syncs every tick.
-  //   - no row yet (a chat hitch never launched): we create one with
-  //     observer_created = 1 and let the observed status BE the status — the
-  //     observer is the sole producer, so there's no hook truth to preserve.
-  // Returns whether anything changed (so the caller can decide to nudge a sync).
+  // Write one observer snapshot onto the chat's `local_chats` row. The observer
+  // never decides status policy itself: `status` is resolved through the single
+  // `resolveChatStatus` seam, exactly like the reducer. In dark mode that means
+  //   - hook/daemon-bound row (has events) → only the observed_* shadow columns
+  //     move; `status` is the unchanged event status.
+  //   - observer-only row (no event ever bound it) → the observation owns
+  //     `status`, since it's the row's only source.
+  // The row is marked dirty only when something actually changed, so we don't
+  // churn Convex syncs every tick. `record.status` is the observer's derived
+  // status (`deriveStatusFromObservation`).
+  //
   // `createIfMissing` (default true) gates producing a brand-new registry row:
   // callers pass false for dormant/gone observations so the observer doesn't
   // resurrect every historical transcript as a synced chat — it only refreshes
@@ -1013,9 +1017,14 @@ export class ChatLifecycleStore {
         existing.observedExistence !== record.existence ||
         existing.observedActivity !== record.activity ||
         existing.observedSource !== record.source;
-      const statusOwned = existing.observerCreated;
-      const nextStatus = statusOwned ? record.status : existing.status;
-      const statusChanged = statusOwned && existing.status !== record.status;
+      // Status is owned by the seam, not by an inline observer-created branch.
+      const nextStatus = resolveChatStatus({
+        eventStatus: existing.observerCreated ? null : existing.status,
+        observedStatus: record.status,
+        observedExistence: record.existence as ObservedExistence,
+        preferObserver: false,
+      }).status;
+      const statusChanged = existing.status !== nextStatus;
       const changed = shadowChanged || statusChanged;
       this.db
         .prepare(
@@ -1054,9 +1063,16 @@ export class ChatLifecycleStore {
       return changed;
     }
 
-    // Observer-only row: a chat hitch never launched and no hook bound. The
-    // observer owns its status. resumeKind = "external" (we didn't launch it).
+    // Observer-only row: a chat hitch never launched and no hook bound. Status
+    // is resolved through the same seam (eventStatus = null → the observation
+    // owns it). resumeKind = "external" (we didn't launch it).
     const title = normalizeChatTitle(record.title ?? undefined, record.harness);
+    const status = resolveChatStatus({
+      eventStatus: null,
+      observedStatus: record.status,
+      observedExistence: record.existence as ObservedExistence,
+      preferObserver: false,
+    }).status;
     this.upsertLocalChatUnsafe({
       localKey,
       projectId: record.projectId,
@@ -1064,7 +1080,7 @@ export class ChatLifecycleStore {
       harness: record.harness,
       chatId: record.chatId,
       pending: false,
-      status: record.status,
+      status,
       title,
       cwd: record.cwd,
       host: record.host,
@@ -1263,7 +1279,18 @@ export class ChatLifecycleStore {
       optionalString(event.metadata.title) ?? existing?.title,
       event.harness,
     );
-    const status = this.statusForEvent(event, existing?.status);
+    // Route the event-derived status through the single ownership seam. In dark
+    // mode this is a passthrough of the event status (the observation is
+    // shadow-only), so behavior is unchanged — but the seam now genuinely lives
+    // on the production path instead of being a parallel helper.
+    const eventStatus = this.statusForEvent(event, existing?.status);
+    const status = resolveChatStatus({
+      eventStatus,
+      observedStatus: existing?.observedStatus ?? null,
+      observedExistence:
+        (existing?.observedExistence as ObservedExistence | null) ?? null,
+      preferObserver: false,
+    }).status;
     const statusChanged = !existing || existing.status !== status;
     const endedAt =
       event.lifecycle === "session.ended"

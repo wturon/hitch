@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -21,6 +21,30 @@ function claudeHome(): string {
 
 function sessionsDir(): string {
   return join(claudeHome(), "sessions");
+}
+
+function projectsDir(): string {
+  return join(claudeHome(), "projects");
+}
+
+// Find a session's transcript by globbing `~/.claude/projects/*/<sessionId>.jsonl`
+// — the filename IS the session id. We do NOT reconstruct the directory from the
+// cwd: Claude's cwd→dir munge replaces every non-`[A-Za-z0-9-]` char with `-`
+// (underscores, spaces, dots…), so it's lossy and collision-prone and must never
+// be reversed/recreated for lookup. Returns the first match, or null when the
+// transcript isn't on this disk (ran on another host, or persistence disabled).
+export function findClaudeTranscript(sessionId: string): string | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(projectsDir());
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const candidate = join(projectsDir(), entry, `${sessionId}.jsonl`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 export interface ClaudePidfile {

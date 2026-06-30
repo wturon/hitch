@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { tailFile } from "../src/observer/tail.js";
+import { readLatestTail, tailFile } from "../src/observer/tail.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hitch-observer-tail-"));
 const path = join(dir, "rollout.jsonl");
@@ -64,6 +64,46 @@ try {
     windowed.lines.includes("aaaaaaaaaa"),
     false,
     "a line outside the window is not read",
+  );
+
+  // --- readLatestTail: level-triggered (the open-tool-stays-working case) ----
+  const lt = join(dir, "transcript.jsonl");
+  writeFileSync(
+    lt,
+    '{"type":"assistant","message":{"stop_reason":"tool_use"}}\n',
+    "utf8",
+  );
+  const t1 = readLatestTail(lt, null);
+  assert.ok(t1);
+  assert.equal(t1.changed, true);
+  assert.deepEqual(t1.lines, [
+    '{"type":"assistant","message":{"stop_reason":"tool_use"}}',
+  ]);
+
+  // Quiet tick — no new bytes — but the current tail STILL carries the open
+  // tool_use line. This is the fix: derivation sees "working" across silent
+  // ticks instead of going blank on the delta.
+  const t2 = readLatestTail(lt, t1.cursor);
+  assert.ok(t2);
+  assert.equal(t2.changed, false, "unchanged file = changed:false");
+  assert.deepEqual(
+    t2.lines,
+    ['{"type":"assistant","message":{"stop_reason":"tool_use"}}'],
+    "the current latest-turn line is re-read every tick, not just the delta",
+  );
+
+  // Turn closes — the terminal marker now appears in the current tail.
+  appendFileSync(
+    lt,
+    '{"type":"assistant","message":{"stop_reason":"end_turn"}}\n',
+    "utf8",
+  );
+  const t3 = readLatestTail(lt, t2.cursor);
+  assert.ok(t3);
+  assert.equal(t3.changed, true);
+  assert.equal(
+    t3.lines.at(-1),
+    '{"type":"assistant","message":{"stop_reason":"end_turn"}}',
   );
 
   console.log("observer-tail-smoke: OK");

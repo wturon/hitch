@@ -1,5 +1,9 @@
 import type { ChatLifecycleStatus } from "../chatLifecycleStore.js";
-import type { Observation, ObservedStatus } from "./types.js";
+import type {
+  Observation,
+  ObservedExistence,
+  ObservedStatus,
+} from "./types.js";
 
 // Map a machine observation to a hitch chat status, ignoring events.
 //
@@ -17,63 +21,71 @@ export function deriveStatusFromObservation(obs: Observation): ObservedStatus {
   return "waiting";
 }
 
-export interface DeriveChatStatusInput {
-  // The status reduced from the hook/daemon event stream — today's source of
-  // truth for `local_chats.status`.
-  eventStatus: ChatLifecycleStatus;
-  // The latest machine observation, when the observer has one.
-  observation: Observation | null;
-  // The flip switch. Dark (default): events win, the observation is shadow-only.
-  // Flipped (P2, per-harness once validated): the observation drives activity,
-  // but `needs-input` from events is preserved (it's the only carrier of the
-  // block axis) and a `working` event can still win the leading edge.
+export interface ResolveChatStatusInput {
+  // The status reduced from the hook/daemon event stream, or null when no event
+  // has ever bound this row (a wide-discovery, observer-only chat).
+  eventStatus: ChatLifecycleStatus | null;
+  // The observer's derived status + existence for this chat, or null when the
+  // observer hasn't seen it. `observedStatus` is `deriveStatusFromObservation`.
+  observedStatus: ChatLifecycleStatus | null;
+  observedExistence: ObservedExistence | null;
+  // The flip switch. Dark (default): events own status, the observation is
+  // shadow-only. Flipped (P2, per-harness once validated): the observation
+  // drives activity, `needs-input` from events is preserved, and a dead process
+  // overrides a stale event.
   preferObserver?: boolean;
 }
 
-export interface DerivedChatStatus {
+export interface ResolvedChatStatus {
   status: ChatLifecycleStatus;
   source: "events" | "observer";
 }
 
-// The unification seam between the two state sources. P0 ships it dark: with
-// `preferObserver` unset it returns the event status verbatim, so wiring it in
-// is a no-op. P2 flips a harness to `preferObserver: true` once the
-// disagreement log shows the observer is at least as good as the hooks.
-export function deriveChatStatus(
-  input: DeriveChatStatusInput,
-): DerivedChatStatus {
-  const { eventStatus, observation, preferObserver } = input;
-  if (!preferObserver || !observation) {
+// THE single status-ownership policy. Everything that materializes
+// `local_chats.status` — the reducer (event-backed rows) and `recordObservation`
+// (observer-only rows) — routes through here, so status is owned in exactly one
+// place instead of split across the store and the reducer.
+//
+// Dark (default `preferObserver` false) is a pure passthrough of the event
+// status, so wiring it into the reducer is a no-op: the dead-process heal still
+// works because it flows through the event stream (a `session.ended` event),
+// not through this function. A row with no events is owned entirely by its
+// observation (that's the only source it has).
+export function resolveChatStatus(
+  input: ResolveChatStatusInput,
+): ResolvedChatStatus {
+  const { eventStatus, observedStatus, observedExistence, preferObserver } =
+    input;
+
+  // Observer-only row (wide discovery): the observation is the sole source.
+  if (eventStatus === null) {
+    return { status: observedStatus ?? "waiting", source: "observer" };
+  }
+
+  // Dark, or nothing observed yet: events own the status.
+  if (!preferObserver || observedStatus === null) {
     return { status: eventStatus, source: "events" };
   }
 
-  // needs-input is event-only and outranks everything *while the chat is live*:
-  // a chat blocked on a prompt reads as `working` (open tool) on disk, so never
-  // let the observer downgrade it. A dead process still overrides it below.
-  if (eventStatus === "needs-input" && observation.existence === "running") {
+  // --- Flipped (P2): the observation drives activity. ---
+  // needs-input is event-only and survives while the chat is live (an open tool
+  // reads as `working` on disk, so the observer can't see the block).
+  if (eventStatus === "needs-input" && observedExistence === "running") {
     return { status: "needs-input", source: "events" };
   }
-
-  const observed = deriveStatusFromObservation(observation);
-
-  // Existence is hard ground truth: a process that's gone or dormant cannot be
-  // working, so the observation overrides a stale `working`/`waiting` event.
-  // This is the heal — the "stuck in working forever" fix.
-  if (observation.existence !== "running") {
-    return { status: observed, source: "observer" };
+  // Existence is hard ground truth: a gone/dormant process can't be working, so
+  // the observation overrides a stale `working`/`waiting` event (the heal).
+  if (observedExistence && observedExistence !== "running") {
+    return { status: observedStatus, source: "observer" };
   }
-
-  // Live chat: leading-edge bias toward `working`. If either source sees an
-  // active turn, it's working — keeps the instant hook signal even when the
-  // observer's trailing settle hasn't flipped yet.
-  if (eventStatus === "working" || observed === "working") {
+  // Live: leading-edge bias toward working.
+  if (eventStatus === "working" || observedStatus === "working") {
     return {
       status: "working",
-      source: observed === "working" ? "observer" : "events",
+      source: observedStatus === "working" ? "observer" : "events",
     };
   }
-
-  return { status: observed, source: "observer" };
+  return { status: observedStatus, source: "observer" };
 }
 
 // True when the observation contradicts the live (event-derived) status in a

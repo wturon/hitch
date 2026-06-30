@@ -140,3 +140,82 @@ export function readTailWindow(
   if (!result) return null;
   return result.lines.join("\n");
 }
+
+export interface LatestTail {
+  // The complete lines in the current tail window — re-read every call, so the
+  // *current* last-relevant line is always present regardless of whether the
+  // file grew since last time.
+  lines: string[];
+  // The file changed (size/mtime/identity) since `prior` — the leading-edge
+  // "working" trigger.
+  changed: boolean;
+  cursor: TailCursor;
+}
+
+// Level-triggered tail: read the last `windowBytes` of the file *every call* and
+// return its complete lines, so derivation reflects the current latest-turn
+// state rather than only newly-appended bytes. This is the fix for the
+// edge-triggered trap — an open tool with no new output stays visible in the
+// window (and thus `working`) until the log actually gains a terminal marker.
+// The cursor is still returned so callers can detect change cheaply next time.
+const LATEST_TAIL_WINDOW_BYTES = 128 * 1024;
+export function readLatestTail(
+  path: string,
+  prior: TailCursor | null,
+  options: { windowBytes?: number } = {},
+): LatestTail | null {
+  let dev: number;
+  let ino: number;
+  let size: number;
+  let mtimeMs: number;
+  try {
+    const st = statSync(path);
+    dev = st.dev;
+    ino = st.ino;
+    size = st.size;
+    mtimeMs = st.mtimeMs;
+  } catch {
+    return null;
+  }
+
+  const changed =
+    !prior ||
+    prior.dev !== dev ||
+    prior.ino !== ino ||
+    prior.size !== size ||
+    prior.mtimeMs !== mtimeMs;
+  const cursor: TailCursor = { dev, ino, offset: size, size, mtimeMs };
+
+  if (size === 0) return { lines: [], changed, cursor };
+
+  const window = options.windowBytes ?? LATEST_TAIL_WINDOW_BYTES;
+  const start = Math.max(0, size - window);
+  const length = size - start;
+  const buf = Buffer.allocUnsafe(length);
+  let read: number;
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    read = readSync(fd, buf, 0, length, start);
+  } catch {
+    return { lines: [], changed, cursor };
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+
+  const region = buf.subarray(0, read);
+  // When we began mid-file, the first line is a partial — drop it.
+  let from = 0;
+  if (start > 0) {
+    const firstNewline = region.indexOf(0x0a);
+    from = firstNewline >= 0 ? firstNewline + 1 : read;
+  }
+  // Drop the trailing partial line (everything after the last newline).
+  const lastNewline = region.lastIndexOf(0x0a);
+  if (lastNewline < from) return { lines: [], changed, cursor };
+  const lines = region
+    .toString("utf8", from, lastNewline + 1)
+    .split("\n")
+    .filter((line) => line.length > 0);
+  return { lines, changed, cursor };
+}
