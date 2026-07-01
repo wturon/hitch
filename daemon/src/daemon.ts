@@ -733,11 +733,22 @@ async function startHitchBinding({
         reduceAgain = false;
         let totalReduced = 0;
         let totalChanged = 0;
+        let totalFailed = 0;
         for (;;) {
           const result = chatLifecycleStore.reduceLifecycleEvents();
           totalReduced += result.eventsReduced;
           totalChanged += result.chatsChanged;
+          totalFailed += result.failed;
           if (result.eventsReduced < 100) break;
+        }
+        if (totalFailed > 0) {
+          // A quarantined event means a chat may not have bound/linked. The
+          // reducer no longer wedges on it (it advanced past), but this must be
+          // loud — the swallowed catch below is a last resort, not the signal.
+          logError(
+            logger,
+            `[hitch:${projectLabel}] quarantined ${totalFailed} un-reducible chat event(s) (${reason}) — see chat_events.reduce_error`,
+          );
         }
         const isDelayedTitleRefresh = reason.startsWith("title-refresh");
         const titlesRefreshed =

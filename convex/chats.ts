@@ -613,9 +613,18 @@ export const upsertReducedState = mutation({
       args.launchId === undefined
         ? null
         : await chatByLaunch(ctx, project._id, args.launchId);
-    const existing = byChat ?? byLaunch;
+    let existing = byChat ?? byLaunch;
     if (byChat && byLaunch && byChat._id !== byLaunch._id) {
-      throw new Error("Reduced chat identifiers match different rows");
+      // A bind unified two rows that were created separately: the pending
+      // launch-scoped doc (carries the task/note link) and an id-scoped doc
+      // (e.g. one the chat-state observer discovered before the bind reduced).
+      // Coalesce instead of throwing — keep the doc that holds the link (default
+      // the launch doc, which also owns any automation linkage) and delete the
+      // other. The patch below then folds in the incoming chatId/launchId/link.
+      const keep = byLaunch.linkedPath || !byChat.linkedPath ? byLaunch : byChat;
+      const drop = keep._id === byLaunch._id ? byChat : byLaunch;
+      await ctx.db.delete(drop._id);
+      existing = keep;
     }
 
     if (existing) {
