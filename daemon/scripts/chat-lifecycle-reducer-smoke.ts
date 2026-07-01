@@ -49,6 +49,7 @@ try {
   assert.deepEqual(result, {
     eventsReduced: 1,
     chatsChanged: 1,
+    failed: 0,
     cursor: created.seq,
   });
 
@@ -71,6 +72,7 @@ try {
   assert.deepEqual(result, {
     eventsReduced: 1,
     chatsChanged: 1,
+    failed: 0,
     cursor: bound.seq,
   });
 
@@ -118,6 +120,7 @@ try {
   assert.deepEqual(result, {
     eventsReduced: 1,
     chatsChanged: 0,
+    failed: 0,
     cursor: noChange.seq,
   });
   assert.equal(store.listDirtyChats().length, 0);

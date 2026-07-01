@@ -159,6 +159,9 @@ export interface ObservationRecord {
 export interface ChatLifecycleReductionResult {
   eventsReduced: number;
   chatsChanged: number;
+  // Events whose reduction threw and were quarantined (marked reduced + error
+  // recorded) so a single poison event can't wedge the cursor for every chat.
+  failed: number;
   cursor: number;
 }
 
@@ -455,47 +458,70 @@ export class ChatLifecycleStore {
     const startedCursor = this.getReducerCursor();
     const events = this.readEventsAfter(startedCursor, options.limit ?? 100);
     if (events.length === 0) {
-      return { eventsReduced: 0, chatsChanged: 0, cursor: startedCursor };
+      return { eventsReduced: 0, chatsChanged: 0, failed: 0, cursor: startedCursor };
     }
 
     const now = options.now ?? Date.now();
-    const reducedAt = now;
     let cursor = startedCursor;
     let chatsChanged = 0;
+    let failed = 0;
 
-    runInTransaction(this.db, () => {
-      for (const event of events) {
-        const next = this.reduceEventToLocalChat(event, now);
-        if (next) {
-          const existing = this.findLocalChatForEvent(event);
-          const changed = !existing || !this.sameReducedChat(existing, next);
-          this.upsertLocalChatUnsafe({
-            ...next,
-            dirty: existing?.dirty || changed,
-            lastSyncedAt: existing?.lastSyncedAt ?? null,
-            convexId: existing?.convexId ?? null,
-            updatedAt: changed || !existing ? now : existing.updatedAt,
+    // Reduce ONE event per transaction, not the whole batch. A single event that
+    // throws (e.g. a bind that would collide on a unique index) must not roll back
+    // its neighbors and freeze the cursor forever — the poison event is instead
+    // quarantined below and the cursor advances past it.
+    for (const event of events) {
+      try {
+        runInTransaction(this.db, () => {
+          const next = this.reduceEventToLocalChat(event, now);
+          if (next) {
+            const existing = this.findLocalChatForEvent(event);
+            const changed = !existing || !this.sameReducedChat(existing, next);
+            this.upsertLocalChatUnsafe({
+              ...next,
+              dirty: existing?.dirty || changed,
+              lastSyncedAt: existing?.lastSyncedAt ?? null,
+              convexId: existing?.convexId ?? null,
+              updatedAt: changed || !existing ? now : existing.updatedAt,
+            });
+            if (changed) chatsChanged += 1;
+          }
+          this.db
+            .prepare("UPDATE chat_events SET reduced_at = ? WHERE seq = ?")
+            .run(now, event.seq);
+          this.setMeta(REDUCER_CURSOR_KEY, String(event.seq));
+        });
+      } catch (err) {
+        failed += 1;
+        // Quarantine: mark the event reduced with the error recorded so it's
+        // skipped on the next pass, and advance the cursor regardless. Its own
+        // transaction so it survives even though the reduce transaction rolled
+        // back. A failure here (should be impossible) is swallowed — we still
+        // advance the in-memory cursor so the loop makes progress.
+        try {
+          runInTransaction(this.db, () => {
+            this.db
+              .prepare(
+                `UPDATE chat_events
+                 SET reduced_at = ?,
+                     reduce_error = ?,
+                     reduce_attempts = reduce_attempts + 1
+                 WHERE seq = ?`,
+              )
+              .run(now, String(err).slice(0, 1000), event.seq);
+            this.setMeta(REDUCER_CURSOR_KEY, String(event.seq));
           });
-          if (changed) chatsChanged += 1;
+        } catch {
+          // Ignore: cursor still advances in memory below.
         }
-
-        this.db
-          .prepare("UPDATE chat_events SET reduced_at = ? WHERE seq = ?")
-          .run(reducedAt, event.seq);
-        cursor = event.seq;
-        this.db
-          .prepare(
-            `INSERT INTO meta (key, value)
-             VALUES (?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          )
-          .run(REDUCER_CURSOR_KEY, String(cursor));
       }
-    });
+      cursor = event.seq;
+    }
 
     return {
       eventsReduced: events.length,
       chatsChanged,
+      failed,
       cursor,
     };
   }
@@ -900,6 +926,17 @@ export class ChatLifecycleStore {
         "observer_created INTEGER NOT NULL DEFAULT 0",
       );
 
+      // Reducer quarantine bookkeeping. Added idempotently outside the
+      // schema_version gate (same reasoning as the observer columns): a single
+      // event whose reduction throws is marked reduced with the error recorded
+      // here instead of rolling back and wedging the cursor for every chat.
+      this.addColumnIfMissing("chat_events", "reduce_error", "reduce_error TEXT");
+      this.addColumnIfMissing(
+        "chat_events",
+        "reduce_attempts",
+        "reduce_attempts INTEGER NOT NULL DEFAULT 0",
+      );
+
       this.db
         .prepare(
           `INSERT INTO meta (key, value)
@@ -1121,19 +1158,34 @@ export class ChatLifecycleStore {
   }
 
   private upsertLocalChatUnsafe(chat: LocalChatInput): void {
+    // Guarantee a single owner of this launch_id before the upsert — the
+    // partial unique index local_chats_by_launch rejects a second holder.
     if (chat.launchId) {
-      this.db
-        .prepare(
-          `UPDATE local_chats
-           SET local_key = ?
-           WHERE launch_id = ?
-             AND local_key != ?
-             AND NOT EXISTS (
-               SELECT 1 FROM local_chats AS target
-               WHERE target.local_key = ?
-             )`,
-        )
-        .run(chat.localKey, chat.launchId, chat.localKey, chat.localKey);
+      const targetExists =
+        this.db
+          .prepare("SELECT 1 FROM local_chats WHERE local_key = ?")
+          .get(chat.localKey) !== undefined;
+      if (targetExists) {
+        // The destination row already exists (e.g. an observer-created chat:<id>
+        // row that a bind is now folding a launch into). Any *other* row still
+        // holding this launch_id — the pending launch:<id> row — has had its link
+        // fields merged into `chat` upstream, so drop it: keeping it would collide
+        // on the unique launch_id index and wedge the reducer.
+        this.db
+          .prepare(
+            "DELETE FROM local_chats WHERE launch_id = ? AND local_key != ?",
+          )
+          .run(chat.launchId, chat.localKey);
+      } else {
+        // No destination row yet: rekey the existing launch:<id> row to the new
+        // key so the upsert updates it in place (pending -> bound) rather than
+        // inserting a duplicate that would collide on launch_id.
+        this.db
+          .prepare(
+            "UPDATE local_chats SET local_key = ? WHERE launch_id = ? AND local_key != ?",
+          )
+          .run(chat.localKey, chat.launchId, chat.localKey);
+      }
     }
 
     this.db
@@ -1237,6 +1289,13 @@ export class ChatLifecycleStore {
     return null;
   }
 
+  private getLocalChatByLaunchId(launchId: string): LocalChatRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM local_chats WHERE launch_id = ?")
+      .get(launchId);
+    return row ? this.localChatFromRow(row) : null;
+  }
+
   private findLocalChatForEvent(event: ChatLifecycleEventRow): LocalChatRow | null {
     if (event.chatId) {
       const byChat = this.getLocalChat(
@@ -1245,10 +1304,8 @@ export class ChatLifecycleStore {
       if (byChat) return byChat;
     }
     if (event.launchId) {
-      const row = this.db
-        .prepare("SELECT * FROM local_chats WHERE launch_id = ?")
-        .get(event.launchId);
-      if (row) return this.localChatFromRow(row);
+      const byLaunch = this.getLocalChatByLaunchId(event.launchId);
+      if (byLaunch) return byLaunch;
     }
     const localKey = this.localKeyForEvent(event);
     return localKey ? this.getLocalChat(localKey) : null;
@@ -1261,7 +1318,26 @@ export class ChatLifecycleStore {
     const localKey = this.localKeyForEvent(event);
     if (!localKey) return null;
 
-    const existing = this.findLocalChatForEvent(event);
+    // A bind event (chatId AND launchId) can straddle two rows: an observer-created
+    // `chat:<id>` row (status/observed state, no link) and the pending `launch:<id>`
+    // row (the task/note link, no chatId). Read both so link fields are inherited
+    // from whichever actually carries them — otherwise the bound chat loses its
+    // task link and the pending row is orphaned. upsertLocalChatUnsafe then coalesces
+    // the two rows so only one owns the launch_id.
+    const chatRow = event.chatId
+      ? this.getLocalChat(`chat:${event.harness}:${event.host}:${event.chatId}`)
+      : null;
+    const launchRow = event.launchId
+      ? this.getLocalChatByLaunchId(event.launchId)
+      : null;
+    const existing = chatRow ?? launchRow ?? this.getLocalChat(localKey);
+    // The link lives on whichever row was stamped with it (usually the pending
+    // launch row); the observer row has none.
+    const linkSource =
+      (chatRow?.linkedPath ? chatRow : null) ??
+      (launchRow?.linkedPath ? launchRow : null) ??
+      existing;
+
     const environment =
       optionalString(event.metadata.environment) ?? existing?.environment ?? null;
     const linkedType =
@@ -1269,12 +1345,13 @@ export class ChatLifecycleStore {
       event.metadata.linkedType === "note" ||
       event.metadata.linkedType === "automation"
         ? event.metadata.linkedType
-        : existing?.linkedType ?? null;
+        : linkSource?.linkedType ?? null;
     const linkedPath =
-      optionalString(event.metadata.linkedPath) ?? existing?.linkedPath ?? null;
+      optionalString(event.metadata.linkedPath) ?? linkSource?.linkedPath ?? null;
     const automationRunId =
       optionalString(event.metadata.automationRunId) ??
-      optionalString(existing?.resumePayload.automationRunId);
+      optionalString(existing?.resumePayload.automationRunId) ??
+      optionalString(launchRow?.resumePayload.automationRunId);
     const title = normalizeChatTitle(
       optionalString(event.metadata.title) ?? existing?.title,
       event.harness,
@@ -1299,10 +1376,15 @@ export class ChatLifecycleStore {
     const pending = event.chatId ? false : existing?.pending ?? true;
     const chatId = event.chatId ?? existing?.chatId ?? null;
 
+    const projectId =
+      event.projectId ?? existing?.projectId ?? launchRow?.projectId ?? null;
+    const launchId =
+      event.launchId ?? existing?.launchId ?? launchRow?.launchId ?? null;
+
     return {
       localKey,
-      projectId: event.projectId ?? existing?.projectId ?? null,
-      launchId: event.launchId ?? existing?.launchId ?? null,
+      projectId,
+      launchId,
       harness: event.harness,
       chatId,
       pending,
@@ -1316,7 +1398,7 @@ export class ChatLifecycleStore {
       resumeKind: existing?.resumeKind ?? "open-chat-command",
       resumePayload: {
         ...(existing?.resumePayload ?? {}),
-        launchId: event.launchId ?? existing?.launchId ?? null,
+        launchId,
         chatId,
         cwd: event.cwd || existing?.cwd || "",
         linkedPath,
