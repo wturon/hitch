@@ -53,14 +53,16 @@ export interface PaletteAction {
   onRun: () => void;
 }
 
-// "debug" is intentionally NOT in WORKSPACE_VIEWS below — it's an internal
-// surface reached from the account menu, not a per-project tab or ⌘K target.
+// "debug" and "editor-sandbox" are intentionally NOT in WORKSPACE_VIEWS below —
+// they're internal surfaces (the account menu / a ⌘K action), not per-project
+// tabs, so they stay out of the header pills, ⌘-number jumps, and Ctrl+Tab cycle.
 export type WorkspaceView =
   | "board"
   | "notes"
   | "chats"
   | "automations"
-  | "debug";
+  | "debug"
+  | "editor-sandbox";
 
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in

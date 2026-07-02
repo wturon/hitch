@@ -81,6 +81,7 @@ import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
 import { ChatsView } from "@/components/ChatsView";
 import { DebugView } from "@/components/DebugView";
+import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
 import {
   CommandPalette,
@@ -2146,6 +2147,14 @@ function BoardContent({
       icon: <Code2Icon className="size-4" />,
       onRun: () => openGlobalSettings("harnesses"),
     },
+    {
+      id: "editor-sandbox",
+      title: "Editor Sandbox",
+      meta: "internal",
+      keywords: ["editor", "sandbox", "lexical", "playground"],
+      icon: <PencilIcon className="size-4" />,
+      onRun: () => setWorkspaceView("editor-sandbox"),
+    },
   ];
 
   // Open a task: show the board first so the dialog floats over it (not Notes).
@@ -2301,6 +2310,8 @@ function BoardContent({
             projectId={projectId}
             onExit={() => setWorkspaceView("board")}
           />
+        ) : workspaceView === "editor-sandbox" ? (
+          <SandboxEditor onExit={() => setWorkspaceView("board")} />
         ) : (
         <DndContext
           sensors={sensors}
