@@ -8,6 +8,7 @@ import {
   type ChatOpenState,
   type ChatRef,
   type ChatStatus,
+  type DelegationRequest,
 } from "@/lib/chat";
 import { useOpenChat } from "@/lib/useOpenChat";
 import { HarnessIcon } from "@/components/HarnessIcon";
@@ -225,6 +226,51 @@ export function HarnessChip({
           onRetry={() => void launchOpen()}
         />
       )}
+    </div>
+  );
+}
+
+// The corner chip for a task that has *summoned* an agent but has no bound chat
+// yet — the durable, fire-and-forget "requested" flag (or a "failed" launch). It
+// reuses the same avatar/ring/expand-on-hover body as HarnessChip so the board
+// reads consistently, but it's inert: there's nothing to open yet, so a click
+// falls through to open the task (where a failed request can be cleared).
+//   requested — spinner ring, softened, "Requested"
+//   failed    — amber ring + dot, "Couldn't start" (+ the reason in the tooltip)
+export function RequestChip({ request }: { request: DelegationRequest }) {
+  const failed = request.state === "failed";
+  const state: ChipState = failed ? "needs-input" : "working";
+  const label = failed ? "Couldn’t start" : "Requested";
+  const tip = failed
+    ? request.error?.trim() ||
+      "The launch couldn’t start. Open the task to clear it and try again."
+    : `Summoning ${harnessLabel(request.harness)}… waiting for it to pick up the task.`;
+
+  return (
+    <div className="relative flex h-7 justify-end">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              tabIndex={0}
+              className={cn(
+                "relative inline-flex items-center rounded-full p-[3px]",
+                !failed && "opacity-70",
+              )}
+            />
+          }
+          aria-label={label}
+        >
+          <ChipRing state={state} />
+          <ChipBody
+            harness={request.harness}
+            state={state}
+            label={label}
+            disabledReason
+          />
+        </TooltipTrigger>
+        <TooltipContent className="max-w-64">{tip}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

@@ -9,9 +9,11 @@ import {
   parseChatOpenState,
   parseChatRef,
   parseChatStatus,
+  parseDelegationRequest,
   type ChatOpenState,
   type ChatRef,
   type ChatStatus,
+  type DelegationRequest,
 } from "@/lib/chat";
 
 // The in-memory document model for a single open task. It is the generic
@@ -24,8 +26,12 @@ export interface TaskDraft extends FrontmatterDocument {
   chat: ChatRef | null;
   chatStatus: ChatStatus | null;
   chatOpenState: ChatOpenState | null;
-  // Strip every chat-* field. Returns the new content so the caller can persist
-  // it (only frontmatter changes, so the body editor needs no update).
+  // The pre-link "summoning" flag, if a delegation is in flight (or failed) and
+  // no real chat has bound yet. Null once `chat` is present.
+  request: DelegationRequest | null;
+  // Strip every chat-* field (including the request flag). Returns the new content
+  // so the caller can persist it (only frontmatter changes, so the body editor
+  // needs no update).
   clearChat: () => string;
 }
 
@@ -45,6 +51,7 @@ export function useTaskDraft(content: string): TaskDraft {
     chat: parseChatRef(doc.frontmatter),
     chatStatus: parseChatStatus(doc.frontmatter),
     chatOpenState: parseChatOpenState(doc.frontmatter),
+    request: parseDelegationRequest(doc.frontmatter),
     clearChat,
   };
 }

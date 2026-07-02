@@ -16,6 +16,8 @@ import {
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import type { Harness } from "@/lib/chat";
+import { stampDelegationRequest } from "@/lib/chat";
+import { sha256 } from "@/lib/hash";
 import { useTaskDraft } from "@/hooks/useTaskDraft";
 import { useTaskPersistence } from "@/hooks/useTaskPersistence";
 import { useAttachments } from "@/hooks/useAttachments";
@@ -155,7 +157,7 @@ function TaskEditor({
   onManagePrompts?: () => void;
   onManageHarnesses?: () => void;
 }) {
-  const startPendingChat = useMutation(api.chats.startChat);
+  const requestDelegation = useMutation(api.chats.requestDelegation);
   // The whole document model lives in the hook: the full-file draft, the
   // body/title/frontmatter selectors, the document mutations, dirty tracking,
   // and adoption of external writes. This component owns only the things around
@@ -499,30 +501,37 @@ function TaskEditor({
     effort: string;
     prompt: string;
   }) {
-    const uncommitted = isUncommitted();
     // Materialize before launching so the linked path (and the prompt's task-ref
     // preamble, which the bar built against prospectivePath) point at a real file.
     // canDelegate gates the bar on a non-empty title, so commitDraft always has a
     // title here and never returns null.
     const path = await commitDraft();
     if (!path) return;
-    // A just-materialized draft was written whole by commitDraft; an already-real
-    // file (existing task, or a draft committed earlier by a pasted attachment)
-    // still needs its pending edits flushed.
-    if (!uncommitted && draft.dirty) await persist(draft.raw, path);
-    await startPendingChat({
+    // Stamp the summoning flag onto the current doc and hand the whole thing to
+    // requestDelegation, which persists the doc + enqueues the launch atomically.
+    // This is the single write — it folds in any pending edits (stamped === the
+    // live draft plus the flag) and replaces the old flush-then-launch two-step.
+    // The card flips to "Summoning…" the instant this returns, via the files
+    // subscription; no phantom pending chat row, no open dialog required.
+    const launchId = crypto.randomUUID();
+    const stamped = stampDelegationRequest(draft.raw, harness, launchId);
+    await requestDelegation({
       projectId: task.projectId,
       harness,
+      launchId,
       linkedType: "task",
       linkedPath: path,
+      content: stamped,
+      hash: await sha256(stamped),
       initialPrompt: prompt,
       title: draft.title.trim() || task.title,
       model,
       effort,
     });
     // A draft dialog is still mounted on its in-memory target, whose static
-    // content can't pick up the daemon's chat link. Reopen it on the now-real card
-    // so the bar flips to its delegated state. (No-op for an existing task.)
+    // content can't pick up the stamped flag or the daemon's later chat link.
+    // Reopen it on the now-real card so the bar flips to its live state. (No-op
+    // for an existing task.)
     if (task.isDraft) onDraftDelegated(path);
   }
 
@@ -756,6 +765,7 @@ function TaskEditor({
             chat={draft.chat}
             chatStatus={draft.chatStatus}
             chatOpenState={draft.chatOpenState}
+            request={draft.request}
             title={draft.frontmatter.title || task.title}
             path={prospectivePath}
             canDelegate={draft.title.trim() !== ""}

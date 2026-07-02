@@ -5,8 +5,9 @@ import type {
   ChatOpenState,
   ChatRef,
   ChatStatus,
+  DelegationRequest,
 } from "@/lib/chat";
-import { HarnessChip } from "@/components/HarnessChip";
+import { HarnessChip, RequestChip } from "@/components/HarnessChip";
 
 // A board card models one task body (tasks/<slug>/task.md). The same shape backs
 // the kanban board and the note-foot linked-task card, so it lives here next to
@@ -21,6 +22,7 @@ export interface Card {
   chat: ChatRef | null; // the coding-agent chat driving this task, if linked
   chatStatus: ChatStatus | null; // live working/ready state, if the chat reports it
   chatOpenState: ChatOpenState | null; // whether the chat link is safe to open
+  request: DelegationRequest | null; // the pre-link summoning flag (requested/failed)
   column: string;
   archived: boolean;
   updatedAt: number;
@@ -44,18 +46,28 @@ export function CardChat({
   card: Card;
   projectId: Id<"projects">;
 }) {
-  if (!card.chat) return null;
-
-  return (
-    <div className="mt-3">
-      <HarnessChip
-        chat={card.chat}
-        status={card.chatStatus}
-        openState={card.chatOpenState}
-        projectId={projectId}
-      />
-    </div>
-  );
+  // A bound chat wins; otherwise show the summoning flag if one is in flight or
+  // failed. Both render at the card's corner in the same slot.
+  if (card.chat) {
+    return (
+      <div className="mt-3">
+        <HarnessChip
+          chat={card.chat}
+          status={card.chatStatus}
+          openState={card.chatOpenState}
+          projectId={projectId}
+        />
+      </div>
+    );
+  }
+  if (card.request) {
+    return (
+      <div className="mt-3">
+        <RequestChip request={card.request} />
+      </div>
+    );
+  }
+  return null;
 }
 
 export function CardContents({
@@ -68,7 +80,9 @@ export function CardContents({
   return (
     <>
       <CardSummary card={card} />
-      {card.chat && <CardChat card={card} projectId={projectId} />}
+      {(card.chat || card.request) && (
+        <CardChat card={card} projectId={projectId} />
+      )}
     </>
   );
 }
