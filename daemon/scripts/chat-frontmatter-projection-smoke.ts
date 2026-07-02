@@ -54,6 +54,7 @@ Body
 const clearedRequest = {
   "chat-request": undefined,
   "chat-request-harness": undefined,
+  "chat-request-id": undefined,
   "chat-request-error": undefined,
 };
 

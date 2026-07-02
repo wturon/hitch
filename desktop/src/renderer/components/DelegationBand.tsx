@@ -157,6 +157,13 @@ export function DelegationBand({
   // files subscription, so it survives the dialog closing. This flag exists only
   // to disable the Send button between click and the mutation resolving.
   const [sending, setSending] = useState(false);
+  // Latched once a delegation is fired and NOT reset on success. The durable
+  // `request` flag can lag the mutation (files round-trip) — or, for a dirty
+  // existing task, never adopt while the editor stays open — leaving a window
+  // where Send/⌘↩ would fire a *second* launch. The latch closes that window: it
+  // stays set until the band remounts (keyed per task) or a chat/request appears
+  // and swaps the whole view. Only a failed submit unlatches it (retry allowed).
+  const [submitted, setSubmitted] = useState(false);
   // Whether the prompt editor is revealed. Minimized is the default calm state.
   const [expanded, setExpanded] = useState(false);
 
@@ -238,21 +245,26 @@ export function DelegationBand({
   // requested`, and the card/band reflect it off the subscription — durable and
   // dialog-independent. `sending` only guards against a double-click mid-flight.
   const start = useCallback(async () => {
-    if (sending || !canDelegate) return;
+    if (sending || submitted || !canDelegate) return;
     setSending(true);
+    setSubmitted(true);
     try {
       await onStart({ harness, model, effort, prompt });
       // Remember this exact combination for the next task's bar.
       saveLastAgent({ harness, model, effort });
+    } catch (error) {
+      // The launch never left — unlatch so the user can retry.
+      setSubmitted(false);
+      throw error;
     } finally {
       setSending(false);
     }
-  }, [sending, canDelegate, effort, harness, model, onStart, prompt]);
+  }, [sending, submitted, canDelegate, effort, harness, model, onStart, prompt]);
 
   // While the task dialog is open and no agent is linked or in flight yet,
   // Cmd+Enter sends the current delegation prompt from anywhere in the dialog.
   useEffect(() => {
-    if (chat || request || !canDelegate) return;
+    if (chat || request || submitted || !canDelegate) return;
     function onKeyDown(e: KeyboardEvent) {
       if (
         e.key !== "Enter" ||
@@ -276,7 +288,7 @@ export function DelegationBand({
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [canDelegate, chat, request, start]);
+  }, [canDelegate, chat, request, submitted, start]);
 
   // Whether the current (harness, environment) pair accepts model/effort at
   // launch. Unset env falls back to the harness default.
@@ -549,11 +561,11 @@ export function DelegationBand({
             <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
               <Button
                 onClick={start}
-                disabled={sending || !canDelegate}
+                disabled={sending || submitted || !canDelegate}
                 aria-label="Delegate to agent"
                 className="size-8 shrink-0 rounded-lg p-0"
               >
-                {sending ? (
+                {sending || submitted ? (
                   <LoaderCircle className="animate-spin" />
                 ) : (
                   <ArrowUp className="size-4" strokeWidth={2.5} />

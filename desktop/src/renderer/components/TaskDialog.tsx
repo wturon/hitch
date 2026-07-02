@@ -513,10 +513,12 @@ function TaskEditor({
     // live draft plus the flag) and replaces the old flush-then-launch two-step.
     // The card flips to "Summoning…" the instant this returns, via the files
     // subscription; no phantom pending chat row, no open dialog required.
-    const stamped = stampDelegationRequest(draft.raw, harness);
+    const launchId = crypto.randomUUID();
+    const stamped = stampDelegationRequest(draft.raw, harness, launchId);
     await requestDelegation({
       projectId: task.projectId,
       harness,
+      launchId,
       linkedType: "task",
       linkedPath: path,
       content: stamped,

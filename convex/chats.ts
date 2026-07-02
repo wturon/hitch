@@ -473,6 +473,10 @@ export const requestDelegation = mutation({
     projectId: v.id("projects"),
     harness: harnessValidator,
     initialPrompt: v.string(),
+    // The client mints the launch id and stamps it into `content` as
+    // chat-request-id, so the daemon can correlate a failure to this exact
+    // request. The same id keys the command's pending-chat correlation.
+    launchId: v.optional(v.string()),
     linkedType: linkedTypeValidator,
     linkedPath: v.string(),
     // The linked doc, re-stamped with `chat-request: requested` by the client so
@@ -488,8 +492,30 @@ export const requestDelegation = mutation({
   handler: async (ctx, args) => {
     const access = await requireProjectMemberById(ctx, args.projectId);
     const now = Date.now();
-    const id = launchId();
+    const id = args.launchId ?? launchId();
     const title = normalizeTitle(args.title ?? args.initialPrompt, args.harness);
+
+    // Idempotency backstop for a rapid double-fire (the durable `request` state
+    // can lag the mutation, so the client's Send guard alone isn't enough): if an
+    // unclaimed start-chat for this doc is already on the bus, don't enqueue a
+    // second — that would spawn a duplicate agent. Claimed commands are already
+    // in flight and a fresh request legitimately supersedes them, so we only
+    // dedup the un-acted-on ones.
+    const pendingForPath = await ctx.db
+      .query("commands")
+      .withIndex("by_project_status", (q) =>
+        q.eq("projectId", access.project._id).eq("status", "pending"),
+      )
+      .collect();
+    const duplicate = pendingForPath.find(
+      (cmd) =>
+        cmd.kind === "start-chat" &&
+        cmd.linkedPath === args.linkedPath &&
+        cmd.claimedAt === undefined,
+    );
+    if (duplicate) {
+      return { commandId: duplicate._id, launchId: duplicate.launchId, deduped: true };
+    }
 
     // Persist the stamped doc (same shape as files.upsertFile) so the flag rides
     // the files subscription to every open board and, via the daemon, to disk.
@@ -533,7 +559,7 @@ export const requestDelegation = mutation({
       updatedAt: now,
     });
 
-    return { commandId, launchId: id };
+    return { commandId, launchId: id, deduped: false };
   },
 });
 

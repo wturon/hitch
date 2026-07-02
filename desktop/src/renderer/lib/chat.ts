@@ -329,6 +329,11 @@ export function parseChatOpenState(fm: Frontmatter): ChatOpenState | null {
 export const CHAT_REQUEST_KEY = "chat-request";
 export const CHAT_REQUEST_HARNESS_KEY = "chat-request-harness";
 export const CHAT_REQUEST_ERROR_KEY = "chat-request-error";
+// The launch this flag belongs to. The daemon correlates a command's failure to
+// the doc's *current* request via this id, so a stale command's late failure
+// can't clobber a newer request the user has since re-fired (see the daemon's
+// markDelegationFailed). Cleared alongside the rest on bind / clear.
+export const CHAT_REQUEST_ID_KEY = "chat-request-id";
 
 export type DelegationRequestState = "requested" | "failed";
 
@@ -341,18 +346,28 @@ export interface DelegationRequest {
 export function parseDelegationRequest(fm: Frontmatter): DelegationRequest | null {
   const raw = normalizeStatusValue(fm[CHAT_REQUEST_KEY] ?? "");
   if (raw !== "requested" && raw !== "failed") return null;
-  const harness = (fm[CHAT_REQUEST_HARNESS_KEY] ?? "").trim();
-  if (!isHarness(harness)) return null;
+  const rawHarness = (fm[CHAT_REQUEST_HARNESS_KEY] ?? "").trim();
+  // A launch genuinely in flight must never be hidden just because the harness
+  // key is missing/unknown (a hand-edit or a cross-version harness rename) —
+  // hiding it silently drops the band back to compose and re-arms Send. Show the
+  // state with a best-effort harness for the icon instead.
+  const harness = isHarness(rawHarness) ? rawHarness : "claude-code";
   const error = (fm[CHAT_REQUEST_ERROR_KEY] ?? "").trim();
   return { state: raw, harness, error: error || undefined };
 }
 
-// Stamp a fresh "requested" flag onto raw file content. Any stale error is
-// cleared so a retry after a failure reads clean.
-export function stampDelegationRequest(content: string, harness: Harness): string {
+// Stamp a fresh "requested" flag onto raw file content, tagged with the launch
+// id so a later failure can be matched back to this exact request. Any stale
+// error is cleared so a retry after a failure reads clean.
+export function stampDelegationRequest(
+  content: string,
+  harness: Harness,
+  launchId: string,
+): string {
   return setFrontmatterKeys(content, {
     [CHAT_REQUEST_KEY]: "requested",
     [CHAT_REQUEST_HARNESS_KEY]: harness,
+    [CHAT_REQUEST_ID_KEY]: launchId,
     [CHAT_REQUEST_ERROR_KEY]: undefined,
   });
 }
@@ -363,6 +378,7 @@ export function clearDelegationRequest(content: string): string {
   return setFrontmatterKeys(content, {
     [CHAT_REQUEST_KEY]: undefined,
     [CHAT_REQUEST_HARNESS_KEY]: undefined,
+    [CHAT_REQUEST_ID_KEY]: undefined,
     [CHAT_REQUEST_ERROR_KEY]: undefined,
   });
 }
@@ -435,6 +451,7 @@ export function clearChatFields(content: string): string {
     "chat-t3-environment-id": undefined,
     [CHAT_REQUEST_KEY]: undefined,
     [CHAT_REQUEST_HARNESS_KEY]: undefined,
+    [CHAT_REQUEST_ID_KEY]: undefined,
     [CHAT_REQUEST_ERROR_KEY]: undefined,
   });
 }

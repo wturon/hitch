@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { MessageSquareIcon } from "lucide-react";
+import { LoaderCircleIcon, MessageSquareIcon } from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
 import type { Harness } from "@/lib/chat";
 import type { ChatRowViewModel } from "@/lib/chats";
@@ -33,11 +33,21 @@ export function NoteChatDock({
   const linkedChat = useChatByLink(projectId, "note", notePath);
   const actions = useChatActions();
   const [composing, setComposing] = useState(false);
+  // A start mutation is in flight or awaiting bind. startChat no longer creates a
+  // pending row, so `linkedChat` stays null through the whole launch→bind window;
+  // without this the composer would sit open and let a second chat fire on the
+  // same note. We collapse the composer the moment the mutation resolves and show
+  // a calm "Starting…" until the daemon binds and `linkedChat` appears.
+  const [starting, setStarting] = useState(false);
 
-  // Collapse the composer once the started chat lands; keeping `composing` false
-  // means a later archive/delete (linkedChat → null) returns to the launcher.
+  // Once the started chat lands, drop out of composing/starting; keeping them
+  // false means a later archive/delete (linkedChat → null) returns to the
+  // launcher.
   useEffect(() => {
-    if (linkedChat) setComposing(false);
+    if (linkedChat) {
+      setComposing(false);
+      setStarting(false);
+    }
   }, [linkedChat]);
 
   // Resume/pin/archive/delete for the docked ChatRow — identical to the Chats
@@ -72,15 +82,25 @@ export function NoteChatDock({
     effort: string;
     prompt: string;
   }) {
-    await actions.startChat({
-      projectId,
-      harness: params.harness,
-      initialPrompt: params.prompt,
-      model: params.model,
-      effort: params.effort,
-      linkedType: "note",
-      linkedPath: notePath,
-    });
+    setStarting(true);
+    try {
+      await actions.startChat({
+        projectId,
+        harness: params.harness,
+        initialPrompt: params.prompt,
+        model: params.model,
+        effort: params.effort,
+        linkedType: "note",
+        linkedPath: notePath,
+      });
+      // Collapse now, not on `linkedChat` — the bind can be seconds away and the
+      // open composer must not linger as a second-launch trap.
+      setComposing(false);
+    } catch (err) {
+      // The launch never left — reopen for a retry.
+      setStarting(false);
+      throw err;
+    }
   }
 
   if (linkedChat) {
@@ -99,6 +119,16 @@ export function NoteChatDock({
           wide
           onStart={startNoteChat}
         />
+      </div>
+    );
+  }
+  // Launch fired, awaiting the daemon's bind — a calm placeholder, never the
+  // launcher (which would invite a duplicate chat on this note).
+  if (starting) {
+    return (
+      <div className="flex w-full items-center gap-2 px-1 text-[13px] text-muted-foreground">
+        <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden />
+        Starting…
       </div>
     );
   }

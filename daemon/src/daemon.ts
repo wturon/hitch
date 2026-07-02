@@ -316,6 +316,7 @@ const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 const CHAT_REQUEST_KEYS = {
   state: "chat-request",
   harness: "chat-request-harness",
+  id: "chat-request-id",
   error: "chat-request-error",
 } as const;
 
@@ -324,6 +325,7 @@ const CHAT_REQUEST_KEYS = {
 const CLEAR_CHAT_REQUEST: Record<string, string | undefined> = {
   [CHAT_REQUEST_KEYS.state]: undefined,
   [CHAT_REQUEST_KEYS.harness]: undefined,
+  [CHAT_REQUEST_KEYS.id]: undefined,
   [CHAT_REQUEST_KEYS.error]: undefined,
 };
 
@@ -976,19 +978,43 @@ async function startHitchBinding({
     await reduceAndSyncChats("chat-settled");
   }
 
+  // The task doc a start-chat command targets, or null if it isn't a
+  // task-linked start-chat. Only tasks carry the card-visible `chat-request`
+  // flag today (notes are handled by their own dock), so the flag lifecycle is
+  // scoped to them.
+  function taskDocForCommand(cmd: CommandDoc): string | null {
+    if (cmd.kind !== "start-chat") return null;
+    const linkedType = cmd.linkedType ?? (cmd.path ? "task" : undefined);
+    const linkedPath = cmd.linkedPath ?? cmd.path;
+    if (linkedType !== "task" || !linkedPath) return null;
+    return linkedPath;
+  }
+
+  // The launch this command belongs to still owns the doc's request flag — i.e.
+  // the user hasn't Cleared + re-fired a newer launch since. Compared against the
+  // doc's chat-request-id so a stale command's late resolution can't clobber a
+  // fresher request (review #5). A doc with no id yet (the file write lost the
+  // claim round-trip — review #4) is treated as ours, since only our launch is
+  // in flight for this path at claim time.
+  function stillOwnsRequest(cmd: CommandDoc, content: string): boolean {
+    const docLaunch = frontmatterValue(content, CHAT_REQUEST_KEYS.id);
+    if (!docLaunch || !cmd.launchId) return true;
+    return docLaunch === cmd.launchId;
+  }
+
   // A doc-linked launch failed before any session bound (cmux gone, harness
   // misconfigured, unsupported environment). Flip the summon flag to `failed` so
   // the failure lands durably on the card instead of vanishing with the closed
-  // dialog. Guarded so a late failure can never clobber a chat that did bind, and
-  // only acts while the request is still outstanding (idempotent under retries).
+  // dialog. Guarded so it can't clobber a chat that bound or a newer request; it
+  // does NOT require the `requested` flag to be on disk yet, so a fast failure
+  // that outran the file→disk write still lands (review #4) — the flag it writes
+  // simply wins the later, staler `requested` echo by recency.
   async function markDelegationFailed(
     cmd: CommandDoc,
     reason: string,
   ): Promise<void> {
-    if (cmd.kind !== "start-chat") return;
-    const linkedType = cmd.linkedType ?? (cmd.path ? "task" : undefined);
-    const linkedPath = cmd.linkedPath ?? cmd.path;
-    if (!linkedPath || !isLinkedDocType(linkedType)) return;
+    const linkedPath = taskDocForCommand(cmd);
+    if (!linkedPath) return;
     const absPath = toAbs(linkedPath);
     let content: string;
     try {
@@ -997,9 +1023,15 @@ async function startHitchBinding({
       return;
     }
     if (frontmatterValue(content, "chat-id")) return;
-    if (frontmatterValue(content, CHAT_REQUEST_KEYS.state) !== "requested") return;
+    if (!stillOwnsRequest(cmd, content)) return;
     const next = setFrontmatterKeys(content, {
       [CHAT_REQUEST_KEYS.state]: "failed",
+      // Restore harness/id in case the file write hadn't landed them yet, so the
+      // card can still draw the chip and future resolutions correlate correctly.
+      [CHAT_REQUEST_KEYS.harness]:
+        frontmatterValue(content, CHAT_REQUEST_KEYS.harness) ?? cmd.harness,
+      [CHAT_REQUEST_KEYS.id]:
+        frontmatterValue(content, CHAT_REQUEST_KEYS.id) ?? cmd.launchId,
       [CHAT_REQUEST_KEYS.error]: reason,
     });
     if (next === content) return;
@@ -1013,6 +1045,40 @@ async function startHitchBinding({
       logError(
         logger,
         `[hitch:${projectLabel}] failed to stamp delegation failure on ${linkedPath}: ${String(err)}`,
+      );
+    }
+  }
+
+  // A launch reported success but bound no session in-band — the editor
+  // launchers (Claude in VS Code / Cursor) open a pre-filled prompt and return
+  // `done` immediately; the session only binds later, when the user presses Enter
+  // and claudeSessionLinker fires (review #2). Nothing else clears the summon
+  // flag in that window, so it would sit at "Summoning…" forever. Resolve it on
+  // the successful completion: drop the flag back to the compose state (the card
+  // then reflects the real chat once the linker binds). Guarded to our own
+  // still-outstanding request so it can't wipe a bound chat or a newer launch.
+  async function clearDelegationOnSuccess(cmd: CommandDoc): Promise<void> {
+    const linkedPath = taskDocForCommand(cmd);
+    if (!linkedPath) return;
+    const absPath = toAbs(linkedPath);
+    let content: string;
+    try {
+      content = await readFile(absPath, "utf8");
+    } catch {
+      return;
+    }
+    if (frontmatterValue(content, "chat-id")) return; // already bound → its own teardown ran
+    if (!frontmatterValue(content, CHAT_REQUEST_KEYS.state)) return;
+    if (!stillOwnsRequest(cmd, content)) return;
+    const next = setFrontmatterKeys(content, CLEAR_CHAT_REQUEST);
+    if (next === content) return;
+    try {
+      await writeFile(absPath, next, "utf8");
+      await pushLocal(absPath);
+    } catch (err) {
+      logError(
+        logger,
+        `[hitch:${projectLabel}] failed to clear delegation flag on ${linkedPath}: ${String(err)}`,
       );
     }
   }
@@ -1340,12 +1406,15 @@ async function startHitchBinding({
       deviceToken,
       claimedBy: host,
     });
-    // Every error completion for a doc-linked launch flows through here, so this
-    // is the one place the failure has to become card-visible: flip the summon
-    // flag to `failed`. markDelegationFailed no-ops for non-start-chat / bound
-    // docs, so it's safe to call unconditionally on error.
+    // Every completion for a doc-linked launch flows through here, so this is the
+    // one place the summon flag has to resolve. On error → `failed` (card-visible
+    // + retryable). On a success that bound no session in-band (editor launchers
+    // return `done` before the user submits) → clear it so it doesn't stick at
+    // "Summoning…". Both no-op for non-task / already-bound docs.
     if (status === "error") {
       await markDelegationFailed(cmd, delegationFailureReason(result, errorCode));
+    } else {
+      await clearDelegationOnSuccess(cmd);
     }
   }
 
