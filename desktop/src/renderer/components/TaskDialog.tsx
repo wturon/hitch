@@ -15,15 +15,9 @@ import {
 } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
-import { sha256 } from "@/lib/hash";
-import {
-  deriveTitleFromBody,
-  taskBodyPath,
-  taskSlug,
-  uniqueSlug,
-} from "@/lib/tasks";
 import type { Harness } from "@/lib/chat";
 import { useTaskDraft } from "@/hooks/useTaskDraft";
+import { useTaskPersistence } from "@/hooks/useTaskPersistence";
 import { useAttachments } from "@/hooks/useAttachments";
 import { DelegationBand } from "@/components/DelegationBand";
 import {
@@ -161,35 +155,26 @@ function TaskEditor({
   onManagePrompts?: () => void;
   onManageHarnesses?: () => void;
 }) {
-  const upsertFile = useMutation(api.files.upsertFile);
   const startPendingChat = useMutation(api.chats.startChat);
   // The whole document model lives in the hook: the full-file draft, the
   // body/title/frontmatter selectors, the document mutations, dirty tracking,
   // and adoption of external writes. This component owns only the things around
-  // it — persistence, close policy, focus, and chrome.
+  // it — close policy, focus, and chrome.
   const draft = useTaskDraft(task.content);
-  // The task file's real path, once it exists. A committed task starts with its
-  // path; a fresh draft starts null and is materialized (title → slug → file) at
-  // the first save-point, after which everything below keys off this real path.
-  const [committedPath, setCommittedPath] = useState<string | null>(
-    task.isDraft ? null : task.path,
-  );
-  const committedPathRef = useRef(committedPath);
-  committedPathRef.current = committedPath;
-  // The task folder slug, used to scope attachment paths/queries to this task.
-  const slug = committedPath ? taskSlug(committedPath) : null;
-  // The path the delegate bar advertises (preamble target + link path): the real
-  // file once committed, else the slug this draft *will* get on save, so the bar
-  // is correct the moment the user hits ⌘↩ and we materialize with the same slug.
-  const prospectivePath =
-    committedPath ??
-    taskBodyPath(
-      uniqueSlug(
-        draft.title.trim() || deriveTitleFromBody(draft.body),
-        new Set(takenSlugs),
-        "task",
-      ),
-    );
+  // The create/persist lifecycle (draft vs. committed, materialization, the
+  // prospective slug, and writes) lives in its own hook, keyed off `task.isDraft`.
+  // This component just calls its primitives at the right save-points.
+  const { stateRef, slug, prospectivePath, persist, commitDraft } =
+    useTaskPersistence({
+      projectId: task.projectId,
+      initialPath: task.path,
+      isDraft: task.isDraft ?? false,
+      draft,
+      takenSlugs,
+      onMaterialize,
+    });
+  // True while the task has no file yet (read live for async handlers).
+  const isUncommitted = () => stateRef.current.status === "draft";
   // Shared upload path for both the editor's image paste and the dialog-wide
   // file drop below. Inert (enabled: false) for a task with no slug.
   const attachments = useAttachments(
@@ -199,44 +184,6 @@ function TaskEditor({
   // eager commit (below) can upload against the just-created slug.
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
-
-  // Write `content` to the task file. Defaults to the committed path (via ref, so
-  // it's current inside async handlers); a caller that just minted a path passes
-  // it explicitly since the state update hasn't flushed yet. No-op with no path
-  // (an uncommitted draft is materialized through commitDraft, never persist).
-  async function persist(content: string, path = committedPathRef.current) {
-    if (!path) return;
-    await upsertFile({
-      projectId: task.projectId,
-      path,
-      content,
-      hash: await sha256(content),
-      deleted: false,
-    });
-  }
-
-  // Materialize an uncommitted draft into a real `tasks/<slug>/task.md`: resolve a
-  // title (the typed title, else the body's first line), mint a non-colliding
-  // slug, fold the title into the frontmatter, and write the file. Returns the new
-  // path — or null when there's nothing worth creating (an empty draft on close).
-  // A no-op returning the existing path once committed. `allowEmpty` forces
-  // creation even without a title (a pasted attachment needs a slug now — the slug
-  // falls back to "task"); the close path leaves it off so empty drafts discard.
-  async function commitDraft(opts?: {
-    allowEmpty?: boolean;
-  }): Promise<string | null> {
-    if (committedPathRef.current) return committedPathRef.current;
-    const title = draft.title.trim() || deriveTitleFromBody(draft.body);
-    if (!title && !opts?.allowEmpty) return null;
-    const path = taskBodyPath(uniqueSlug(title, new Set(takenSlugs), "task"));
-    const content = draft.setFrontmatter({ title });
-    setCommittedPath(path);
-    committedPathRef.current = path;
-    // Route the create through the app's optimistic upsert so the new card lands
-    // on the board immediately — a draft delegate reopens the dialog on it.
-    await onMaterialize(path, content);
-    return path;
-  }
 
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
@@ -296,7 +243,7 @@ function TaskEditor({
   // present, else falling back to "task"), then wait a frame for useAttachments to
   // adopt the new slug before uploading through the refreshed instance.
   async function attachmentsForUpload() {
-    if (committedPathRef.current) return attachmentsRef.current;
+    if (!isUncommitted()) return attachmentsRef.current;
     await commitDraft({ allowEmpty: true });
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => resolve()),
@@ -317,21 +264,31 @@ function TaskEditor({
   const onPasteFilesRef = useRef<(files: File[]) => void>(() => {});
   onPasteFilesRef.current = (files: File[]) => {
     void (async () => {
+      // Uploading an attachment on an uncommitted draft materializes it first,
+      // which rewrites the frontmatter (a new title line) and shifts every raw
+      // offset — so a caret splice would land wrong and, worse, writing back a
+      // render-time `draft.raw` snapshot would clobber the freshly-derived title.
+      const materialized = isUncommitted();
       const a = await attachmentsForUpload();
       const snippets = await a.uploadPasted(files);
       if (snippets.length === 0) return;
       const ta = rawRef.current;
-      if (viewRef.current === "raw" && ta) {
-        const start = ta.selectionStart ?? draft.raw.length;
+      if (viewRef.current === "raw" && ta && !materialized) {
+        // Splice at the caret against the LATEST document (this callback spanned
+        // the upload, so the closure's `draft.raw` may be stale).
+        const raw = draft.getLatestRaw();
+        const start = ta.selectionStart ?? raw.length;
         const end = ta.selectionEnd ?? start;
         const insertion = snippets.join("\n\n");
-        draft.setRaw(draft.raw.slice(0, start) + insertion + draft.raw.slice(end));
+        draft.setRaw(raw.slice(0, start) + insertion + raw.slice(end));
         requestAnimationFrame(() => {
           ta.focus();
           const pos = start + insertion.length;
           ta.setSelectionRange(pos, pos);
         });
       } else {
+        // Formatted view, or a just-materialized draft whose offsets are now
+        // invalid: append at the end, which recombines against the latest body.
         appendToBody(snippets);
       }
     })();
@@ -394,7 +351,7 @@ function TaskEditor({
       // — but only once there's a real file. On an uncommitted draft the plugin
       // has no slug to upload to, so we take it ourselves: eager-commit and append
       // like a drop, rather than let the paste silently no-op.
-      if (viewRef.current === "formatted" && allImages && committedPathRef.current)
+      if (viewRef.current === "formatted" && allImages && !isUncommitted())
         return;
       e.preventDefault();
       e.stopPropagation();
@@ -484,7 +441,7 @@ function TaskEditor({
     if (saving) return;
     setSaving(true);
     try {
-      if (!committedPathRef.current) {
+      if (isUncommitted()) {
         await commitDraft();
         return;
       }
@@ -506,21 +463,20 @@ function TaskEditor({
     if (closeInFlightRef.current) return;
     closeInFlightRef.current = true;
     const content = draft.raw;
-    const committed = committedPathRef.current;
     const shouldPersist = draft.dirty;
     onClose();
 
-    if (committed) {
-      if (shouldPersist) {
-        void persist(content, committed).catch((error) => {
-          console.error("Failed to save task after closing modal", error);
-        });
-      }
+    if (isUncommitted()) {
+      void commitDraft().catch((error) => {
+        console.error("Failed to save draft after closing modal", error);
+      });
       return;
     }
-    void commitDraft().catch((error) => {
-      console.error("Failed to save draft after closing modal", error);
-    });
+    if (shouldPersist) {
+      void persist(content).catch((error) => {
+        console.error("Failed to save task after closing modal", error);
+      });
+    }
   }
 
   // Keep the registered close handler pointing at the latest draft/dirty state.
@@ -543,7 +499,7 @@ function TaskEditor({
     effort: string;
     prompt: string;
   }) {
-    const uncommitted = !committedPathRef.current;
+    const uncommitted = isUncommitted();
     // Materialize before launching so the linked path (and the prompt's task-ref
     // preamble, which the bar built against prospectivePath) point at a real file.
     // canDelegate gates the bar on a non-empty title, so commitDraft always has a
