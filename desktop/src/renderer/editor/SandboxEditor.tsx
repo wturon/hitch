@@ -8,9 +8,10 @@
 // `editor/index.ts` (nothing outside the folder imports these files directly).
 
 import { useRef, useState } from "react";
-import { XIcon } from "lucide-react";
+import { XIcon, FileTextIcon } from "lucide-react";
 
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
+import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
 import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
@@ -33,6 +34,8 @@ import {
   type Transformer,
 } from "@lexical/markdown";
 import type { EditorState } from "lexical";
+
+import { exportMarkdown, importMarkdown } from "./bridge";
 
 // Explicit transformer set — deliberately NOT the default `TRANSFORMERS` from
 // `@lexical/markdown`. That default bundles the fenced-code-block transformer,
@@ -88,15 +91,20 @@ export function SandboxEditor({ onExit }: { onExit: () => void }) {
         </button>
       </div>
 
-      {/* Body: editor left, live state inspector right. */}
+      {/* Body: editor left; live EditorState inspector + Markdown pane right. */}
       <LexicalComposer initialConfig={initialConfig}>
         <div className="flex min-h-0 flex-1 flex-row gap-4 pt-4">
-          {/* `relative` so the placeholder can absolutely position onto the
-              first line; `min-h-full` on the editable makes the whole column the
-              click target (Lexical renders the placeholder as an unpositioned
-              flow sibling, and the editable is otherwise only ~180px tall). */}
-          <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
-            <RichTextPlugin
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+            {/* Exercises the import direction: fills the editor from a canned
+                markdown doc so you can watch it render. */}
+            <SampleLoader />
+            {/* `relative` so the placeholder can absolutely position onto the
+                first line; `min-h-full` on the editable makes the whole column
+                the click target (Lexical renders the placeholder as an
+                unpositioned flow sibling, and the editable is otherwise only
+                ~180px tall). */}
+            <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
+              <RichTextPlugin
               contentEditable={
                 <ContentEditable
                   className="hitch-sandbox-content min-h-full"
@@ -121,8 +129,13 @@ export function SandboxEditor({ onExit }: { onExit: () => void }) {
                 list nodes registered above. */}
             <ListPlugin />
             <TabIndentationPlugin />
+            </div>
           </div>
-          <StateInspector />
+          {/* Right column: EditorState inspector on top, live markdown below. */}
+          <div className="flex w-[380px] shrink-0 flex-col gap-3">
+            <StateInspector />
+            <MarkdownPane />
+          </div>
         </div>
       </LexicalComposer>
     </div>
@@ -155,7 +168,7 @@ function StateInspector() {
   }
 
   return (
-    <div className="flex w-[380px] shrink-0 flex-col overflow-hidden rounded-[10px] border border-border">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border">
       <button
         type="button"
         onClick={toggle}
@@ -175,6 +188,118 @@ function StateInspector() {
       ) : null}
       {/* OnChangePlugin lives inside the composer via SandboxEditor; we render it
           here so the inspector owns the state it displays. */}
+      <OnChangePlugin onChange={onChange} />
+    </div>
+  );
+}
+
+// A canonical markdown doc for the "Load sample" button — exercises the import
+// direction (headings, nested lists of both kinds, bold/italic/code, a link,
+// a blockquote). Authored in the bridge's canonical output form, so loading it
+// and reading the Markdown pane shows byte-identical text.
+const SAMPLE_MARKDOWN = `# Editor bridge sample
+
+A paragraph with **bold**, *italic*, and \`inline code\`.
+
+## A nested list
+
+- First item
+- Second item
+  - Nested item a
+  - Nested item b
+
+1. Step one
+2. Step two
+
+> A short blockquote with a [link](https://example.com).
+`;
+
+// Fills the editor from SAMPLE_MARKDOWN via the import bridge. Lives inside the
+// composer so it can reach the editor through context.
+function SampleLoader() {
+  const [editor] = useLexicalComposerContext();
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        editor.update(() => {
+          importMarkdown(SAMPLE_MARKDOWN);
+        });
+      }}
+      className="flex h-8 shrink-0 items-center gap-1.5 self-start rounded-lg border border-border bg-background px-3 text-[13px] font-medium text-foreground hover:bg-muted"
+    >
+      <FileTextIcon className="size-3.5 text-muted-foreground" />
+      Load sample
+    </button>
+  );
+}
+
+// Live markdown serialization of the editor via the export bridge. Mirrors the
+// StateInspector's collapsed-pane guard: while hidden it keeps only the latest
+// EditorState (cheap) and defers the serialize until reopened, so a large pasted
+// doc isn't re-serialized on every keystroke behind a closed pane. If export
+// throws (e.g. an unsupported node), the error message is shown in place instead
+// of crashing the sandbox.
+function MarkdownPane() {
+  const [markdown, setMarkdown] = useState<string>("");
+  const [isError, setIsError] = useState(false);
+  const [open, setOpen] = useState(true);
+  const latest = useRef<EditorState | null>(null);
+
+  function serialize(editorState: EditorState) {
+    try {
+      let out = "";
+      editorState.read(() => {
+        out = exportMarkdown();
+      });
+      setMarkdown(out);
+      setIsError(false);
+    } catch (error) {
+      setMarkdown(error instanceof Error ? error.message : String(error));
+      setIsError(true);
+    }
+  }
+
+  function onChange(editorState: EditorState) {
+    latest.current = editorState;
+    if (open) serialize(editorState);
+  }
+
+  function toggle() {
+    setOpen((wasOpen) => {
+      const nowOpen = !wasOpen;
+      if (nowOpen && latest.current) {
+        serialize(latest.current);
+      }
+      return nowOpen;
+    });
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border">
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex shrink-0 items-center justify-between border-b border-border bg-secondary px-3.5 py-2 text-left"
+      >
+        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+          Markdown
+        </span>
+        <span className="font-mono text-[11px] text-muted-foreground">
+          {open ? "hide" : "show"}
+        </span>
+      </button>
+      {open ? (
+        <pre
+          className={
+            isError
+              ? "min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-3.5 py-3 font-mono text-[11px] leading-[1.5] text-destructive"
+              : "min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-3.5 py-3 font-mono text-[11px] leading-[1.5] text-foreground"
+          }
+        >
+          {isError ? `export error: ${markdown}` : markdown || "// type to see markdown"}
+        </pre>
+      ) : null}
       <OnChangePlugin onChange={onChange} />
     </div>
   );
