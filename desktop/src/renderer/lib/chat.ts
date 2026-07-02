@@ -389,9 +389,9 @@ export function buildStartPrompt(
 export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
-    name: "Ship it.",
-    description: "Reads the task and starts implementing it",
-    body: "Read the task, keep the task status/progress current as you work, and start implementing it.",
+    name: "Do the task.",
+    description: "Reads the task and does what it asks",
+    body: "Read this task and do what it asks.",
     includeTaskRef: true,
   },
   {
