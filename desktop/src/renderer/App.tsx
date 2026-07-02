@@ -61,6 +61,7 @@ import {
   parseChatOpenState,
   parseChatRef,
   parseChatStatus,
+  parseDelegationRequest,
 } from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
 import {
@@ -1659,6 +1660,7 @@ function BoardContent({
         chat: parseChatRef(frontmatter),
         chatStatus: parseChatStatus(frontmatter),
         chatOpenState: parseChatOpenState(frontmatter),
+        request: parseDelegationRequest(frontmatter),
         column: boardColumnFor(status, boardStatuses),
         archived: status === "archived",
         updatedAt: f.updatedAt,

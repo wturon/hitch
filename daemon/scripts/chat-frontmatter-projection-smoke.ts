@@ -49,17 +49,30 @@ chat-status: waiting
 Body
 `;
 
+// Every projection clears the pre-link summon flag — a bound chat's chat-* fields
+// are the truth, so `chat-request*` must never linger beside them.
+const clearedRequest = {
+  "chat-request": undefined,
+  "chat-request-harness": undefined,
+  "chat-request-error": undefined,
+};
+
+// A codex thread mid-turn inside Hitch's own app-server (codex-app, working) is
+// not safe to deep-link yet → chat-open-state: pending. This is now the *sole*
+// meaning of chat-open-state (it no longer doubles as "launch in flight").
 const working = chat({ status: "working" });
 assert.equal(projectedChatStatus(openTask, working), "working");
 assert.deepEqual(projectedChatFrontmatter(openTask, working), {
   "chat-harness": "codex",
   "chat-id": "thread-1",
   "chat-status": "working",
-  "chat-open-state": undefined,
+  "chat-open-state": "pending",
   "chat-cwd": undefined,
   "chat-env": undefined,
+  ...clearedRequest,
 });
 
+// cmux codex is always focusable (it's a real terminal pane), so never pending.
 const codexCmux = chat({ environment: "cmux", cwd: "/tmp/project" });
 assert.deepEqual(projectedChatFrontmatter(openTask, codexCmux), {
   "chat-harness": "codex",
@@ -68,6 +81,7 @@ assert.deepEqual(projectedChatFrontmatter(openTask, codexCmux), {
   "chat-open-state": undefined,
   "chat-cwd": "/tmp/project",
   "chat-env": "cmux",
+  ...clearedRequest,
 });
 
 const alreadyWaiting = chat({ status: "waiting" });
@@ -87,6 +101,10 @@ assert.equal(
   undefined,
 );
 
+// A non-codex chat is never "open-pending" regardless of status — chat-open-state
+// is codex-app-only now. (Unbound rows like this no longer reach the doc anyway:
+// projectReducedFileFrontmatter skips chats with no chatId, so `chat-request`
+// owns the doc until a real session binds.)
 const pendingClaude = chat({
   localKey: "launch:launch-1",
   harness: "claude-code",
@@ -99,9 +117,10 @@ assert.deepEqual(projectedChatFrontmatter(openTask, pendingClaude), {
   "chat-harness": "claude-code",
   "chat-id": undefined,
   "chat-status": "working",
-  "chat-open-state": "pending",
+  "chat-open-state": undefined,
   "chat-cwd": "/tmp/project",
   "chat-env": "cmux",
+  ...clearedRequest,
 });
 
 const ended = chat({ status: "idle", endedAt: 1_800_000_000_100 });

@@ -433,30 +433,12 @@ export const startChat = mutation({
     const now = Date.now();
     const id = launchId();
     const link = normalizeLink(args.linkedType, args.linkedPath);
-    const cwd = args.cwd ?? "";
-    const host = args.host ?? "unknown";
     const title = normalizeTitle(args.title ?? args.initialPrompt, args.harness);
 
-    const chatId = await ctx.db.insert("chats", {
-      projectId: access.project._id,
-      launchId: id,
-      harness: args.harness,
-      pending: true,
-      status: "working",
-      title,
-      cwd,
-      host,
-      linkedType: link.linkedType,
-      linkedPath: link.linkedPath,
-      resumeKind: "open-chat-command",
-      resumePayload: {},
-      firstObservedAt: now,
-      lastEventAt: now,
-      lastStatusAt: now,
-      createdAt: now,
-      updatedAt: now,
-    });
-
+    // No chats row here — chat rows are born from ground truth (the daemon binds
+    // the real session, or the observer discovers it). A launch is just a command
+    // on the bus; the "summoning" state lives on the linked doc (see
+    // requestDelegation) or, for doc-less launches, surfaces once the row binds.
     const commandId = await ctx.db.insert("commands", {
       projectId: access.project._id,
       host: args.host,
@@ -477,7 +459,81 @@ export const startChat = mutation({
       updatedAt: now,
     });
 
-    return { chatId, commandId, launchId: id };
+    return { commandId, launchId: id };
+  },
+});
+
+// Fire-and-forget delegation from a task/note. Atomically (a) stamps the linked
+// doc's frontmatter with the `chat-request` summoning flag — the client passes
+// the already-stamped content + hash, mirroring the upsertFile contract — and
+// (b) enqueues the start-chat command. No chats row: the daemon creates one when
+// it binds the real session, and clears the flag then (or flips it to `failed`).
+export const requestDelegation = mutation({
+  args: {
+    projectId: v.id("projects"),
+    harness: harnessValidator,
+    initialPrompt: v.string(),
+    linkedType: linkedTypeValidator,
+    linkedPath: v.string(),
+    // The linked doc, re-stamped with `chat-request: requested` by the client so
+    // the board reflects "summoning" the instant this mutation returns.
+    content: v.string(),
+    hash: v.string(),
+    cwd: v.optional(v.string()),
+    host: v.optional(v.string()),
+    model: v.optional(v.string()),
+    effort: v.optional(v.string()),
+    title: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectMemberById(ctx, args.projectId);
+    const now = Date.now();
+    const id = launchId();
+    const title = normalizeTitle(args.title ?? args.initialPrompt, args.harness);
+
+    // Persist the stamped doc (same shape as files.upsertFile) so the flag rides
+    // the files subscription to every open board and, via the daemon, to disk.
+    const existing = await ctx.db
+      .query("files")
+      .withIndex("by_key", (q) =>
+        q.eq("projectId", access.project._id).eq("path", args.linkedPath),
+      )
+      .unique();
+    const fileDoc = {
+      projectId: access.project._id,
+      path: args.linkedPath,
+      content: args.content,
+      hash: args.hash,
+      deleted: false,
+      updatedAt: now,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fileDoc);
+    } else {
+      await ctx.db.insert("files", fileDoc);
+    }
+
+    const commandId = await ctx.db.insert("commands", {
+      projectId: access.project._id,
+      host: args.host,
+      kind: "start-chat",
+      harness: args.harness,
+      launchId: id,
+      path: args.linkedType === "task" ? args.linkedPath : undefined,
+      linkedType: args.linkedType,
+      linkedPath: args.linkedPath,
+      initialPrompt: args.initialPrompt,
+      title,
+      cwd: args.cwd,
+      model: args.model,
+      effort: args.effort,
+      status: "pending",
+      expiresAt: commandExpiry(now),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { commandId, launchId: id };
   },
 });
 
@@ -512,7 +568,12 @@ export const bindPendingChat = mutation({
       host: args.host,
     });
     const pending = await chatByLaunch(ctx, project._id, args.launchId);
-    if (!pending) throw new Error("Pending chat not found");
+    // No preemptive pending row exists anymore (the client stopped creating one).
+    // The reduced-state sync (upsertReducedState) that runs alongside every bind
+    // is the authoritative creator now, so a missing row here is expected — no-op
+    // rather than throw. This mutation only still matters when a pending row does
+    // exist (e.g. the codex ID-gap launch row) and needs its link fields folded in.
+    if (!pending) return null;
     if (pending.projectId !== project._id) throw new Error("Chat project mismatch");
     if (pending.harness !== args.harness) throw new Error("Chat harness mismatch");
     if (existing && existing._id !== pending._id) {

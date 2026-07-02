@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
@@ -35,6 +35,7 @@ import {
   type ChatOpenState,
   type ChatRef,
   type ChatStatus,
+  type DelegationRequest,
   type Environment,
   type Harness,
   type StartingPrompt,
@@ -60,10 +61,6 @@ import { cn } from "@/lib/utils";
 // Sentinel value for the dropdown's footer action. It's not a real preset id —
 // selecting it jumps to the Settings prompt manager instead of picking a prompt.
 const MANAGE_PROMPTS_VALUE = "__manage_prompts__";
-const CODEX_LINKING_GRACE_MS = 6_000;
-const STARTING_GRACE_MS = 1_500;
-
-type LaunchPhase = "starting" | "linking";
 
 // The calm live status shown next to a linked agent. Monochrome by design:
 // working/idle stay muted; amber is reserved for the one "your turn" moment
@@ -108,6 +105,7 @@ export function DelegationBand({
   chat,
   chatStatus,
   chatOpenState,
+  request,
   title,
   path,
   canDelegate = true,
@@ -120,6 +118,9 @@ export function DelegationBand({
   chat: ChatRef | null;
   chatStatus: ChatStatus | null;
   chatOpenState: ChatOpenState | null;
+  // The pre-link summoning flag (requested / failed). Present only when a launch
+  // is in flight or failed and no real chat has bound yet.
+  request: DelegationRequest | null;
   title: string;
   path: string;
   // Whether the task can be delegated right now. A new draft with no title has
@@ -151,27 +152,13 @@ export function DelegationBand({
   const [prompt, setPrompt] = useState(() =>
     buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }),
   );
-  const [launchPhase, setLaunchPhase] = useState<LaunchPhase | null>(null);
-  const launchPhaseTimerRef = useRef<number | null>(null);
+  // Whether a Send is in flight (the mutation round-trip only). This is not a
+  // launch state — the durable "summoning" state rides `request`, driven off the
+  // files subscription, so it survives the dialog closing. This flag exists only
+  // to disable the Send button between click and the mutation resolving.
+  const [sending, setSending] = useState(false);
   // Whether the prompt editor is revealed. Minimized is the default calm state.
   const [expanded, setExpanded] = useState(false);
-
-  const clearLaunchPhaseTimer = useCallback(() => {
-    if (launchPhaseTimerRef.current === null) return;
-    window.clearTimeout(launchPhaseTimerRef.current);
-    launchPhaseTimerRef.current = null;
-  }, []);
-
-  const clearLaunchPhaseSoon = useCallback(
-    (delayMs: number) => {
-      clearLaunchPhaseTimer();
-      launchPhaseTimerRef.current = window.setTimeout(() => {
-        launchPhaseTimerRef.current = null;
-        setLaunchPhase(null);
-      }, delayMs);
-    },
-    [clearLaunchPhaseTimer],
-  );
 
   // Load the user's custom prompts once. The band remounts per task (its parent
   // is keyed by the task path), so a mount-time load also refreshes after a
@@ -195,16 +182,6 @@ export function DelegationBand({
     setPromptId(BUILTIN_STARTING_PROMPTS[0].id);
     setPrompt(buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }));
   }, [title, path]);
-
-  useEffect(() => {
-    if (!chat) return;
-    clearLaunchPhaseTimer();
-    setLaunchPhase(null);
-  }, [chat, clearLaunchPhaseTimer]);
-
-  useEffect(() => {
-    return () => clearLaunchPhaseTimer();
-  }, [clearLaunchPhaseTimer]);
 
   // Read the per-harness environment preference once, so we know whether the
   // selected harness honors launch params (Claude in vscode/cursor does not).
@@ -256,48 +233,26 @@ export function DelegationBand({
     setPrompt(buildStartPrompt(preset, { title, path }));
   }
 
+  // Fire the delegation and return to rest. We don't track a launch phase here:
+  // the moment onStart's mutation resolves, the doc carries `chat-request:
+  // requested`, and the card/band reflect it off the subscription — durable and
+  // dialog-independent. `sending` only guards against a double-click mid-flight.
   const start = useCallback(async () => {
-    if (launchPhase || !canDelegate) return;
-    clearLaunchPhaseTimer();
-    setLaunchPhase("starting");
+    if (sending || !canDelegate) return;
+    setSending(true);
     try {
       await onStart({ harness, model, effort, prompt });
       // Remember this exact combination for the next task's bar.
       saveLastAgent({ harness, model, effort });
-      if (harness === "codex" && !chat) {
-        setLaunchPhase("linking");
-        clearLaunchPhaseSoon(CODEX_LINKING_GRACE_MS);
-      } else {
-        clearLaunchPhaseSoon(STARTING_GRACE_MS);
-      }
-    } catch (error) {
-      setLaunchPhase(null);
-      throw error;
+    } finally {
+      setSending(false);
     }
-  }, [
-    canDelegate,
-    chat,
-    clearLaunchPhaseSoon,
-    clearLaunchPhaseTimer,
-    effort,
-    harness,
-    launchPhase,
-    model,
-    onStart,
-    prompt,
-  ]);
+  }, [sending, canDelegate, effort, harness, model, onStart, prompt]);
 
-  const launchPhaseLabel =
-    launchPhase === "starting"
-      ? "Starting..."
-      : launchPhase === "linking"
-        ? "Linking Codex chat..."
-        : null;
-
-  // While the task dialog is open and no chat is linked yet, Cmd+Enter sends
-  // the current delegation prompt from anywhere in the dialog.
+  // While the task dialog is open and no agent is linked or in flight yet,
+  // Cmd+Enter sends the current delegation prompt from anywhere in the dialog.
   useEffect(() => {
-    if (chat || !canDelegate) return;
+    if (chat || request || !canDelegate) return;
     function onKeyDown(e: KeyboardEvent) {
       if (
         e.key !== "Enter" ||
@@ -321,7 +276,7 @@ export function DelegationBand({
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [canDelegate, chat, start]);
+  }, [canDelegate, chat, request, start]);
 
   // Whether the current (harness, environment) pair accepts model/effort at
   // launch. Unset env falls back to the harness default.
@@ -363,6 +318,47 @@ export function DelegationBand({
             label="Open"
             primary
           />
+        </div>
+      </div>
+    );
+  }
+
+  // A delegation is in flight or failed but no chat has bound yet. Mirror the
+  // linked layout so the band doesn't jump, but with the requested harness and a
+  // status word in place of the live controls. Failed offers Clear (start over).
+  if (request) {
+    const failed = request.state === "failed";
+    return (
+      <div
+        className={cn(
+          surface,
+          "flex items-center justify-between gap-2 py-2.5 pr-2.5 pl-3.5",
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-2.5">
+          <HarnessIcon
+            harness={request.harness}
+            className={cn("size-5 shrink-0", !failed && "opacity-60")}
+          />
+          <span className="truncate text-sm font-semibold">
+            {harnessLabel(request.harness)}
+          </span>
+          {failed ? (
+            <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+              <span className="size-1.5 rounded-full bg-current" aria-hidden />
+              {request.error?.trim() || "Couldn’t start"}
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+              Summoning…
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button variant="ghost" size="sm" onClick={onClear}>
+            Clear
+          </Button>
         </div>
       </div>
     );
@@ -547,26 +543,17 @@ export function DelegationBand({
         </div>
 
         <div className="flex min-w-0 shrink-0 items-center gap-2">
-          {launchPhaseLabel && (
-            <span
-              className="min-w-0 max-w-36 truncate text-xs font-medium text-muted-foreground"
-              aria-live="polite"
-            >
-              {launchPhaseLabel}
-            </span>
-          )}
-
           {/* Send — the primary one-click trigger. Black rounded square, up-arrow,
               no text. */}
           <Tooltip>
             <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
               <Button
                 onClick={start}
-                disabled={launchPhase !== null || !canDelegate}
+                disabled={sending || !canDelegate}
                 aria-label="Delegate to agent"
                 className="size-8 shrink-0 rounded-lg p-0"
               >
-                {launchPhase ? (
+                {sending ? (
                   <LoaderCircle className="animate-spin" />
                 ) : (
                   <ArrowUp className="size-4" strokeWidth={2.5} />
