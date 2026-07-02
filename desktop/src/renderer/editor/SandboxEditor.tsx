@@ -17,12 +17,46 @@ import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
 import { AutoFocusPlugin } from "@lexical/react/LexicalAutoFocusPlugin";
 import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
 import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
+import { MarkdownShortcutPlugin } from "@lexical/react/LexicalMarkdownShortcutPlugin";
+import { ListPlugin } from "@lexical/react/LexicalListPlugin";
+import { TabIndentationPlugin } from "@lexical/react/LexicalTabIndentationPlugin";
+import { HeadingNode, QuoteNode } from "@lexical/rich-text";
+import { ListNode, ListItemNode } from "@lexical/list";
+import { LinkNode } from "@lexical/link";
+import {
+  HEADING,
+  QUOTE,
+  UNORDERED_LIST,
+  ORDERED_LIST,
+  LINK,
+  TEXT_FORMAT_TRANSFORMERS,
+  type Transformer,
+} from "@lexical/markdown";
 import type { EditorState } from "lexical";
+
+// Explicit transformer set — deliberately NOT the default `TRANSFORMERS` from
+// `@lexical/markdown`. That default bundles the fenced-code-block transformer,
+// which pulls in `CodeNode`/`CodeHighlightNode` from `@lexical/code` and its
+// Prism global — exactly the dependency Text Editor 2.0 is escaping. So we
+// assemble only the block, inline-format, and link transformers by hand. Code
+// blocks are intentionally out of scope.
+//
+// Order mirrors the default array's shape: element (block) transformers first,
+// then inline text-format transformers, then text-match transformers (LINK).
+const MARKDOWN_TRANSFORMERS: Transformer[] = [
+  HEADING,
+  QUOTE,
+  UNORDERED_LIST,
+  ORDERED_LIST,
+  ...TEXT_FORMAT_TRANSFORMERS,
+  LINK,
+];
 
 const initialConfig = {
   namespace: "hitch-editor-sandbox",
-  // No custom nodes yet — this is deliberately plain rich text.
-  nodes: [],
+  // Block + inline nodes the markdown shortcuts restructure the tree into.
+  // No `CodeNode` — code blocks are out of scope (see MARKDOWN_TRANSFORMERS).
+  nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode, LinkNode],
   onError(error: Error) {
     // Lexical throws on internal invariants; surface them loudly while we learn
     // rather than swallowing them.
@@ -79,6 +113,14 @@ export function SandboxEditor({ onExit }: { onExit: () => void }) {
             />
             <HistoryPlugin />
             <AutoFocusPlugin />
+            {/* Turns `# `, `- `, `> `, `**bold**`, `[text](url)` etc. into real
+                block/inline nodes as you type — watch the tree update in the
+                inspector. Uses our code-free transformer set. */}
+            <MarkdownShortcutPlugin transformers={MARKDOWN_TRANSFORMERS} />
+            {/* Enter-to-new-item, backspace-to-outdent, and Tab nesting for the
+                list nodes registered above. */}
+            <ListPlugin />
+            <TabIndentationPlugin />
           </div>
           <StateInspector />
         </div>
