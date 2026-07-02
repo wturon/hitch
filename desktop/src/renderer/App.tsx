@@ -922,56 +922,6 @@ function ArchivedSheetContent({
   );
 }
 
-// The inline "new task" input that appears at the top of a column. Commit is a
-// single path — blur — so Enter and clicking away both save; Escape sets a guard
-// so its blur discards instead. An empty/whitespace title creates nothing.
-function TaskComposer({
-  onCreate,
-  onClose,
-}: {
-  onCreate: (title: string) => void;
-  onClose: () => void;
-}) {
-  const [value, setValue] = useState("");
-  const cancelled = useRef(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  function commit() {
-    const title = value.trim();
-    if (title) onCreate(title);
-    onClose();
-  }
-
-  return (
-    <div className={cn(CARD_CLASS, "flex flex-col gap-2 bg-card")}>
-      <input
-        aria-label="Task title"
-        ref={inputRef}
-        autoFocus
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onBlur={() => {
-          if (!cancelled.current) commit();
-          else onClose();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commit();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            cancelled.current = true;
-            onClose();
-          }
-        }}
-        placeholder="Task title…"
-        spellCheck={false}
-        className="w-full bg-transparent text-[13px] font-normal text-card-foreground outline-none placeholder:text-muted-foreground"
-      />
-    </div>
-  );
-}
-
 // A column that accepts dropped cards. Its droppable id IS the status value, so
 // the drop handler can read the destination status straight off `over.id`.
 function DroppableColumn({
@@ -1357,8 +1307,10 @@ function BoardContent({
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [renamingStatusId, setRenamingStatusId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
-  // Which column, if any, has its inline "new task" composer open.
-  const [composingCol, setComposingCol] = useState<string | null>(null);
+  // When set, the task dialog is open on a fresh unsaved draft seeded to this
+  // status column (opened by `C` or a column's `+`). The draft has no file until
+  // it's saved/delegated — see TaskDialog's commitDraft.
+  const [draftStatus, setDraftStatus] = useState<string | null>(null);
   // Per-project tab: the Kanban board, or the Notes two-pane view.
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("board");
   // The global command palette (⌘K) and its one-shot request to NotesView to
@@ -1500,14 +1452,14 @@ function BoardContent({
     setKeepAwake(next);
   }
 
-  // `C` arms the composer on the first column for keyboard-driven creation.
-  // Ignored while typing in a field or with the editor open, and when chorded
-  // with a modifier (so browser shortcuts like ⌘C still work).
+  // `C` opens the task dialog on a fresh draft in the first column for
+  // keyboard-driven capture. Ignored while typing in a field or with a dialog
+  // already open, and when chorded with a modifier (so ⌘C still copies).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "c" && e.key !== "C") return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (selectedPath) return;
+      if (selectedPath || draftStatus !== null) return;
       const el = e.target as HTMLElement | null;
       if (
         el &&
@@ -1516,11 +1468,11 @@ function BoardContent({
         return;
       }
       e.preventDefault();
-      setComposingCol(boardStatuses[0].id);
+      setDraftStatus(boardStatuses[0].id);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [boardStatuses, selectedPath]);
+  }, [boardStatuses, selectedPath, draftStatus]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1533,7 +1485,8 @@ function BoardContent({
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-      if (workspaceView !== "board" || selectedPath || composingCol) return;
+      if (workspaceView !== "board" || selectedPath || draftStatus !== null)
+        return;
       if (
         document.querySelector(
           '[role="dialog"],[role="alertdialog"],[role="menu"]',
@@ -1561,7 +1514,7 @@ function BoardContent({
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [composingCol, selectedPath, workspaceView]);
+  }, [draftStatus, selectedPath, workspaceView]);
 
   // ⌘K (Ctrl+K) toggles the command palette. When it's already open, close it
   // (the footer advertises ⌘K). When closed, suppress only where ⌘K means
@@ -1862,12 +1815,36 @@ function BoardContent({
   const selected = selectedPath
     ? (cards.find((card) => card.path === selectedPath) ?? null)
     : null;
-  const target: TaskTarget | null = selected && {
-    projectId,
-    path: selected.path,
-    title: selected.title,
-    content: selected.content,
-  };
+  // A fresh draft (C / `+`) takes precedence: an empty in-memory task seeded to
+  // its column, with no file yet. Otherwise the dialog reflects the selected card.
+  const target: TaskTarget | null =
+    draftStatus !== null
+      ? {
+          projectId,
+          path: "",
+          title: "",
+          content: setFrontmatterKeys("", { status: draftStatus }),
+          isDraft: true,
+        }
+      : selected && {
+          projectId,
+          path: selected.path,
+          title: selected.title,
+          content: selected.content,
+        };
+
+  // Write a keyboard-captured draft's file (path + full content already resolved
+  // by the dialog) through the optimistic upsert, so the new card lands on the
+  // board instantly — the dialog reopens on it after a draft is delegated.
+  async function materializeDraftFile(path: string, content: string) {
+    await upsertFile({
+      projectId,
+      path,
+      content,
+      hash: await sha256(content),
+      deleted: false,
+    });
+  }
 
   // Create a task by writing a fresh `tasks/<slug>/task.md` through the same
   // upsert path everything else uses; the daemon writes the file and the live
@@ -2177,11 +2154,11 @@ function BoardContent({
     setSelectedPath(path);
   }
   // New task → default column. With a title, create it directly; with none, open
-  // the inline composer on the board so the user can name it.
+  // the task dialog on a fresh draft so the user can capture it from the keyboard.
   function paletteCreateTask(title: string) {
     setWorkspaceView("board");
     if (title) void createTask(boardStatuses[0].id, title);
-    else setComposingCol(boardStatuses[0].id);
+    else setDraftStatus(boardStatuses[0].id);
   }
   // Open / create a note: hand the request to NotesView (which owns the editor +
   // draft-flush lifecycle) after switching to the Notes view.
@@ -2339,7 +2316,7 @@ function BoardContent({
                 key={col.id}
                 status={col}
                 count={byColumn[col.id].length}
-                onAdd={() => setComposingCol(col.id)}
+                onAdd={() => setDraftStatus(col.id)}
                 isRenaming={renamingStatusId === col.id}
                 onTitleClick={() => openProjectDetails("statuses")}
                 onRename={() => setRenamingStatusId(col.id)}
@@ -2350,12 +2327,6 @@ function BoardContent({
                 onArchiveAll={() => void archiveAllInColumn(byColumn[col.id])}
                 onDeleteAll={() => void deleteAllInColumn(byColumn[col.id])}
               >
-                {composingCol === col.id && (
-                  <TaskComposer
-                    onCreate={(title) => void createTask(col.id, title)}
-                    onClose={() => setComposingCol(null)}
-                  />
-                )}
                 {byColumn[col.id].map((card) => (
                   <DraggableCard
                     key={card.id}
@@ -2449,8 +2420,19 @@ function BoardContent({
 
         <TaskDialog
           task={target}
+          takenSlugs={cards.map((card) => card.slug)}
+          onMaterialize={materializeDraftFile}
           onOpenChange={(open) => {
-            if (!open) setSelectedPath(null);
+            if (!open) {
+              setSelectedPath(null);
+              setDraftStatus(null);
+            }
+          }}
+          onDraftDelegated={(path) => {
+            // The draft is now a real card: drop draft mode and reopen the dialog
+            // on it so the bar reflects the linked chat.
+            setDraftStatus(null);
+            setSelectedPath(path);
           }}
           onArchive={selected ? () => void setArchived(selected, true) : undefined}
           onDelete={selected ? () => void deleteCard(selected) : undefined}
