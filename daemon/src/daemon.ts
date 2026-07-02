@@ -308,6 +308,38 @@ const hashOf = (content: string): string =>
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
+// The fire-and-forget "summoning" flag the server stamps on a task/note when a
+// delegation is requested (see convex requestDelegation + lib/chat.ts). The
+// daemon owns its teardown: it clears these when a real chat binds (the chat-*
+// fields take over) and flips them to `failed` when a launch can't be
+// provisioned. Kept in sync with the CHAT_REQUEST_* keys in lib/chat.ts.
+const CHAT_REQUEST_KEYS = {
+  state: "chat-request",
+  harness: "chat-request-harness",
+  id: "chat-request-id",
+  error: "chat-request-error",
+} as const;
+
+// Cleared whenever a chat exists on the doc — a bound chat's chat-* fields are
+// the source of truth, so the pre-link request flag must not linger beside them.
+const CLEAR_CHAT_REQUEST: Record<string, string | undefined> = {
+  [CHAT_REQUEST_KEYS.state]: undefined,
+  [CHAT_REQUEST_KEYS.harness]: undefined,
+  [CHAT_REQUEST_KEYS.id]: undefined,
+  [CHAT_REQUEST_KEYS.error]: undefined,
+};
+
+// A short, human reason for a failed launch, shown in the card's tooltip. Prefer
+// a friendly gloss for the error codes we tag; otherwise squash + truncate the
+// raw message so it fits a single frontmatter line.
+function delegationFailureReason(result: string, errorCode?: string): string {
+  if (errorCode === "cmux-access-denied") return "cmux denied access";
+  if (errorCode) return errorCode.replace(/-/g, " ");
+  const msg = result.replace(/^Error:\s*/i, "").replace(/\s+/g, " ").trim();
+  if (!msg) return "Launch failed";
+  return msg.length > 80 ? `${msg.slice(0, 79)}…` : msg;
+}
+
 // Files under a task's or note's attachments/ folder are image blobs, NOT UTF-8
 // text. They sync via the attachments table (download-only), so the text watcher
 // must never read/push them — doing so would shove corrupted binary into the
@@ -422,6 +454,20 @@ export function projectedChatStatus(
   return chat.status;
 }
 
+// Whether opening this chat's deep link would strand the user. True only for a
+// codex thread whose turn Hitch is driving inside its own app-server (non-cmux)
+// and that's still mid-turn — the deep link points at the wrong server until the
+// turn settles. This is the *sole* meaning of chat-open-state now; the pre-link
+// "launch in flight" state it used to double as lives on `chat-request` instead.
+function codexOpenPending(chat: LocalChatRow): boolean {
+  return (
+    chat.harness === "codex" &&
+    chat.environment != null &&
+    chat.environment !== "cmux" &&
+    chat.status === "working"
+  );
+}
+
 export function projectedChatFrontmatter(
   content: string,
   chat: LocalChatRow,
@@ -431,7 +477,10 @@ export function projectedChatFrontmatter(
     "chat-harness": chat.harness,
     "chat-id": chat.chatId ?? undefined,
     "chat-status": status,
-    "chat-open-state": chat.pending ? "pending" : undefined,
+    "chat-open-state": codexOpenPending(chat) ? "pending" : undefined,
+    // A projected chat has bound, so any lingering summon flag must go — the
+    // chat-* fields are now the truth.
+    ...CLEAR_CHAT_REQUEST,
   };
 
   if (
@@ -652,6 +701,11 @@ async function startHitchBinding({
       const linkedPath = chat.linkedPath;
       // Only the canonical doc bodies carry chat frontmatter (task.md/index.md).
       if (!linkedPath || !isLinkedDocPath(linkedPath)) continue;
+      // Don't project an unbound chat (no chatId yet — e.g. the codex ID-gap
+      // launch row). The doc's launch state is owned by `chat-request` until a
+      // real session binds; projecting a half-row here would fight that flag and
+      // resurrect the pre-link/openability conflation we just untangled.
+      if (!chat.chatId) continue;
 
       const absPath = toAbs(linkedPath);
       let content: string;
@@ -846,6 +900,8 @@ async function startHitchBinding({
       "chat-cwd": environment === "cmux" ? cwd : undefined,
       "chat-env": environment === "cmux" ? environment : undefined,
       "chat-open-state": environment === "cmux" ? undefined : "pending",
+      // The summon flag has served its purpose — this doc now has a real chat.
+      ...CLEAR_CHAT_REQUEST,
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${projectLabel}] linked codex thread ${threadId} → ${path}`);
@@ -867,6 +923,8 @@ async function startHitchBinding({
       "chat-id": sessionId,
       "chat-cwd": cwd,
       "chat-env": environment,
+      // The summon flag has served its purpose — this doc now has a real chat.
+      ...CLEAR_CHAT_REQUEST,
     });
     await writeFile(absPath, next, "utf8");
     logger.info(`[hitch:${projectLabel}] linked claude session ${sessionId} → ${path}`);
@@ -918,6 +976,111 @@ async function startHitchBinding({
       await client.mutation(anyApi.chats.bindPendingChat, args);
     }
     await reduceAndSyncChats("chat-settled");
+  }
+
+  // The task doc a start-chat command targets, or null if it isn't a
+  // task-linked start-chat. Only tasks carry the card-visible `chat-request`
+  // flag today (notes are handled by their own dock), so the flag lifecycle is
+  // scoped to them.
+  function taskDocForCommand(cmd: CommandDoc): string | null {
+    if (cmd.kind !== "start-chat") return null;
+    const linkedType = cmd.linkedType ?? (cmd.path ? "task" : undefined);
+    const linkedPath = cmd.linkedPath ?? cmd.path;
+    if (linkedType !== "task" || !linkedPath) return null;
+    return linkedPath;
+  }
+
+  // The launch this command belongs to still owns the doc's request flag — i.e.
+  // the user hasn't Cleared + re-fired a newer launch since. Compared against the
+  // doc's chat-request-id so a stale command's late resolution can't clobber a
+  // fresher request (review #5). A doc with no id yet (the file write lost the
+  // claim round-trip — review #4) is treated as ours, since only our launch is
+  // in flight for this path at claim time.
+  function stillOwnsRequest(cmd: CommandDoc, content: string): boolean {
+    const docLaunch = frontmatterValue(content, CHAT_REQUEST_KEYS.id);
+    if (!docLaunch || !cmd.launchId) return true;
+    return docLaunch === cmd.launchId;
+  }
+
+  // A doc-linked launch failed before any session bound (cmux gone, harness
+  // misconfigured, unsupported environment). Flip the summon flag to `failed` so
+  // the failure lands durably on the card instead of vanishing with the closed
+  // dialog. Guarded so it can't clobber a chat that bound or a newer request; it
+  // does NOT require the `requested` flag to be on disk yet, so a fast failure
+  // that outran the file→disk write still lands (review #4) — the flag it writes
+  // simply wins the later, staler `requested` echo by recency.
+  async function markDelegationFailed(
+    cmd: CommandDoc,
+    reason: string,
+  ): Promise<void> {
+    const linkedPath = taskDocForCommand(cmd);
+    if (!linkedPath) return;
+    const absPath = toAbs(linkedPath);
+    let content: string;
+    try {
+      content = await readFile(absPath, "utf8");
+    } catch {
+      return;
+    }
+    if (frontmatterValue(content, "chat-id")) return;
+    if (!stillOwnsRequest(cmd, content)) return;
+    const next = setFrontmatterKeys(content, {
+      [CHAT_REQUEST_KEYS.state]: "failed",
+      // Restore harness/id in case the file write hadn't landed them yet, so the
+      // card can still draw the chip and future resolutions correlate correctly.
+      [CHAT_REQUEST_KEYS.harness]:
+        frontmatterValue(content, CHAT_REQUEST_KEYS.harness) ?? cmd.harness,
+      [CHAT_REQUEST_KEYS.id]:
+        frontmatterValue(content, CHAT_REQUEST_KEYS.id) ?? cmd.launchId,
+      [CHAT_REQUEST_KEYS.error]: reason,
+    });
+    if (next === content) return;
+    try {
+      await writeFile(absPath, next, "utf8");
+      await pushLocal(absPath);
+      logger.info(
+        `[hitch:${projectLabel}] ⚑ delegation failed → ${linkedPath}: ${reason}`,
+      );
+    } catch (err) {
+      logError(
+        logger,
+        `[hitch:${projectLabel}] failed to stamp delegation failure on ${linkedPath}: ${String(err)}`,
+      );
+    }
+  }
+
+  // A launch reported success but bound no session in-band — the editor
+  // launchers (Claude in VS Code / Cursor) open a pre-filled prompt and return
+  // `done` immediately; the session only binds later, when the user presses Enter
+  // and claudeSessionLinker fires (review #2). Nothing else clears the summon
+  // flag in that window, so it would sit at "Summoning…" forever. Resolve it on
+  // the successful completion: drop the flag back to the compose state (the card
+  // then reflects the real chat once the linker binds). Guarded to our own
+  // still-outstanding request so it can't wipe a bound chat or a newer launch.
+  async function clearDelegationOnSuccess(cmd: CommandDoc): Promise<void> {
+    const linkedPath = taskDocForCommand(cmd);
+    if (!linkedPath) return;
+    const absPath = toAbs(linkedPath);
+    let content: string;
+    try {
+      content = await readFile(absPath, "utf8");
+    } catch {
+      return;
+    }
+    if (frontmatterValue(content, "chat-id")) return; // already bound → its own teardown ran
+    if (!frontmatterValue(content, CHAT_REQUEST_KEYS.state)) return;
+    if (!stillOwnsRequest(cmd, content)) return;
+    const next = setFrontmatterKeys(content, CLEAR_CHAT_REQUEST);
+    if (next === content) return;
+    try {
+      await writeFile(absPath, next, "utf8");
+      await pushLocal(absPath);
+    } catch (err) {
+      logError(
+        logger,
+        `[hitch:${projectLabel}] failed to clear delegation flag on ${linkedPath}: ${String(err)}`,
+      );
+    }
   }
 
   async function pushLocal(absPath: string): Promise<void> {
@@ -1243,6 +1406,16 @@ async function startHitchBinding({
       deviceToken,
       claimedBy: host,
     });
+    // Every completion for a doc-linked launch flows through here, so this is the
+    // one place the summon flag has to resolve. On error → `failed` (card-visible
+    // + retryable). On a success that bound no session in-band (editor launchers
+    // return `done` before the user submits) → clear it so it doesn't stick at
+    // "Summoning…". Both no-op for non-task / already-bound docs.
+    if (status === "error") {
+      await markDelegationFailed(cmd, delegationFailureReason(result, errorCode));
+    } else {
+      await clearDelegationOnSuccess(cmd);
+    }
   }
 
   async function claimCommand(cmd: CommandDoc): Promise<CommandDoc | null> {
