@@ -36,6 +36,27 @@ export function slugify(title: string): string {
     .replace(/-+$/, ""); // re-strip in case the slice landed on a hyphen
 }
 
+// Fall back to the first line of the body when a task is saved without a title.
+// Keyboard capture opens the dialog on the title, but a user can drop straight
+// into the body and Esc out; rather than lose the thought (or create an untitled
+// card), we name it from the first ~6 words of the first non-empty line, with the
+// most common inline/leading markdown stripped so the title reads as plain prose.
+// Returns "" when the body has no words, so the caller can discard an empty draft.
+export function deriveTitleFromBody(body: string, maxWords = 6): string {
+  const firstLine =
+    body.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  const cleaned = firstLine
+    .replace(/^#{1,6}\s+/, "") // heading markers
+    .replace(/^>\s+/, "") // blockquote
+    .replace(/^[-*+]\s+/, "") // bullet
+    .replace(/^\d+\.\s+/, "") // ordered-list marker
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // links/images → their text
+    .replace(/[*_`~]/g, "") // emphasis / code / strike marks
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.split(" ").filter(Boolean).slice(0, maxWords).join(" ");
+}
+
 // A slug for `title` that doesn't collide with `taken`, appending -2, -3, …
 // Falls back to `fallback` ("task" by default) when the title has no slug-able
 // characters — notes pass "note" so an untitled note reads sensibly.

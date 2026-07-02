@@ -19,9 +19,10 @@ import {
   buildStartPrompt,
   chatActivity,
   defaultEnvironment,
-  defaultModel,
   defaultReasoning,
   environmentLabel,
+  loadLastAgent,
+  saveLastAgent,
   harnessLabel,
   honorsLaunchParams,
   isEnvironment,
@@ -109,6 +110,7 @@ export function DelegationBand({
   chatOpenState,
   title,
   path,
+  canDelegate = true,
   onStart,
   onClear,
   onManagePrompts,
@@ -120,6 +122,9 @@ export function DelegationBand({
   chatOpenState: ChatOpenState | null;
   title: string;
   path: string;
+  // Whether the task can be delegated right now. A new draft with no title has
+  // no slug/file to launch against, so Send and ⌘↩ stay inert until it's typed.
+  canDelegate?: boolean;
   onStart: (params: {
     harness: Harness;
     model: string;
@@ -130,11 +135,11 @@ export function DelegationBand({
   onManagePrompts?: () => void;
   onManageHarnesses?: () => void;
 }) {
-  const [harness, setHarness] = useState<Harness>("codex");
-  const [model, setModel] = useState(() => defaultModel("codex"));
-  const [effort, setEffort] = useState(() =>
-    defaultReasoning("codex", defaultModel("codex")),
-  );
+  // Seed the pickers from the user's last delegation, not a hardcoded default, so
+  // "the defaults are already selected" means their defaults. Read once on mount.
+  const [harness, setHarness] = useState<Harness>(() => loadLastAgent().harness);
+  const [model, setModel] = useState(() => loadLastAgent().model);
+  const [effort, setEffort] = useState(() => loadLastAgent().effort);
   // Per-harness run environment, read from the local daemon bridge. Claude in an
   // editor extension can't take model/effort at launch, so we disable those
   // controls for that case and point the user at the editor.
@@ -168,23 +173,27 @@ export function DelegationBand({
     [clearLaunchPhaseTimer],
   );
 
-  // (Re)load the custom prompts and reset the selection to the first built-in
-  // ("Ship it") whenever the dialog switches to a different task — the band isn't
-  // remounted per task, so title/path change underneath us, and re-running here
-  // also picks up prompts edited in settings. The dropdown shows the built-ins
-  // first, then the customs. The harness no longer changes the prompt — prompts
-  // are decoupled.
+  // Load the user's custom prompts once. The band remounts per task (its parent
+  // is keyed by the task path), so a mount-time load also refreshes after a
+  // settings edit reopens the dialog. Kept out of the title/path effect below so
+  // typing a draft's title doesn't re-hit the bridge on every keystroke.
   useEffect(() => {
     let active = true;
-    setPromptId(BUILTIN_STARTING_PROMPTS[0].id);
-    setPrompt(buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }));
     void loadCustomPrompts().then((custom) => {
-      if (!active) return;
-      setPrompts([...BUILTIN_STARTING_PROMPTS, ...custom]);
+      if (active) setPrompts([...BUILTIN_STARTING_PROMPTS, ...custom]);
     });
     return () => {
       active = false;
     };
+  }, []);
+
+  // Refill the preview prompt from the first built-in whenever the target task
+  // changes — the preamble embeds the title + file path, and a fresh draft's
+  // prospective path resolves as its title is typed. Manual edits are one-off and
+  // replaced on the next preset pick or task change (prior behavior).
+  useEffect(() => {
+    setPromptId(BUILTIN_STARTING_PROMPTS[0].id);
+    setPrompt(buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }));
   }, [title, path]);
 
   useEffect(() => {
@@ -248,11 +257,13 @@ export function DelegationBand({
   }
 
   const start = useCallback(async () => {
-    if (launchPhase) return;
+    if (launchPhase || !canDelegate) return;
     clearLaunchPhaseTimer();
     setLaunchPhase("starting");
     try {
       await onStart({ harness, model, effort, prompt });
+      // Remember this exact combination for the next task's bar.
+      saveLastAgent({ harness, model, effort });
       if (harness === "codex" && !chat) {
         setLaunchPhase("linking");
         clearLaunchPhaseSoon(CODEX_LINKING_GRACE_MS);
@@ -264,6 +275,7 @@ export function DelegationBand({
       throw error;
     }
   }, [
+    canDelegate,
     chat,
     clearLaunchPhaseSoon,
     clearLaunchPhaseTimer,
@@ -285,7 +297,7 @@ export function DelegationBand({
   // While the task dialog is open and no chat is linked yet, Cmd+Enter sends
   // the current delegation prompt from anywhere in the dialog.
   useEffect(() => {
-    if (chat) return;
+    if (chat || !canDelegate) return;
     function onKeyDown(e: KeyboardEvent) {
       if (
         e.key !== "Enter" ||
@@ -309,7 +321,7 @@ export function DelegationBand({
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [chat, start]);
+  }, [canDelegate, chat, start]);
 
   // Whether the current (harness, environment) pair accepts model/effort at
   // launch. Unset env falls back to the harness default.
@@ -550,7 +562,7 @@ export function DelegationBand({
             <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
               <Button
                 onClick={start}
-                disabled={launchPhase !== null}
+                disabled={launchPhase !== null || !canDelegate}
                 aria-label="Delegate to agent"
                 className="size-8 shrink-0 rounded-lg p-0"
               >
@@ -562,10 +574,14 @@ export function DelegationBand({
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              <KbdGroup>
-                <Kbd>⌘</Kbd>
-                <Kbd>Enter</Kbd>
-              </KbdGroup>
+              {canDelegate ? (
+                <KbdGroup>
+                  <Kbd>⌘</Kbd>
+                  <Kbd>Enter</Kbd>
+                </KbdGroup>
+              ) : (
+                "Add a title to delegate"
+              )}
             </TooltipContent>
           </Tooltip>
         </div>

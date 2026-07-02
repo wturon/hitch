@@ -196,6 +196,59 @@ export function modelLabel(harness: Harness, id: string): string {
   return MODELS_BY_HARNESS[harness].find((m) => m.id === id)?.label ?? id;
 }
 
+// The (harness, model, effort) triple the delegate bar launches with. Persisted
+// as one blob so the bar reopens on the user's last choice instead of a hardcoded
+// default — switching harness then effort remembers the whole combination.
+export interface AgentChoice {
+  harness: Harness;
+  model: string;
+  effort: string;
+}
+
+const LAST_AGENT_KEY = "hitch:last-agent";
+
+export function defaultAgentChoice(): AgentChoice {
+  const harness: Harness = "codex";
+  const model = defaultModel(harness);
+  return { harness, model, effort: defaultReasoning(harness, model) };
+}
+
+// Read the last-used agent from localStorage, validating every field against the
+// current harness/model/effort catalog — a build that dropped a model or renamed
+// an effort must never seed the bar with a stale value, so each unknown piece
+// falls back to its default (and an unknown harness resets the whole triple).
+export function loadLastAgent(): AgentChoice {
+  if (typeof window === "undefined") return defaultAgentChoice();
+  try {
+    const raw = window.localStorage.getItem(LAST_AGENT_KEY);
+    if (!raw) return defaultAgentChoice();
+    const parsed = JSON.parse(raw) as Partial<AgentChoice>;
+    const harness = HARNESSES.includes(parsed.harness as Harness)
+      ? (parsed.harness as Harness)
+      : defaultAgentChoice().harness;
+    const model = MODELS_BY_HARNESS[harness].some((m) => m.id === parsed.model)
+      ? (parsed.model as string)
+      : defaultModel(harness);
+    const effort = reasoningOptions(harness, model).some(
+      (r) => r.id === parsed.effort,
+    )
+      ? (parsed.effort as string)
+      : defaultReasoning(harness, model);
+    return { harness, model, effort };
+  } catch {
+    return defaultAgentChoice();
+  }
+}
+
+export function saveLastAgent(choice: AgentChoice): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_AGENT_KEY, JSON.stringify(choice));
+  } catch {
+    // Private-mode / quota failures are non-fatal — we just don't remember.
+  }
+}
+
 export function reasoningLabel(
   harness: Harness,
   id: string,

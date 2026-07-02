@@ -35,6 +35,11 @@ export interface FrontmatterDocument {
   // The whole-file draft (frontmatter + body), edited verbatim and written back
   // byte-for-byte. This is the canonical value.
   raw: string;
+  // The latest `raw`, read synchronously from the internal ref. Use this instead
+  // of the `raw` field inside async callbacks that span a mutation (e.g. an
+  // attachment upload that first materializes a draft, changing the frontmatter):
+  // the `raw` field is the render-time snapshot and would be stale.
+  getLatestRaw: () => string;
   // The body half only — what the friendly editor sees. Frontmatter never enters
   // the formatted editor; it's recombined verbatim on every body edit.
   body: string;
@@ -116,6 +121,7 @@ export function useFrontmatterDocument(content: string): FrontmatterDocument {
 
   return {
     raw: draft,
+    getLatestRaw: () => draftRef.current,
     body: splitFrontmatter(draft).body,
     title: rawTitle(draft),
     frontmatter,
