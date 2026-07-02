@@ -387,6 +387,7 @@ function AppShell({
   onToggleKeepAwake,
   onShowGlobalSettings,
   onShowDebug,
+  onShowEditorSandbox,
   onSignOut,
   onOpenPalette,
   children,
@@ -403,6 +404,7 @@ function AppShell({
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onShowDebug?: () => void;
+  onShowEditorSandbox?: () => void;
   onSignOut: () => void;
   onOpenPalette: () => void;
   children: ReactNode;
@@ -451,6 +453,7 @@ function AppShell({
         onToggleKeepAwake={onToggleKeepAwake}
         onShowGlobalSettings={onShowGlobalSettings}
         onShowDebug={onShowDebug}
+        onShowEditorSandbox={onShowEditorSandbox}
         onSignOut={onSignOut}
         onOpenPalette={onOpenPalette}
       />
@@ -2204,6 +2207,7 @@ function BoardContent({
       onToggleKeepAwake={() => void toggleKeepAwake()}
       onShowGlobalSettings={openGlobalSettings}
       onShowDebug={() => setWorkspaceView("debug")}
+      onShowEditorSandbox={() => setWorkspaceView("editor-sandbox")}
       onSignOut={() => void signOut()}
       onOpenPalette={() => setShowPalette(true)}
     >

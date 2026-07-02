@@ -7,7 +7,7 @@
 // Everything the editor needs lives in this folder; the only public entry is
 // `editor/index.ts` (nothing outside the folder imports these files directly).
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { XIcon } from "lucide-react";
 
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
@@ -57,18 +57,23 @@ export function SandboxEditor({ onExit }: { onExit: () => void }) {
       {/* Body: editor left, live state inspector right. */}
       <LexicalComposer initialConfig={initialConfig}>
         <div className="flex min-h-0 flex-1 flex-row gap-4 pt-4">
-          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+          {/* `relative` so the placeholder can absolutely position onto the
+              first line; `min-h-full` on the editable makes the whole column the
+              click target (Lexical renders the placeholder as an unpositioned
+              flow sibling, and the editable is otherwise only ~180px tall). */}
+          <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
             <RichTextPlugin
               contentEditable={
                 <ContentEditable
-                  className="hitch-sandbox-content"
+                  className="hitch-sandbox-content min-h-full"
                   aria-label="Editor sandbox"
+                  aria-placeholder="Start typing…"
+                  placeholder={
+                    <div className="pointer-events-none absolute left-0 top-0 text-muted-foreground">
+                      Start typing…
+                    </div>
+                  }
                 />
-              }
-              placeholder={
-                <div className="pointer-events-none -mt-[25px] text-muted-foreground">
-                  Start typing…
-                </div>
               }
               ErrorBoundary={LexicalErrorBoundary}
             />
@@ -87,16 +92,31 @@ export function SandboxEditor({ onExit }: { onExit: () => void }) {
 function StateInspector() {
   const [json, setJson] = useState<string>("");
   const [open, setOpen] = useState(true);
+  // Keep the latest state cheaply (no serialization) so we can render fresh JSON
+  // the moment the pane is reopened, without stringifying on every keystroke
+  // while it's collapsed — that cost would balloon on large pasted documents.
+  const latest = useRef<EditorState | null>(null);
 
   function onChange(editorState: EditorState) {
-    setJson(JSON.stringify(editorState.toJSON(), null, 2));
+    latest.current = editorState;
+    if (open) setJson(JSON.stringify(editorState.toJSON(), null, 2));
+  }
+
+  function toggle() {
+    setOpen((wasOpen) => {
+      const nowOpen = !wasOpen;
+      if (nowOpen && latest.current) {
+        setJson(JSON.stringify(latest.current.toJSON(), null, 2));
+      }
+      return nowOpen;
+    });
   }
 
   return (
     <div className="flex w-[380px] shrink-0 flex-col overflow-hidden rounded-[10px] border border-border">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         className="flex shrink-0 items-center justify-between border-b border-border bg-secondary px-3.5 py-2 text-left"
       >
         <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">

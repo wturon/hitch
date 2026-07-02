@@ -24,6 +24,7 @@ import {
   BugIcon,
   ChevronUpIcon,
   CoffeeIcon,
+  FlaskConicalIcon,
   LoaderCircleIcon,
   LogOutIcon,
   PinIcon,
@@ -404,6 +405,7 @@ export function AppSidebar({
   onToggleKeepAwake,
   onShowGlobalSettings,
   onShowDebug,
+  onShowEditorSandbox,
   onSignOut,
   onOpenPalette,
 }: {
@@ -420,6 +422,7 @@ export function AppSidebar({
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onShowDebug?: () => void;
+  onShowEditorSandbox?: () => void;
   onSignOut: () => void;
   // Open the global command palette (⌘K). The sidebar's search bar is just a
   // discoverable, clickable entry point to it.
@@ -684,6 +687,7 @@ export function AppSidebar({
           onToggleKeepAwake={onToggleKeepAwake}
           onShowGlobalSettings={onShowGlobalSettings}
           onShowDebug={onShowDebug}
+          onShowEditorSandbox={onShowEditorSandbox}
           onSignOut={onSignOut}
         />
       </div>
@@ -704,6 +708,7 @@ function AccountFooter({
   onToggleKeepAwake,
   onShowGlobalSettings,
   onShowDebug,
+  onShowEditorSandbox,
   onSignOut,
 }: {
   harnessSetup: GlobalHarnessSetupStatus | null;
@@ -712,6 +717,7 @@ function AccountFooter({
   onToggleKeepAwake: () => void;
   onShowGlobalSettings: (tab?: GlobalSettingsTab) => void;
   onShowDebug?: () => void;
+  onShowEditorSandbox?: () => void;
   onSignOut: () => void;
 }) {
   const viewer = useQuery(api.users.viewer);
@@ -856,6 +862,12 @@ function AccountFooter({
           <MenuItem onClick={onShowDebug}>
             <BugIcon />
             Debug
+          </MenuItem>
+        ) : null}
+        {onShowEditorSandbox ? (
+          <MenuItem onClick={onShowEditorSandbox}>
+            <FlaskConicalIcon />
+            Editor Sandbox
           </MenuItem>
         ) : null}
         <MenuItem onClick={onSignOut}>
