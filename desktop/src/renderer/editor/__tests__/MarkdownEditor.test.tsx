@@ -202,6 +202,45 @@ describe("MarkdownEditor — invariant D: editing continues cleanly after adopti
   });
 });
 
+describe("MarkdownEditor — external reverts to previously-seen bytes still adopt", () => {
+  // Regression tests for the stale-ref bug: with separate last-emitted /
+  // last-adopted refs, a genuine external write whose bytes exactly matched an
+  // OLDER state (a `git checkout`-style revert of the file) was silently dropped
+  // — leaving the editor and the file diverged, and the next keystroke would
+  // clobber the external write. A single "value the editor currently reflects"
+  // ref has no stale bytes to wrongly match.
+
+  it("adopts a revert to a prior adoption's exact bytes after an intervening edit", async () => {
+    const { onChange, setValue } = renderEditor("# One\n");
+    const editor = getEditor();
+
+    await setValue("_hi_\n"); // adopt non-canonical bytes
+    await appendText(editor, "Z"); // user edits → emits "*hi*Z\n"
+    expect(onChange).toHaveBeenLastCalledWith("*hi*Z\n");
+    onChange.mockClear();
+
+    // An agent reverts the file to the EXACT bytes adopted earlier. This must
+    // re-import (the editor no longer reflects them), silently.
+    await setValue("_hi_\n");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(currentMarkdown(editor)).toBe("*hi*\n"); // canonical form of the revert
+  });
+
+  it("adopts a revert to the initial value after an intervening adoption", async () => {
+    const { onChange, setValue } = renderEditor("initial\n");
+    const editor = getEditor();
+
+    await setValue("hello\n"); // external write
+    expect(currentMarkdown(editor)).toBe("hello\n");
+
+    // External revert back to the exact initial bytes — must re-import, not be
+    // mistaken for an echo of the (long-gone) mount value.
+    await setValue("initial\n");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(currentMarkdown(editor)).toBe("initial\n");
+  });
+});
+
 describe("MarkdownEditor — invariant E: failures don't crash the surface", () => {
   it("swallows and logs an export failure, skipping that emission", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
