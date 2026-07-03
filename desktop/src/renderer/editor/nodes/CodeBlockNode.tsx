@@ -1,8 +1,12 @@
 // A Notion-style fenced code block: a block-level DecoratorNode backing a plain
-// markdown fence (```lang … ```). Deliberately highlight-free — plain monospace
-// text in a rounded, theme-token container with a quiet language dropdown in the
-// top-right. No `@lexical/code`/prismjs anywhere: syntax highlighting is out of
-// scope by product decision, so nothing here pulls that machinery in.
+// markdown fence (```lang … ```). Syntax highlighting is a Shiki OVERLAY (see
+// editor/highlight.ts) that never touches the editing model: an in-flow
+// `<pre>` renders the colored code and drives the block's height, and an
+// invisible `<textarea>` sits absolutely on top (transparent text, visible
+// caret) as the real edit surface. The pre and textarea share pixel-identical
+// font/padding/wrapping metrics so the caret lands exactly on the glyphs. No
+// `@lexical/code`/prismjs anywhere — Shiki is the only highlighter, loaded lazily
+// so the block is editable before/without it (plain code is the loading state).
 //
 // Unlike ImageNode/UnknownBlockNode (immutable, set once at construction) this
 // node is MUTABLE: the textarea inside the decorator writes back through
@@ -15,7 +19,7 @@
 // body, `__language` the info-string language (`""` = a lang-less fence), and
 // `__meta` the rest of the info string after the language (`title=x`, `{1,3}`,
 // …) preserved verbatim for round-trip and never surfaced in the UI.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ReactElement } from "react";
 
 import {
@@ -49,6 +53,12 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
+import {
+  getHighlighter,
+  highlightToHtml,
+  onHighlighterReady,
+} from "../highlight";
+
 // The curated language menu, in display order. The empty value is "Plain text"
 // (a lang-less fence). A document may carry a language outside this list (any
 // info string is legal markdown); the dropdown surfaces that raw value as an
@@ -70,6 +80,36 @@ const LANGUAGE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "go", label: "go" },
   { value: "markdown", label: "markdown" },
 ];
+
+// The ONLY keys allowed to bubble out of the code textarea to Lexical's editor
+// root (and the app's window-level handlers): true non-editing, app-global chrome
+// shortcuts. This is the inverted containment contract — the textarea owns EVERY
+// other key, so native editing works untouched. That matters most for ⌘⌫ (delete
+// to line start) and ⌥⌫ (delete word), which are NATIVE textarea edits needing no
+// implementation, ONLY protection: Lexical's root keydown maps them to
+// DELETE_LINE_COMMAND / DELETE_WORD_COMMAND, calls `event.preventDefault()`
+// UNCONDITIONALLY (cancelling the textarea's native delete → "nothing happens"),
+// then runs the command against `$getSelection()` — which, while focus is in the
+// textarea, is whatever stale RangeSelection Lexical last held OUTSIDE the block.
+// Those two command handlers (unlike KEY_BACKSPACE/KEY_DELETE) don't guard the
+// decorator target, so a leftover range selection silently deleted a word/line
+// elsewhere in the document: a latent data-corruption class this contract closes.
+// The list is built from the window `keydown` listeners in App.tsx (the only
+// app-global ones). ⌘, / ⌘N etc. don't exist, so they're not here.
+function isAppGlobalShortcut(e: React.KeyboardEvent): boolean {
+  const mod = e.metaKey || e.ctrlKey;
+  // ⌘K — command palette.
+  if (mod && e.key.toLowerCase() === "k") return true;
+  // ⌘\ — sidebar rail toggle.
+  if (mod && e.key === "\\") return true;
+  // ⌘1…⌘9 — jump to a project view by position.
+  if (mod && !e.altKey && !e.shiftKey && /^[1-9]$/.test(e.key)) return true;
+  // Ctrl+Shift+Tab — cycle to the previous view (Ctrl only; ⌘Tab is the OS app
+  // switcher). Ctrl+Tab *without* Shift never reaches here — the Tab-indent
+  // handler above catches it — so only the Shift variant needs allowing.
+  if (e.key === "Tab" && e.ctrlKey && !e.metaKey && !e.altKey) return true;
+  return false;
+}
 
 // A freshly-inserted block (via the slash menu or the ``` shortcut) records its
 // key here so the decorator can focus its textarea once, on mount. A single
@@ -244,6 +284,21 @@ function CodeBlockComponent({
     }
   }, [nodeKey]);
 
+  // The Shiki highlighter loads lazily. Until it does, `highlightToHtml` returns
+  // null and we render plain code (the loading state). Re-render once on ready so
+  // the plain pre swaps to the highlighted one; if it's already loaded, skip.
+  const [, bumpHighlightReady] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (getHighlighter()) return;
+    return onHighlighterReady(bumpHighlightReady);
+  }, []);
+  // Highlight the LOCAL mirror (`text`), not the `code` prop, so the pre tracks
+  // the caret exactly as the user types. null → plain fallback (loading, or an
+  // unknown/lang-less fence). The `+ "\n"` on the fallback matches the textarea's
+  // trailing empty line (a pre collapses one trailing newline; the textarea shows
+  // it) — Shiki emits a structural trailing line span, so it needs no such fix.
+  const highlightedHtml = highlightToHtml(text, language);
+
   const onChange = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       const next = event.target.value;
@@ -351,6 +406,31 @@ function CodeBlockComponent({
         });
         return;
       }
+      // Enter (no modifiers) auto-indents: the new line inherits the current
+      // line's leading whitespace, the same way editors keep a block's indent
+      // going. Shift/⌘/⌥+Enter fall through to the native textarea newline (no
+      // auto-indent), and are contained below like any other key. Same
+      // setRangeText + node-sync path as Tab.
+      if (
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
+        const indent = /^[ \t]*/.exec(value.slice(lineStart))?.[0] ?? "";
+        el.setRangeText("\n" + indent, selectionStart, selectionEnd, "end");
+        const next = el.value;
+        setText(next);
+        editor.update(() => {
+          const node = $getNodeByKey(nodeKey);
+          if ($isCodeBlockNode(node)) node.setCode(next);
+        });
+        return;
+      }
       if (event.key === "ArrowDown" && collapsed) {
         // On the last line → step out below.
         if (value.indexOf("\n", selectionEnd) === -1) {
@@ -369,12 +449,14 @@ function CodeBlockComponent({
           return;
         }
       }
-      // Let app-global shortcuts (⌘K, …) through; contain every other key
-      // so Lexical's own bindings (Backspace-deletes-block, Enter, arrows, Tab,
-      // the `/` slash menu) never act on the surrounding document while the user
-      // is typing code. The textarea sits inside a contentEditable=false host, so
-      // this is belt-and-braces, but keydown still bubbles to the editor root.
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // Inverted containment: the textarea owns EVERY remaining key. Only an
+      // explicit allowlist of app-global chrome shortcuts is let out to bubble to
+      // Lexical's root and the window handlers; everything else is contained so
+      // Lexical's own bindings (its modifier-delete handlers, Enter, arrows, the
+      // `/` slash menu, ⌘A-select-all) never act on the surrounding document
+      // while the user edits code. We stopPropagation but never preventDefault
+      // here, so the textarea's own native editing (incl. ⌘⌫/⌥⌫) runs untouched.
+      if (isAppGlobalShortcut(event)) return;
       event.stopPropagation();
     },
     [nodeSelect, escapeTo, editor, nodeKey],
@@ -407,7 +489,7 @@ function CodeBlockComponent({
   return (
     <div
       className={cn(
-        "group relative my-2 rounded-lg border border-border bg-muted",
+        "hitch-code-overlay group relative my-2 rounded-lg border border-border bg-muted",
         isSelected && "ring-2 ring-ring",
       )}
     >
@@ -439,6 +521,24 @@ function CodeBlockComponent({
           </SelectContent>
         </Select>
       </div>
+      {/* The highlight overlay: an in-flow sizer that renders the (Shiki-colored
+          or plain) code and drives the block's height, with the transparent
+          textarea laid absolutely on top. Both share pixel-identical metrics via
+          the .hitch-code-* rules in styles.css so the caret sits on the glyphs.
+          The sizer is aria-hidden — the textarea is the accessible edit surface.
+          dangerouslySetInnerHTML is safe: Shiki escapes the code text and only
+          emits its own <span> token markup (see editor/highlight.ts). */}
+      {highlightedHtml !== null ? (
+        <div
+          className="hitch-code-sizer"
+          aria-hidden
+          dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+        />
+      ) : (
+        <pre className="hitch-code-sizer hitch-code-fallback" aria-hidden>
+          {text + "\n"}
+        </pre>
+      )}
       <textarea
         ref={textareaRef}
         value={text}
@@ -448,13 +548,8 @@ function CodeBlockComponent({
         spellCheck={false}
         autoCapitalize="off"
         autoCorrect="off"
-        rows={1}
         aria-label="Code block"
-        // `field-sizing: content` auto-grows the textarea to its content in the
-        // bundled Chromium (Electron 42, Chromium ≥136) — the cleanest sizer, no
-        // hidden mirror element. `rows={1}` sets the minimum height.
-        style={{ fieldSizing: "content" } as React.CSSProperties}
-        className="block w-full resize-none border-0 bg-transparent px-3 py-2.5 pr-16 font-mono text-[13px] leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground"
+        className="hitch-code-textarea"
       />
     </div>
   );

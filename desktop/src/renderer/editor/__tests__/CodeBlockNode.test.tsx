@@ -35,8 +35,50 @@ import { exportMarkdown } from "../bridge";
 import { CODE_BLOCK_TRANSFORMER, EDITOR_NODES } from "../config";
 import { CodeBlockNode, $isCodeBlockNode } from "../nodes/CodeBlockNode";
 import { SLASH_COMMANDS, applySlashCommand } from "../SlashMenuPlugin";
+import * as highlight from "../highlight";
 
-afterEach(cleanup);
+// Mock the Shiki highlighter: the real one loads asynchronously via dynamic
+// import(), too slow/flaky for the unit suite. This stub starts "not loaded"
+// (highlightToHtml → null → plain fallback), and a test-only `__setReady()`
+// flips it to "loaded" and notifies subscribers, so we can assert the plain →
+// highlighted transition and that the textarea value stays authoritative. The
+// emitted markup mirrors Shiki's shape (`<pre class="shiki">…<span>`).
+vi.mock("../highlight", () => {
+  let ready = false;
+  const listeners = new Set<() => void>();
+  return {
+    getHighlighter: () => (ready ? {} : null),
+    onHighlighterReady: (fn: () => void) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    highlightToHtml: (code: string, language: string) =>
+      ready && language === "ts"
+        ? `<pre class="shiki"><code><span class="line"><span class="tok">${code
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")}</span></span></code></pre>`
+        : null,
+    shikiLang: (l: string) => (l === "ts" ? "typescript" : null),
+    LIGHT_THEME: "github-light",
+    DARK_THEME: "github-dark",
+    __resetHighlighterForTests: () => {
+      ready = false;
+      listeners.clear();
+    },
+    __setReady: () => {
+      ready = true;
+      for (const fn of listeners) fn();
+    },
+  };
+});
+
+const setHighlighterReady = () =>
+  (highlight as unknown as { __setReady: () => void }).__setReady();
+
+afterEach(() => {
+  cleanup();
+  highlight.__resetHighlighterForTests();
+});
 
 function getEditor(): LexicalEditor {
   const el = document.querySelector('[contenteditable="true"]');
@@ -167,6 +209,141 @@ describe("code block keyboard: Tab and undo routing", () => {
     expect(codeTextarea().value).toBe("mid();");
     expect(onChange.mock.calls.at(-1)![0]).toBe("```ts\nmid();\n```\n");
     vi.useRealTimers();
+  });
+});
+
+describe("modifier-key containment (inverted allowlist contract)", () => {
+  // jsdom can't emulate the NATIVE textarea edits ⌘⌫/⌥⌫ perform, so we test the
+  // CONTRACT the fix guarantees: those keys are (a) never default-prevented (so
+  // the browser's own delete-to-line-start / delete-word runs) and (b) never
+  // bubble to a listener on Lexical's contentEditable root — where Lexical maps
+  // ⌘⌫/⌥⌫ to DELETE_LINE/DELETE_WORD, preventDefaults, and mutates its own stale
+  // selection. Only the app-global allowlist (⌘K) is allowed to reach the root.
+  async function setup() {
+    render(
+      <MarkdownEditor value={"```ts\nhello world\n```\n"} onChange={() => {}} />,
+    );
+    await act(async () => {});
+    const root = document.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    let rootSaw = false;
+    root.addEventListener("keydown", () => {
+      rootSaw = true;
+    });
+    const ta = codeTextarea();
+    ta.focus();
+    ta.setSelectionRange(11, 11); // end of "hello world"
+    return { ta, seen: () => rootSaw, reset: () => (rootSaw = false) };
+  }
+
+  it("⌘⌫ is contained and not default-prevented (native delete-to-line-start runs)", async () => {
+    const { ta, seen } = await setup();
+    let notPrevented = true;
+    await act(async () => {
+      notPrevented = fireEvent.keyDown(ta, { key: "Backspace", metaKey: true });
+    });
+    expect(notPrevented).toBe(true); // default NOT prevented → native edit runs
+    expect(seen()).toBe(false); // never reached Lexical's root
+  });
+
+  it("⌥⌫ is contained and not default-prevented (native delete-word runs)", async () => {
+    const { ta, seen } = await setup();
+    let notPrevented = true;
+    await act(async () => {
+      notPrevented = fireEvent.keyDown(ta, { key: "Backspace", altKey: true });
+    });
+    expect(notPrevented).toBe(true);
+    expect(seen()).toBe(false);
+  });
+
+  it("⌘K (allowlisted app-global) DOES reach the root; a plain char does not", async () => {
+    const { ta, seen, reset } = await setup();
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: "k", metaKey: true });
+    });
+    expect(seen()).toBe(true); // ⌘K bubbles out to open the command palette
+
+    reset();
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: "a" });
+    });
+    expect(seen()).toBe(false); // plain typing stays inside the block
+  });
+});
+
+describe("Enter auto-indents from the current line", () => {
+  it("carries the leading whitespace of an indented line onto the new line", async () => {
+    const onChange = vi.fn();
+    render(
+      <MarkdownEditor value={"```ts\n    indented\n```\n"} onChange={onChange} />,
+    );
+    await act(async () => {});
+    onChange.mockClear();
+
+    const ta = codeTextarea();
+    ta.setSelectionRange(12, 12); // end of "    indented" (4 spaces + 8 chars)
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: "Enter" });
+    });
+
+    expect(ta.value).toBe("    indented\n    "); // new line inherits the 4 spaces
+    expect(ta.selectionStart).toBe(17); // caret after the carried indent
+    expect(onChange.mock.calls.at(-1)![0]).toBe("```ts\n    indented\n    \n```\n");
+  });
+
+  it("inserts a plain newline (no indent) from an unindented line", async () => {
+    const onChange = vi.fn();
+    render(<MarkdownEditor value={"```ts\nflush\n```\n"} onChange={onChange} />);
+    await act(async () => {});
+    onChange.mockClear();
+
+    const ta = codeTextarea();
+    ta.setSelectionRange(5, 5); // end of "flush"
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: "Enter" });
+    });
+
+    expect(ta.value).toBe("flush\n");
+    expect(ta.selectionStart).toBe(6);
+  });
+});
+
+describe("Shiki highlight overlay", () => {
+  function sizer() {
+    return document.querySelector(".hitch-code-overlay");
+  }
+
+  it("renders plain fallback before load, then token spans once loaded; textarea stays authoritative", async () => {
+    render(<MarkdownEditor value={"```ts\nconst x = 1;\n```\n"} onChange={() => {}} />);
+    await act(async () => {});
+
+    // Before the highlighter loads: a plain fallback pre, no Shiki spans.
+    expect(sizer()!.querySelector(".hitch-code-fallback")).not.toBeNull();
+    expect(sizer()!.querySelector(".shiki")).toBeNull();
+    // The textarea already holds the code — editable without the highlighter.
+    expect(codeTextarea().value).toBe("const x = 1;");
+
+    // Load the highlighter: the plain fallback swaps to Shiki token spans.
+    await act(async () => {
+      setHighlighterReady();
+    });
+    const shiki = sizer()!.querySelector(".shiki");
+    expect(shiki).not.toBeNull();
+    expect(shiki!.querySelector("span.tok")).not.toBeNull();
+    expect(shiki!.textContent).toContain("const x = 1;");
+    // The textarea value is still the source of truth (unchanged by highlighting).
+    expect(codeTextarea().value).toBe("const x = 1;");
+  });
+
+  it("keeps the plain fallback for an unknown language even when loaded", async () => {
+    render(
+      <MarkdownEditor value={"```unknownlang\nz\n```\n"} onChange={() => {}} />,
+    );
+    await act(async () => {});
+    await act(async () => {
+      setHighlighterReady();
+    });
+    expect(sizer()!.querySelector(".shiki")).toBeNull();
+    expect(sizer()!.querySelector(".hitch-code-fallback")).not.toBeNull();
   });
 });
 

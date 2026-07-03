@@ -558,3 +558,96 @@ select,
 .dark .hitch-mdx {
   --basePageBg: var(--card);
 }
+
+/* ---------------------------------------------------------------------------
+   Code block syntax-highlight overlay (editor/nodes/CodeBlockNode.tsx).
+   A Shiki <pre class="shiki"> (or a plain fallback <pre>) renders the code IN
+   FLOW and drives the block's height; an invisible <textarea> lies absolutely
+   on top as the edit surface. THE INVARIANT: pixel-perfect glyph alignment —
+   the pre and the textarea must share identical font, size, line-height,
+   letter-spacing, padding, box-sizing, and wrapping, so the visible caret lands
+   exactly on the visible glyphs. Any drift floats the caret off the text.
+   --------------------------------------------------------------------------- */
+.hitch-code-overlay {
+  position: relative;
+}
+
+/* The SHARED geometry — the alignment contract. Applied identically to the
+   Shiki pre (.shiki), the plain fallback pre, and the textarea. Never change one
+   of these three without the other two. The right padding clears the language
+   dropdown; because it's identical on all three, the code wraps at the same
+   column in the pre and the textarea. */
+.hitch-code-overlay .shiki,
+.hitch-code-overlay .hitch-code-fallback,
+.hitch-code-overlay .hitch-code-textarea {
+  margin: 0;
+  padding: 10px 56px 10px 12px;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  box-sizing: border-box;
+}
+
+/* Neutralize Shiki's nested <code> element. The app's global prose rules
+   (`.hitch-sandbox-content :where(code)`, `.hitch-editor-content :where(code)`,
+   …) target every <code> and would otherwise shrink this one to `font-size:
+   0.85em` and add a chip background/padding — which changes the glyph size so
+   the pre and textarea wrap at different columns (the alignment breaks). Reset
+   to inherit the pre's exact metrics. Specificity (0,3,0) beats the `:where`
+   prose rules (0,1,0). */
+.hitch-code-overlay .shiki code {
+  font: inherit;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+
+/* The sizer wrapper is a plain block; the pre inside carries the geometry and
+   drives the block height. */
+.hitch-code-sizer {
+  display: block;
+  min-width: 0;
+}
+.hitch-code-overlay .shiki,
+.hitch-code-overlay .hitch-code-fallback {
+  /* One line + vertical padding, so an empty fence keeps a caret-height row
+     (a pre with no content collapses to zero). */
+  min-height: calc(1.6em + 20px);
+  /* Keep the block's own bg-muted surface (Shiki's theme background is
+     suppressed via defaultColor:false — the pre carries only color vars). */
+  background: transparent;
+  color: var(--foreground);
+  /* The textarea above owns all interaction. */
+  pointer-events: none;
+}
+
+/* Shiki token colors: with defaultColor:false each span carries only
+   --shiki-light / --shiki-dark; wire them to `color`, flipping on `.dark`. */
+.hitch-code-overlay .shiki span {
+  color: var(--shiki-light);
+}
+.dark .hitch-code-overlay .shiki span {
+  color: var(--shiki-dark);
+}
+
+/* The edit surface: absolutely over the sizer, transparent text so the colored
+   pre shows through, with a visible caret and native selection highlight. */
+.hitch-code-overlay .hitch-code-textarea {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--foreground);
+  outline: none;
+}
