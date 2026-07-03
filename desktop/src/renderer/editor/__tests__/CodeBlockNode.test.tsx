@@ -334,6 +334,32 @@ describe("Shiki highlight overlay", () => {
     expect(codeTextarea().value).toBe("const x = 1;");
   });
 
+  it("pads BOTH sizer paths with a trailing newline so a trailing empty line gets height", async () => {
+    // CSS collapses a trailing "\n" in a pre (Shiki's empty trailing line span
+    // has no line box either), while the textarea shows that empty line — so
+    // without the pad, Enter at the end left the caret on a line the sizer
+    // didn't have, and the block clipped it (regression: Will's screenshot,
+    // 2026-07-03). Contract: the sizer always renders `value + "\n"`.
+    render(<MarkdownEditor value={"```ts\nx();\n```\n"} onChange={() => {}} />);
+    await act(async () => {});
+
+    // Simulate Enter at the end: the textarea value gains a trailing newline.
+    await act(async () => {
+      fireEvent.change(codeTextarea(), { target: { value: "x();\n" } });
+    });
+
+    // Plain fallback path.
+    expect(sizer()!.querySelector(".hitch-code-fallback")!.textContent).toBe(
+      "x();\n\n",
+    );
+
+    // Shiki path (mock echoes its input): also padded.
+    await act(async () => {
+      setHighlighterReady();
+    });
+    expect(sizer()!.querySelector(".shiki")!.textContent).toBe("x();\n\n");
+  });
+
   it("keeps the plain fallback for an unknown language even when loaded", async () => {
     render(
       <MarkdownEditor value={"```unknownlang\nz\n```\n"} onChange={() => {}} />,

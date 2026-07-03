@@ -294,10 +294,13 @@ function CodeBlockComponent({
   }, []);
   // Highlight the LOCAL mirror (`text`), not the `code` prop, so the pre tracks
   // the caret exactly as the user types. null → plain fallback (loading, or an
-  // unknown/lang-less fence). The `+ "\n"` on the fallback matches the textarea's
-  // trailing empty line (a pre collapses one trailing newline; the textarea shows
-  // it) — Shiki emits a structural trailing line span, so it needs no such fix.
-  const highlightedHtml = highlightToHtml(text, language);
+  // unknown/lang-less fence). BOTH paths append "\n": CSS collapses a trailing
+  // newline in a pre (the final empty line gets no line box — Shiki's trailing
+  // empty `<span class="line">` doesn't help, it's empty), while the textarea
+  // DOES show that empty line. Without the pad, pressing Enter leaves the caret
+  // on a line the sizer doesn't have — the block stays short and clips the
+  // caret. The extra "\n" is itself collapsed when the code doesn't end in one.
+  const highlightedHtml = highlightToHtml(text + "\n", language);
 
   const onChange = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
