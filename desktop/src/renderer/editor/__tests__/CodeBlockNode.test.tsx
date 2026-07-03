@@ -107,6 +107,69 @@ describe("code block textarea drives onChange", () => {
   });
 });
 
+describe("code block keyboard: Tab and undo routing", () => {
+  it("Tab inserts two spaces at the caret and syncs the node (never tabs focus out)", async () => {
+    const onChange = vi.fn();
+    render(<MarkdownEditor value={"```ts\nab\n```\n"} onChange={onChange} />);
+    await act(async () => {});
+    onChange.mockClear();
+
+    const ta = codeTextarea();
+    ta.setSelectionRange(1, 1); // between "a" and "b"
+    let prevented = false;
+    await act(async () => {
+      prevented = !fireEvent.keyDown(ta, { key: "Tab" });
+    });
+
+    expect(prevented).toBe(true); // default (focus move) suppressed
+    expect(ta.value).toBe("a  b");
+    expect(ta.selectionStart).toBe(3); // caret after the inserted spaces
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0]).toBe("```ts\na  b\n```\n");
+  });
+
+  it("⌘Z routes to Lexical history (native default suppressed) and reverts the edit", async () => {
+    // Fake only Date: HistoryPlugin coalesces updates landing within its delay
+    // window into one entry, and a test runs entirely inside that window — step
+    // the clock so the edit is its own undoable entry, as it is in real typing.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const base = Date.now();
+    const onChange = vi.fn();
+    render(<MarkdownEditor value={"```ts\nold();\n```\n"} onChange={onChange} />);
+    await act(async () => {});
+
+    // Two edits: in this jsdom mount order the initial reconcile lands before
+    // HistoryPlugin registers, so the first edit only seeds history's `current`
+    // (nothing on the undo stack yet) — the second edit is the undoable one.
+    vi.setSystemTime(base + 1000);
+    await act(async () => {
+      fireEvent.change(codeTextarea(), { target: { value: "mid();" } });
+    });
+    vi.setSystemTime(base + 2000);
+    await act(async () => {
+      fireEvent.change(codeTextarea(), { target: { value: "fresh();" } });
+    });
+    expect(codeTextarea().value).toBe("fresh();");
+    onChange.mockClear();
+    vi.setSystemTime(base + 3000);
+
+    let prevented = false;
+    await act(async () => {
+      prevented = !fireEvent.keyDown(codeTextarea(), {
+        key: "z",
+        metaKey: true,
+      });
+    });
+
+    expect(prevented).toBe(true); // the textarea's own undo stack never runs
+    // Lexical history reverted the setCode commit; the adoption sync brought the
+    // textarea along, and the revert emitted through the controlled contract.
+    expect(codeTextarea().value).toBe("mid();");
+    expect(onChange.mock.calls.at(-1)![0]).toBe("```ts\nmid();\n```\n");
+    vi.useRealTimers();
+  });
+});
+
 describe("Backspace on a node-selected code block removes it", () => {
   it("deletes the block under a NodeSelection", async () => {
     render(<MarkdownEditor value={"```ts\nkeep();\n```\n"} onChange={() => {}} />);

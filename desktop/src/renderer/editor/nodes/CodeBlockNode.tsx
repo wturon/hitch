@@ -27,6 +27,8 @@ import {
   DecoratorNode,
   KEY_BACKSPACE_COMMAND,
   KEY_DELETE_COMMAND,
+  REDO_COMMAND,
+  UNDO_COMMAND,
 } from "lexical";
 import type {
   LexicalNode,
@@ -317,6 +319,38 @@ function CodeBlockComponent({
       const el = event.currentTarget;
       const { selectionStart, selectionEnd, value } = el;
       const collapsed = selectionStart === selectionEnd;
+      // Undo/redo must have a single authority. Focus is in a native textarea,
+      // so ⌘Z would otherwise trigger BOTH the textarea's own undo stack and
+      // Lexical's history (the keydown still bubbles to the editor root) — two
+      // systems reverting different state out from under each other. Kill the
+      // native edit, stop the bubble, and route to Lexical's history, which
+      // holds every setCode commit; the node→local adoption sync above then
+      // brings the textarea along.
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        (event.key.toLowerCase() === "z" || event.key.toLowerCase() === "y")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        const redo = event.key.toLowerCase() === "y" || event.shiftKey;
+        editor.dispatchCommand(redo ? REDO_COMMAND : UNDO_COMMAND, undefined);
+        return;
+      }
+      // Tab indents (two spaces) instead of tabbing focus out — nobody reaches
+      // for Tab inside a code block hoping to land on the language dropdown.
+      // Shift+Tab keeps its native reverse-focus meaning as the keyboard exit.
+      if (event.key === "Tab" && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        el.setRangeText("  ", selectionStart, selectionEnd, "end");
+        const next = el.value;
+        setText(next);
+        editor.update(() => {
+          const node = $getNodeByKey(nodeKey);
+          if ($isCodeBlockNode(node)) node.setCode(next);
+        });
+        return;
+      }
       if (event.key === "ArrowDown" && collapsed) {
         // On the last line → step out below.
         if (value.indexOf("\n", selectionEnd) === -1) {
@@ -335,7 +369,7 @@ function CodeBlockComponent({
           return;
         }
       }
-      // Let app-global shortcuts (⌘K, undo, …) through; contain every other key
+      // Let app-global shortcuts (⌘K, …) through; contain every other key
       // so Lexical's own bindings (Backspace-deletes-block, Enter, arrows, Tab,
       // the `/` slash menu) never act on the surrounding document while the user
       // is typing code. The textarea sits inside a contentEditable=false host, so
@@ -343,7 +377,7 @@ function CodeBlockComponent({
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       event.stopPropagation();
     },
-    [nodeSelect, escapeTo],
+    [nodeSelect, escapeTo, editor, nodeKey],
   );
 
   // Backspace/Delete on the node-selected block removes it — the same explicit
