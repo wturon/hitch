@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { importMarkdown } from "./bridge";
 import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { ControlledMarkdownPlugin } from "./ControlledMarkdownPlugin";
+import { SlashMenuPlugin } from "./SlashMenuPlugin";
 
 // The imperative surface the editor exposes to its parent. Deliberately
 // focus-only: content flows through the controlled `value`/`onChange` props, so
@@ -113,6 +114,9 @@ const EditorBody = forwardRef<
       <TabIndentationPlugin />
       {/* Wires the INSERT_HORIZONTAL_RULE command for `---`. */}
       <HorizontalRulePlugin />
+      {/* `/` block picker — headings, lists, quote, divider. Rides the typeahead
+          menu plugin; renders its dropdown into a caret-anchored portal. */}
+      <SlashMenuPlugin />
       {/* Turns `# `, `- `, `> `, `**bold**`, `[text](url)` etc. into real nodes
           as you type, using our code-free transformer set. */}
       <MarkdownShortcutPlugin transformers={MARKDOWN_TRANSFORMERS} />
