@@ -84,6 +84,55 @@ describe("ImageComponent — Skeleton → img → loaded", () => {
 });
 
 describe("ImageComponent — error state", () => {
+  it("REMOUNTS the <img> on an attachments retry, and settles into the placeholder when retries exhaust", async () => {
+    vi.useFakeTimers();
+    try {
+      // Handler always resolves the src unchanged — the worst case: the
+      // attachments query never catches up (or the file is truly gone).
+      render(
+        <MarkdownEditor
+          value={"![p](attachments/x.png)\n"}
+          onChange={() => {}}
+          imagePreviewHandler={async (s) => s}
+        />,
+      );
+      await act(async () => {});
+
+      let img = document.querySelector("img");
+      expect(img).not.toBeNull();
+
+      // First error → a retry is scheduled. Because the re-resolved url is
+      // identical, only a REMOUNT makes the browser re-attempt the load; if the
+      // element survives (same identity), the retry chain is dead and the
+      // Skeleton would show forever.
+      await act(async () => {
+        img!.dispatchEvent(new Event("error"));
+        vi.advanceTimersByTime(500);
+      });
+      await act(async () => {});
+      const retried = document.querySelector("img");
+      expect(retried).not.toBeNull();
+      expect(retried).not.toBe(img);
+
+      // Keep failing until retries exhaust → the error placeholder, not an
+      // eternal Skeleton.
+      for (let i = 0; i < 10 && document.querySelector("img"); i += 1) {
+        await act(async () => {
+          document.querySelector("img")!.dispatchEvent(new Event("error"));
+          vi.advanceTimersByTime(500);
+        });
+        await act(async () => {});
+      }
+      expect(document.querySelector("img")).toBeNull();
+      expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
+      const placeholder = document.querySelector('[role="img"]');
+      expect(placeholder).not.toBeNull();
+      expect(placeholder!.textContent).toContain("attachments/x.png");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows the bordered placeholder with the raw src when a non-attachments image errors", async () => {
     const previewHandler = vi.fn(async (src: string) => src);
     render(

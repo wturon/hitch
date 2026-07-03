@@ -303,7 +303,13 @@ function ImageComponent({
         <Skeleton className="inline-block h-40 w-64 max-w-full align-bottom" />
       )}
       {resolvedSrc !== null && (
+        // Keyed by attempt: a retry often re-resolves to the SAME url (the
+        // attachments query hasn't caught up, or the file is truly gone), and an
+        // unchanged `src` never re-attempts the load — without the remount the
+        // retry chain dies after one round and the Skeleton shows forever
+        // instead of reaching the error box.
         <img
+          key={`${resolvedSrc}:${attempt}`}
           src={resolvedSrc}
           alt={alt}
           title={title ?? undefined}
