@@ -212,8 +212,9 @@ function StateInspector() {
 
 // A canonical markdown doc for the "Load sample" button — exercises the import
 // direction (headings, nested lists of both kinds, bold/italic/code, a link,
-// a blockquote). Authored in the bridge's canonical output form, so loading it
-// and reading the Markdown pane shows byte-identical text.
+// a blockquote, a divider, and two unsupported constructs that land in opaque
+// UnknownBlockNodes). Authored in the bridge's canonical output form, so loading
+// it and reading the Markdown pane shows byte-identical text.
 const SAMPLE_MARKDOWN = `# Editor bridge sample
 
 A paragraph with **bold**, *italic*, and \`inline code\`.
@@ -229,6 +230,21 @@ A paragraph with **bold**, *italic*, and \`inline code\`.
 2. Step two
 
 > A short blockquote with a [link](https://example.com).
+
+---
+
+## Unsupported constructs
+
+The bridge doesn't model these yet, so each lands in a read-only unknown block
+and round-trips byte-for-byte:
+
+\`\`\`ts
+const kept = "verbatim";
+\`\`\`
+
+| Name | Role |
+| ---- | ---- |
+| Ada  | Eng  |
 `;
 
 // Fills the editor from SAMPLE_MARKDOWN via the import bridge. Lives inside the
