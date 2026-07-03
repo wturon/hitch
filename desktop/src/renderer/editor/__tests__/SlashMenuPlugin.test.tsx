@@ -1,0 +1,182 @@
+// @vitest-environment jsdom
+//
+// Tests for the slash-command menu. Two layers, no synthesized keystrokes:
+//
+//   - `filterSlashCommands` is a pure function (query → visible commands), tested
+//     directly for title/keyword matches, case-insensitivity, and zero-match.
+//   - Each command's ACTION is run through `applySlashCommand` — the exact path
+//     the plugin's `onSelectOption` takes — on a real headless editor, then the
+//     resulting document is exported to markdown and asserted (marker present AND
+//     the `/query` trigger text gone).
+//
+// The typeahead trigger/keyboard/anchor behavior itself belongs to
+// `LexicalTypeaheadMenuPlugin` (upstream, tested there) and depends on real
+// selection/DOM-range events that jsdom does not faithfully dispatch — so it is
+// covered by the e2e harness run against the real app, not simulated here. See
+// the PR notes.
+import { createHeadlessEditor } from "@lexical/headless";
+import { registerList } from "@lexical/list";
+import {
+  $createParagraphNode,
+  $createTextNode,
+  $getRoot,
+  type LexicalEditor,
+} from "lexical";
+import { describe, expect, it } from "vitest";
+
+import { EDITOR_NODES } from "../config";
+import { exportMarkdown } from "../bridge";
+import {
+  SLASH_COMMANDS,
+  applySlashCommand,
+  filterSlashCommands,
+  type SlashCommandSpec,
+} from "../SlashMenuPlugin";
+
+// ---------------------------------------------------------------------------
+// filterSlashCommands — the pure query filter
+// ---------------------------------------------------------------------------
+describe("filterSlashCommands", () => {
+  const titles = (cmds: SlashCommandSpec[]) => cmds.map((c) => c.title);
+
+  it("returns the full set for an empty or whitespace query", () => {
+    expect(filterSlashCommands("")).toHaveLength(SLASH_COMMANDS.length);
+    expect(filterSlashCommands("   ")).toHaveLength(SLASH_COMMANDS.length);
+  });
+
+  it("matches on title substring", () => {
+    // "head" hits the three headings' titles.
+    expect(titles(filterSlashCommands("head"))).toEqual([
+      "Heading 1",
+      "Heading 2",
+      "Heading 3",
+    ]);
+    expect(titles(filterSlashCommands("divid"))).toEqual(["Divider"]);
+  });
+
+  it("matches on keyword when the title does not contain the query", () => {
+    // "unordered" is a keyword of Bullet list; its title has neither, and no
+    // other keyword contains the full string.
+    expect(titles(filterSlashCommands("unordered"))).toEqual(["Bullet list"]);
+    // "separator" is a Divider keyword, absent from every title.
+    expect(titles(filterSlashCommands("separator"))).toEqual(["Divider"]);
+  });
+
+  it("matches purely as a substring (no word boundaries)", () => {
+    // "rule" (a Divider keyword) contains "ul", which is also a Bullet list
+    // keyword — both surface, proving the match is a raw substring.
+    expect(titles(filterSlashCommands("ul"))).toEqual([
+      "Bullet list",
+      "Divider",
+    ]);
+  });
+
+  it("is case-insensitive on both title and keyword", () => {
+    // Title-side folding.
+    expect(titles(filterSlashCommands("HEAD"))).toEqual([
+      "Heading 1",
+      "Heading 2",
+      "Heading 3",
+    ]);
+    // Keyword-side folding: "ol" is a Numbered list keyword only.
+    expect(titles(filterSlashCommands("OL"))).toEqual(["Numbered list"]);
+  });
+
+  it("returns [] on zero matches", () => {
+    expect(filterSlashCommands("zzz")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Command actions — the real onSelectOption path on a headless editor
+// ---------------------------------------------------------------------------
+function findCommand(key: string): SlashCommandSpec {
+  const cmd = SLASH_COMMANDS.find((c) => c.key === key);
+  if (!cmd) throw new Error(`no slash command with key "${key}"`);
+  return cmd;
+}
+
+function newEditor(): LexicalEditor {
+  const editor = createHeadlessEditor({
+    namespace: "slash-menu-test",
+    nodes: [...EDITOR_NODES],
+    onError: (error) => {
+      throw error;
+    },
+  });
+  // The list commands are wired by ListPlugin in the app; register the same
+  // handlers here so the ul/ol actions have something to dispatch to.
+  registerList(editor);
+  return editor;
+}
+
+// Reproduce what the typeahead plugin hands `onSelectOption`: a block whose
+// trailing text node holds the `/query` the user typed (optionally preceded by
+// other text), with the caret at its end. Run the command through
+// `applySlashCommand` (which removes that node, then acts) and return the
+// exported markdown.
+function runOnBlock(
+  key: string,
+  { leading, query }: { leading?: string; query: string },
+): string {
+  const editor = newEditor();
+  editor.update(
+    () => {
+      const root = $getRoot();
+      root.clear();
+      const paragraph = $createParagraphNode();
+      if (leading) paragraph.append($createTextNode(leading));
+      const queryNode = $createTextNode(query);
+      paragraph.append(queryNode);
+      root.append(paragraph);
+      // Caret at the end of the query, as it is when the option is chosen.
+      queryNode.selectEnd();
+      // The exact production cleanup+action, minus the plugin plumbing.
+      applySlashCommand(editor, findCommand(key), queryNode);
+    },
+    { discrete: true },
+  );
+  return editor.getEditorState().read(() => exportMarkdown());
+}
+
+describe("slash command actions (query as the whole block → empty result block)", () => {
+  const cases: Array<{ key: string; marker: RegExp; label: string }> = [
+    { key: "h1", marker: /^#\s*\n?$/m, label: "H1" },
+    { key: "h2", marker: /^##\s*\n?$/m, label: "H2" },
+    { key: "h3", marker: /^###\s*\n?$/m, label: "H3" },
+    { key: "ul", marker: /^-\s*$/m, label: "bullet" },
+    { key: "ol", marker: /^1\.\s*$/m, label: "numbered" },
+    { key: "quote", marker: /^>\s*$/m, label: "quote" },
+    { key: "hr", marker: /^---$/m, label: "divider" },
+  ];
+
+  for (const { key, marker, label } of cases) {
+    it(`${label}: produces the marker and drops the /query`, () => {
+      const md = runOnBlock(key, { query: "/x" });
+      expect(md).toMatch(marker);
+      expect(md).not.toContain("/x");
+    });
+  }
+});
+
+describe("slash command actions preserve surviving block text", () => {
+  it("heading keeps text typed before the /query", () => {
+    // "some text /h1" → the query node is removed, "some text " stays and the
+    // paragraph becomes an H1.
+    const md = runOnBlock("h1", { leading: "some text ", query: "/head" });
+    expect(md).toMatch(/^#\s+some text/);
+    expect(md).not.toContain("/head");
+  });
+
+  it("quote keeps text typed before the /query", () => {
+    const md = runOnBlock("quote", { leading: "wisdom ", query: "/quote" });
+    expect(md).toMatch(/^>\s+wisdom/);
+    expect(md).not.toContain("/quote");
+  });
+
+  it("bullet list keeps text typed before the /query", () => {
+    const md = runOnBlock("ul", { leading: "item ", query: "/ul" });
+    expect(md).toMatch(/^-\s+item/);
+    expect(md).not.toContain("/ul");
+  });
+});

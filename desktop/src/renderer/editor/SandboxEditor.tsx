@@ -27,6 +27,7 @@ import type { EditorState } from "lexical";
 import { exportMarkdown, importMarkdown } from "./bridge";
 import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./MarkdownEditor";
+import { SlashMenuPlugin } from "./SlashMenuPlugin";
 
 const initialConfig = {
   namespace: "hitch-editor-sandbox",
@@ -135,6 +136,9 @@ function VanillaSandbox() {
             {/* Wires up the INSERT_HORIZONTAL_RULE command + selection handling
                 for the HorizontalRuleNode registered above (`---`). */}
             <HorizontalRulePlugin />
+            {/* `/` block picker — the same slash menu the production editor
+                mounts, so it can be exercised here in the raw playground. */}
+            <SlashMenuPlugin />
             </div>
           </div>
           {/* Right column: EditorState inspector on top, live markdown below. */}
