@@ -859,9 +859,17 @@ async function startHitchBinding({
   function isChatBumpPath(path: string): boolean {
     return basename(path) === chatBumpName;
   }
-  const chatBumpWatcher = chokidar.watch(dirname(chatLifecycleStore.paths.bumpPath), {
+  // The bump file lives in Electron's user-data dir, which Chromium fills with
+  // cache trees (~10k files). An unscoped recursive watch opens one fd per
+  // file on macOS, and past ~10240 open fds every child spawn in this process
+  // fails with EBADF — which took down all cmux launches. Watch shallowly and
+  // ignore everything but the bump file.
+  const chatBumpDir = dirname(chatLifecycleStore.paths.bumpPath);
+  const chatBumpWatcher = chokidar.watch(chatBumpDir, {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 25 },
+    depth: 0,
+    ignored: (path) => path !== chatBumpDir && !isChatBumpPath(path),
   });
   chatBumpWatcher
     .on("add", (path) => {

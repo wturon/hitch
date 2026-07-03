@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
+import { toast } from "sonner";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 
@@ -37,14 +38,21 @@ export function useOpenChat(chat: ChatRef, projectId: Id<"projects">) {
   useEffect(() => {
     if (!command || command.status === "pending") return;
     // Terminal: stop watching. Open the guided dialog for the cmux failures we
-    // recognize; other outcomes (done, or an unrecognized error) just clear.
+    // recognize; other errors surface as a toast so they aren't silently lost.
     setPendingCommandId(null);
-    if (
-      command.status === "error" &&
-      (command.errorCode === "cmux-access-denied" ||
-        command.errorCode === "cmux-unavailable")
-    ) {
-      setCmuxReason(command.errorCode);
+    if (command.status === "error") {
+      if (
+        command.errorCode === "cmux-access-denied" ||
+        command.errorCode === "cmux-unavailable"
+      ) {
+        setCmuxReason(command.errorCode);
+      } else {
+        // Keyed by chat so retrying replaces the toast instead of stacking.
+        toast.error("Couldn't open chat", {
+          id: `open-chat-${chat.id}`,
+          description: command.result,
+        });
+      }
     }
     if (command.status === "done" && command.result === "revealed") {
       setFocusHint(
@@ -55,7 +63,7 @@ export function useOpenChat(chat: ChatRef, projectId: Id<"projects">) {
         "Couldn't reach T3Code. Make sure it's installed and its environment is initialized, then try again.",
       );
     }
-  }, [command]);
+  }, [command, chat.id]);
 
   async function launchOpen() {
     setOpening(true);

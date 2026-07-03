@@ -211,6 +211,15 @@ function classifyCmuxError(err: unknown): CmuxError {
       "cmux is not installed or not on PATH.",
     );
   }
+  // Spawn errnos (EBADF/EMFILE/ENFILE) mean the daemon itself can't fork — fd
+  // exhaustion on our side, not a cmux problem.
+  if (e.code === "EBADF" || e.code === "EMFILE" || e.code === "ENFILE") {
+    return new CmuxError(
+      "cmux-error",
+      `The Hitch daemon can't launch processes (${e.code}) — cmux is fine. ` +
+        "Restart the Hitch daemon; if it recurs, check the daemon's open-file count.",
+    );
+  }
   // cmux accepted the socket connection then dropped it on the ancestry check.
   if (/broken pipe|errno\s*32|connection reset|econnreset/i.test(text)) {
     return new CmuxError(
