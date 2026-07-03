@@ -5,12 +5,23 @@ import { createHeadlessEditor } from "@lexical/headless";
 import { HeadingNode, QuoteNode } from "@lexical/rich-text";
 import { ListItemNode, ListNode } from "@lexical/list";
 import { LinkNode } from "@lexical/link";
+import { HorizontalRuleNode } from "@lexical/react/LexicalHorizontalRuleNode";
+import { $getRoot, type LexicalNode } from "lexical";
 
 import { importMarkdown } from "../importMarkdown";
 import { exportMarkdown } from "../exportMarkdown";
+import { UnknownBlockNode } from "../../nodes/UnknownBlockNode";
 
 // Must match SandboxEditor.tsx's `initialConfig.nodes`.
-const NODES = [HeadingNode, QuoteNode, ListNode, ListItemNode, LinkNode];
+const NODES = [
+  HeadingNode,
+  QuoteNode,
+  ListNode,
+  ListItemNode,
+  LinkNode,
+  HorizontalRuleNode,
+  UnknownBlockNode,
+];
 
 function newEditor(onError: (error: Error) => void) {
   return createHeadlessEditor({
@@ -55,4 +66,46 @@ export function captureImportError(markdown: string): unknown {
     captured ??= error;
   }
   return captured;
+}
+
+/**
+ * Import `markdown` and return the `getType()` of every node in the resulting
+ * tree (root excluded), depth-first. Lets a test assert e.g. that an unsupported
+ * construct landed in an `"unknown-block"` node rather than being dropped.
+ */
+export function importedNodeTypes(markdown: string): string[] {
+  const editor = newEditor((error) => {
+    throw error;
+  });
+  editor.update(() => importMarkdown(markdown), { discrete: true });
+  const types: string[] = [];
+  editor.getEditorState().read(() => {
+    const walk = (node: LexicalNode) => {
+      types.push(node.getType());
+      const children = (node as { getChildren?: () => LexicalNode[] }).getChildren?.();
+      children?.forEach(walk);
+    };
+    $getRoot()
+      .getChildren()
+      .forEach(walk);
+  });
+  return types;
+}
+
+/**
+ * Build a Lexical tree by hand (inside `editor.update()`), then export it to
+ * markdown. Used by the export-side throw tests to construct nodes the import
+ * path can't produce (e.g. an underline-formatted TextNode) and assert the
+ * serializer fails loudly rather than dropping the unrepresentable formatting.
+ */
+export function exportBuiltTree(build: () => void): string {
+  const editor = newEditor((error) => {
+    throw error;
+  });
+  editor.update(build, { discrete: true });
+  let out = "";
+  editor.getEditorState().read(() => {
+    out = exportMarkdown();
+  });
+  return out;
 }

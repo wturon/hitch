@@ -5,9 +5,11 @@
 // bitmask passed down the recursion) instead of MDXEditor's mutable WeakMap.
 //
 // Scope: paragraph, heading (h1–h6), blockquote, ordered/unordered list (nested),
-// link, and text with bold/italic/strikethrough/inline-code. Anything else —
-// code fences, images, raw HTML, tables, hard breaks — hits no visitor and
-// throws `UnsupportedMarkdownError` rather than being dropped.
+// link, thematic break (`---`), hard line break (`\`), and text with
+// bold/italic/strikethrough/inline-code. Anything else — code fences, images,
+// raw HTML, tables, multi-paragraph list items — is preserved byte-for-byte in
+// an `UnknownBlockNode` (a top-level `canImport` pre-scan decides which path a
+// flow node takes; see below). Nothing is dropped or lossily re-rendered.
 import { fromMarkdown } from "mdast-util-from-markdown";
 import type {
   Blockquote,
@@ -31,13 +33,16 @@ import {
   $isListItemNode,
 } from "@lexical/list";
 import { $createLinkNode } from "@lexical/link";
+import { $createHorizontalRuleNode } from "@lexical/react/LexicalHorizontalRuleNode";
 import {
+  $createLineBreakNode,
   $createParagraphNode,
   $createTextNode,
   $getRoot,
   type ElementNode,
 } from "lexical";
 
+import { $createUnknownBlockNode } from "../nodes/UnknownBlockNode";
 import { UnsupportedMarkdownError } from "./errors";
 import { IS_BOLD, IS_CODE, IS_ITALIC, IS_STRIKETHROUGH } from "./format";
 import {
@@ -203,6 +208,26 @@ const InlineCodeVisitor: MdastImportVisitor<InlineCode> = {
   },
 };
 
+const BreakVisitor: MdastImportVisitor<{ type: "break" }> = {
+  type: "break",
+  visit(_node, parent) {
+    // A hard line break (`\` or two trailing spaces in source) inside a
+    // paragraph. Lexical models it as a LineBreakNode; export emits a real
+    // mdast `break` back out (the `\` form). Soft breaks (a bare `\n` in a
+    // paragraph) never reach here — they stay inside text node values.
+    parent.append($createLineBreakNode());
+  },
+};
+
+const ThematicBreakVisitor: MdastImportVisitor<{ type: "thematicBreak" }> = {
+  type: "thematicBreak",
+  visit(_node, parent) {
+    // `---` / `***` / `___` → Lexical's stock HorizontalRuleNode. Export emits
+    // `thematicBreak`, serialized as `---` via the `rule: "-"` option.
+    parent.append($createHorizontalRuleNode());
+  },
+};
+
 const VISITOR_LIST: LooseImportVisitor[] = [
   ParagraphVisitor,
   HeadingVisitor,
@@ -215,6 +240,8 @@ const VISITOR_LIST: LooseImportVisitor[] = [
   StrongVisitor,
   StrikethroughVisitor,
   InlineCodeVisitor,
+  BreakVisitor,
+  ThematicBreakVisitor,
 ].map((visitor) => visitor as unknown as LooseImportVisitor);
 
 const VISITORS = new Map<string, LooseImportVisitor>(
@@ -237,11 +264,83 @@ function visitChildren(node: unknown, parent: ElementNode, format: number): void
   }
 }
 
+// ---------------------------------------------------------------------------
+// canImport: the pre-scan that decides, for a top-level flow node, whether the
+// visitors above can represent its WHOLE subtree losslessly. It must stay in
+// lock-step with those visitors — every constraint a visitor enforces (or
+// throws on) is mirrored here as a `false`. When it returns false, the caller
+// slices the node's original source into an opaque UnknownBlockNode instead of
+// visiting it, so unsupported markdown survives byte-for-byte.
+//
+// IMPORTANT: keep this in sync with the visitors. If you add/relax a visitor
+// constraint (a new node type, a new child shape), reflect it here or the
+// pre-scan will wrongly reject (churn) or wrongly accept (crash on visit).
+// ---------------------------------------------------------------------------
+function canImportChildren(node: unknown): boolean {
+  const children = (node as { children?: unknown[] }).children ?? [];
+  return children.every((child) => canImport(child));
+}
+
+function canImport(node: unknown): boolean {
+  const n = node as { type: string; depth?: number; children?: unknown[] };
+  switch (n.type) {
+    // Leaves the visitors handle unconditionally.
+    case "text":
+    case "inlineCode":
+    case "break":
+    case "thematicBreak":
+      return true;
+    // HeadingVisitor throws outside depth 1–6; mirror that here.
+    case "heading":
+      return (
+        typeof n.depth === "number" &&
+        n.depth >= 1 &&
+        n.depth <= 6 &&
+        canImportChildren(n)
+      );
+    // Containers whose visitors just recurse into children.
+    case "paragraph":
+    case "blockquote":
+    case "emphasis":
+    case "strong":
+    case "delete":
+    case "link":
+    case "list":
+      return canImportChildren(n);
+    // ListItemVisitor: only paragraph/list children, and at most ONE paragraph
+    // (a second, loose paragraph has no lossless Lexical mapping → it throws).
+    case "listItem": {
+      let sawParagraph = false;
+      for (const child of n.children ?? []) {
+        const childType = (child as { type: string }).type;
+        if (childType === "paragraph") {
+          if (sawParagraph) return false;
+          sawParagraph = true;
+          if (!canImportChildren(child)) return false;
+        } else if (childType === "list") {
+          if (!canImport(child)) return false;
+        } else {
+          return false;
+        }
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
 /**
  * Parse `markdown` and rebuild the current editor's content from it. Must run
- * inside `editor.update()` — it touches `$getRoot()`. Throws
- * `UnsupportedMarkdownError` if the input contains a construct outside the
- * sandbox's node set; nothing is dropped silently.
+ * inside `editor.update()` — it touches `$getRoot()`.
+ *
+ * Every top-level flow node is either visited (when `canImport` says the whole
+ * subtree is representable) or preserved verbatim in an `UnknownBlockNode`
+ * sliced from the original source by its `position` offsets. So an unsupported
+ * construct anywhere in the tree falls the enclosing top-level node back to an
+ * opaque block — coarse (whole top-level node) is correct for v1. Nothing is
+ * dropped or lossily re-rendered; `UnsupportedMarkdownError` is unreachable
+ * here for any parseable markdown.
  */
 export function importMarkdown(markdown: string): void {
   const tree = fromMarkdown(markdown, {
@@ -250,5 +349,19 @@ export function importMarkdown(markdown: string): void {
   }) as Root;
   const root = $getRoot();
   root.clear();
-  visitChildren(tree, root, 0);
+  for (const child of tree.children) {
+    if (canImport(child)) {
+      visit(child, root, 0);
+      continue;
+    }
+    // Fall back: slice the ORIGINAL markdown by this node's source offsets and
+    // keep the exact bytes. fromMarkdown always stamps positions; guard anyway
+    // so a hand-built tree can't silently drop content.
+    const start = child.position?.start?.offset;
+    const end = child.position?.end?.offset;
+    if (start === undefined || end === undefined) {
+      throw new UnsupportedMarkdownError(`${child.type} (no source position)`);
+    }
+    root.append($createUnknownBlockNode(markdown.slice(start, end)));
+  }
 }

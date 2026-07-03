@@ -21,6 +21,8 @@ import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
 import { MarkdownShortcutPlugin } from "@lexical/react/LexicalMarkdownShortcutPlugin";
 import { ListPlugin } from "@lexical/react/LexicalListPlugin";
 import { TabIndentationPlugin } from "@lexical/react/LexicalTabIndentationPlugin";
+import { HorizontalRulePlugin } from "@lexical/react/LexicalHorizontalRulePlugin";
+import { HorizontalRuleNode } from "@lexical/react/LexicalHorizontalRuleNode";
 import { HeadingNode, QuoteNode } from "@lexical/rich-text";
 import { ListNode, ListItemNode } from "@lexical/list";
 import { LinkNode } from "@lexical/link";
@@ -36,6 +38,7 @@ import {
 import type { EditorState } from "lexical";
 
 import { exportMarkdown, importMarkdown } from "./bridge";
+import { UnknownBlockNode } from "./nodes/UnknownBlockNode";
 
 // Explicit transformer set — deliberately NOT the default `TRANSFORMERS` from
 // `@lexical/markdown`. That default bundles the fenced-code-block transformer,
@@ -59,7 +62,18 @@ const initialConfig = {
   namespace: "hitch-editor-sandbox",
   // Block + inline nodes the markdown shortcuts restructure the tree into.
   // No `CodeNode` — code blocks are out of scope (see MARKDOWN_TRANSFORMERS).
-  nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode, LinkNode],
+  // HorizontalRuleNode backs `---`; UnknownBlockNode preserves any markdown the
+  // bridge doesn't model (see nodes/UnknownBlockNode.tsx). Keep in sync with the
+  // bridge test harness's node list.
+  nodes: [
+    HeadingNode,
+    QuoteNode,
+    ListNode,
+    ListItemNode,
+    LinkNode,
+    HorizontalRuleNode,
+    UnknownBlockNode,
+  ],
   onError(error: Error) {
     // Lexical throws on internal invariants; surface them loudly while we learn
     // rather than swallowing them.
@@ -129,6 +143,9 @@ export function SandboxEditor({ onExit }: { onExit: () => void }) {
                 list nodes registered above. */}
             <ListPlugin />
             <TabIndentationPlugin />
+            {/* Wires up the INSERT_HORIZONTAL_RULE command + selection handling
+                for the HorizontalRuleNode registered above (`---`). */}
+            <HorizontalRulePlugin />
             </div>
           </div>
           {/* Right column: EditorState inspector on top, live markdown below. */}

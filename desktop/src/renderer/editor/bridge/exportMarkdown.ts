@@ -14,6 +14,7 @@ import type { Root } from "mdast";
 import { $isHeadingNode, $isQuoteNode } from "@lexical/rich-text";
 import { $isListItemNode, $isListNode } from "@lexical/list";
 import { $isLinkNode } from "@lexical/link";
+import { $isHorizontalRuleNode } from "@lexical/react/LexicalHorizontalRuleNode";
 import {
   $getRoot,
   $isDecoratorNode,
@@ -33,6 +34,7 @@ import {
   IS_STRIKETHROUGH,
   SUPPORTED_FORMATS,
 } from "./format";
+import { $isUnknownBlockNode } from "../nodes/UnknownBlockNode";
 import { TO_MARKDOWN_EXTENSIONS, TO_MARKDOWN_OPTIONS } from "./options";
 
 // A loosely-typed mdast node under construction. The visitors build plain
@@ -186,10 +188,36 @@ const LinkVisitor: LexicalExportVisitor = {
 const LineBreakVisitor: LexicalExportVisitor = {
   testLexicalNode: $isLineBreakNode,
   visitLexicalNode: ({ mdastParent, actions }) => {
-    // A soft break inside a paragraph. Emitted as a "\n" text node that the text
-    // join merges into its neighbours. (Import never produces these; this keeps
-    // the sandbox from crashing when a user presses Shift+Enter.)
-    actions.appendToParent(mdastParent, { type: "text", value: "\n" });
+    // A HARD line break inside a paragraph (Shift+Enter, or an imported `\`).
+    // Emit a real mdast `break` so the serializer renders the `\` form — not a
+    // "\n" text node, which would collapse into a soft break. Source authored
+    // with the two-trailing-spaces hard-break form normalizes to `\` (a
+    // normalize-once case, covered by the idempotence suite). Soft breaks stay
+    // as `\n` inside text node values and never reach this visitor.
+    actions.appendToParent(mdastParent, { type: "break" });
+  },
+};
+
+const HorizontalRuleVisitor: LexicalExportVisitor = {
+  testLexicalNode: $isHorizontalRuleNode,
+  visitLexicalNode: ({ actions }) => {
+    // No children; `rule: "-"` (options.ts) makes this serialize as `---`.
+    actions.addAndStepInto("thematicBreak", {}, false);
+  },
+};
+
+const UnknownBlockVisitor: LexicalExportVisitor = {
+  testLexicalNode: $isUnknownBlockNode,
+  visitLexicalNode: ({ lexicalNode, actions }) => {
+    if (!$isUnknownBlockNode(lexicalNode)) return;
+    // Emit a custom `unknownBlock` mdast node carrying the stored source; the
+    // `unknownBlock` handler in TO_MARKDOWN_OPTIONS writes `value` verbatim
+    // (no escaping), so the exact bytes we sliced on import come back out.
+    actions.addAndStepInto(
+      "unknownBlock",
+      { value: lexicalNode.getSource() },
+      false,
+    );
   },
 };
 
@@ -262,6 +290,8 @@ const VISITORS: LexicalExportVisitor[] = [
   ListItemVisitor,
   LinkVisitor,
   LineBreakVisitor,
+  HorizontalRuleVisitor,
+  UnknownBlockVisitor,
   TextVisitor,
 ];
 
