@@ -19,6 +19,7 @@ import {
 import type { Klass, LexicalNode } from "lexical";
 
 import { UnknownBlockNode } from "./nodes/UnknownBlockNode";
+import { ImageNode } from "./nodes/ImageNode";
 
 // Block + inline nodes the markdown shortcuts (and the bridge) restructure the
 // tree into. No `CodeNode` — code blocks are out of scope, so no code node ever
@@ -42,6 +43,10 @@ export const EDITOR_NODES: ReadonlyArray<Klass<LexicalNode>> = [
   LinkNode,
   HorizontalRuleNode,
   UnknownBlockNode,
+  // Always registered — the bridge imports/exports `image` nodes regardless of
+  // whether the runtime handlers (upload/preview) are wired, so a document with
+  // images round-trips even in the headless test harness and the sandbox.
+  ImageNode,
 ];
 
 // Explicit transformer set — deliberately NOT the default `TRANSFORMERS` from

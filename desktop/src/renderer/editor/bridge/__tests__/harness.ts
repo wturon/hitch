@@ -11,8 +11,9 @@ import { $getRoot, type LexicalNode } from "lexical";
 import { importMarkdown } from "../importMarkdown";
 import { exportMarkdown } from "../exportMarkdown";
 import { UnknownBlockNode } from "../../nodes/UnknownBlockNode";
+import { ImageNode } from "../../nodes/ImageNode";
 
-// Must match SandboxEditor.tsx's `initialConfig.nodes`.
+// Must match SandboxEditor.tsx's `initialConfig.nodes` (the shared EDITOR_NODES).
 const NODES = [
   HeadingNode,
   QuoteNode,
@@ -21,6 +22,7 @@ const NODES = [
   LinkNode,
   HorizontalRuleNode,
   UnknownBlockNode,
+  ImageNode,
 ];
 
 function newEditor(onError: (error: Error) => void) {

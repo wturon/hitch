@@ -7,7 +7,7 @@
 // Everything the editor needs lives in this folder; the only public entry is
 // `editor/index.ts` (nothing outside the folder imports these files directly).
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { XIcon, FileTextIcon } from "lucide-react";
 
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
@@ -207,9 +207,16 @@ function StateInspector() {
 // a blockquote, a divider, and two unsupported constructs that land in opaque
 // UnknownBlockNodes). Authored in the bridge's canonical output form, so loading
 // it and reading the Markdown pane shows byte-identical text.
+// A tiny (8×8) real PNG, inlined as a data: URL so the sample renders an actual
+// image with no network dependency (the bridge round-trips the whole `![](…)`).
+const SAMPLE_IMAGE_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGPQvbIfK2IYWhIAns1wAWMqv18AAAAASUVORK5CYII=";
+
 const SAMPLE_MARKDOWN = `# Editor bridge sample
 
 A paragraph with **bold**, *italic*, and \`inline code\`.
+
+An inline image ![a tiny square](${SAMPLE_IMAGE_DATA_URL}) sits mid-sentence.
 
 ## A nested list
 
@@ -351,10 +358,39 @@ Nothing here should tick the onChange counter.
 // buttons to push an external value in and exercise the focus handle.
 function ComponentHarness() {
   const [value, setValue] = useState<string>(
-    "# Component mode\n\nType here — watch `value` and the onChange counter update.\n",
+    `# Component mode
+
+Type here — watch \`value\` and the onChange counter update.
+
+An image loads through the fake preview handler (note the Skeleton for ~800ms):
+
+![a tiny square](${SAMPLE_IMAGE_DATA_URL})
+
+Paste an image from your clipboard to upload + insert it inline.
+`,
   );
   const [changeCount, setChangeCount] = useState(0);
   const editorRef = useRef<MarkdownEditorHandle>(null);
+
+  // Fake handlers so the whole image feature is demoable without Convex.
+  // Preview: an ~800ms artificial delay then the src unchanged — long enough to
+  // watch the Skeleton before the <img> swaps in. Upload: read the pasted file
+  // to a data: URL, so pasting a real clipboard image renders immediately.
+  const imagePreviewHandler = useMemo(
+    () => (src: string) =>
+      new Promise<string>((resolve) => setTimeout(() => resolve(src), 800)),
+    [],
+  );
+  const imageUploadHandler = useMemo(
+    () => (file: File) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      }),
+    [],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-row gap-4 pt-4">
@@ -393,6 +429,8 @@ function ComponentHarness() {
               setValue(md);
             }}
             placeholder="Start typing…"
+            imageUploadHandler={imageUploadHandler}
+            imagePreviewHandler={imagePreviewHandler}
           />
         </div>
       </div>

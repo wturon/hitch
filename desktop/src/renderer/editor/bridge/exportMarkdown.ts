@@ -35,6 +35,7 @@ import {
   SUPPORTED_FORMATS,
 } from "./format";
 import { $isUnknownBlockNode } from "../nodes/UnknownBlockNode";
+import { $isImageNode } from "../nodes/ImageNode";
 import { TO_MARKDOWN_EXTENSIONS, TO_MARKDOWN_OPTIONS } from "./options";
 
 // A loosely-typed mdast node under construction. The visitors build plain
@@ -221,6 +222,21 @@ const UnknownBlockVisitor: LexicalExportVisitor = {
   },
 };
 
+const ImageVisitor: LexicalExportVisitor = {
+  testLexicalNode: $isImageNode,
+  visitLexicalNode: ({ lexicalNode, mdastParent, actions }) => {
+    if (!$isImageNode(lexicalNode)) return;
+    // A leaf mdast `image` appended into the enclosing paragraph. `alt: ""`
+    // serializes to `![](url)`; a non-null `title` becomes `![alt](url "title")`.
+    actions.appendToParent(mdastParent, {
+      type: "image",
+      url: lexicalNode.getSrc(),
+      alt: lexicalNode.getAltText(),
+      title: lexicalNode.getTitle(),
+    });
+  },
+};
+
 const TextVisitor: LexicalExportVisitor = {
   // Merge adjacent same-type inline wrappers so a run split across Lexical text
   // nodes serializes with a single marker pair.
@@ -289,6 +305,7 @@ const VISITORS: LexicalExportVisitor[] = [
   ListVisitor,
   ListItemVisitor,
   LinkVisitor,
+  ImageVisitor,
   LineBreakVisitor,
   HorizontalRuleVisitor,
   UnknownBlockVisitor,

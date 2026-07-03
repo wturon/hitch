@@ -9,9 +9,7 @@
 // the node set and markdown transformers (shared config, kept in lock-step with
 // the sandbox), the plugin wiring, placeholder, styling, and the focus handle.
 //
-// Images and an overlay container are NOT props yet — they land with the image
-// port. Kept off the type until then so callers don't depend on a no-op.
-import { forwardRef, useImperativeHandle, useRef } from "react";
+import { forwardRef, useImperativeHandle, useMemo, useRef } from "react";
 
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
@@ -30,6 +28,9 @@ import { importMarkdown } from "./bridge";
 import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { ControlledMarkdownPlugin } from "./ControlledMarkdownPlugin";
 import { SlashMenuPlugin } from "./SlashMenuPlugin";
+import { PasteImagePlugin } from "./PasteImagePlugin";
+import { ImageContextMenuPlugin } from "./ImageContextMenuPlugin";
+import { ImageHandlersContext } from "./nodes/ImageNode";
 
 // The imperative surface the editor exposes to its parent. Deliberately
 // focus-only: content flows through the controlled `value`/`onChange` props, so
@@ -47,15 +48,41 @@ export interface MarkdownEditorProps {
   onChange: (markdown: string) => void;
   placeholder?: string;
   className?: string;
+  // Image support. EXACT same names/signatures as the old MDXEditor wrapper so a
+  // surface (NotesView, TaskDialog) can flip editors with a one-line import
+  // change. When `imageUploadHandler` is set, an all-image clipboard paste
+  // uploads + inserts inline (PasteImagePlugin); the returned string is written
+  // as the markdown `src`. `imagePreviewHandler` resolves that stored `src` to a
+  // loadable URL for inline display (else the raw `src` is used as-is). Both are
+  // supplied by the parent via useAttachments; file *drop* is handled upstream.
+  imageUploadHandler?: (file: File) => Promise<string>;
+  imagePreviewHandler?: (src: string) => Promise<string>;
 }
 
 // The composed editor body. Rendered inside the LexicalComposer so its plugins
 // and the focus handle can reach the editor through context.
 const EditorBody = forwardRef<
   MarkdownEditorHandle,
-  { value: string; onChange: (markdown: string) => void; placeholder?: string }
->(function EditorBody({ value, onChange, placeholder }, ref) {
+  {
+    value: string;
+    onChange: (markdown: string) => void;
+    placeholder?: string;
+    imageUploadHandler?: (file: File) => Promise<string>;
+    imagePreviewHandler?: (src: string) => Promise<string>;
+  }
+>(function EditorBody(
+  { value, onChange, placeholder, imageUploadHandler, imagePreviewHandler },
+  ref,
+) {
   const [editor] = useLexicalComposerContext();
+
+  // Threaded to the ImageNode decorators (which render inside RichTextPlugin,
+  // below this provider) so they can resolve their src for display. Memoized so
+  // the context value is stable unless the handler identity actually changes.
+  const imageHandlers = useMemo(
+    () => ({ previewHandler: imagePreviewHandler }),
+    [imagePreviewHandler],
+  );
 
   useImperativeHandle(
     ref,
@@ -85,6 +112,7 @@ const EditorBody = forwardRef<
     // `min-h-full` on the editable makes the whole column the click target
     // (Lexical renders the placeholder as an unpositioned flow sibling, and the
     // editable would otherwise be only as tall as its content).
+    <ImageHandlersContext.Provider value={imageHandlers}>
     <div className="relative min-h-0 flex-1">
       <RichTextPlugin
         contentEditable={
@@ -120,15 +148,32 @@ const EditorBody = forwardRef<
       {/* Turns `# `, `- `, `> `, `**bold**`, `[text](url)` etc. into real nodes
           as you type, using our code-free transformer set. */}
       <MarkdownShortcutPlugin transformers={MARKDOWN_TRANSFORMERS} />
+      {/* Clipboard-image paste → upload → inline ImageNode. Inert (registers
+          nothing) unless an upload handler is supplied. */}
+      <PasteImagePlugin imageUploadHandler={imageUploadHandler} />
+      {/* Right-click Copy/Delete on an image. Mounted always — inert without
+          images; reads the preview handler from the context above. */}
+      <ImageContextMenuPlugin />
       {/* The value/onChange bridge — the only path between the `.md` string and
           the live editor state. */}
       <ControlledMarkdownPlugin value={value} onChange={onChange} />
     </div>
+    </ImageHandlersContext.Provider>
   );
 });
 
 export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(
-  function MarkdownEditor({ value, onChange, placeholder, className }, ref) {
+  function MarkdownEditor(
+    {
+      value,
+      onChange,
+      placeholder,
+      className,
+      imageUploadHandler,
+      imagePreviewHandler,
+    },
+    ref,
+  ) {
     // The initial content is imported ONCE, here, via the composer's `editorState`
     // callback (Lexical runs it inside an update tagged HISTORY_MERGE before this
     // subtree's effects register). That's why opening never fires onChange: the
@@ -159,6 +204,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
             value={value}
             onChange={onChange}
             placeholder={placeholder}
+            imageUploadHandler={imageUploadHandler}
+            imagePreviewHandler={imagePreviewHandler}
           />
         </LexicalComposer>
       </div>

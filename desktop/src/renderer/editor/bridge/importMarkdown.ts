@@ -16,6 +16,7 @@ import type {
   Delete,
   Emphasis,
   Heading,
+  Image,
   InlineCode,
   Link,
   List,
@@ -43,6 +44,7 @@ import {
 } from "lexical";
 
 import { $createUnknownBlockNode } from "../nodes/UnknownBlockNode";
+import { $createImageNode } from "../nodes/ImageNode";
 import { UnsupportedMarkdownError } from "./errors";
 import { IS_BOLD, IS_CODE, IS_ITALIC, IS_STRIKETHROUGH } from "./format";
 import {
@@ -170,6 +172,18 @@ const LinkVisitor: MdastImportVisitor<Link> = {
   },
 };
 
+const ImageVisitor: MdastImportVisitor<Image> = {
+  type: "image",
+  visit(node, parent) {
+    // A leaf inline node → an ImageNode appended into the enclosing paragraph
+    // (or heading/link/etc.). `alt` defaults to "" and `title` to null so the
+    // three fields fully capture `![alt](url "title")` and round-trip byte-exact.
+    parent.append(
+      $createImageNode(node.url, node.alt ?? "", node.title ?? null),
+    );
+  },
+};
+
 const TextVisitor: MdastImportVisitor<Text> = {
   type: "text",
   visit(node, parent, ctx) {
@@ -235,6 +249,7 @@ const VISITOR_LIST: LooseImportVisitor[] = [
   ListVisitor,
   ListItemVisitor,
   LinkVisitor,
+  ImageVisitor,
   TextVisitor,
   EmphasisVisitor,
   StrongVisitor,
@@ -284,11 +299,16 @@ function canImportChildren(node: unknown): boolean {
 function canImport(node: unknown): boolean {
   const n = node as { type: string; depth?: number; children?: unknown[] };
   switch (n.type) {
-    // Leaves the visitors handle unconditionally.
+    // Leaves the visitors handle unconditionally. `image` is inline (it lives in
+    // a paragraph's phrasing content) but it's still a leaf here — ImageVisitor
+    // appends an ImageNode with no recursion. NOTE: only `image` is accepted;
+    // `imageReference` (`![alt][id]` + a separate `definition`) has no visitor,
+    // so it stays unsupported and falls the whole block to an UnknownBlockNode.
     case "text":
     case "inlineCode":
     case "break":
     case "thematicBreak":
+    case "image":
       return true;
     // HeadingVisitor throws outside depth 1–6; mirror that here.
     case "heading":
