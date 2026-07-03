@@ -13,7 +13,6 @@ import {
   type SyntheticEvent,
 } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { Toaster } from "sonner";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
@@ -148,6 +147,7 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
+import { Toaster } from "@/components/ui/sonner";
 
 function columnFor(
   status: string | undefined,

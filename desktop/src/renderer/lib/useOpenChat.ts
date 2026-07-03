@@ -38,7 +38,9 @@ export function useOpenChat(chat: ChatRef, projectId: Id<"projects">) {
   useEffect(() => {
     if (!command || command.status === "pending") return;
     // Terminal: stop watching. Open the guided dialog for the cmux failures we
-    // recognize; other errors surface as a toast so they aren't silently lost.
+    // recognize; other errors (including a daemon that never picked up the
+    // command, which resolves as "expired") surface as a toast so they aren't
+    // silently lost.
     setPendingCommandId(null);
     if (command.status === "error") {
       if (
@@ -53,6 +55,12 @@ export function useOpenChat(chat: ChatRef, projectId: Id<"projects">) {
           description: command.result,
         });
       }
+    } else if (command.status === "expired") {
+      // Keyed by chat so retrying replaces the toast instead of stacking.
+      toast.error("Couldn't open chat", {
+        id: `open-chat-${chat.id}`,
+        description: "The Hitch daemon didn't respond — it may not be running.",
+      });
     }
     if (command.status === "done" && command.result === "revealed") {
       setFocusHint(
