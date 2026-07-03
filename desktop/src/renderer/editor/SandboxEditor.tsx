@@ -22,58 +22,17 @@ import { MarkdownShortcutPlugin } from "@lexical/react/LexicalMarkdownShortcutPl
 import { ListPlugin } from "@lexical/react/LexicalListPlugin";
 import { TabIndentationPlugin } from "@lexical/react/LexicalTabIndentationPlugin";
 import { HorizontalRulePlugin } from "@lexical/react/LexicalHorizontalRulePlugin";
-import { HorizontalRuleNode } from "@lexical/react/LexicalHorizontalRuleNode";
-import { HeadingNode, QuoteNode } from "@lexical/rich-text";
-import { ListNode, ListItemNode } from "@lexical/list";
-import { LinkNode } from "@lexical/link";
-import {
-  HEADING,
-  QUOTE,
-  UNORDERED_LIST,
-  ORDERED_LIST,
-  LINK,
-  TEXT_FORMAT_TRANSFORMERS,
-  type Transformer,
-} from "@lexical/markdown";
 import type { EditorState } from "lexical";
 
 import { exportMarkdown, importMarkdown } from "./bridge";
-import { UnknownBlockNode } from "./nodes/UnknownBlockNode";
-
-// Explicit transformer set — deliberately NOT the default `TRANSFORMERS` from
-// `@lexical/markdown`. That default bundles the fenced-code-block transformer,
-// which pulls in `CodeNode`/`CodeHighlightNode` from `@lexical/code` and its
-// Prism global — exactly the dependency Text Editor 2.0 is escaping. So we
-// assemble only the block, inline-format, and link transformers by hand. Code
-// blocks are intentionally out of scope.
-//
-// Order mirrors the default array's shape: element (block) transformers first,
-// then inline text-format transformers, then text-match transformers (LINK).
-const MARKDOWN_TRANSFORMERS: Transformer[] = [
-  HEADING,
-  QUOTE,
-  UNORDERED_LIST,
-  ORDERED_LIST,
-  ...TEXT_FORMAT_TRANSFORMERS,
-  LINK,
-];
+import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
+import { MarkdownEditor, type MarkdownEditorHandle } from "./MarkdownEditor";
 
 const initialConfig = {
   namespace: "hitch-editor-sandbox",
-  // Block + inline nodes the markdown shortcuts restructure the tree into.
-  // No `CodeNode` — code blocks are out of scope (see MARKDOWN_TRANSFORMERS).
-  // HorizontalRuleNode backs `---`; UnknownBlockNode preserves any markdown the
-  // bridge doesn't model (see nodes/UnknownBlockNode.tsx). Keep in sync with the
-  // bridge test harness's node list.
-  nodes: [
-    HeadingNode,
-    QuoteNode,
-    ListNode,
-    ListItemNode,
-    LinkNode,
-    HorizontalRuleNode,
-    UnknownBlockNode,
-  ],
+  // The shared node set (see config.ts) — kept in lock-step with the production
+  // MarkdownEditor and the bridge test harness. No `CodeNode`.
+  nodes: [...EDITOR_NODES],
   onError(error: Error) {
     // Lexical throws on internal invariants; surface them loudly while we learn
     // rather than swallowing them.
@@ -81,19 +40,40 @@ const initialConfig = {
   },
 };
 
+// The sandbox has two modes: the raw "vanilla" Lexical playground (state
+// inspector + live markdown, for iterating on the engine) and a "component" mode
+// that drives the production <MarkdownEditor> from real React state — the manual
+// QA surface for the controlled contract (see ComponentHarness).
+type SandboxMode = "vanilla" | "component";
+
 export function SandboxEditor({ onExit }: { onExit: () => void }) {
+  const [mode, setMode] = useState<SandboxMode>("vanilla");
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* Header — title + exit affordance, mirroring DebugView's shape. */}
+      {/* Header — title + mode toggle + exit affordance. */}
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border pb-3">
         <div className="flex items-center gap-3">
           <div className="size-2 rounded-full bg-foreground" />
           <span className="text-[17px] font-semibold tracking-tight">
             Editor Sandbox
           </span>
-          <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-            lexical · vanilla
-          </span>
+          {/* Switch between the raw engine playground and the real component. */}
+          <div className="flex items-center gap-1 rounded-full border border-border p-0.5">
+            {(["vanilla", "component"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setMode(value)}
+                className={
+                  mode === value
+                    ? "rounded-full bg-foreground px-2.5 py-0.5 font-mono text-[11px] text-background"
+                    : "rounded-full px-2.5 py-0.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                }
+              >
+                {value === "vanilla" ? "lexical · vanilla" : "component"}
+              </button>
+            ))}
+          </div>
         </div>
         <button
           type="button"
@@ -105,9 +85,18 @@ export function SandboxEditor({ onExit }: { onExit: () => void }) {
         </button>
       </div>
 
+      {mode === "vanilla" ? <VanillaSandbox /> : <ComponentHarness />}
+    </div>
+  );
+}
+
+// The original raw-Lexical playground: a bare editor plus a live EditorState
+// inspector and markdown pane, for iterating on the bridge and engine.
+function VanillaSandbox() {
+  return (
+    <LexicalComposer initialConfig={initialConfig}>
       {/* Body: editor left; live EditorState inspector + Markdown pane right. */}
-      <LexicalComposer initialConfig={initialConfig}>
-        <div className="flex min-h-0 flex-1 flex-row gap-4 pt-4">
+      <div className="flex min-h-0 flex-1 flex-row gap-4 pt-4">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
             {/* Exercises the import direction: fills the editor from a canned
                 markdown doc so you can watch it render. */}
@@ -155,7 +144,6 @@ export function SandboxEditor({ onExit }: { onExit: () => void }) {
           </div>
         </div>
       </LexicalComposer>
-    </div>
   );
 }
 
@@ -334,6 +322,97 @@ function MarkdownPane() {
         </pre>
       ) : null}
       <OnChangePlugin onChange={onChange} />
+    </div>
+  );
+}
+
+// A deliberately NON-canonical doc for the "Set external value" button: `*`
+// bullets and `_emphasis_` that the bridge re-serializes to `-` bullets and
+// `*emphasis*`. Pushing it through the `value` prop proves invariant C — the
+// editor adopts it silently (no onChange), and the change counter stays put
+// until you actually type.
+const EXTERNAL_SAMPLE = `# Rewritten by an agent
+
+This paragraph arrived through the *value* prop, not the keyboard.
+
+* first star bullet
+* second star bullet
+
+Nothing here should tick the onChange counter.
+`;
+
+// Manual-QA surface for the production MarkdownEditor: drives it from real React
+// state so you can watch the controlled contract behave. Left pane is the live
+// editor; right pane shows the current `value` string, an onChange counter, and
+// buttons to push an external value in and exercise the focus handle.
+function ComponentHarness() {
+  const [value, setValue] = useState<string>(
+    "# Component mode\n\nType here — watch `value` and the onChange counter update.\n",
+  );
+  const [changeCount, setChangeCount] = useState(0);
+  const editorRef = useRef<MarkdownEditorHandle>(null);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-row gap-4 pt-4">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+        {/* Controls: push a non-canonical external value, drive the focus handle. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setValue(EXTERNAL_SAMPLE)}
+            className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-[13px] font-medium text-foreground hover:bg-muted"
+          >
+            <FileTextIcon className="size-3.5 text-muted-foreground" />
+            Set external value
+          </button>
+          <button
+            type="button"
+            onClick={() => editorRef.current?.focusStart()}
+            className="flex h-8 items-center rounded-lg border border-border bg-background px-3 text-[13px] font-medium text-foreground hover:bg-muted"
+          >
+            Focus start
+          </button>
+          <button
+            type="button"
+            onClick={() => editorRef.current?.focusEnd()}
+            className="flex h-8 items-center rounded-lg border border-border bg-background px-3 text-[13px] font-medium text-foreground hover:bg-muted"
+          >
+            Focus end
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-[10px] border border-border px-3.5 py-3">
+          <MarkdownEditor
+            ref={editorRef}
+            value={value}
+            onChange={(md) => {
+              setChangeCount((n) => n + 1);
+              setValue(md);
+            }}
+            placeholder="Start typing…"
+          />
+        </div>
+      </div>
+      {/* Right column: onChange counter on top, the live `value` string below. */}
+      <div className="flex w-[380px] shrink-0 flex-col gap-3">
+        <div className="flex shrink-0 items-center justify-between rounded-[10px] border border-border bg-secondary px-3.5 py-2">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+            onChange calls
+          </span>
+          <span className="font-mono text-[13px] tabular-nums text-foreground">
+            {changeCount}
+          </span>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border">
+          <div className="flex shrink-0 items-center justify-between border-b border-border bg-secondary px-3.5 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+              value (parent state)
+            </span>
+          </div>
+          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-3.5 py-3 font-mono text-[11px] leading-[1.5] text-foreground">
+            {value || "// empty"}
+          </pre>
+        </div>
+      </div>
     </div>
   );
 }

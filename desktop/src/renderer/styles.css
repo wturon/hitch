@@ -342,6 +342,84 @@ select,
   margin: 1.5em 0;
 }
 
+/* Production editor content area (Text Editor 2.0 — the Hitch-owned Lexical
+   MarkdownEditor that replaces MDXEditor). Mirrors `.hitch-mdx-content`'s type
+   scale so the new editor reads identically to the task body it supersedes.
+   Standalone (not nested under `.hitch-mdx`) so it never touches the MDXEditor
+   rules — a surface can flip between the two without a style regression. */
+.hitch-editor-content {
+  min-height: 180px;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 14.5px;
+  line-height: 25px;
+  color: var(--foreground);
+  outline: none;
+}
+
+/* Render embedded `\n` inside a text node as a real line break. Our bridge keeps
+   soft breaks inside text-node values (only hard breaks become LineBreakNodes),
+   so paragraphs must preserve whitespace or a soft-wrapped line would collapse. */
+.hitch-editor-content :where(p) {
+  margin: 0 0 0.85em;
+  white-space: pre-wrap;
+}
+.hitch-editor-content :where(h1) {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: 0.1em 0 0.55em;
+}
+.hitch-editor-content :where(h2) {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.5em 0 0.5em;
+}
+.hitch-editor-content :where(h3, h4, h5, h6) {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 1.25em 0 0.4em;
+}
+.hitch-editor-content :where(ul, ol) {
+  margin: 0 0 0.85em;
+  padding-left: 1.45em;
+}
+.hitch-editor-content :where(ul) {
+  list-style: disc;
+}
+.hitch-editor-content :where(ol) {
+  list-style: decimal;
+}
+.hitch-editor-content :where(li) {
+  margin: 0.15em 0;
+}
+.hitch-editor-content :where(a) {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in oklab, var(--foreground) 35%, transparent);
+}
+.hitch-editor-content :where(code) {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--muted);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.hitch-editor-content :where(blockquote) {
+  margin: 0 0 0.85em;
+  padding-left: 0.9em;
+  border-left: 2px solid var(--border);
+  color: var(--muted-foreground);
+}
+.hitch-editor-content :where(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+
 /* Textareas that auto-grow with their content (wrap, no scrollbar) instead of a
    fixed line count — the title and the Raw full-file view. Supported by the
    app's Chromium; the surrounding scroll container caps + scrolls past max-h. */
