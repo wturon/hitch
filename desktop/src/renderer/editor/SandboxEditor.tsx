@@ -365,6 +365,8 @@ function ComponentHarness() {
 
 Type here — watch \`value\` and the onChange counter update.
 
+Click the [funnel dashboard](https://example.com/dash) link to open the popover — copy, edit, or unwrap it. Select text and paste a URL to link it.
+
 An image loads through the fake preview handler (note the Skeleton for ~800ms):
 
 ![a tiny square](${SAMPLE_IMAGE_DATA_URL})

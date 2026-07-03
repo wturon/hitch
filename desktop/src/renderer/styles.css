@@ -400,6 +400,14 @@ select,
   text-decoration: underline;
   text-underline-offset: 2px;
   text-decoration-color: color-mix(in oklab, var(--foreground) 35%, transparent);
+  border-radius: 3px;
+}
+/* The link the popover is currently anchored to — a faint, hueless highlight so
+   the user can see which link they're acting on (set by LinkPopoverPlugin). */
+.hitch-editor-content :where(a)[data-hitch-link-active="true"] {
+  background: color-mix(in oklab, var(--foreground) 9%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--foreground) 9%, transparent);
+  text-decoration-color: color-mix(in oklab, var(--foreground) 70%, transparent);
 }
 .hitch-editor-content :where(code) {
   font-family: var(--font-mono);

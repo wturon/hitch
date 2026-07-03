@@ -29,6 +29,8 @@ import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { ControlledMarkdownPlugin } from "./ControlledMarkdownPlugin";
 import { SlashMenuPlugin } from "./SlashMenuPlugin";
 import { PasteImagePlugin } from "./PasteImagePlugin";
+import { PasteLinkPlugin } from "./PasteLinkPlugin";
+import { LinkPopoverPlugin } from "./LinkPopoverPlugin";
 import { ImageContextMenuPlugin } from "./ImageContextMenuPlugin";
 import { ImageHandlersContext } from "./nodes/ImageNode";
 
@@ -151,6 +153,13 @@ const EditorBody = forwardRef<
       {/* Clipboard-image paste → upload → inline ImageNode. Inert (registers
           nothing) unless an upload handler is supplied. */}
       <PasteImagePlugin imageUploadHandler={imageUploadHandler} />
+      {/* Paste a single URL over selected text → wrap it in a link (Notion-style),
+          rather than replacing the text. Steps aside for file/image pastes. */}
+      <PasteLinkPlugin />
+      {/* Selection-driven link popover: caret inside a link → floating card to
+          open/copy/edit/unwrap. Portals to body, fixed-positioned from the link's
+          rect so it stays aligned even inside a dialog. */}
+      <LinkPopoverPlugin />
       {/* Right-click Copy/Delete on an image. Mounted always — inert without
           images; reads the preview handler from the context above. */}
       <ImageContextMenuPlugin />
