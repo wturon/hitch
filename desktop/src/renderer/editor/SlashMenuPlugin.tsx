@@ -48,11 +48,16 @@ import {
   ListIcon,
   ListOrderedIcon,
   MinusIcon,
+  SquareCodeIcon,
   TextQuoteIcon,
   type LucideProps,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import {
+  $createCodeBlockNode,
+  focusCodeBlockOnMount,
+} from "./nodes/CodeBlockNode";
 
 // One slash command: what the menu shows and what it does when chosen. `run`
 // executes INSIDE an active `editor.update` (`applySlashCommand` opens one before
@@ -128,6 +133,13 @@ export const SLASH_COMMANDS: SlashCommandSpec[] = [
     run: () => transformBlock(() => $createQuoteNode()),
   },
   {
+    key: "code",
+    title: "Code block",
+    icon: SquareCodeIcon,
+    keywords: ["code", "codeblock", "fence", "snippet"],
+    run: insertCodeBlock,
+  },
+  {
     key: "hr",
     title: "Divider",
     icon: MinusIcon,
@@ -135,6 +147,18 @@ export const SLASH_COMMANDS: SlashCommandSpec[] = [
     run: insertDivider,
   },
 ];
+
+// Drop an empty code block after the current block and focus its textarea. Same
+// guaranteed-trailing-paragraph shape as `insertDivider` (a block decorator at
+// the very end of the document would otherwise leave the caret nowhere useful),
+// then hand focus to the new block's textarea on mount via `focusCodeBlockOnMount`.
+function insertCodeBlock(): void {
+  const node = $insertNodeToNearestRoot($createCodeBlockNode("", "", null));
+  if (!$isParagraphNode(node.getNextSibling())) {
+    node.insertAfter($createParagraphNode());
+  }
+  focusCodeBlockOnMount(node.getKey());
+}
 
 // Drop a horizontal rule after the current block. `$insertNodeToNearestRoot` is
 // what INSERT_HORIZONTAL_RULE_COMMAND (HorizontalRulePlugin) calls; we invoke it

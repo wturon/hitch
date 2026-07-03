@@ -11,8 +11,10 @@
 // an `UnknownBlockNode` (a top-level `canImport` pre-scan decides which path a
 // flow node takes; see below). Nothing is dropped or lossily re-rendered.
 import { fromMarkdown } from "mdast-util-from-markdown";
+import { toMarkdown } from "mdast-util-to-markdown";
 import type {
   Blockquote,
+  Code,
   Delete,
   Emphasis,
   Heading,
@@ -45,11 +47,14 @@ import {
 
 import { $createUnknownBlockNode } from "../nodes/UnknownBlockNode";
 import { $createImageNode } from "../nodes/ImageNode";
+import { $createCodeBlockNode } from "../nodes/CodeBlockNode";
 import { UnsupportedMarkdownError } from "./errors";
 import { IS_BOLD, IS_CODE, IS_ITALIC, IS_STRIKETHROUGH } from "./format";
 import {
   MDAST_FROM_EXTENSIONS,
   SYNTAX_EXTENSIONS,
+  TO_MARKDOWN_EXTENSIONS,
+  TO_MARKDOWN_OPTIONS,
 } from "./options";
 
 // The engine dispatches on `node.type`, so its plumbing takes `unknown` and
@@ -184,6 +189,20 @@ const ImageVisitor: MdastImportVisitor<Image> = {
   },
 };
 
+const CodeVisitor: MdastImportVisitor<Code> = {
+  type: "code",
+  visit(node, parent) {
+    // A block-level leaf → a CodeBlockNode. `lang`/`meta` default to ""/null so
+    // the three fields fully capture the fence (```lang meta … ```). Only ever
+    // reached for a top-level fence that PASSED the byte-exact gate (see
+    // `canRoundTripCode` + importMarkdown); nested or exotic fences never dispatch
+    // here — they fall to a verbatim UnknownBlockNode instead.
+    parent.append(
+      $createCodeBlockNode(node.value, node.lang ?? "", node.meta ?? null),
+    );
+  },
+};
+
 const TextVisitor: MdastImportVisitor<Text> = {
   type: "text",
   visit(node, parent, ctx) {
@@ -250,6 +269,7 @@ const VISITOR_LIST: LooseImportVisitor[] = [
   ListItemVisitor,
   LinkVisitor,
   ImageVisitor,
+  CodeVisitor,
   TextVisitor,
   EmphasisVisitor,
   StrongVisitor,
@@ -345,9 +365,46 @@ function canImport(node: unknown): boolean {
       }
       return true;
     }
+    // Fenced code is handled ONLY at the top level, and only after passing the
+    // byte-exact gate (see importMarkdown). It's deliberately excluded here so a
+    // fence NESTED in a container (blockquote/list) keeps its whole enclosing
+    // block opaque — that source slice carries the container prefix our single-
+    // node serialization can't reproduce, so a real code block there would churn.
+    case "code":
+      return false;
     default:
       return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// The byte-exact gate for fenced code. mdast's single `code` type covers forms
+// our serializer will NOT reproduce verbatim — indented (4-space) code, `~~~`
+// tilde fences, 4+-backtick fences whose content doesn't need them, odd info
+// strings. The product rule is that an unedited document round-trips byte-for-
+// byte, so a `code` node imports as an editable CodeBlockNode ONLY when
+// re-serializing that one node (with the bridge's own TO_MARKDOWN options)
+// reproduces the exact source slice. Anything else falls through to the verbatim
+// UnknownBlockNode path, exactly as before this feature existed.
+//
+// The gate is applied only to TOP-LEVEL fences (a direct child of root). A fence
+// nested in a blockquote/list keeps its enclosing block falling back to an
+// UnknownBlockNode (unchanged from prior behaviour): its source slice carries the
+// container's `> `/indent prefix, which this single-node serialization can't
+// reproduce, so it would fail the gate anyway — we just never reach here for it,
+// since `canImport` still rejects a container holding a `code` child.
+function canRoundTripCode(node: Code, markdown: string): boolean {
+  const start = node.position?.start?.offset;
+  const end = node.position?.end?.offset;
+  if (start === undefined || end === undefined) return false;
+  // toMarkdown always terminates with exactly one "\n"; the source slice (by
+  // position offsets) excludes that trailing newline, so drop it before compare.
+  const serialized = toMarkdown(
+    // Wrap in a root so we serialize just this node with our shared options.
+    { type: "root", children: [node] } as Root,
+    { extensions: TO_MARKDOWN_EXTENSIONS, ...TO_MARKDOWN_OPTIONS },
+  ).replace(/\n$/, "");
+  return serialized === markdown.slice(start, end);
 }
 
 /**
@@ -370,6 +427,15 @@ export function importMarkdown(markdown: string): void {
   const root = $getRoot();
   root.clear();
   for (const child of tree.children) {
+    // Top-level fenced code: importable as an editable CodeBlockNode only when it
+    // survives the byte-exact gate; exotic fences fall through to the verbatim
+    // UnknownBlockNode below. Checked before `canImport` because `code` is
+    // deliberately NOT in `canImport`'s accepted set (a nested fence keeps its
+    // whole block opaque, as before).
+    if (child.type === "code" && canRoundTripCode(child, markdown)) {
+      visit(child, root, 0);
+      continue;
+    }
     if (canImport(child)) {
       visit(child, root, 0);
       continue;

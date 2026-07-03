@@ -12,6 +12,7 @@ import { importMarkdown } from "../importMarkdown";
 import { exportMarkdown } from "../exportMarkdown";
 import { UnknownBlockNode } from "../../nodes/UnknownBlockNode";
 import { ImageNode } from "../../nodes/ImageNode";
+import { CodeBlockNode } from "../../nodes/CodeBlockNode";
 
 // Must match SandboxEditor.tsx's `initialConfig.nodes` (the shared EDITOR_NODES).
 const NODES = [
@@ -23,6 +24,7 @@ const NODES = [
   HorizontalRuleNode,
   UnknownBlockNode,
   ImageNode,
+  CodeBlockNode,
 ];
 
 function newEditor(onError: (error: Error) => void) {

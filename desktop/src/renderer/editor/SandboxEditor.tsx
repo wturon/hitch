@@ -204,9 +204,10 @@ function StateInspector() {
 
 // A canonical markdown doc for the "Load sample" button — exercises the import
 // direction (headings, nested lists of both kinds, bold/italic/code, a link,
-// a blockquote, a divider, and two unsupported constructs that land in opaque
-// UnknownBlockNodes). Authored in the bridge's canonical output form, so loading
-// it and reading the Markdown pane shows byte-identical text.
+// a blockquote, a divider, an editable fenced code block, and one unsupported
+// construct that lands in an opaque UnknownBlockNode). Authored in the bridge's
+// canonical output form, so loading it and reading the Markdown pane shows
+// byte-identical text.
 // A tiny (8×8) real PNG, inlined as a data: URL so the sample renders an actual
 // image with no network dependency (the bridge round-trips the whole `![](…)`).
 const SAMPLE_IMAGE_DATA_URL =
@@ -230,16 +231,18 @@ An inline image ![a tiny square](${SAMPLE_IMAGE_DATA_URL}) sits mid-sentence.
 
 > A short blockquote with a [link](https://example.com).
 
----
-
-## Unsupported constructs
-
-The bridge doesn't model these yet, so each lands in a read-only unknown block
-and round-trips byte-for-byte:
+## A code block
 
 \`\`\`ts
 const kept = "verbatim";
 \`\`\`
+
+---
+
+## Unsupported constructs
+
+The bridge doesn't model this yet, so it lands in a read-only unknown block and
+round-trips byte-for-byte:
 
 | Name | Role |
 | ---- | ---- |

@@ -62,6 +62,13 @@ export const TO_MARKDOWN_OPTIONS: ToMarkdownOptions = {
   // authored with `---`, so this keeps `<hr>` round-trips byte-exact. (Mirrors
   // the `bullet` override above: a canonical-form choice, not a stylistic one.)
   rule: "-",
+  // Always fence code blocks (```), never the indented (4-space) form. Only our
+  // CodeBlockNode emits a `code` mdast node (unknown blocks use the custom
+  // `unknownBlock` type), so this is scoped to code blocks alone: without it a
+  // lang-less or empty fence would serialize as an indented block and never
+  // round-trip to the ``` the user typed. mdast-util-to-markdown still grows the
+  // fence to 4+ backticks on its own when the body contains a ``` run.
+  fences: true,
   handlers: {
     // Cast: `unknownBlock` is our own node type, outside mdast's `Nodes` union,
     // so `Partial<Handlers>` won't accept the key without widening it here.

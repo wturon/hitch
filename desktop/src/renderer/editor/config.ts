@@ -14,27 +14,34 @@ import {
   ORDERED_LIST,
   LINK,
   TEXT_FORMAT_TRANSFORMERS,
+  type ElementTransformer,
   type Transformer,
 } from "@lexical/markdown";
-import type { Klass, LexicalNode } from "lexical";
+import type { ElementNode, Klass, LexicalNode } from "lexical";
 
 import { UnknownBlockNode } from "./nodes/UnknownBlockNode";
 import { ImageNode } from "./nodes/ImageNode";
+import {
+  $createCodeBlockNode,
+  $isCodeBlockNode,
+  CodeBlockNode,
+  focusCodeBlockOnMount,
+} from "./nodes/CodeBlockNode";
 
 // Block + inline nodes the markdown shortcuts (and the bridge) restructure the
-// tree into. No `CodeNode` — code blocks are out of scope, so no code node ever
-// appears in a document (a pasted fence survives as an UnknownBlockNode via the
-// bridge). HorizontalRuleNode backs `---`.
+// tree into. No `@lexical/code` `CodeNode` — fenced code is our own
+// CodeBlockNode (a highlight-free DecoratorNode), never Lexical's code node.
+// HorizontalRuleNode backs `---`.
 //
-// Honest caveat: keeping CodeNode out of the NODE SET does not keep
-// `@lexical/code`/prismjs out of the BUNDLE. `@lexical/markdown` (imported above,
-// and again by MarkdownShortcutPlugin) statically imports `@lexical/code`, which
-// is sideEffects:true and imports prismjs — so any named import from it retains
-// both. Nothing breaks at runtime (prismjs defines its own global; the code paths
-// that touch it are never called from our transformer set), but deleting
-// @mdxeditor/editor will NOT drop prismjs from the build. Truly escaping it means
-// vendoring the shortcut transformers instead of importing `@lexical/markdown` —
-// a tracked follow-up, not this file's job.
+// Honest caveat: keeping `@lexical/code`'s CodeNode out of the NODE SET does not
+// keep `@lexical/code`/prismjs out of the BUNDLE. `@lexical/markdown` (imported
+// above, and again by MarkdownShortcutPlugin) statically imports `@lexical/code`,
+// which is sideEffects:true and imports prismjs — so any named import from it
+// retains both. Nothing breaks at runtime (prismjs defines its own global; the
+// code paths that touch it are never called from our transformer set), but
+// deleting @mdxeditor/editor will NOT drop prismjs from the build. Truly escaping
+// it means vendoring the shortcut transformers instead of importing
+// `@lexical/markdown` — a tracked follow-up, not this file's job.
 export const EDITOR_NODES: ReadonlyArray<Klass<LexicalNode>> = [
   HeadingNode,
   QuoteNode,
@@ -47,7 +54,39 @@ export const EDITOR_NODES: ReadonlyArray<Klass<LexicalNode>> = [
   // whether the runtime handlers (upload/preview) are wired, so a document with
   // images round-trips even in the headless test harness and the sandbox.
   ImageNode,
+  // Our fenced-code block. Registered unconditionally for the same reason as
+  // ImageNode: the bridge round-trips ```fences``` with no runtime wiring.
+  CodeBlockNode,
 ];
+
+// The ``` shortcut: typing a fence opener followed by a SPACE at the start of a
+// paragraph turns it into a code block, optionally capturing a language
+// (```ts<space>). This is the trigger the 0.35 MarkdownShortcutPlugin actually
+// supports for block transformers — it fires on a trailing space, the same as
+// `# ` / `> ` / `- ` (Enter can't drive a block transformer here). We can't reuse
+// the built-in CODE transformer: it constructs `@lexical/code`'s CodeNode, which
+// we deliberately don't register. `export` is unused in production (serialization
+// goes through the bridge, not `$convertToMarkdownString`) but implemented for
+// completeness.
+const CODE_FENCE_REGEX = /^```([\w#+.-]*) $/;
+
+export const CODE_BLOCK_TRANSFORMER: ElementTransformer = {
+  dependencies: [CodeBlockNode],
+  export: (node) => {
+    if (!$isCodeBlockNode(node)) return null;
+    const info = [node.getLanguage(), node.getMeta()].filter(Boolean).join(" ");
+    return "```" + info + "\n" + node.getCode() + "\n```";
+  },
+  regExp: CODE_FENCE_REGEX,
+  replace: (parentNode: ElementNode, _children, match, isImport) => {
+    const language = match[1] ?? "";
+    const node = $createCodeBlockNode("", language, null);
+    parentNode.replace(node);
+    // Typed (not imported) → focus the new block's textarea once it mounts.
+    if (!isImport) focusCodeBlockOnMount(node.getKey());
+  },
+  type: "element",
+};
 
 // Explicit transformer set — deliberately NOT the default `TRANSFORMERS` from
 // `@lexical/markdown`. That default includes the fenced-code-block transformer,
@@ -58,6 +97,7 @@ export const EDITOR_NODES: ReadonlyArray<Klass<LexicalNode>> = [
 // Order mirrors the default array's shape: element (block) transformers first,
 // then inline text-format transformers, then text-match transformers (LINK).
 export const MARKDOWN_TRANSFORMERS: Transformer[] = [
+  CODE_BLOCK_TRANSFORMER,
   HEADING,
   QUOTE,
   UNORDERED_LIST,

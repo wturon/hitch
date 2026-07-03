@@ -36,6 +36,7 @@ import {
 } from "./format";
 import { $isUnknownBlockNode } from "../nodes/UnknownBlockNode";
 import { $isImageNode } from "../nodes/ImageNode";
+import { $isCodeBlockNode } from "../nodes/CodeBlockNode";
 import { TO_MARKDOWN_EXTENSIONS, TO_MARKDOWN_OPTIONS } from "./options";
 
 // A loosely-typed mdast node under construction. The visitors build plain
@@ -237,6 +238,23 @@ const ImageVisitor: LexicalExportVisitor = {
   },
 };
 
+const CodeBlockVisitor: LexicalExportVisitor = {
+  testLexicalNode: $isCodeBlockNode,
+  visitLexicalNode: ({ lexicalNode, mdastParent, actions }) => {
+    if (!$isCodeBlockNode(lexicalNode)) return;
+    // A leaf mdast `code` node. `lang: null` for a lang-less fence; `meta` is the
+    // verbatim info string after the language. `fences: true` (options.ts) keeps
+    // this serializing as ``` rather than an indented block.
+    const language = lexicalNode.getLanguage();
+    actions.appendToParent(mdastParent, {
+      type: "code",
+      value: lexicalNode.getCode(),
+      lang: language === "" ? null : language,
+      meta: lexicalNode.getMeta(),
+    });
+  },
+};
+
 const TextVisitor: LexicalExportVisitor = {
   // Merge adjacent same-type inline wrappers so a run split across Lexical text
   // nodes serializes with a single marker pair.
@@ -309,6 +327,7 @@ const VISITORS: LexicalExportVisitor[] = [
   LineBreakVisitor,
   HorizontalRuleVisitor,
   UnknownBlockVisitor,
+  CodeBlockVisitor,
   TextVisitor,
 ];
 

@@ -30,3 +30,6 @@ npm-debug.log*
 
 # Hitch's own synced folder (the daemon manages this; never commit it)
 .hitch/
+
+# e2e screenshot output (never commit)
+desktop/e2e/shots/
