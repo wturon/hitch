@@ -272,6 +272,32 @@ describe("deriveTodoGroups — backlog order partition", () => {
     expect(paths(g.backlog)).toEqual(["tasks/a/task.md"]);
   });
 
+  it("duplicate present path in order renders once, at its first occurrence", () => {
+    // Legal state: slice 5's uncheck prepends [path, ...existingOrder] without
+    // pruning the stored array, so a completed-then-unchecked task can appear
+    // twice. First occurrence wins.
+    const a = task("a", {}, { updatedAt: 1 });
+    const b = task("b", {}, { updatedAt: 2 });
+    const order = [
+      "tasks/a/task.md", // unchecked → prepended
+      "tasks/b/task.md",
+      "tasks/a/task.md", // stale earlier entry of the same path
+    ];
+    const g = deriveTodoGroups([a, b], order);
+    expect(paths(g.backlog)).toEqual(["tasks/a/task.md", "tasks/b/task.md"]);
+  });
+
+  it("duplicate stale path in order stays a no-op", () => {
+    const a = task("a", {}, { updatedAt: 1 });
+    const order = [
+      "tasks/ghost/task.md",
+      "tasks/a/task.md",
+      "tasks/ghost/task.md", // duplicate of a path with no matching backlog row
+    ];
+    const g = deriveTodoGroups([a], order);
+    expect(paths(g.backlog)).toEqual(["tasks/a/task.md"]);
+  });
+
   it("empty order → pure updatedAt desc", () => {
     const a = task("a", {}, { updatedAt: 100 });
     const b = task("b", {}, { updatedAt: 300 });

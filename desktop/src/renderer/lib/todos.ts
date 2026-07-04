@@ -176,6 +176,8 @@ export function deriveTodoGroups(files: FileRow[], order: string[]): TodoGroups 
 // Backlog manual order: stable-partition into (a) paths present in `order`, kept
 // in `order`'s sequence (stale paths in `order` are ignored), then (b) absentees
 // — tasks not in `order`, e.g. agent-created — appended by updatedAt desc.
+// `order` can legally contain duplicate paths (uncheck prepends without pruning
+// the stored array), so each todo is emitted once, at its first occurrence.
 function sortBacklog(backlog: Todo[], order: string[]): Todo[] {
   const byPath = new Map(backlog.map((t) => [t.path, t]));
   const inOrder = new Set(order);
@@ -183,7 +185,10 @@ function sortBacklog(backlog: Todo[], order: string[]): Todo[] {
   const ordered: Todo[] = [];
   for (const path of order) {
     const todo = byPath.get(path);
-    if (todo) ordered.push(todo); // drops stale paths absent from the backlog
+    if (todo) {
+      ordered.push(todo); // stale paths absent from the backlog are dropped
+      byPath.delete(path); // dedupe: later occurrences of this path are no-ops
+    }
   }
   const absentees = backlog
     .filter((t) => !inOrder.has(t.path))
