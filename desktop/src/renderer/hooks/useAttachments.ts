@@ -166,8 +166,8 @@ export function useAttachments(ctx: AttachmentContext | undefined) {
     [generateUploadUrl, registerAttachment, reserveName],
   );
 
-  // MDXEditor image-plugin upload handler (clipboard paste). Returns just the
-  // relative path, which the plugin writes as the image `src`.
+  // Editor image upload handler (clipboard paste). Returns just the relative
+  // path, which the editor writes as the image `src`.
   const imageUploadHandler = useCallback(
     async (file: File): Promise<string> => {
       const up = await uploadOne(file, "pasted-image");
@@ -176,7 +176,7 @@ export function useAttachments(ctx: AttachmentContext | undefined) {
     [uploadOne],
   );
 
-  // MDXEditor image-plugin preview handler: resolve our stored relative `src`
+  // Editor image preview handler: resolve our stored relative `src`
   // to a signed Convex URL for inline display; pass anything else through.
   const imagePreviewHandler = useCallback(async (src: string): Promise<string> => {
     const c = ctxRef.current;

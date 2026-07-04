@@ -41,8 +41,8 @@ export interface TaskTarget {
 }
 
 // Raw = the honest full-file textarea (frontmatter + body, edited verbatim, and
-// the only place to edit frontmatter). Formatted = the friendly MDXEditor body
-// editor (symbol-free WYSIWYG). The choice is remembered globally.
+// the only place to edit frontmatter). Formatted = the friendly Lexical body
+// editor (@/editor, symbol-free WYSIWYG). The choice is remembered globally.
 type View = "raw" | "formatted";
 const VIEW_KEY = "hitch:task-view";
 
@@ -405,8 +405,8 @@ function TaskEditor({
   // with a body is left alone so reopening a real task doesn't grab focus.
   //
   // Runs once on mount — the editor is keyed per task, so a different task
-  // remounts this. Deferred a frame because the body editor is MDXEditor
-  // (Lexical mounts async) and the Dialog applies its own initial focus; by the
+  // remounts this. Deferred a frame because the body editor mounts Lexical
+  // asynchronously and the Dialog applies its own initial focus; by the
   // next frame both have settled and our focus call wins.
   useEffect(() => {
     if (view !== "formatted") return;
@@ -773,7 +773,7 @@ function TaskEditor({
         </div>
       )}
 
-      {/* In-flight upload feedback (MDXEditor shows nothing during upload). */}
+      {/* In-flight upload feedback (the editor shows nothing during upload). */}
       {attachments.uploading > 0 && (
         <div className="pointer-events-none absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-md border bg-background/90 px-2.5 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
           <LoaderCircle className="size-3.5 animate-spin" />

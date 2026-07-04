@@ -22,7 +22,7 @@ function rawTitle(content: string): string {
 // owns ONLY the document: the whole-file draft (frontmatter + body), the views
 // derived from it, the generic mutations that edit it, the dirty flag, and
 // adoption of external writes. It deliberately knows nothing about persistence
-// (Convex), any dialog's close policy, or MDXEditor.
+// (Convex), any dialog's close policy, or the editor component.
 //
 // This is the primitive-agnostic core shared by tasks and notes. Task-only
 // machinery (chat-* selectors, clearChat) layers on top in useTaskDraft.
