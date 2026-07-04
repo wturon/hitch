@@ -34,6 +34,7 @@ import type { Environment, Harness } from "./launchers/types.js";
 import type { ChatLifecycleStore, LocalChatRow } from "./chatLifecycleStore.js";
 import { createDebugApi, type DebugApi } from "./debugApi.js";
 import { ChatStateObserver } from "./observer/index.js";
+import { startSkillSync } from "./skills.js";
 
 if (!globalThis.WebSocket) {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
@@ -1802,10 +1803,27 @@ export async function startHitchDaemon(
     observer.start();
   }
 
+  // Skills are a per-machine derived index too: scan each hitched project's skill
+  // directories (the global ~/.claude|~/.codex roots plus the project's own
+  // .claude|.codex) and replace its `skills` rows on startup + every 5 minutes.
+  // Deliberately interval-driven, not watched — the daemon has a history of fd
+  // exhaustion from per-file watches. Non-fatal; failures are logged.
+  const skillSync = startSkillSync({
+    client,
+    deviceToken,
+    host,
+    projects: config.hitches.map((hitch) => ({
+      projectId: hitch.projectId,
+      localPath: hitch.localPath,
+    })),
+    logger,
+  });
+
   let stopped = false;
   async function stop(): Promise<void> {
     if (stopped) return;
     stopped = true;
+    skillSync.stop();
     await observer?.stop();
     await Promise.all(bindingHandles.map((binding) => binding.stop()));
     await closeCodexAppServer();

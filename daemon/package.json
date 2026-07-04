@@ -33,6 +33,7 @@
     "smoke:observer-derive": "tsx scripts/observer-derive-smoke.ts",
     "smoke:observer-tail": "tsx scripts/observer-tail-smoke.ts",
     "smoke:observer-store": "tsx scripts/observer-store-smoke.ts",
+    "smoke:skills": "tsx scripts/skills-smoke.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {
