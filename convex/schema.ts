@@ -152,6 +152,31 @@ export default defineSchema({
     .index("by_project", ["projectId"])
     .index("by_key", ["projectId", "hostname"]),
 
+  // Derived index of the agent skills installed on each machine (e.g.
+  // ~/.claude/skills/<name>/SKILL.md). The filesystem is the source of truth;
+  // the daemon scans skill directories on startup + on an interval and replaces
+  // this table's rows for its (projectId, host). The editor's slash menu reads
+  // it so users can autocomplete `/skill-name` into task/note bodies. One row
+  // per (project, host, skill-name); a skill installed for multiple harnesses is
+  // ONE row with several `installs`. Global skills get a row in every hitched
+  // project on that host.
+  skills: defineTable({
+    projectId: v.id("projects"),
+    host: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    installs: v.array(
+      v.object({
+        harness: v.string(), // "claude-code" | "codex"
+        scope: v.union(v.literal("global"), v.literal("project")),
+        path: v.string(),
+      }),
+    ),
+    updatedAt: v.number(),
+  })
+    .index("by_project", ["projectId"])
+    .index("by_key", ["projectId", "host", "name"]),
+
   // A queue of actions for daemons to run on the local machine — things the
   // browser can't do itself, like opening a terminal. The desktop UI enqueues a
   // command; the matching daemon (by project, optionally pinned to a host)
