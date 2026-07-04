@@ -28,10 +28,7 @@ import { noteBodyPath, noteSlug } from "@/lib/notes";
 import { uniqueSlug } from "@/lib/tasks";
 import { useFrontmatterDocument } from "@/hooks/useFrontmatterDocument";
 import { useAttachments } from "@/hooks/useAttachments";
-import {
-  MarkdownEditor,
-  type MarkdownEditorHandle,
-} from "@/components/MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import { NoteChatDock } from "@/components/NoteChatDock";
 import { Button } from "@/components/ui/button";
 import {
