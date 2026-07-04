@@ -264,4 +264,35 @@ describe("Escape", () => {
     });
     expect(previewCard()).toBeNull();
   });
+
+  it("stops the Escape that closed the popover from reaching window listeners", async () => {
+    // NotesView exits the note on a window-level Escape keydown. The Esc that
+    // dismisses the popover is spent — it must not ALSO exit the note. A second
+    // Esc (popover closed) must still bubble through.
+    render(
+      <MarkdownEditor value={"go [site](https://example.com) here\n"} onChange={() => {}} />,
+    );
+    const editor = getEditor();
+    await act(async () => {});
+    await caretIntoLink(editor);
+    expect(previewCard()).not.toBeNull();
+
+    const windowEsc = vi.fn();
+    window.addEventListener("keydown", windowEsc);
+    try {
+      const root = document.querySelector('[contenteditable="true"]')!;
+      await act(async () => {
+        fireEvent.keyDown(root, { key: "Escape" });
+      });
+      expect(previewCard()).toBeNull();
+      expect(windowEsc).not.toHaveBeenCalled();
+
+      await act(async () => {
+        fireEvent.keyDown(root, { key: "Escape" });
+      });
+      expect(windowEsc).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("keydown", windowEsc);
+    }
+  });
 });
