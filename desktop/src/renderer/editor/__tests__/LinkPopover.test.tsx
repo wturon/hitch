@@ -14,7 +14,9 @@ import { render, act, cleanup, fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   $getRoot,
+  $getSelection,
   $isElementNode,
+  $isRangeSelection,
   $isTextNode,
   $nodesOfType,
   KEY_ESCAPE_COMMAND,
@@ -202,7 +204,7 @@ describe("paste-to-link", () => {
     expect(readMarkdown(editor)).toContain("[pick me](https://dest.com)");
   });
 
-  it("does NOT wrap when the caret is collapsed (plain-text paste)", async () => {
+  it("inserts a self-labeled autolink at a collapsed caret, caret landing after it", async () => {
     render(<MarkdownEditor value={"hello\n"} onChange={() => {}} />);
     const editor = getEditor();
     await act(async () => {});
@@ -211,12 +213,40 @@ describe("paste-to-link", () => {
       editor.update(() => $getRoot().selectEnd(), { discrete: true });
     });
 
+    let claimed = false;
+    await act(async () => {
+      claimed = tryPasteLink(editor, "https://dest.com");
+    });
+    expect(claimed).toBe(true);
+    expect(readMarkdown(editor)).toContain("hello<https://dest.com>");
+
+    // The caret must sit AFTER the link: typing now must not extend it.
+    await act(async () => {
+      editor.update(
+        () => {
+          const sel = $getSelection();
+          if ($isRangeSelection(sel)) sel.insertText("x");
+        },
+        { discrete: true },
+      );
+    });
+    expect(readMarkdown(editor)).toContain("hello<https://dest.com>x");
+  });
+
+  it("does NOT claim a collapsed paste inside an existing link (no nested links)", async () => {
+    render(
+      <MarkdownEditor value={"go [site](https://old.com) here\n"} onChange={() => {}} />,
+    );
+    const editor = getEditor();
+    await act(async () => {});
+    await caretIntoLink(editor);
+
     let claimed = true;
     await act(async () => {
       claimed = tryPasteLink(editor, "https://dest.com");
     });
     expect(claimed).toBe(false);
-    expect(readMarkdown(editor)).not.toContain("](");
+    expect(readMarkdown(editor)).toContain("[site](https://old.com)");
   });
 
   it("does NOT wrap when the pasted text is not a single URL", async () => {

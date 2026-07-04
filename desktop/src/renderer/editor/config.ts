@@ -17,7 +17,13 @@ import {
   type ElementTransformer,
   type Transformer,
 } from "@lexical/markdown";
-import type { ElementNode, Klass, LexicalNode } from "lexical";
+import {
+  $createNodeSelection,
+  $setSelection,
+  type ElementNode,
+  type Klass,
+  type LexicalNode,
+} from "lexical";
 
 import { UnknownBlockNode } from "./nodes/UnknownBlockNode";
 import { ImageNode } from "./nodes/ImageNode";
@@ -82,8 +88,18 @@ export const CODE_BLOCK_TRANSFORMER: ElementTransformer = {
     const language = match[1] ?? "";
     const node = $createCodeBlockNode("", language, null);
     parentNode.replace(node);
-    // Typed (not imported) → focus the new block's textarea once it mounts.
-    if (!isImport) focusCodeBlockOnMount(node.getKey());
+    if (!isImport) {
+      // The caret was inside the paragraph we just replaced with a decorator
+      // (which can't host a text selection). Leaving the selection pointing at
+      // removed nodes makes Lexical throw "selection has been lost" and ROLL
+      // BACK the whole transform — the fence stays literal text. Park a
+      // NodeSelection on the block (same as Escape does), then hand DOM focus
+      // to its textarea once it mounts.
+      const selection = $createNodeSelection();
+      selection.add(node.getKey());
+      $setSelection(selection);
+      focusCodeBlockOnMount(node.getKey());
+    }
   },
   type: "element",
 };

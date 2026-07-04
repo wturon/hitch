@@ -24,6 +24,8 @@ import {
   $createTextNode,
   $createNodeSelection,
   $getRoot,
+  $getSelection,
+  $isRangeSelection,
   $nodesOfType,
   $setSelection,
   KEY_BACKSPACE_COMMAND,
@@ -455,6 +457,49 @@ describe("``` typing shortcut converts a paragraph to a code block", () => {
     );
     const md = editor.getEditorState().read(() => exportMarkdown());
     expect(md).toBe("```\n```\n");
+  });
+
+  it("fires through the REAL shortcut engine when ``` + space is typed", async () => {
+    // Regression: the direct-replace tests above never put the caret inside the
+    // paragraph being replaced. The real MarkdownShortcutPlugin does — and until
+    // replace() parked the selection on the new block, Lexical threw "selection
+    // has been lost" and rolled the whole transform back, so typing ``` +space
+    // left literal backticks in every real surface.
+    render(<MarkdownEditor value={"x\n"} onChange={() => {}} />);
+    const el = document.querySelector('[contenteditable="true"]');
+    const editor = (el as unknown as { __lexicalEditor: LexicalEditor })
+      .__lexicalEditor;
+    await act(async () => {});
+    // Fresh empty paragraph below the seed text, caret inside it.
+    await act(async () => {
+      editor.update(
+        () => {
+          $getRoot().getLastChild()!.selectEnd();
+          const sel = $getSelection();
+          if ($isRangeSelection(sel)) sel.insertParagraph();
+        },
+        { discrete: true },
+      );
+    });
+    await act(async () => {});
+
+    for (const ch of ["`", "`", "`", " "]) {
+      await act(async () => {
+        editor.update(
+          () => {
+            const sel = $getSelection();
+            if ($isRangeSelection(sel)) sel.insertText(ch);
+          },
+          { discrete: true },
+        );
+      });
+      await act(async () => {});
+    }
+
+    const types = editor
+      .getEditorState()
+      .read(() => $getRoot().getChildren().map((n) => n.getType()));
+    expect(types).toContain("code-block");
   });
 });
 
