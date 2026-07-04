@@ -1,10 +1,17 @@
 // End-to-end proof for the `/` menu's Skills section (Skills autocomplete v1),
-// PLUS the two UI fixes from fix/slash-menu-width-zindex:
+// PLUS the two UI fixes from fix/slash-menu-width-zindex, PLUS the two fixes
+// from fix/slash-menu-hyphen-and-order:
 //   - Fix 1 (width): the widened menu (min-w-[300px]/max-w-[400px]) doesn't
 //     truncate a moderately long skill name the way the old min-w-[220px] did.
 //   - Fix 2 (z-index): the menu paints ON TOP of a TaskDialog (a modal Base UI
 //     dialog) rather than behind it — the typeahead's anchor <div> now carries
 //     `anchorClassName="z-[90]"` (see SlashMenuPlugin.tsx).
+//   - Fix 3 (hyphen): typing a hyphen (e.g. `/be-` toward `be-concise`) no
+//     longer closes the menu — our hand-rolled `slashTriggerMatch` keeps
+//     matching through `-`/`_`, unlike upstream's trigger regex.
+//   - Fix 4 (order): the Skills section now renders ABOVE the block commands
+//     (they're used more often), so the flat keyboard-nav list is
+//     [...skills, ...commands] instead of the old [...commands, ...skills].
 //
 // The TaskDialog check runs FIRST (fresh boot lands on the Board), then the
 // script switches to the Editor Sandbox's "component" mode — the production
@@ -12,10 +19,13 @@
 // is exercisable without Convex/the daemon) — for the rest of the original
 // Skills-autocomplete assertions plus the width check. It verifies that
 // typing `/`:
-//   - shows the Skills section BELOW the block commands (both visible at once);
+//   - shows the Skills section ABOVE the block commands (both visible at once);
 //   - filters skills by the typed query alongside the block commands;
-//   - keyboard nav flows across the section boundary (ArrowDown from a block
-//     command into a skill);
+//   - a bare `/` preselects the first SKILL (not Heading 1 — intended, since
+//     skills now come first) and keyboard nav flows across the section
+//     boundary (ArrowDown past all the skills into the first block command);
+//   - typing a hyphenated query (`/be-`) keeps the menu open and filtered,
+//     rather than closing it;
 //   - accepting a skill inserts PLAIN TEXT `/skill-name ` into the editor.
 //
 // Run against a throwaway Vite on 5199 (NEVER 5173, the live app):
@@ -170,7 +180,7 @@ try {
   const headingRow = page.getByText("Heading 1", { exact: true });
   const beConciseRow = page.getByText("/be-concise", { exact: true });
   check("block commands present (Heading 1)", (await headingRow.count()) > 0);
-  check("Skills section present below commands", (await skillsHeader.count()) > 0);
+  check("Skills section present above commands", (await skillsHeader.count()) > 0);
   check("sample skill row present (/be-concise)", (await beConciseRow.count()) > 0);
   // Harness badges render on the skill rows.
   check("harness badges render (CC)", (await page.getByText("CC").count()) > 0);
@@ -213,10 +223,10 @@ try {
   });
 
   // --- Filter: typing "be" narrows to just the be-concise skill (no block
-  // command matches "be"), proving the shared query filters the skills section.
-  // (Hyphen-free prefix: the typeahead's trigger stops matching at a `-`, so a
-  // user filters by a contiguous non-hyphen prefix — exactly how autocomplete is
-  // meant to be used.) ---
+  // command matches "be"), proving the shared query filters the skills
+  // section. This is a hyphen-free prefix; the hyphenated case (`/be-`,
+  // continuing through the `-`) is its own check further down, since that's
+  // exactly the bug this branch fixes. ---
   await page.keyboard.type("be");
   await page.waitForTimeout(350);
   await shot(page, "skills-03-filtered.png");
@@ -229,9 +239,14 @@ try {
     (await page.getByText("Heading 1", { exact: true }).count()) === 0,
   );
 
-  // --- Back to the unfiltered menu, then prove keyboard nav flows across the
-  // section boundary: ArrowDown past all 8 block commands lands on the first
-  // skill (be-concise), and Enter accepts it. ---
+  // --- Back to the unfiltered menu. The typeahead re-preselects index 0 on
+  // every query change (LexicalMenu's own effect), and since skills now
+  // render FIRST, index 0 is a SKILL (be-concise) — not Heading 1, as it was
+  // before this change. Prove the new order two ways: (1) the re-preselected
+  // row is a skill, and (2) ArrowDown past all of SAMPLE_SKILLS (be-concise,
+  // code-review, deploy-check, scratch — 4 entries) lands on the first block
+  // command (Heading 1); the section-boundary crossing now runs
+  // skills→commands, the reverse of the old commands→skills direction. ---
   await page.keyboard.press("Backspace");
   await page.keyboard.press("Backspace");
   await page.waitForTimeout(300);
@@ -239,26 +254,69 @@ try {
     "backspacing restores the full menu (Heading 1 back)",
     (await page.getByText("Heading 1", { exact: true }).count()) > 0,
   );
-  for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowDown");
+  const preselected = await page.evaluate(() => {
+    const el = document.querySelector('[role="option"][aria-selected="true"]');
+    return el ? el.textContent ?? "" : "";
+  });
+  check(
+    "bare / preselects the first SKILL (be-concise), not Heading 1 — intended: skills render first now",
+    preselected.includes("/be-concise"),
+    `selected="${preselected}"`,
+  );
+  const SAMPLE_SKILL_COUNT = 4; // be-concise, code-review, deploy-check, scratch
+  for (let i = 0; i < SAMPLE_SKILL_COUNT; i++) await page.keyboard.press("ArrowDown");
   await page.waitForTimeout(200);
   const selectedText = await page.evaluate(() => {
     const el = document.querySelector('[role="option"][aria-selected="true"]');
     return el ? el.textContent ?? "" : "";
   });
-  log(`highlighted option after 8×ArrowDown: ${JSON.stringify(selectedText)}`);
+  log(`highlighted option after ${SAMPLE_SKILL_COUNT}×ArrowDown: ${JSON.stringify(selectedText)}`);
   check(
-    "ArrowDown crosses from commands into the skills section",
-    selectedText.includes("/be-concise"),
+    "ArrowDown crosses from the skills section into the block commands (lands on Heading 1)",
+    selectedText.includes("Heading 1"),
     `selected="${selectedText}"`,
   );
-  await page.keyboard.press("Enter");
+
+  // Heading 1 (a block command, not a skill) is highlighted here — don't
+  // accept it. Close the menu and drop the leftover bare "/" so the next
+  // check starts from a clean line.
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(150);
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(150);
+
+  // =========================================================================
+  // The bug fix under test: typing a hyphen must NOT close the menu. Skills
+  // are kebab-case (be-concise), and upstream's typeahead trigger regex
+  // treats `-` as punctuation that ends the match, so `/be-` used to close
+  // the whole dropdown mid-word (see `slashTriggerMatch` in
+  // SlashMenuPlugin.tsx). Type it, prove the menu survives the hyphen and
+  // still shows the be-concise row, then finish accepting it and prove the
+  // exact plain-text insertion.
+  // =========================================================================
+  await page.keyboard.press("Enter"); // fresh blank line
+  await page.waitForTimeout(150);
+  await page.keyboard.type("/be-");
+  await page.waitForTimeout(350);
+  await shot(page, "skills-05-hyphen-query.png");
+  const rowsAfterHyphen = await page.locator('[role="option"]').count();
+  check(
+    "typing a hyphen (/be-) keeps the menu open, not closed",
+    rowsAfterHyphen > 0,
+    `rows=${rowsAfterHyphen}`,
+  );
+  check(
+    "the be-concise row is still visible through the hyphen",
+    (await page.getByText("/be-concise", { exact: true }).count()) > 0,
+  );
+  await page.keyboard.press("Enter"); // accept the (sole, preselected) match
   await page.waitForTimeout(400);
-  await shot(page, "skills-04-inserted.png");
+  await shot(page, "skills-06-hyphen-accepted.png");
 
   const text = await editorText(page);
   log("---- editor text after accept ----\n" + text + "\n----------------------------------");
   check(
-    "accepting the skill inserts plain text /be-concise (with trailing space)",
+    "accepting after a hyphenated query inserts plain text /be-concise (trailing space)",
     text.includes("/be-concise "),
     text.includes("/be-concise ") ? "" : `editor text was: ${JSON.stringify(text)}`,
   );

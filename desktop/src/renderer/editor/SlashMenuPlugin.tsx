@@ -1,9 +1,10 @@
 // The `/` slash-command menu for the Hitch editor — a Notion-style block picker
 // that turns the current block into a heading/list/quote or drops in a divider,
-// without the user reaching for markdown syntax. Below the block commands it also
+// without the user reaching for markdown syntax. Above the block commands it also
 // offers a "Skills" section (the agent skills installed on the machine, fed in as
 // a prop) so users can autocomplete a `/skill-name` mention into the text as
-// PLAIN TEXT — no custom node, no serialization change.
+// PLAIN TEXT — no custom node, no serialization change. Skills render first
+// because they're used more often than the block transforms.
 //
 // Behavior is NOT ours: it rides `LexicalTypeaheadMenuPlugin`, which owns the
 // trigger detection, the query string, keyboard nav (↑/↓ wrap, Enter/Tab select,
@@ -30,7 +31,6 @@ import { createPortal } from "react-dom";
 import {
   LexicalTypeaheadMenuPlugin,
   MenuOption,
-  useBasicTypeaheadTriggerMatch,
 } from "@lexical/react/LexicalTypeaheadMenuPlugin";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { $createHorizontalRuleNode } from "@lexical/react/LexicalHorizontalRuleNode";
@@ -337,7 +337,7 @@ function harnessBadgeLabel(harness: string): string {
 type SlashOption = SlashMenuOption | SkillMenuOption;
 
 // One clickable row, shared by both sections. `globalIndex` is the option's
-// position in the typeahead's flat list (block commands first, then skills), so
+// position in the typeahead's flat list (skills first, then block commands), so
 // keyboard highlight and mouse highlight agree across the section boundary.
 // `stacked` switches the row from the block commands' single line (icon + title,
 // centered) to the skill rows' two lines (name+badges, then description) — see
@@ -392,8 +392,9 @@ function SlashMenuRow({
 // The dropdown itself — shadcn popover skin over the app's semantic tokens (so it
 // reads correctly in light and dark without hardcoded colors), NOT a shadcn/Radix
 // component: the typeahead plugin owns focus and keyboard, this only paints rows.
-// Block commands render first; the "Skills" section (name + dimmed description +
-// monochrome harness badges) renders below when there are matching skills.
+// The "Skills" section (name + dimmed description + monochrome harness badges)
+// renders FIRST when there are matching skills; block commands render below —
+// skills are used more often than the block transforms.
 export function SlashMenuList({
   commandOptions,
   skillOptions,
@@ -417,36 +418,13 @@ export function SlashMenuList({
     // `w-max` makes the box content-sized (shrink/grow-to-fit), and `min-w`/
     // `max-w` then clamp that to the [300, 400] range a long skill name needs.
     <div className="max-h-[min(320px,60vh)] w-max min-w-[300px] max-w-[400px] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md">
-      {commandOptions.map((option, i) => {
-        const Icon = option.spec.icon;
-        const active = i === selectedIndex;
-        return (
-          <SlashMenuRow
-            key={option.key}
-            globalIndex={i}
-            selectedIndex={selectedIndex}
-            setRefElement={(el) => option.setRefElement(el)}
-            selectOption={() => selectOption(option)}
-            setHighlightedIndex={setHighlightedIndex}
-          >
-            <Icon
-              className={cn(
-                "size-4 shrink-0",
-                active ? "text-accent-foreground" : "text-muted-foreground",
-              )}
-            />
-            <span className="truncate">{option.spec.title}</span>
-          </SlashMenuRow>
-        );
-      })}
-
       {skillOptions.length > 0 && (
         <>
           <div className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Skills
           </div>
-          {skillOptions.map((option, j) => {
-            const globalIndex = commandOptions.length + j;
+          {skillOptions.map((option, i) => {
+            const globalIndex = i;
             const active = globalIndex === selectedIndex;
             const { name, description, harnesses } = option.skill;
             return (
@@ -494,14 +472,82 @@ export function SlashMenuList({
           })}
         </>
       )}
+
+      {commandOptions.map((option, j) => {
+        // Offset by `skillOptions.length`: skills occupy the front of the flat
+        // typeahead list now, so a block command's global index (used for
+        // keyboard/mouse highlight, see `SlashMenuRow`) starts counting after
+        // them, not from 0.
+        const globalIndex = skillOptions.length + j;
+        const Icon = option.spec.icon;
+        const active = globalIndex === selectedIndex;
+        return (
+          <SlashMenuRow
+            key={option.key}
+            globalIndex={globalIndex}
+            selectedIndex={selectedIndex}
+            setRefElement={(el) => option.setRefElement(el)}
+            selectOption={() => selectOption(option)}
+            setHighlightedIndex={setHighlightedIndex}
+          >
+            <Icon
+              className={cn(
+                "size-4 shrink-0",
+                active ? "text-accent-foreground" : "text-muted-foreground",
+              )}
+            />
+            <span className="truncate">{option.spec.title}</span>
+          </SlashMenuRow>
+        );
+      })}
     </div>
   );
+}
+
+// Hand-transcribed twin of `useBasicTypeaheadTriggerMatch("/", { minLength: 0,
+// maxLength: 40 })` (@lexical/react/LexicalTypeaheadMenuPlugin.dev.mjs) — see the
+// deviation below. Upstream builds a NEGATED valid-query-character class,
+// `[^<trigger><PUNCTUATION>\s]` (exclude the trigger char, a fixed punctuation
+// set, and whitespace), and matches `(^|\s|\()(<trigger>(<validChars>{0,40}))$`
+// against the text up to the caret. Our skills are kebab-case (`be-concise`),
+// and upstream's punctuation set includes `-`, so the query stops matching at
+// the very first hyphen and the whole menu closes mid-word. We change ONLY the
+// valid-query-character class, to a POSITIVE class of exactly what a query can
+// contain — word chars plus hyphen (`[A-Za-z0-9_-]`) — since spaces are outside
+// that class either way, the menu still closes on a space. The lead conditions
+// (start of block / after whitespace / after `(`), `minLength: 0`, and
+// `maxLength: 40` are transcribed unchanged; they're baked in as constants
+// rather than left parameterized since this file only ever calls it one way.
+const SLASH_TRIGGER_MIN_LENGTH = 0;
+const SLASH_TRIGGER_MAX_LENGTH = 40;
+const SLASH_TRIGGER_REGEX = new RegExp(
+  `(^|\\s|\\()(/((?:[A-Za-z0-9_-]){0,${SLASH_TRIGGER_MAX_LENGTH}}))$`,
+);
+
+// Exported (like `filterSlashCommands`/`filterSkills`) so it can be unit-tested
+// directly as a pure string → match function, without a DOM or a real editor.
+export function slashTriggerMatch(
+  text: string,
+): { leadOffset: number; matchingString: string; replaceableString: string } | null {
+  const match = SLASH_TRIGGER_REGEX.exec(text);
+  if (match !== null) {
+    const maybeLeadingWhitespace = match[1];
+    const matchingString = match[3];
+    if (matchingString.length >= SLASH_TRIGGER_MIN_LENGTH) {
+      return {
+        leadOffset: match.index + maybeLeadingWhitespace.length,
+        matchingString,
+        replaceableString: match[2],
+      };
+    }
+  }
+  return null;
 }
 
 export function SlashMenuPlugin({
   skills = EMPTY_SKILLS,
 }: {
-  // The installed skills to offer below the block commands. Omitted / empty →
+  // The installed skills to offer above the block commands. Omitted / empty →
   // no Skills section, identical behavior to before this feature.
   skills?: ReadonlyArray<SkillMenuItem>;
 }) {
@@ -510,21 +556,26 @@ export function SlashMenuPlugin({
   const [query, setQuery] = useState<string | null>(null);
 
   // Trigger on `/` at the start of a block or after whitespace (the regex's
-  // `(^|\s|\()` prefix), matching up to 40 query chars. `minLength: 0` so a bare
-  // `/` opens the full menu before any filter text is typed.
-  const triggerFn = useBasicTypeaheadTriggerMatch("/", {
-    minLength: 0,
-    maxLength: 40,
-  });
+  // `(^|\s|\()` prefix), matching up to 40 query chars through hyphens and
+  // underscores (kebab-case skill names), stopping at a space. `minLength: 0`
+  // so a bare `/` opens the full menu before any filter text is typed. See
+  // `slashTriggerMatch`'s own comment for how/why this deviates from upstream's
+  // `useBasicTypeaheadTriggerMatch`. A plain module-level function (not a hook)
+  // — it has no dependencies to track, so it's passed straight through instead
+  // of re-wrapped in a `useCallback`.
+  const triggerFn = slashTriggerMatch;
 
-  // Two sections, one flat option list for the typeahead. Skills follow the
-  // block commands so keyboard nav (↑/↓/Enter, which the plugin drives off this
-  // array's order) reads block-commands-then-skills, matching the render order.
+  // Two sections, one flat option list for the typeahead. Skills come FIRST,
+  // ahead of the block commands, so keyboard nav (↑/↓/Enter, which the plugin
+  // drives off this array's order) reads skills-then-block-commands, matching
+  // the render order. Behavior note: with skills present, a bare `/` + Enter
+  // now selects the first SKILL (previously Heading 1) — intended, since
+  // skills are used more often than the block transforms.
   const { commandOptions, skillOptions, options } = useMemo(() => {
     const sections = buildSlashMenuSections(query ?? "", skills);
     return {
       ...sections,
-      options: [...sections.commandOptions, ...sections.skillOptions],
+      options: [...sections.skillOptions, ...sections.commandOptions],
     };
   }, [query, skills]);
 

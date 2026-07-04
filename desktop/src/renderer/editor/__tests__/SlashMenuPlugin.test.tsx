@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Tests for the slash-command menu. Two layers, no synthesized keystrokes:
+// Tests for the slash-command menu. Three layers, no synthesized keystrokes:
 //
 //   - `filterSlashCommands` is a pure function (query → visible commands), tested
 //     directly for title/keyword matches, case-insensitivity, and zero-match.
@@ -8,8 +8,12 @@
 //     the plugin's `onSelectOption` takes — on a real headless editor, then the
 //     resulting document is exported to markdown and asserted (marker present AND
 //     the `/query` trigger text gone).
+//   - `slashTriggerMatch` (our hand-rolled twin of upstream's
+//     `useBasicTypeaheadTriggerMatch`) is also a pure string → match function,
+//     tested directly — in particular that it keeps matching through hyphens
+//     (kebab-case skill names) while still ending the match at a space.
 //
-// The typeahead trigger/keyboard/anchor behavior itself belongs to
+// The rest of the typeahead's trigger/keyboard/anchor plumbing belongs to
 // `LexicalTypeaheadMenuPlugin` (upstream, tested there) and depends on real
 // selection/DOM-range events that jsdom does not faithfully dispatch — so it is
 // covered by the e2e harness run against the real app, not simulated here. See
@@ -35,6 +39,7 @@ import {
   buildSlashMenuSections,
   filterSkills,
   filterSlashCommands,
+  slashTriggerMatch,
   type SkillMenuItem,
   type SlashCommandSpec,
 } from "../SlashMenuPlugin";
@@ -90,6 +95,96 @@ describe("filterSlashCommands", () => {
 
   it("returns [] on zero matches", () => {
     expect(filterSlashCommands("zzz")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// slashTriggerMatch — our hand-rolled twin of upstream's
+// useBasicTypeaheadTriggerMatch("/", { minLength: 0, maxLength: 40 })
+// ---------------------------------------------------------------------------
+describe("slashTriggerMatch", () => {
+  it("matches a bare trigger (minLength: 0 — the full menu, no filter yet)", () => {
+    expect(slashTriggerMatch("/")).toEqual({
+      leadOffset: 0,
+      matchingString: "",
+      replaceableString: "/",
+    });
+  });
+
+  it("keeps matching through hyphens — the bug: kebab-case skill names", () => {
+    // This is the regression: upstream's punctuation set includes `-`, so
+    // typing the hyphen in `/be-` used to fail the match and close the menu.
+    expect(slashTriggerMatch("/be-")).toEqual({
+      leadOffset: 0,
+      matchingString: "be-",
+      replaceableString: "/be-",
+    });
+    expect(slashTriggerMatch("/be-concise")).toEqual({
+      leadOffset: 0,
+      matchingString: "be-concise",
+      replaceableString: "/be-concise",
+    });
+  });
+
+  it("also matches underscores, alongside plain word characters", () => {
+    expect(slashTriggerMatch("/foo_bar1")).toEqual({
+      leadOffset: 0,
+      matchingString: "foo_bar1",
+      replaceableString: "/foo_bar1",
+    });
+  });
+
+  it("still ends the match at a space, closing the menu", () => {
+    // A trailing space right after a hyphenated query...
+    expect(slashTriggerMatch("/be-concise ")).toBeNull();
+    // ...and a space anywhere between the trigger and the caret, even without
+    // a hyphen involved.
+    expect(slashTriggerMatch("/be con")).toBeNull();
+  });
+
+  it("triggers at the start of the text", () => {
+    expect(slashTriggerMatch("/h1")).toEqual({
+      leadOffset: 0,
+      matchingString: "h1",
+      replaceableString: "/h1",
+    });
+  });
+
+  it("triggers after whitespace, with leadOffset at the trigger itself", () => {
+    // "hello /wor": the leading space is consumed by the lead group but is not
+    // part of leadOffset — leadOffset points at the "/" (index 6).
+    expect(slashTriggerMatch("hello /wor")).toEqual({
+      leadOffset: 6,
+      matchingString: "wor",
+      replaceableString: "/wor",
+    });
+  });
+
+  it("triggers after an opening paren", () => {
+    expect(slashTriggerMatch("(/x")).toEqual({
+      leadOffset: 1,
+      matchingString: "x",
+      replaceableString: "/x",
+    });
+  });
+
+  it("does not trigger when the slash isn't at a valid lead position", () => {
+    // "/" preceded by a plain letter — not start-of-text, whitespace, or "(".
+    expect(slashTriggerMatch("a/b")).toBeNull();
+  });
+
+  it("caps the query at 40 characters, same as upstream's maxLength", () => {
+    const forty = "a".repeat(40);
+    const fortyOne = "a".repeat(41);
+    expect(slashTriggerMatch(`/${forty}`)).toEqual({
+      leadOffset: 0,
+      matchingString: forty,
+      replaceableString: `/${forty}`,
+    });
+    // One character past the cap: the regex can no longer reach the end of
+    // the string within the {0,40} repetition, so the whole match fails
+    // (same "too long, menu just closes" behavior as upstream).
+    expect(slashTriggerMatch(`/${fortyOne}`)).toBeNull();
   });
 });
 
@@ -332,6 +427,76 @@ describe("SlashMenuList skills section", () => {
     expect(screen.queryByText("Skills")).toBeNull();
     // The block commands still render as before.
     expect(screen.getByText("Heading 1")).toBeTruthy();
+  });
+
+  // Skills are used more than the block transforms, so they render ABOVE them
+  // now (previously below) — assert DOM order directly rather than relying on
+  // visual inspection.
+  it("renders the Skills section before the block commands", () => {
+    renderList(SKILLS);
+    const skillsHeader = screen.getByText("Skills");
+    const heading1 = screen.getByText("Heading 1");
+    // DOCUMENT_POSITION_FOLLOWING on the Heading-1 side means `heading1` comes
+    // AFTER `skillsHeader` in the document — i.e. Skills is first.
+    expect(
+      skillsHeader.compareDocumentPosition(heading1) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  // The typeahead drives ↑/↓/Enter off the flat option array's order, which
+  // `SlashMenuPlugin` now builds as [...skills, ...commands]; `SlashMenuList`
+  // mirrors that in its `globalIndex` math (`skillOptions.length + j` for
+  // block commands). These two tests pin that offset from the render side:
+  // keyboard/mouse highlight (`aria-selected`) must agree with the new order.
+  it("selectedIndex 0 highlights the first SKILL, not the first block command", () => {
+    const { commandOptions, skillOptions } = buildSlashMenuSections("", SKILLS);
+    render(
+      <SlashMenuList
+        commandOptions={commandOptions}
+        skillOptions={skillOptions}
+        selectedIndex={0}
+        selectOption={() => {}}
+        setHighlightedIndex={() => {}}
+      />,
+    );
+    expect(
+      screen
+        .getByText("/be-concise")
+        .closest('[role="option"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByText("Heading 1")
+        .closest('[role="option"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("false");
+  });
+
+  it("selectedIndex === skillOptions.length highlights the first block command", () => {
+    const { commandOptions, skillOptions } = buildSlashMenuSections("", SKILLS);
+    render(
+      <SlashMenuList
+        commandOptions={commandOptions}
+        skillOptions={skillOptions}
+        selectedIndex={skillOptions.length}
+        selectOption={() => {}}
+        setHighlightedIndex={() => {}}
+      />,
+    );
+    expect(
+      screen
+        .getByText("Heading 1")
+        .closest('[role="option"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByText("/be-concise")
+        .closest('[role="option"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("false");
   });
 
   it("lays out a skill row as two lines: name+badges on line 1, description on line 2", () => {
