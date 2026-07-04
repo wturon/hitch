@@ -28,6 +28,7 @@ import { noteBodyPath, noteSlug } from "@/lib/notes";
 import { uniqueSlug } from "@/lib/tasks";
 import { useFrontmatterDocument } from "@/hooks/useFrontmatterDocument";
 import { useAttachments } from "@/hooks/useAttachments";
+import { useSkills } from "@/hooks/useSkills";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import { NoteChatDock } from "@/components/NoteChatDock";
 import { Button } from "@/components/ui/button";
@@ -835,6 +836,8 @@ function NoteEditor({
 }) {
   const draft = useFrontmatterDocument(content);
   const attachments = useAttachments({ projectId, slug, base: "notes" });
+  // Installed skills for the `/` menu's Skills section (see useSkills).
+  const skills = useSkills(projectId);
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
   const editorRef = useRef<MarkdownEditorHandle>(null);
@@ -1242,6 +1245,7 @@ function NoteEditor({
                 imagePreviewHandler={
                   attachments.enabled ? attachments.imagePreviewHandler : undefined
                 }
+                skills={skills}
               />
             </>
           ) : (

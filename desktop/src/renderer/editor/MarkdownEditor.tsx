@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 import { importMarkdown } from "./bridge";
 import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { ControlledMarkdownPlugin } from "./ControlledMarkdownPlugin";
-import { SlashMenuPlugin } from "./SlashMenuPlugin";
+import { SlashMenuPlugin, type SkillMenuItem } from "./SlashMenuPlugin";
 import { PasteImagePlugin } from "./PasteImagePlugin";
 import { PasteLinkPlugin } from "./PasteLinkPlugin";
 import { LinkPopoverPlugin } from "./LinkPopoverPlugin";
@@ -59,6 +59,10 @@ export interface MarkdownEditorProps {
   // supplied by the parent via useAttachments; file *drop* is handled upstream.
   imageUploadHandler?: (file: File) => Promise<string>;
   imagePreviewHandler?: (src: string) => Promise<string>;
+  // Agent skills to offer in the `/` menu's Skills section. Fetched by the app
+  // surface (TaskDialog/NotesView via useSkills) and passed down so the editor
+  // stays Convex-free. Omitted / empty → no Skills section, zero behavior change.
+  skills?: ReadonlyArray<SkillMenuItem>;
 }
 
 // The composed editor body. Rendered inside the LexicalComposer so its plugins
@@ -71,9 +75,17 @@ const EditorBody = forwardRef<
     placeholder?: string;
     imageUploadHandler?: (file: File) => Promise<string>;
     imagePreviewHandler?: (src: string) => Promise<string>;
+    skills?: ReadonlyArray<SkillMenuItem>;
   }
 >(function EditorBody(
-  { value, onChange, placeholder, imageUploadHandler, imagePreviewHandler },
+  {
+    value,
+    onChange,
+    placeholder,
+    imageUploadHandler,
+    imagePreviewHandler,
+    skills,
+  },
   ref,
 ) {
   const [editor] = useLexicalComposerContext();
@@ -144,9 +156,10 @@ const EditorBody = forwardRef<
       <TabIndentationPlugin />
       {/* Wires the INSERT_HORIZONTAL_RULE command for `---`. */}
       <HorizontalRulePlugin />
-      {/* `/` block picker — headings, lists, quote, divider. Rides the typeahead
-          menu plugin; renders its dropdown into a caret-anchored portal. */}
-      <SlashMenuPlugin />
+      {/* `/` block picker — headings, lists, quote, divider, plus a Skills
+          section fed by the `skills` prop. Rides the typeahead menu plugin;
+          renders its dropdown into a caret-anchored portal. */}
+      <SlashMenuPlugin skills={skills} />
       {/* Turns `# `, `- `, `> `, `**bold**`, `[text](url)` etc. into real nodes
           as you type, using our code-free transformer set. */}
       <MarkdownShortcutPlugin transformers={MARKDOWN_TRANSFORMERS} />
@@ -180,6 +193,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       className,
       imageUploadHandler,
       imagePreviewHandler,
+      skills,
     },
     ref,
   ) {
@@ -215,6 +229,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
             placeholder={placeholder}
             imageUploadHandler={imageUploadHandler}
             imagePreviewHandler={imagePreviewHandler}
+            skills={skills}
           />
         </LexicalComposer>
       </div>

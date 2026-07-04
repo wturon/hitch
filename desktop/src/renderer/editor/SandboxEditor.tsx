@@ -27,7 +27,29 @@ import type { EditorState } from "lexical";
 import { exportMarkdown, importMarkdown } from "./bridge";
 import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./MarkdownEditor";
-import { SlashMenuPlugin } from "./SlashMenuPlugin";
+import { SlashMenuPlugin, type SkillMenuItem } from "./SlashMenuPlugin";
+
+// Hardcoded skills so the `/` menu's Skills section is exercisable here without
+// Convex/the daemon (in the real app they come from useSkills). Deliberately
+// mixed: multi-harness, single-harness, and a no-description entry.
+const SAMPLE_SKILLS: SkillMenuItem[] = [
+  {
+    name: "be-concise",
+    description: "Trim replies to the essential — no preamble, no filler",
+    harnesses: ["claude-code", "codex"],
+  },
+  {
+    name: "code-review",
+    description: "Review the diff for correctness and cleanup opportunities",
+    harnesses: ["claude-code"],
+  },
+  {
+    name: "deploy-check",
+    description: "Verify a change end-to-end before shipping",
+    harnesses: ["codex"],
+  },
+  { name: "scratch", harnesses: ["claude-code"] },
+];
 
 const initialConfig = {
   namespace: "hitch-editor-sandbox",
@@ -137,8 +159,9 @@ function VanillaSandbox() {
                 for the HorizontalRuleNode registered above (`---`). */}
             <HorizontalRulePlugin />
             {/* `/` block picker — the same slash menu the production editor
-                mounts, so it can be exercised here in the raw playground. */}
-            <SlashMenuPlugin />
+                mounts, so it can be exercised here in the raw playground. Fed the
+                sample skills so the Skills section shows without Convex. */}
+            <SlashMenuPlugin skills={SAMPLE_SKILLS} />
             </div>
           </div>
           {/* Right column: EditorState inspector on top, live markdown below. */}
@@ -436,6 +459,7 @@ Paste an image from your clipboard to upload + insert it inline.
             placeholder="Start typing…"
             imageUploadHandler={imageUploadHandler}
             imagePreviewHandler={imagePreviewHandler}
+            skills={SAMPLE_SKILLS}
           />
         </div>
       </div>

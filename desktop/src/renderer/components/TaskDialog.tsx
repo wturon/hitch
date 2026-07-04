@@ -21,6 +21,7 @@ import { sha256 } from "@/lib/hash";
 import { useTaskDraft } from "@/hooks/useTaskDraft";
 import { useTaskPersistence } from "@/hooks/useTaskPersistence";
 import { useAttachments } from "@/hooks/useAttachments";
+import { useSkills } from "@/hooks/useSkills";
 import { DelegationBand } from "@/components/DelegationBand";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -183,6 +184,10 @@ function TaskEditor({
   // eager commit (below) can upload against the just-created slug.
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
+
+  // Installed skills for the `/` menu's Skills section — a derived Convex index
+  // the daemon fills; empty while loading or when there are none.
+  const skills = useSkills(task.projectId);
 
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
@@ -725,6 +730,7 @@ function TaskEditor({
                   ? attachments.imagePreviewHandler
                   : undefined
               }
+              skills={skills}
             />
           </>
         ) : (

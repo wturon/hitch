@@ -1,6 +1,9 @@
 // The `/` slash-command menu for the Hitch editor — a Notion-style block picker
 // that turns the current block into a heading/list/quote or drops in a divider,
-// without the user reaching for markdown syntax.
+// without the user reaching for markdown syntax. Below the block commands it also
+// offers a "Skills" section (the agent skills installed on the machine, fed in as
+// a prop) so users can autocomplete a `/skill-name` mention into the text as
+// PLAIN TEXT — no custom node, no serialization change.
 //
 // Behavior is NOT ours: it rides `LexicalTypeaheadMenuPlugin`, which owns the
 // trigger detection, the query string, keyboard nav (↑/↓ wrap, Enter/Tab select,
@@ -15,7 +18,13 @@
 // unit-tested without a DOM; the plugin component itself stays internal
 // (MarkdownEditor / the sandbox compose it — see index.ts, which does NOT
 // re-export it).
-import { useCallback, useMemo, useState, type ComponentType } from "react";
+import {
+  useCallback,
+  useMemo,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 
 import {
@@ -34,6 +43,7 @@ import { $setBlocksType } from "@lexical/selection";
 import { $insertNodeToNearestRoot } from "@lexical/utils";
 import {
   $createParagraphNode,
+  $createTextNode,
   $getSelection,
   $isParagraphNode,
   $isRangeSelection,
@@ -71,6 +81,17 @@ export interface SlashCommandSpec {
   // case folding of the (fixed) keyword set.
   keywords: string[];
   run: (editor: LexicalEditor) => void;
+}
+
+// One installed skill offered in the menu. Shaped by the app layer
+// (hooks/useSkills.ts) and passed into `MarkdownEditor` as a prop — the editor
+// stays Convex-free and knows nothing about where these come from. `harnesses`
+// is the set of agents the skill is installed for (e.g. "claude-code", "codex"),
+// rendered as small badges on the row's right edge.
+export interface SkillMenuItem {
+  name: string;
+  description?: string;
+  harnesses: ReadonlyArray<string>;
 }
 
 // Retarget the block(s) touched by the current selection to a fresh element of
@@ -193,6 +214,19 @@ export function filterSlashCommands(
   );
 }
 
+// Pure query → visible-skills filter (exported for unit tests). Mirrors
+// `filterSlashCommands`: case-insensitive substring, empty query shows all. Only
+// the skill name is matched (there are no keywords to fold), so behavior lines up
+// with the block commands the user is filtering in the same keystroke.
+export function filterSkills(
+  query: string,
+  skills: ReadonlyArray<SkillMenuItem>,
+): SkillMenuItem[] {
+  const q = query.trim().toLowerCase();
+  if (q === "") return [...skills];
+  return skills.filter((s) => s.name.toLowerCase().includes(q));
+}
+
 // The core of choosing a command: remove the `/query` text node the typeahead
 // split off, then run the action. MUST be called inside an active `editor.update`
 // — the typeahead opens one before invoking `onSelectOption`, and reusing it (not
@@ -217,6 +251,39 @@ export function applySlashCommand(
   editor.update(() => runSlashCommand(editor, spec, nodeToRemove));
 }
 
+// Choosing a skill: unlike a block command, this doesn't transform the block — it
+// replaces the split-off `/query` node with plain text `/name ` (trailing space)
+// so the mention stays byte-plain markdown with no custom node. Same in-place-
+// update contract as `runSlashCommand`. When there's no split node (defensive —
+// the typeahead always provides one), fall back to inserting at the selection.
+function runSkillInsert(
+  editor: LexicalEditor,
+  skill: SkillMenuItem,
+  nodeToRemove: TextNode | null,
+): void {
+  const text = `/${skill.name} `;
+  if (nodeToRemove) {
+    const replacement = $createTextNode(text);
+    nodeToRemove.replace(replacement);
+    replacement.selectEnd();
+    return;
+  }
+  const selection = $getSelection();
+  if ($isRangeSelection(selection)) {
+    selection.insertText(text);
+  }
+}
+
+// Test-only convenience: `runSkillInsert` wrapped in its own update, mirroring
+// `applySlashCommand`.
+export function applySkillInsert(
+  editor: LexicalEditor,
+  skill: SkillMenuItem,
+  nodeToRemove: TextNode | null,
+): void {
+  editor.update(() => runSkillInsert(editor, skill, nodeToRemove));
+}
+
 // The typeahead `MenuOption` (its key + ref bookkeeping) paired with our command
 // spec. A fresh set is minted per query so the plugin re-indexes highlight state.
 class SlashMenuOption extends MenuOption {
@@ -225,48 +292,128 @@ class SlashMenuOption extends MenuOption {
   }
 }
 
+// The skill-section twin of `SlashMenuOption`. Key is namespaced so it can never
+// collide with a block command's key when both sets share the typeahead's flat
+// option list.
+class SkillMenuOption extends MenuOption {
+  constructor(readonly skill: SkillMenuItem) {
+    super(`skill:${skill.name}`);
+  }
+}
+
+// Both sections share the typeahead's single option array (keyboard nav flows
+// across them as one list); the split into command/skill options is only a
+// rendering concern. Built pure so unit tests can assert section membership
+// without a DOM: no skills → empty `skillOptions` → the plugin renders no Skills
+// section (zero behavior change from before this feature).
+export function buildSlashMenuSections(
+  query: string,
+  skills: ReadonlyArray<SkillMenuItem>,
+): { commandOptions: SlashMenuOption[]; skillOptions: SkillMenuOption[] } {
+  return {
+    commandOptions: filterSlashCommands(query).map(
+      (spec) => new SlashMenuOption(spec),
+    ),
+    skillOptions: filterSkills(query, skills).map(
+      (skill) => new SkillMenuOption(skill),
+    ),
+  };
+}
+
+// Two-letter monochrome glyph per harness for the row's badges. Kept as quiet
+// text (not the app's colored harness SVGs) so the menu stays monochrome and the
+// editor owns no app assets — see the file header on the ownership split.
+const HARNESS_BADGE_LABELS: Record<string, string> = {
+  "claude-code": "CC",
+  codex: "CX",
+};
+
+function harnessBadgeLabel(harness: string): string {
+  return HARNESS_BADGE_LABELS[harness] ?? harness.slice(0, 2).toUpperCase();
+}
+
+// The union the typeahead nav treats as one flat list; rendering splits it back
+// into its two sections.
+type SlashOption = SlashMenuOption | SkillMenuOption;
+
+// One clickable row, shared by both sections. `globalIndex` is the option's
+// position in the typeahead's flat list (block commands first, then skills), so
+// keyboard highlight and mouse highlight agree across the section boundary.
+function SlashMenuRow({
+  globalIndex,
+  selectedIndex,
+  setRefElement,
+  selectOption,
+  setHighlightedIndex,
+  children,
+}: {
+  globalIndex: number;
+  selectedIndex: number | null;
+  setRefElement: (el: HTMLElement | null) => void;
+  selectOption: () => void;
+  setHighlightedIndex: (index: number) => void;
+  children: ReactNode;
+}) {
+  const active = globalIndex === selectedIndex;
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={active}
+      ref={(el) => setRefElement(el)}
+      // Keep the click from blurring the editor / collapsing the selection
+      // before `onClick` fires — the caret must stay put for the transform,
+      // so focus never leaves the contenteditable.
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={selectOption}
+      // Highlight on mouse MOVEMENT, not enter: the menu opens under the
+      // stationary cursor, and Chromium re-hit-tests on layout change —
+      // an onMouseEnter would steal the keyboard preselection (row 0)
+      // without the user touching the mouse. cmdk does the same.
+      onMouseMove={() => {
+        if (globalIndex !== selectedIndex) setHighlightedIndex(globalIndex);
+      }}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]",
+        active ? "bg-accent text-accent-foreground" : "text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 // The dropdown itself — shadcn popover skin over the app's semantic tokens (so it
 // reads correctly in light and dark without hardcoded colors), NOT a shadcn/Radix
 // component: the typeahead plugin owns focus and keyboard, this only paints rows.
-function SlashMenuList({
-  options,
+// Block commands render first; the "Skills" section (name + dimmed description +
+// monochrome harness badges) renders below when there are matching skills.
+export function SlashMenuList({
+  commandOptions,
+  skillOptions,
   selectedIndex,
   selectOption,
   setHighlightedIndex,
 }: {
-  options: SlashMenuOption[];
+  commandOptions: SlashMenuOption[];
+  skillOptions: SkillMenuOption[];
   selectedIndex: number | null;
-  selectOption: (option: SlashMenuOption) => void;
+  selectOption: (option: SlashOption) => void;
   setHighlightedIndex: (index: number) => void;
 }) {
   return (
     <div className="max-h-[min(320px,60vh)] min-w-[220px] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md">
-      {options.map((option, i) => {
+      {commandOptions.map((option, i) => {
         const Icon = option.spec.icon;
         const active = i === selectedIndex;
         return (
-          <button
+          <SlashMenuRow
             key={option.key}
-            type="button"
-            role="option"
-            aria-selected={active}
-            ref={(el) => option.setRefElement(el)}
-            // Keep the click from blurring the editor / collapsing the selection
-            // before `onClick` fires — the caret must stay put for the transform,
-            // so focus never leaves the contenteditable.
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => selectOption(option)}
-            // Highlight on mouse MOVEMENT, not enter: the menu opens under the
-            // stationary cursor, and Chromium re-hit-tests on layout change —
-            // an onMouseEnter would steal the keyboard preselection (row 0)
-            // without the user touching the mouse. cmdk does the same.
-            onMouseMove={() => {
-              if (i !== selectedIndex) setHighlightedIndex(i);
-            }}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]",
-              active ? "bg-accent text-accent-foreground" : "text-foreground",
-            )}
+            globalIndex={i}
+            selectedIndex={selectedIndex}
+            setRefElement={(el) => option.setRefElement(el)}
+            selectOption={() => selectOption(option)}
+            setHighlightedIndex={setHighlightedIndex}
           >
             <Icon
               className={cn(
@@ -275,14 +422,67 @@ function SlashMenuList({
               )}
             />
             <span className="truncate">{option.spec.title}</span>
-          </button>
+          </SlashMenuRow>
         );
       })}
+
+      {skillOptions.length > 0 && (
+        <>
+          <div className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Skills
+          </div>
+          {skillOptions.map((option, j) => {
+            const globalIndex = commandOptions.length + j;
+            const active = globalIndex === selectedIndex;
+            const { name, description, harnesses } = option.skill;
+            return (
+              <SlashMenuRow
+                key={option.key}
+                globalIndex={globalIndex}
+                selectedIndex={selectedIndex}
+                setRefElement={(el) => option.setRefElement(el)}
+                selectOption={() => selectOption(option)}
+                setHighlightedIndex={setHighlightedIndex}
+              >
+                <span className="truncate">/{name}</span>
+                {description ? (
+                  <span
+                    className={cn(
+                      "truncate text-[12px]",
+                      active
+                        ? "text-accent-foreground/80"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {description}
+                  </span>
+                ) : null}
+                <span className="ml-auto flex shrink-0 items-center gap-1">
+                  {harnesses.map((harness) => (
+                    <span
+                      key={harness}
+                      className="rounded border border-border px-1 text-[10px] font-medium leading-4 text-muted-foreground"
+                    >
+                      {harnessBadgeLabel(harness)}
+                    </span>
+                  ))}
+                </span>
+              </SlashMenuRow>
+            );
+          })}
+        </>
+      )}
     </div>
   );
 }
 
-export function SlashMenuPlugin() {
+export function SlashMenuPlugin({
+  skills = EMPTY_SKILLS,
+}: {
+  // The installed skills to offer below the block commands. Omitted / empty →
+  // no Skills section, identical behavior to before this feature.
+  skills?: ReadonlyArray<SkillMenuItem>;
+}) {
   const [editor] = useLexicalComposerContext();
   // The live query (text after `/`); `null` when the menu is closed.
   const [query, setQuery] = useState<string | null>(null);
@@ -295,15 +495,20 @@ export function SlashMenuPlugin() {
     maxLength: 40,
   });
 
-  const options = useMemo(
-    () =>
-      filterSlashCommands(query ?? "").map((spec) => new SlashMenuOption(spec)),
-    [query],
-  );
+  // Two sections, one flat option list for the typeahead. Skills follow the
+  // block commands so keyboard nav (↑/↓/Enter, which the plugin drives off this
+  // array's order) reads block-commands-then-skills, matching the render order.
+  const { commandOptions, skillOptions, options } = useMemo(() => {
+    const sections = buildSlashMenuSections(query ?? "", skills);
+    return {
+      ...sections,
+      options: [...sections.commandOptions, ...sections.skillOptions],
+    };
+  }, [query, skills]);
 
   const onSelectOption = useCallback(
     (
-      option: SlashMenuOption,
+      option: SlashOption,
       nodeToRemove: TextNode | null,
       closeMenu: () => void,
     ) => {
@@ -311,14 +516,18 @@ export function SlashMenuPlugin() {
       // callback (right after splitting off `nodeToRemove`) — mutate directly.
       // Nesting another `editor.update` here would queue it behind this one and
       // strand the split query node (see runSlashCommand's contract).
-      runSlashCommand(editor, option.spec, nodeToRemove);
+      if (option instanceof SkillMenuOption) {
+        runSkillInsert(editor, option.skill, nodeToRemove);
+      } else {
+        runSlashCommand(editor, option.spec, nodeToRemove);
+      }
       closeMenu();
     },
     [editor],
   );
 
   return (
-    <LexicalTypeaheadMenuPlugin<SlashMenuOption>
+    <LexicalTypeaheadMenuPlugin<SlashOption>
       options={options}
       onQueryChange={setQuery}
       onSelectOption={onSelectOption}
@@ -334,7 +543,8 @@ export function SlashMenuPlugin() {
           ? null
           : createPortal(
               <SlashMenuList
-                options={options}
+                commandOptions={commandOptions}
+                skillOptions={skillOptions}
                 selectedIndex={selectedIndex}
                 selectOption={selectOptionAndCleanUp}
                 setHighlightedIndex={setHighlightedIndex}
@@ -345,3 +555,7 @@ export function SlashMenuPlugin() {
     />
   );
 }
+
+// Stable identity for the default so `SlashMenuPlugin`'s `skills` memo doesn't
+// re-run every render when a parent omits the prop.
+const EMPTY_SKILLS: ReadonlyArray<SkillMenuItem> = [];
