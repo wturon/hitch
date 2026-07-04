@@ -22,14 +22,20 @@ import {
   $getRoot,
   type LexicalEditor,
 } from "lexical";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { EDITOR_NODES } from "../config";
 import { exportMarkdown } from "../bridge";
 import {
   SLASH_COMMANDS,
+  SlashMenuList,
+  applySkillInsert,
   applySlashCommand,
+  buildSlashMenuSections,
+  filterSkills,
   filterSlashCommands,
+  type SkillMenuItem,
   type SlashCommandSpec,
 } from "../SlashMenuPlugin";
 
@@ -178,5 +184,153 @@ describe("slash command actions preserve surviving block text", () => {
     const md = runOnBlock("ul", { leading: "item ", query: "/ul" });
     expect(md).toMatch(/^-\s+item/);
     expect(md).not.toContain("/ul");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Skills section — filter, section building, insert action, and rendering
+// ---------------------------------------------------------------------------
+const SKILLS: SkillMenuItem[] = [
+  {
+    name: "be-concise",
+    description: "Trim replies to the essential",
+    harnesses: ["claude-code", "codex"],
+  },
+  { name: "code-review", description: "Review the diff", harnesses: ["claude-code"] },
+  { name: "deploy-check", harnesses: ["codex"] },
+];
+
+describe("filterSkills", () => {
+  const names = (skills: SkillMenuItem[]) => skills.map((s) => s.name);
+
+  it("returns the full set for an empty or whitespace query", () => {
+    expect(filterSkills("", SKILLS)).toHaveLength(SKILLS.length);
+    expect(filterSkills("   ", SKILLS)).toHaveLength(SKILLS.length);
+  });
+
+  it("matches on name substring, case-insensitively", () => {
+    expect(names(filterSkills("con", SKILLS))).toEqual(["be-concise"]);
+    expect(names(filterSkills("CODE", SKILLS))).toEqual(["code-review"]);
+  });
+
+  it("returns [] on zero matches", () => {
+    expect(filterSkills("zzz", SKILLS)).toEqual([]);
+  });
+});
+
+describe("buildSlashMenuSections", () => {
+  it("omits the skills section entirely when no skills are supplied", () => {
+    const { commandOptions, skillOptions } = buildSlashMenuSections("", []);
+    expect(commandOptions).toHaveLength(SLASH_COMMANDS.length);
+    expect(skillOptions).toEqual([]);
+  });
+
+  it("surfaces matching skills alongside the block commands", () => {
+    const { commandOptions, skillOptions } = buildSlashMenuSections("", SKILLS);
+    expect(commandOptions).toHaveLength(SLASH_COMMANDS.length);
+    expect(skillOptions.map((o) => o.skill.name)).toEqual([
+      "be-concise",
+      "code-review",
+      "deploy-check",
+    ]);
+  });
+
+  it("filters both sections by the same query", () => {
+    // "code" matches the "Code block" command AND the code-review skill.
+    const { commandOptions, skillOptions } = buildSlashMenuSections(
+      "code",
+      SKILLS,
+    );
+    expect(commandOptions.map((o) => o.spec.title)).toEqual(["Code block"]);
+    expect(skillOptions.map((o) => o.skill.name)).toEqual(["code-review"]);
+  });
+});
+
+// The insert action: unlike a block command, choosing a skill drops PLAIN TEXT
+// `/name ` (trailing space) where the `/query` was — no custom node. Mirrors
+// runOnBlock but drives `applySkillInsert`, and reads back both the raw text
+// content (to prove the trailing space) and the exported markdown.
+function insertSkillOnBlock(
+  skill: SkillMenuItem,
+  { leading, query }: { leading?: string; query: string },
+): { text: string; markdown: string } {
+  const editor = newEditor();
+  editor.update(
+    () => {
+      const root = $getRoot();
+      root.clear();
+      const paragraph = $createParagraphNode();
+      if (leading) paragraph.append($createTextNode(leading));
+      const queryNode = $createTextNode(query);
+      paragraph.append(queryNode);
+      root.append(paragraph);
+      queryNode.selectEnd();
+      applySkillInsert(editor, skill, queryNode);
+    },
+    { discrete: true },
+  );
+  return editor.getEditorState().read(() => ({
+    text: $getRoot().getTextContent(),
+    markdown: exportMarkdown(),
+  }));
+}
+
+describe("skill insert action", () => {
+  it("replaces the /query with plain text /name and a trailing space", () => {
+    const { text, markdown } = insertSkillOnBlock(SKILLS[0], { query: "/be-con" });
+    // Exact text, trailing space included — this is the whole feature.
+    expect(text).toBe("/be-concise ");
+    // Byte-plain markdown: the skill name is just text, and the partial query
+    // the user typed is gone.
+    expect(markdown).toContain("/be-concise");
+    expect(markdown).not.toContain("/be-con\n");
+  });
+
+  it("keeps text typed before the /query", () => {
+    const { text } = insertSkillOnBlock(SKILLS[1], {
+      leading: "run ",
+      query: "/code",
+    });
+    expect(text).toBe("run /code-review ");
+  });
+});
+
+// The rendered section — one jsdom render asserting the "Skills" header, a row,
+// and the monochrome harness badges appear with skill options, and that no header
+// shows without them (the compat default). Keyboard/selection itself belongs to
+// the typeahead plugin (covered by e2e), so this only checks the paint.
+describe("SlashMenuList skills section", () => {
+  // Unmount between renders — these tests share a jsdom document.
+  afterEach(cleanup);
+
+  function renderList(skills: SkillMenuItem[]) {
+    const { commandOptions, skillOptions } = buildSlashMenuSections("", skills);
+    render(
+      <SlashMenuList
+        commandOptions={commandOptions}
+        skillOptions={skillOptions}
+        selectedIndex={0}
+        selectOption={() => {}}
+        setHighlightedIndex={() => {}}
+      />,
+    );
+  }
+
+  it("renders the Skills header, rows, and harness badges", () => {
+    renderList(SKILLS);
+    expect(screen.getByText("Skills")).toBeTruthy();
+    expect(screen.getByText("/be-concise")).toBeTruthy();
+    expect(screen.getByText("Trim replies to the essential")).toBeTruthy();
+    // Monochrome harness badges: CC for the two claude-code skills, CX for the
+    // two codex ones (be-concise carries both).
+    expect(screen.getAllByText("CC")).toHaveLength(2);
+    expect(screen.getAllByText("CX")).toHaveLength(2);
+  });
+
+  it("shows no Skills section when there are no skills", () => {
+    renderList([]);
+    expect(screen.queryByText("Skills")).toBeNull();
+    // The block commands still render as before.
+    expect(screen.getByText("Heading 1")).toBeTruthy();
   });
 });
