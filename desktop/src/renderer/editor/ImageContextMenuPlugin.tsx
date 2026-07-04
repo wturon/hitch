@@ -1,7 +1,7 @@
 // Right-click menu for an inline image: Copy Image / Delete. Ported almost
-// verbatim from the old MDXEditor wrapper (components/MarkdownEditor.tsx), adapted
-// to our own ImageNode and re-skinned to use the app's sonner toast wrapper for
-// feedback instead of the wrapper's hand-rolled fixed-position status div.
+// verbatim from the old MDXEditor wrapper (since removed), adapted to our own
+// ImageNode and re-skinned to use the app's sonner toast wrapper for feedback
+// instead of the wrapper's hand-rolled fixed-position status div.
 //
 // It's mounted unconditionally by MarkdownEditor — inert until a right-click
 // actually lands on an image node's host span (the `data-editor-block-type=

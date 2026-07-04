@@ -1,6 +1,3 @@
-// Pin the global `Prism` before anything pulls in MDXEditor/Lexical (see
-// prism-global.ts). MUST stay above the App import.
-import "./prism-global";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";

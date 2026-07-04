@@ -226,53 +226,11 @@ select,
   z-index: 60;
 }
 
-/* Friendly markdown editor (MDXEditor) — restyle the content surface to the
-   task dialog's "Reading" mock: app sans body, real headings, monochrome code
-   chips, real bullets. MDXEditor ships its own base CSS (style.css); these
-   rules layer on top, scoped to our wrapper classes so nothing leaks. The
-   scrolling + padding are owned by the dialog's wrapper, so the editor itself
-   sits flush and grows with its content. */
-/* Fill the scroll area so the content-editable covers the whole blank body —
-   clicking anywhere (not just the first line) lands the caret. The host wraps
-   MDXEditor, which nests the editable two more divs deep, so stretch the whole
-   chain into a single full-height flex column. */
-.hitch-mdx-host,
-.hitch-mdx,
-.hitch-mdx [class*="ontentEditableWrapper"],
-.hitch-mdx [class*="ontentEditableWrapper"] > div:not([class*="_placeholder"]) {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.hitch-mdx {
-  font-family: var(--font-sans);
-  background: transparent;
-}
-
-/* The `.hitch-mdx` ancestor bumps specificity so our `padding: 0` reliably
-   beats MDXEditor's default content padding (`._contentEditable_ { padding:
-   var(--spacing-3) }`) regardless of stylesheet order — keeps the body text
-   flush-left with the title. */
-.hitch-mdx .hitch-mdx-content {
-  flex: 1 1 auto;
-  /* Baseline editable height so a short/empty task still has a comfortable area
-     to type in and click (the modal is now auto-height, so the editor can't rely
-     on filling a fixed-height parent). It grows past this with the content. */
-  min-height: 180px;
-  padding: 0;
-  font-family: var(--font-sans);
-  font-size: 14.5px;
-  line-height: 25px;
-  color: var(--foreground);
-  outline: none;
-}
-
 /* Editor Sandbox content area (Text Editor 2.0 — the raw Lexical playground).
-   Mirrors `.hitch-mdx-content`'s type scale so the sandbox reads at the same
-   size as the task editor while we iterate. Standalone (not nested under
-   `.hitch-mdx`) so it never touches or depends on the MDXEditor rules above. */
+   The type scale (14.5px / 25px, real headings, monochrome code chips, real
+   bullets) matches the task-dialog editor so the sandbox reads at the same size
+   while we iterate. Self-contained — every rule is scoped to
+   `.hitch-sandbox-content`, so it depends on nothing else. */
 .hitch-sandbox-content {
   min-height: 180px;
   padding: 0;
@@ -343,10 +301,10 @@ select,
 }
 
 /* Production editor content area (Text Editor 2.0 — the Hitch-owned Lexical
-   MarkdownEditor that replaces MDXEditor). Mirrors `.hitch-mdx-content`'s type
-   scale so the new editor reads identically to the task body it supersedes.
-   Standalone (not nested under `.hitch-mdx`) so it never touches the MDXEditor
-   rules — a surface can flip between the two without a style regression. */
+   MarkdownEditor). The type scale (14.5px body / 25px line-height, real
+   headings, monochrome code chips, real bullets) is the task-dialog body's
+   baseline. Self-contained — every rule below is scoped to
+   `.hitch-editor-content`, so it stands on its own. */
 .hitch-editor-content {
   min-height: 180px;
   padding: 0;
@@ -433,138 +391,6 @@ select,
    app's Chromium; the surrounding scroll container caps + scrolls past max-h. */
 .hitch-autosize {
   field-sizing: content;
-}
-
-/* Empty-body helper text. Drawn as pseudo-content on the editor's own empty
-   paragraph (`<p><br></p>`) rather than MDXEditor's absolute overlay, so it
-   shares the caret's exact line box — always perfectly in line with the cursor.
-   The text comes from the --hitch-md-placeholder var the wrapper sets.
-
-   Positioned ABSOLUTE (with the paragraph as the containing block) so it
-   overlays the line instead of occupying it: the caret stays at the real start
-   of the paragraph and the prompt text flows out to its right — the "start
-   typing here" invitation — instead of being pushed after the caret. */
-.hitch-mdx-content > p:only-child:has(> br:only-child) {
-  position: relative;
-}
-.hitch-mdx-content > p:only-child:has(> br:only-child)::before {
-  content: var(--hitch-md-placeholder, "");
-  position: absolute;
-  top: 0;
-  left: 0;
-  color: var(--muted-foreground);
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.hitch-mdx-content :where(p) {
-  margin: 0 0 0.85em;
-}
-
-.hitch-mdx-content :where(h1) {
-  font-size: 26px;
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.01em;
-  margin: 0.1em 0 0.55em;
-}
-
-.hitch-mdx-content :where(h2) {
-  font-size: 17px;
-  font-weight: 600;
-  line-height: 1.3;
-  margin: 1.5em 0 0.5em;
-}
-
-.hitch-mdx-content :where(h3, h4, h5, h6) {
-  font-size: 15px;
-  font-weight: 600;
-  margin: 1.25em 0 0.4em;
-}
-
-.hitch-mdx-content :where(ul, ol) {
-  margin: 0 0 0.85em;
-  padding-left: 1.45em;
-}
-.hitch-mdx-content :where(ul) {
-  list-style: disc;
-}
-.hitch-mdx-content :where(ol) {
-  list-style: decimal;
-}
-.hitch-mdx-content :where(li) {
-  margin: 0.15em 0;
-}
-
-.hitch-mdx-content :where(a) {
-  color: var(--foreground);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-color: color-mix(in oklab, var(--foreground) 35%, transparent);
-}
-
-/* Inline code → a mono chip on a subtle grey fill (the mock). Fenced blocks are
-   a CodeMirror widget, not <code>, so this only hits inline spans. */
-.hitch-mdx-content :where(code) {
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  background: var(--muted);
-  border-radius: 4px;
-  padding: 0.1em 0.35em;
-}
-
-.hitch-mdx-content :where(blockquote) {
-  margin: 0 0 0.85em;
-  padding-left: 0.9em;
-  border-left: 2px solid var(--border);
-  color: var(--muted-foreground);
-}
-
-.hitch-mdx-content :where(hr) {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 1.5em 0;
-}
-
-/* Dark-mode fenced code blocks. The block body is a CodeMirror widget themed
-   in JS by `basicLight` (hardcoded in MDXEditor's codeMirrorPlugin) — a fixed
-   light theme the `.dark` class can't reach. We can't swap that theme from
-   here, but `basicLight`'s only unreadable parts on a dark page are the white
-   surface and its near-black plain-text/gutter colors; its Nord syntax tokens
-   read fine on dark, so we leave them. Override just the surface, keyed on the
-   stable CodeMirror class names (not MDXEditor's hashed module classes) and
-   scoped under `.dark .hitch-mdx` so we out-specify `basicLight`'s
-   `.cm-editor.<themeclass>` (2 classes < our 3). Lives in CSS so it flips
-   instantly with the theme — an extension-based fix wouldn't re-theme
-   already-open blocks (CodeMirror only rebuilds on its own deps). */
-.dark .hitch-mdx .cm-editor {
-  background: var(--card);
-  color: var(--foreground);
-}
-.dark .hitch-mdx .cm-gutters {
-  background: var(--card);
-  color: var(--muted-foreground);
-}
-.dark .hitch-mdx .cm-activeLine,
-.dark .hitch-mdx .cm-activeLineGutter {
-  background: color-mix(in oklab, var(--foreground) 6%, transparent);
-}
-.dark .hitch-mdx .cm-cursor,
-.dark .hitch-mdx .cm-dropCursor {
-  border-left-color: var(--foreground);
-}
-.dark .hitch-mdx .cm-selectionBackground,
-.dark .hitch-mdx .cm-focused .cm-selectionBackground {
-  background: color-mix(in oklab, var(--foreground) 18%, transparent);
-}
-
-/* The code-block toolbar's language picker renders a white box in dark mode:
-   its trigger background is `var(--basePageBg)`, hardcoded to literal `white`
-   in MDXEditor's `._editorRoot_` and never redefined for dark. `.hitch-mdx` is
-   that editor-root element, so redefining the variable here fixes the trigger
-   (and any other `--basePageBg` chrome) in one place. */
-.dark .hitch-mdx {
-  --basePageBg: var(--card);
 }
 
 /* ---------------------------------------------------------------------------
