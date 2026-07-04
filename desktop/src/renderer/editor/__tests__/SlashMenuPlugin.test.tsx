@@ -333,4 +333,26 @@ describe("SlashMenuList skills section", () => {
     // The block commands still render as before.
     expect(screen.getByText("Heading 1")).toBeTruthy();
   });
+
+  it("lays out a skill row as two lines: name+badges on line 1, description on line 2", () => {
+    renderList(SKILLS);
+    const name = screen.getByText("/be-concise");
+    const description = screen.getByText("Trim replies to the essential");
+    const badge = screen.getAllByText("CC")[0];
+    // Name and its badges share the same line-1 container...
+    const line1 = name.parentElement;
+    expect(line1).toBe(badge.parentElement?.parentElement);
+    // ...while the description (line 2) is a direct child of the row, a
+    // SIBLING of that line-1 container — one level shallower than the name.
+    expect(description.parentElement).toBe(line1?.parentElement);
+    expect(description.parentElement).not.toBe(line1);
+  });
+
+  it("keeps block-command rows single-line (icon + title, no stacking)", () => {
+    renderList(SKILLS);
+    const title = screen.getByText("Heading 1");
+    // The row <button> itself lays out horizontally (not `flex-col`) for block
+    // commands — only the skill rows stack.
+    expect(title.closest("button")?.className).not.toContain("flex-col");
+  });
 });
