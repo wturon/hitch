@@ -16,7 +16,7 @@ import {
   TEXT_FORMAT_TRANSFORMERS,
   type ElementTransformer,
   type Transformer,
-} from "@lexical/markdown";
+} from "./shortcuts";
 import {
   $createNodeSelection,
   $setSelection,
@@ -39,15 +39,17 @@ import {
 // CodeBlockNode (a highlight-free DecoratorNode), never Lexical's code node.
 // HorizontalRuleNode backs `---`.
 //
-// Honest caveat: keeping `@lexical/code`'s CodeNode out of the NODE SET does not
-// keep `@lexical/code`/prismjs out of the BUNDLE. `@lexical/markdown` (imported
-// above, and again by MarkdownShortcutPlugin) statically imports `@lexical/code`,
-// which is sideEffects:true and imports prismjs — so any named import from it
-// retains both. Nothing breaks at runtime (prismjs defines its own global; the
-// code paths that touch it are never called from our transformer set), but
-// deleting @mdxeditor/editor will NOT drop prismjs from the build. Truly escaping
-// it means vendoring the shortcut transformers instead of importing
-// `@lexical/markdown` — a tracked follow-up, not this file's job.
+// Caveat resolved: the transformers and the shortcut engine below now come from
+// our own `./shortcuts` (vendored from @lexical/markdown@0.35.0 +
+// @lexical/react's MarkdownShortcutPlugin), NOT from `@lexical/markdown`. That
+// package statically imports `@lexical/code` (sideEffects:true → prismjs), so
+// while we imported anything from it, prismjs could never leave the bundle even
+// though our transformer set never constructs a CodeNode. `./shortcuts` copies
+// only the pieces we use (the run/register engine, the block/inline/link
+// transformers, and the transformer types) with the one unreachable
+// `$isCodeNode` guard dropped — so nothing in this editor references
+// `@lexical/code`, and prismjs is gone from the build. Serialization still lives
+// in `./bridge` (never `$convertTo/FromMarkdownString`), untouched by this.
 export const EDITOR_NODES: ReadonlyArray<Klass<LexicalNode>> = [
   HeadingNode,
   QuoteNode,
