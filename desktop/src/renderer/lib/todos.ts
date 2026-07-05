@@ -15,13 +15,18 @@
 // (`chat-status`) / file recency otherwise — so calling without `chats` matches
 // today's read path exactly.
 
-import type { ChatRef, ChatStatus, DelegationRequest, Harness } from "./chat";
+// Imports come from ./chatModel (not ./chat) so this module's whole import
+// chain stays pure — no DOM, no React — which lets the Convex sidebar-badge
+// query (convex/files.ts) import this file directly and share the exact
+// predicate instead of maintaining a server-side twin. ./chat re-exports the
+// same names, so semantics are identical for renderer consumers.
+import type { ChatRef, ChatStatus, DelegationRequest, Harness } from "./chatModel";
 import {
   normalizeChatStatus,
   parseChatRef,
   parseChatStatus,
   parseDelegationRequest,
-} from "./chat";
+} from "./chatModel";
 import type { Frontmatter } from "./frontmatter";
 import { parseFrontmatter } from "./frontmatter";
 import { taskSlug } from "./tasks";
@@ -326,4 +331,32 @@ function sortBacklog(backlog: Todo[], order: string[]): Todo[] {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   return ordered.concat(absentees);
+}
+
+// The sidebar-badge projection of the group predicate: the counted attention
+// group for ONE task body's raw content — "working" / "needs-you" / null
+// (done, archived, or backlog: uncounted). This is the same predicate chain
+// deriveTodoGroups runs per file (parseFrontmatter → resolveChatState →
+// groupOf), just without the UI fields or sorting, exported so the Convex
+// badge query (convex/files.ts chatStatusCounts) counts with the identical
+// semantics — including the two-mode chat resolution: pass the live-chat
+// index and a frontmatter `chat-id` whose row is missing/idle reads as
+// not-working → needs-you, exactly like the list.
+export type CountedTodoGroup = "working" | "needs-you";
+
+export function taskCountedGroup(
+  content: string,
+  chats?: ReadonlyMap<string, LiveChatRow>,
+): CountedTodoGroup | null {
+  const { frontmatter } = parseFrontmatter(content);
+  const { chat, chatStatus } = resolveChatState(frontmatter, chats);
+  const group = groupOf({
+    fm: frontmatter,
+    archivedPresent: timestampPresent(frontmatter["archived-at"]),
+    completedPresent: timestampPresent(frontmatter["completed-at"]),
+    request: parseDelegationRequest(frontmatter),
+    chat,
+    chatStatus,
+  });
+  return group === "working" || group === "needs-you" ? group : null;
 }

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-// The pure server-side predicate that backs the sidebar badge counts
-// (convex/files.ts chatStatusCounts). Imported by relative path — it has no
-// Convex imports, so it runs headlessly here. This guards that the badge model
-// stays in lockstep with the Todos list grouping (lib/todos.ts groupOf).
-import { taskCountedGroup } from "../../../../../convex/todoGroups";
+// The sidebar-badge projection of the unified derivation core — the SAME
+// module the Todos list derives with, consumed server-side by
+// convex/files.ts chatStatusCounts. These tests pin the badge-count semantics
+// in both chat-resolution modes so the badges can never disagree with the
+// list: frontmatter-only (no index — the coexistence read path) and
+// index-supplied (live rows authoritative; a missing row = dead chat).
+import { indexChats, taskCountedGroup, type LiveChatRow } from "../todos";
 
 function fm(lines: Record<string, string>): string {
   const body = Object.entries(lines)
@@ -14,7 +16,17 @@ function fm(lines: Record<string, string>): string {
 
 const CHAT = { "chat-harness": "codex", "chat-id": "abc123" };
 
-describe("taskCountedGroup", () => {
+function liveRow(status: string, chatId = "abc123"): LiveChatRow {
+  return {
+    harness: "codex",
+    chatId,
+    status,
+    lastEventAt: 100,
+    updatedAt: 200,
+  };
+}
+
+describe("taskCountedGroup — frontmatter-only mode (no index)", () => {
   it("archived → uncounted (null)", () => {
     expect(taskCountedGroup(fm({ "archived-at": "2026-07-04T00:00:00Z" }))).toBeNull();
     // archived wins even over a bound working chat
@@ -78,5 +90,51 @@ describe("taskCountedGroup", () => {
         taskCountedGroup(fm({ ...CHAT, "chat-status": "working", status: "in-review" })),
       ).toBe("working");
     });
+  });
+});
+
+// Index-supplied mode: what the Convex badge query runs (the server always has
+// the full chats table in hand, so it always passes the index). These pin the
+// exact stale-frontmatter cases slice 1 was designed to fix — the badge must
+// agree with the list on them.
+describe("taskCountedGroup — index-supplied mode (live rows authoritative)", () => {
+  it("stale projected chat-status: working + live row idle → needs-you, NOT working", () => {
+    const chats = indexChats([liveRow("idle")]);
+    expect(taskCountedGroup(fm({ ...CHAT, "chat-status": "working" }), chats)).toBe(
+      "needs-you",
+    );
+  });
+
+  it("frontmatter chat ref + row missing from the index → needs-you (dead chat)", () => {
+    // Non-empty index whose rows don't include this chat-id.
+    const chats = indexChats([liveRow("working", "other-chat")]);
+    expect(taskCountedGroup(fm({ ...CHAT, "chat-status": "working" }), chats)).toBe(
+      "needs-you",
+    );
+    // Empty index (project has no live rows at all) reads the same way.
+    expect(taskCountedGroup(fm({ ...CHAT }), indexChats([]))).toBe("needs-you");
+  });
+
+  it("live row working → working, regardless of frontmatter status", () => {
+    const chats = indexChats([liveRow("working")]);
+    // no projected chat-status at all
+    expect(taskCountedGroup(fm({ ...CHAT }), chats)).toBe("working");
+    // stale projected waiting
+    expect(taskCountedGroup(fm({ ...CHAT, "chat-status": "waiting" }), chats)).toBe(
+      "working",
+    );
+    // unknown legacy status: ignored by the shim, live row still wins
+    expect(taskCountedGroup(fm({ ...CHAT, status: "in-review" }), chats)).toBe(
+      "working",
+    );
+  });
+
+  it("completed/archived/requested precedence is unchanged by the index", () => {
+    const chats = indexChats([liveRow("working")]);
+    expect(taskCountedGroup(fm({ ...CHAT, "completed-at": "x" }), chats)).toBeNull();
+    expect(taskCountedGroup(fm({ ...CHAT, "archived-at": "x" }), chats)).toBeNull();
+    expect(
+      taskCountedGroup(fm({ "chat-request": "requested" }), indexChats([])),
+    ).toBe("working");
   });
 });

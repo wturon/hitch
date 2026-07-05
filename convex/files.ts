@@ -2,7 +2,15 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireProjectAccess, requireUser } from "./authz";
 import { projectSyncedAutomationFile } from "./automations";
-import { taskCountedGroup } from "./todoGroups";
+// The Todos derivation core, imported straight from the renderer lib — the SAME
+// module TodosView derives with, so the badge counts cannot drift from the
+// list. The import chain (todos → chatModel/frontmatter/tasks) is pure by
+// contract (no DOM, no React, no Convex imports — see chatModel.ts's purity
+// note); Convex's esbuild bundles the relative imports outside convex/ fine.
+import {
+  indexChats,
+  taskCountedGroup,
+} from "../desktop/src/renderer/lib/todos";
 
 // Insert or update a file by its (projectId, path) key. A delete is just an
 // upsert with deleted: true (a tombstone) so other machines learn to remove the
@@ -81,17 +89,18 @@ const TASK_BODY_RE = /^tasks\/[^/]+\/task\.md$/;
 
 // Per-project tallies for the at-a-glance sidebar badges: tasks in the WORKING
 // group (spinner count) and the NEEDS YOU group (amber count). Under todos-v1
-// these are DERIVED, not raw `chat-status` reads: `working` = a pending/failed
-// summon flag OR a bound chat that is mid-turn; `needs-you` = a bound chat that
-// isn't working and isn't completed/archived. The predicate lives in the pure
-// ./todoGroups module (server-side twin of lib/todos.ts groupOf, honoring the
-// slice-1→5 compat shim) so the badges match the Todos list exactly. Computed
+// these are DERIVED with the same inputs the Todos list uses — task files PLUS
+// the project's live chat rows — through the shared predicate core
+// (lib/todos.ts taskCountedGroup): `working` = a pending/failed summon flag OR
+// a bound chat whose LIVE row is mid-turn; `needs-you` = a bound chat that
+// isn't working (including a frontmatter chat-id whose row is missing — a dead
+// chat) and isn't completed/archived (compat shim honored). Computed
 // server-side and returned as small counts keyed by project id, so the client
 // never has to subscribe to every project's full file contents. Reactive:
-// re-runs when membership changes or any task is written. Projects with no
-// attention-worthy tasks still get a {0,0} entry so the UI can tell "idle" apart
-// from "still loading". The `needsInput` key name is retained for the existing
-// AppSidebar consumer; it now carries the NEEDS YOU group count.
+// re-runs when membership changes or any task/chat is written. Projects with no
+// attention-worthy tasks still get a {0,0} entry so the UI can tell "idle"
+// apart from "still loading". The `needsInput` key name is retained for the
+// existing AppSidebar consumer; it now carries the NEEDS YOU group count.
 export const chatStatusCounts = query({
   args: {},
   handler: async (ctx) => {
@@ -107,11 +116,28 @@ export const chatStatusCounts = query({
         .query("files")
         .withIndex("by_project", (q) => q.eq("projectId", membership.projectId))
         .collect();
+      // The live-chat index — same filter as chats.listForTodos (bound +
+      // non-deleted; archived included, still ground truth for an attached
+      // todo). Unlike the client, the server ALWAYS has the full chats table
+      // in hand — there is no subscription loading state — so this query
+      // always runs the derivation in index-supplied mode. (TodosView is the
+      // one call site with a loading window; it derives index-less until rows
+      // arrive. The two call sites intentionally differ in mode availability.)
+      const chatRows = await ctx.db
+        .query("chats")
+        .withIndex("by_project", (q) => q.eq("projectId", membership.projectId))
+        .collect();
+      const chats = indexChats(
+        chatRows.filter(
+          (chat) => chat.deletedAt === undefined && chat.chatId !== undefined,
+        ),
+      );
+
       let working = 0;
       let needsInput = 0;
       for (const file of files) {
         if (file.deleted || !TASK_BODY_RE.test(file.path)) continue;
-        const group = taskCountedGroup(file.content);
+        const group = taskCountedGroup(file.content, chats);
         if (group === "working") working++;
         else if (group === "needs-you") needsInput++;
       }

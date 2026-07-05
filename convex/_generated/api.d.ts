@@ -25,7 +25,6 @@ import type * as http from "../http.js";
 import type * as projects from "../projects.js";
 import type * as skills from "../skills.js";
 import type * as status from "../status.js";
-import type * as todoGroups from "../todoGroups.js";
 import type * as users from "../users.js";
 
 import type {
@@ -52,7 +51,6 @@ declare const fullApi: ApiFromModules<{
   projects: typeof projects;
   skills: typeof skills;
   status: typeof status;
-  todoGroups: typeof todoGroups;
   users: typeof users;
 }>;
 
