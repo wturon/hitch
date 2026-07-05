@@ -86,7 +86,7 @@ import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
 import { TodosView } from "@/components/TodosView";
 import { TodoDialog } from "@/components/todo-dialog/TodoDialog";
-import type { Todo } from "@/lib/todos";
+import { prependBacklogPath, type Todo } from "@/lib/todos";
 import {
   CommandPalette,
   WORKSPACE_VIEWS,
@@ -1296,6 +1296,22 @@ function BoardContent({
   const duplicateTaskWithAttachments = useAction(
     api.attachments.duplicateTaskWithAttachments,
   );
+  // Backlog manual order — read for the uncheck→backlog-top prepend (slice 5,
+  // Decision 8). Whole-list-replace with an optimistic patch so the row lands at
+  // the top instantly (same pattern TodosView uses for drag reorders).
+  const backlogOrder =
+    useQuery(api.backlogOrders.getBacklogOrder, { projectId }) ?? [];
+  const backlogOrderRef = useRef<string[]>(backlogOrder);
+  backlogOrderRef.current = backlogOrder;
+  const setBacklogOrder = useMutation(
+    api.backlogOrders.setBacklogOrder,
+  ).withOptimisticUpdate((store, args) => {
+    store.setQuery(
+      api.backlogOrders.getBacklogOrder,
+      { projectId: args.projectId },
+      args.order,
+    );
+  });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   // The Notes view's Archived sheet, opened from the same top-right header slot.
@@ -1324,6 +1340,10 @@ function BoardContent({
   // add-row or `C` on the Todos tab; a transactional capture card that nothing
   // survives until ⌘⏎ (see TodoDialog).
   const [todoCaptureOpen, setTodoCaptureOpen] = useState(false);
+  // The existing-todo dialog (Todos v1, slice 5): a row opens the TodoDialog in
+  // its saved stage on this task path (the board still uses TaskDialog). Null =
+  // closed; the file itself comes from the live `files` subscription.
+  const [openTodoPath, setOpenTodoPath] = useState<string | null>(null);
   // Per-project tab: the Kanban board, or the Notes two-pane view.
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("board");
   // The global command palette (⌘K) and its one-shot request to NotesView to
@@ -1338,6 +1358,13 @@ function BoardContent({
   const projectConfigFile = files?.find(
     (file) => file.path === PROJECT_CONFIG_PATH && !file.deleted,
   );
+  // The live file backing the open existing-todo dialog (slice 5). Kept live
+  // (not snapshotted) so the dialog adopts external writes — the daemon linking
+  // a chat or projecting a status flips the footer while the dialog is open.
+  const openTodoFile =
+    openTodoPath !== null
+      ? files?.find((file) => file.path === openTodoPath && !file.deleted)
+      : undefined;
   const projectConfig = useMemo(
     () => parseProjectConfig(projectConfigFile?.content, projectId),
     [projectConfigFile?.content, projectId],
@@ -1908,13 +1935,25 @@ function BoardContent({
 
   // Check/uncheck a todo: stamp (or clear) `completed-at` in the task.md
   // frontmatter through the same optimistic upsert everything else uses, so the
-  // row moves between BACKLOG/… and DONE instantly. Unchecking clears the field
-  // (Backlog-top prepend is slice 5); an agent writing `completed-at` itself is
-  // honored the same way (Decision 7).
+  // row moves between BACKLOG/… and DONE instantly. Unchecking also returns the
+  // todo to the TOP of Backlog (Decision 8): prepend its path to the manual
+  // order (dedup) so it lands above existing items rather than in the absentee
+  // block. An agent writing `completed-at` itself is honored the same way
+  // (Decision 7).
   async function setTodoCompleted(todo: Todo, completed: boolean) {
     const nextContent = setFrontmatterKeys(todo.content, {
       "completed-at": completed ? new Date().toISOString() : undefined,
     });
+    if (!completed) {
+      // Prepend before the file write so the row is already pinned to the top
+      // when the derivation re-runs against the cleared completed-at.
+      void setBacklogOrder({
+        projectId,
+        order: prependBacklogPath(backlogOrderRef.current, todo.path),
+      }).catch((err) =>
+        console.error("Failed to prepend unchecked todo to backlog", err),
+      );
+    }
     await upsertFile({
       projectId,
       path: todo.path,
@@ -2331,7 +2370,7 @@ function BoardContent({
           <TodosView
             projectId={projectId}
             files={files}
-            onOpenTodo={(path) => setSelectedPath(path)}
+            onOpenTodo={(path) => setOpenTodoPath(path)}
             onAddTodo={() => setTodoCaptureOpen(true)}
             onToggleCompleted={(todo, completed) =>
               void setTodoCompleted(todo, completed)
@@ -2512,6 +2551,31 @@ function BoardContent({
           projectId={projectId}
           takenSlugs={cards.map((card) => card.slug)}
           onClose={() => setTodoCaptureOpen(false)}
+          onWrite={materializeDraftFile}
+          onDeleteTodo={deleteTodo}
+          onManagePrompts={() => openGlobalSettings("starting-prompts")}
+          onManageHarnesses={() => openGlobalSettings("harnesses")}
+        />
+
+        {/* The existing-todo dialog (slice 5): a Todos row opens the same
+            TodoDialog in its saved stage on the on-disk file. The file comes
+            from the live subscription, so its footer flips as the daemon links a
+            chat / projects status. If the file vanishes (deleted elsewhere), the
+            dialog closes. The board keeps TaskDialog until slice 6. */}
+        <TodoDialog
+          open={openTodoFile !== undefined}
+          projectId={projectId}
+          takenSlugs={cards.map((card) => card.slug)}
+          existing={
+            openTodoFile
+              ? {
+                  path: openTodoFile.path,
+                  content: openTodoFile.content,
+                  updatedAt: openTodoFile.updatedAt,
+                }
+              : undefined
+          }
+          onClose={() => setOpenTodoPath(null)}
           onWrite={materializeDraftFile}
           onDeleteTodo={deleteTodo}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}

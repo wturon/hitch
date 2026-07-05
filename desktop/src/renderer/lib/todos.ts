@@ -368,6 +368,15 @@ export function reorderBacklog(
   return next;
 }
 
+// Prepend a task path to the front of the manual backlog order, deduping any
+// existing occurrence so the path lands exactly once at the top (Decision 8's
+// "uncheck returns the todo to the top of Backlog", and the capture-save
+// prepend). Pure so the uncheck/prepend arithmetic is unit-testable without the
+// mutation. The caller persists the result via `setBacklogOrder`.
+export function prependBacklogPath(order: string[], path: string): string[] {
+  return [path, ...order.filter((p) => p !== path)];
+}
+
 // The sidebar-badge projection of the group predicate: the counted attention
 // group for ONE task body's raw content — "working" / "needs-you" / null
 // (done, archived, or backlog: uncounted). This is the same predicate chain

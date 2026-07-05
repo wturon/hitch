@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveTodoGroups,
   indexChats,
+  prependBacklogPath,
   reorderBacklog,
   type FileRow,
   type LiveChatRow,
@@ -576,5 +577,43 @@ describe("reorderBacklog — drag from index A to index B → next order array",
     expect(next).toEqual(["tasks/y/task.md", "tasks/x/task.md"]);
     // The write no longer carries the stale "z" path (compaction).
     expect(next).not.toContain("tasks/z/task.md");
+  });
+});
+
+describe("prependBacklogPath — uncheck / capture-save lands a path at the top", () => {
+  it("prepends a new path to the front", () => {
+    expect(prependBacklogPath(["a", "b"], "new")).toEqual(["new", "a", "b"]);
+  });
+
+  it("dedups: a path already present moves to the top (no duplicate)", () => {
+    expect(prependBacklogPath(["a", "b", "c"], "b")).toEqual(["b", "a", "c"]);
+  });
+
+  it("empty order → single-element list", () => {
+    expect(prependBacklogPath([], "only")).toEqual(["only"]);
+  });
+
+  it("returns a fresh array, never mutating the input", () => {
+    const input = ["a", "b"];
+    const out = prependBacklogPath(input, "a");
+    expect(input).toEqual(["a", "b"]); // untouched
+    expect(out).not.toBe(input);
+    expect(out).toEqual(["a", "b"]); // 'a' de-duped back to the front
+  });
+
+  // The uncheck flow feeds the result to deriveTodoGroups' backlog partition:
+  // the just-unchecked path must render at the very top of BACKLOG.
+  it("integrates with deriveTodoGroups: an unchecked path renders atop BACKLOG", () => {
+    const files: FileRow[] = [
+      { path: "tasks/x/task.md", content: "---\n---\n", updatedAt: 1 },
+      { path: "tasks/y/task.md", content: "---\n---\n", updatedAt: 2 },
+    ];
+    const order = ["tasks/x/task.md"];
+    const next = prependBacklogPath(order, "tasks/y/task.md");
+    const g = deriveTodoGroups(files, next);
+    expect(g.backlog.map((t) => t.path)).toEqual([
+      "tasks/y/task.md",
+      "tasks/x/task.md",
+    ]);
   });
 });

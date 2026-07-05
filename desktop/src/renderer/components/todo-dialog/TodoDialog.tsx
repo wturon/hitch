@@ -6,7 +6,15 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 
-import { stampDelegationRequest, type Harness } from "@/lib/chat";
+import {
+  BUILTIN_STARTING_PROMPTS,
+  MODELS_BY_HARNESS,
+  buildStartPrompt,
+  defaultReasoning,
+  loadLastAgent,
+  stampDelegationRequest,
+  type Harness,
+} from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
 import { setFrontmatterKeys } from "@/lib/frontmatter";
 import {
@@ -16,6 +24,7 @@ import {
   taskSlug,
   uniqueSlug,
 } from "@/lib/tasks";
+import { prependBacklogPath } from "@/lib/todos";
 import { useTaskDraft } from "@/hooks/useTaskDraft";
 import { useAttachments } from "@/hooks/useAttachments";
 import { useSkills } from "@/hooks/useSkills";
@@ -24,10 +33,39 @@ import type { MarkdownEditorHandle } from "@/editor";
 import { CaptureFooter } from "./CaptureFooter";
 import { SavedActions } from "./SavedActions";
 import { TodoDelegateFooter } from "./TodoDelegateFooter";
+import { TodoLinkedFooter, TodoRequestFooter } from "./TodoChatFooter";
 import { TodoEditorArea } from "./TodoEditorArea";
+import { selectSavedFooterState } from "./footerState";
 import { useCaptureAttachments } from "./useCaptureAttachments";
 import { dismissAction, useDiscardGuard } from "./useDiscardGuard";
 import { useGrowAnimation } from "./useGrowAnimation";
+
+// A compact "last activity" stamp for the linked footer's status line — bare
+// under an hour ("4m ago"), then coarsens. Mirrors TodosView's cadence so a
+// todo reads the same recency in the list and in the dialog.
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const min = 60_000;
+  const hour = 60 * min;
+  const day = 24 * hour;
+  if (diff < min) return "just now";
+  if (diff < hour) return `${Math.floor(diff / min)}m ago`;
+  if (diff < day) return `${Math.floor(diff / hour)}h ago`;
+  if (diff < 14 * day) return `${Math.floor(diff / day)}d ago`;
+  return new Date(ts).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// A todo already on disk, opened directly into the saved stage (slice 5). The
+// dialog seeds its document model from `content` and pins `path`; `updatedAt` is
+// the files row's recency, shown in the linked footer's status line.
+export interface ExistingTodo {
+  path: string;
+  content: string;
+  updatedAt: number;
+}
 
 // The two-stage create dialog for the Todos tab (Todos v1, slice 4). One
 // component, two stages, transformed IN PLACE:
@@ -45,11 +83,11 @@ import { useGrowAnimation } from "./useGrowAnimation";
 // (docked compose chrome over the shared useDelegationComposer), and the
 // useDiscardGuard / useGrowAnimation / useCaptureAttachments hooks.
 //
-// The footer render is keyed by an explicit state enum (not booleans) so slice 5
-// can add the existing-todo states (linked / requested / completed) without
-// reshaping this component. Slice 4 uses "coaching" / "coaching-armed" / "compose".
-type TodoFooterState = "coaching" | "coaching-armed" | "compose";
-
+// The footer render is keyed by explicit state (not booleans): the capture stage
+// owns "coaching"/"coaching-armed" (CaptureFooter); the saved stage's footer is
+// chosen by selectSavedFooterState (compose / linked / requested / failed /
+// linked-completed / none) off the draft's chat/request/completed state, so an
+// existing todo opens on the right band (slice 5).
 type Stage = "capture" | "saved";
 
 // Raw = the honest full-file textarea (frontmatter + body). Formatted = the
@@ -69,6 +107,9 @@ const TRANSFORM_MS = 260;
 export interface TodoDialogProps {
   open: boolean;
   projectId: Id<"projects">;
+  // When set, the dialog opens an EXISTING todo directly in the saved stage on
+  // this file (slice 5). Absent = a fresh two-stage capture (slice 4).
+  existing?: ExistingTodo;
   // Slugs already on disk, so a fresh capture mints a non-colliding one on save.
   takenSlugs: string[];
   // Close the dialog (the parent owns the `open` flag).
@@ -106,6 +147,9 @@ export function TodoDialog(props: TodoDialogProps) {
         >
           {props.open && (
             <TodoBody
+              // Keyed so opening a different existing todo remounts fresh — the
+              // document model seeds from `content` once (useFrontmatterDocument).
+              key={props.existing?.path ?? "capture"}
               {...props}
               registerDismiss={(fn) => (dismissRef.current = fn)}
             />
@@ -118,6 +162,7 @@ export function TodoDialog(props: TodoDialogProps) {
 
 function TodoBody({
   projectId,
+  existing,
   takenSlugs,
   onClose,
   onWrite,
@@ -129,27 +174,31 @@ function TodoBody({
   registerDismiss: (fn: (reason: string) => void) => void;
 }) {
   const requestDelegation = useMutation(api.chats.requestDelegation);
-  // The document model. A fresh capture opens on an empty draft; the ⌘⏎ split
-  // writes `title:` into it and the body autosaves from there.
-  const draft = useTaskDraft("");
+  // The document model. A fresh capture opens on an empty draft; an existing
+  // todo (slice 5) seeds from its file content and opens straight in "saved".
+  const draft = useTaskDraft(existing?.content ?? "");
 
-  const [stage, setStage] = useState<Stage>("capture");
+  const [stage, setStage] = useState<Stage>(existing ? "saved" : "capture");
   const guard = useDiscardGuard(); // the esc discard machine (Decision 4)
   const [transforming, setTransforming] = useState(false);
   const [view, setView] = useState<View>(loadView);
 
   // The committed file path once materialized (by ⌘⏎ or an early image paste),
-  // mirrored in a ref for async handlers that span a write.
-  const [committedPath, setCommittedPath] = useState<string | null>(null);
-  const committedRef = useRef<string | null>(null);
+  // or the existing todo's path from the start. Mirrored in a ref for async
+  // handlers that span a write.
+  const [committedPath, setCommittedPath] = useState<string | null>(
+    existing?.path ?? null,
+  );
+  const committedRef = useRef<string | null>(existing?.path ?? null);
   const setCommitted = (path: string | null) => {
     committedRef.current = path;
     setCommittedPath(path);
   };
   const slug = committedPath ? taskSlug(committedPath) : null;
   // The last content we persisted, so close only rewrites when the body actually
-  // changed (the draft's own dirty baseline is "", so it's always "dirty").
-  const lastWrittenRef = useRef<string | null>(null);
+  // changed. A fresh capture starts null (draft baseline is "", always "dirty");
+  // an existing todo starts at its on-disk content, so a no-op close skips a write.
+  const lastWrittenRef = useRef<string | null>(existing?.content ?? null);
 
   // Backlog order (for the prepend-on-save, Decision "new items land at top").
   const order = useQuery(api.backlogOrders.getBacklogOrder, { projectId }) ?? [];
@@ -197,8 +246,10 @@ function TodoBody({
   );
 
   async function prependBacklog(path: string) {
-    const current = orderRef.current.filter((p) => p !== path);
-    await setBacklogOrder({ projectId, order: [path, ...current] });
+    await setBacklogOrder({
+      projectId,
+      order: prependBacklogPath(orderRef.current, path),
+    });
   }
 
   // The capture→saved grow (FLIP on the card's height; see useGrowAnimation).
@@ -360,6 +411,44 @@ function TodoBody({
     }
   }
 
+  // Detach chat (⋯ menu) / Cancel request (requested footer): strip every chat-*
+  // frontmatter key including the request flag (clearChat → clearChatFields), so
+  // the todo derives back to Backlog. The dialog stays open on the compose
+  // footer (no chat, no request) — the user can re-delegate or close.
+  async function detachChat() {
+    const path = committedRef.current;
+    if (!path) return;
+    const cleared = draft.clearChat();
+    await write(path, cleared).catch((err) =>
+      console.error("Failed to detach chat", err),
+    );
+  }
+
+  // Retry (failed footer, ⌘⏎): re-fire the delegation. The original launch
+  // params aren't recoverable (only the harness is stamped in the request), so
+  // retry reuses the failed request's harness with the user's last-agent model/
+  // effort (or that harness's defaults) and the default starting prompt. Like
+  // any Start it's fire-and-forget and closes the dialog (Decision 6).
+  function retryRequest() {
+    const req = draft.request;
+    const path = committedRef.current;
+    if (!req || !path) return;
+    const last = loadLastAgent();
+    const harness = req.harness;
+    const models = MODELS_BY_HARNESS[harness];
+    const model = models.some((m) => m.id === last.model)
+      ? last.model
+      : models[0].id;
+    const effort =
+      last.harness === harness ? last.effort : defaultReasoning(harness, model);
+    const title = draft.title.trim() || taskSlug(path) || "task";
+    const prompt = buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], {
+      title,
+      path,
+    });
+    void startChat({ harness, model, effort, prompt });
+  }
+
   // File paste/drop → materialize early + upload (Decision 3). The provisional
   // title commit stays here (it owns slug minting + the optimistic write); the
   // listener plumbing lives in the hook.
@@ -410,9 +499,24 @@ function TodoBody({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [transform]);
 
-  const footerState: TodoFooterState =
-    stage === "saved" ? "compose" : guard.armed ? "coaching-armed" : "coaching";
+  // The saved-stage footer band (compose / linked / requested / failed /
+  // linked-completed / none), chosen off the live draft. `completed` honors the
+  // slice-1→5 compat shim (legacy `status: done`) so an unmigrated done todo
+  // still opens ghosted. Only meaningful once `stage === "saved"`.
+  const completed =
+    (draft.frontmatter["completed-at"] ?? "").trim() !== "" ||
+    (draft.frontmatter.status ?? "").trim().toLowerCase() === "done";
+  const savedFooter = selectSavedFooterState({
+    hasChat: draft.chat !== null,
+    request: draft.request,
+    completed,
+  });
+  // ⌘⏎ arms the saved-stage footers only once the card has settled (existing
+  // todos open settled; a capture→saved transform re-arms after ~250ms).
+  const footerReady = stage === "saved" && !transforming;
   const displayTitle = draft.frontmatter.title || "Untitled";
+  const footerTitle = draft.frontmatter.title || slug || "Untitled";
+  const linkedWhen = relativeTime(existing?.updatedAt ?? Date.now());
 
   return (
     <div
@@ -433,6 +537,10 @@ function TodoBody({
             view={view}
             onToggleView={() => setView(view === "raw" ? "formatted" : "raw")}
             onCopyPath={copyPath}
+            // Detach shows only when there's a chat or a request to detach.
+            onDetach={
+              draft.chat || draft.request ? () => void detachChat() : undefined
+            }
             onArchive={() => void archive()}
             onDelete={del}
             onClose={() => dismiss("close-press")}
@@ -451,18 +559,40 @@ function TodoBody({
           skills={skills}
         />
 
-        {/* Footer — keyed by the explicit state enum (slice 5 adds more). */}
-        {footerState === "compose" ? (
+        {/* Footer — capture coaching strip, or the saved-stage band chosen by
+            selectSavedFooterState off the draft's chat/request/completed state. */}
+        {stage === "capture" ? (
+          <CaptureFooter armed={guard.armed} />
+        ) : savedFooter === "linked" || savedFooter === "linked-completed" ? (
+          draft.chat && (
+            <TodoLinkedFooter
+              chat={draft.chat}
+              chatStatus={draft.chatStatus}
+              title={footerTitle}
+              when={linkedWhen}
+              projectId={projectId}
+              ready={footerReady}
+              ghostChip={savedFooter === "linked-completed"}
+            />
+          )
+        ) : savedFooter === "requested" || savedFooter === "failed" ? (
+          draft.request && (
+            <TodoRequestFooter
+              request={draft.request}
+              ready={footerReady}
+              onCancel={() => void detachChat()}
+              onRetry={retryRequest}
+            />
+          )
+        ) : savedFooter === "none" ? null : (
           <TodoDelegateFooter
             title={displayTitle}
             path={committedPath ?? ""}
-            ready={stage === "saved" && !transforming}
+            ready={footerReady}
             onStart={startChat}
             onManagePrompts={onManagePrompts}
             onManageHarnesses={onManageHarnesses}
           />
-        ) : (
-          <CaptureFooter armed={footerState === "coaching-armed"} />
         )}
       </div>
     </div>
