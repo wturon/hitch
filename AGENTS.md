@@ -14,8 +14,8 @@ to git.
 - `daemon/` — TypeScript (`src/index.ts`, run via `tsx`) Node watcher: pushes
   local file changes up to Convex and writes remote changes back to disk, with
   echo suppression so a synced write never loops.
-- `desktop/` — Electron app with the canonical Vite/React Kanban board and
-  local daemon controls.
+- `desktop/` — Electron app with the canonical Vite/React todos workspace
+  (grouped todo list) and local daemon controls.
 - `hitch.config.json` — the active project + which local paths are hitched.
 
 ---

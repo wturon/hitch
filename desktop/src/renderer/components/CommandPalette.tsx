@@ -30,9 +30,9 @@ export interface PaletteProject {
   name: string;
 }
 export interface PaletteTask {
-  path: string; // tasks/<slug>/task.md — the board's selection key
+  path: string; // tasks/<slug>/task.md — the todo's selection key
   title: string;
-  meta: string; // column/status name, shown as the mono tag
+  meta: string; // group name, shown as the mono tag
 }
 export interface PaletteNote {
   slug: string;
@@ -59,7 +59,6 @@ export interface PaletteAction {
 // tabs, so they stay out of the header pills, ⌘-number jumps, and Ctrl+Tab cycle.
 export type WorkspaceView =
   | "todos"
-  | "board"
   | "notes"
   | "chats"
   | "automations"
@@ -69,15 +68,13 @@ export type WorkspaceView =
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in
 // App.tsx). Adding a view here lights it up everywhere. Title is what the palette
-// query matches against ("tasks" / "notes" / "chats" / "automations").
-// The first view keeps the internal `board` id but the product label is "Tasks".
+// query matches against ("todos" / "notes" / "chats" / "automations").
 export const WORKSPACE_VIEWS: {
   view: WorkspaceView;
   title: string;
   Icon: typeof BookIcon;
 }[] = [
   { view: "todos", title: "Todos", Icon: ListTodoIcon },
-  { view: "board", title: "Tasks", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
   { view: "chats", title: "Chats", Icon: MessageCircleIcon },
   // Automations is hidden for the release — it stays a valid WorkspaceView (the
@@ -276,8 +273,8 @@ export function CommandPalette({
       </CommandItem>
     ));
 
-  // The Board / Notes rows — shared between the empty state and search results.
-  // The current view is tagged `active`, mirroring the project switcher.
+  // The workspace-view rows — shared between the empty state and search
+  // results. The current view is tagged `active`, mirroring the project switcher.
   const viewRows = (views: typeof WORKSPACE_VIEWS) =>
     views.map(({ view, title, Icon }) => (
       <CommandItem

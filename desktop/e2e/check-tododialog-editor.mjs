@@ -1,19 +1,19 @@
-// End-to-end check for TaskDialog flipped from the old MDXEditor wrapper
-// (@/components/MarkdownEditor) to the Hitch-owned Lexical editor (@/editor).
+// End-to-end check for the Hitch-owned Lexical editor (@/editor) hosted inside
+// the TodoDialog — the modal @base-ui dialog that replaced the board's old
+// TaskDialog in Todos v1 (slice 6b).
 //
-// TaskDialog is the LAST surface to flip, and the only one that hosts the editor
-// INSIDE a modal @base-ui dialog. The new editor's floating UI (link popover,
-// slash menu, image context menu) portals to document.body — OUTSIDE the dialog
-// popup DOM — so the risk this script exists to prove is the modal dialog's
-// dismissal / focus-trap / pointer behavior fighting those portaled layers.
+// The editor's floating UI (link popover, slash menu, image context menu)
+// portals to document.body — OUTSIDE the dialog popup DOM — so the risk this
+// script exists to prove is the modal dialog's dismissal / focus-trap / pointer
+// behavior fighting those portaled layers.
 //
 // Run against a throwaway Vite on 5199 (NEVER 5173, the live app):
 //   npx vite --host 127.0.0.1 --port 5199        # in another shell (this worktree)
-//   HITCH_DESKTOP_RENDERER_URL=http://127.0.0.1:5199 node e2e/check-taskdialog-neweditor.mjs
+//   HITCH_DESKTOP_RENDERER_URL=http://127.0.0.1:5199 node e2e/check-tododialog-editor.mjs
 //
-// It creates a clearly-named scratch task via the board's "Add task", exercises
-// the dialog, and DELETES the scratch task at the end. All edits are confined to
-// that scratch task.
+// It captures a clearly-named scratch todo (open capture → type → ⌘⏎ crystallizes
+// it into the saved stage), exercises the dialog, and DELETES the scratch todo at
+// the end via the ⋯ menu. All edits are confined to that scratch todo.
 //
 // NOT covered: image-paste upload — the isolated e2e profile has attachments
 // disabled (no slug/storage), so imageUploadHandler is never wired. Expected.
@@ -30,7 +30,7 @@ const log = (...a) => console.log(...a);
 
 process.on("unhandledRejection", (e) => console.warn("late:", String(e)));
 
-const { page, cleanup } = await launchHitch({ profile: "taskdialog-editor-check" });
+const { page, cleanup } = await launchHitch({ profile: "tododialog-editor-check" });
 page.on("dialog", (d) => d.dismiss().catch(() => {}));
 
 let failures = 0;
@@ -41,26 +41,26 @@ const check = (label, ok, extra = "") => {
 
 // Dialog is open iff its popup is in the DOM.
 const dialogOpen = async () =>
-  (await page.locator('[data-slot="dialog-content"]').count()) > 0;
+  (await page.locator('[data-slot="todo-dialog"]').count()) > 0;
 // Editor is mounted (formatted view) iff the contenteditable is present.
 const editor = page.locator(".hitch-editor-content");
 
-const title = `e2e-taskdialog-${Date.now()}`;
+const title = `e2e-tododialog-${Date.now()}`;
 
-// The Raw⇄Formatted toggle lives in the task's "Task actions" (…) menu.
+// The Raw⇄Formatted toggle lives in the todo's "Todo actions" (…) menu.
 async function pickMenuItem(name) {
-  await page.locator('[aria-label="Task actions"]').first().click();
+  await page.locator('[aria-label="Todo actions"]').first().click();
   await page.waitForTimeout(200);
   await page.getByRole("menuitem", { name }).first().click();
   await page.waitForTimeout(300);
 }
 async function toRaw() {
-  const rawTa = page.locator('textarea[aria-label="Task content"]');
+  const rawTa = page.locator('textarea[aria-label="Todo content"]');
   if ((await rawTa.count()) === 0) await pickMenuItem(/Raw markdown/i);
   return rawTa.first();
 }
 async function toFormatted() {
-  const rawTa = page.locator('textarea[aria-label="Task content"]');
+  const rawTa = page.locator('textarea[aria-label="Todo content"]');
   if ((await rawTa.count()) > 0) await pickMenuItem(/Formatted view/i);
   await editor.first().waitFor({ timeout: 5000 });
 }
@@ -73,22 +73,25 @@ const watchdog = setTimeout(() => {
 
 try {
   // --- Boot signed-in -------------------------------------------------------
-  const addTask = page.locator('[aria-label="Add task"]').first();
-  await addTask.waitFor({ timeout: 25000 });
-  await shot(page, "td-00-board.png");
-  check("boots signed-in (board renders)", true);
+  const addTodo = page.getByRole("button", { name: "Add a todo…" }).first();
+  await addTodo.waitFor({ timeout: 25000 });
+  await shot(page, "td-00-todos.png");
+  check("boots signed-in (Todos view renders)", true);
 
-  // --- Create a scratch task ------------------------------------------------
-  // "Add task" now opens the TaskDialog directly on a fresh draft (no inline
-  // card input); the draft materializes into a real card on first save/close.
-  await addTask.click();
+  // --- Capture a scratch todo, then crystallize it into the saved stage -----
+  // Capture is body-only; the first line becomes the title on ⌘⏎, and the card
+  // transforms in place into the saved (edit/delegate) stage — same dialog, now
+  // with a title textarea + the ⋯ menu.
+  await addTodo.click();
   await editor.first().waitFor({ timeout: 10000 });
-  const titleBoxNew = page.locator('textarea[aria-label="Task title"]');
+  await editor.first().click();
+  await page.keyboard.type(title);
+  await page.keyboard.press("Meta+Enter");
+  const titleBoxNew = page.locator('textarea[aria-label="Todo title"]');
   await titleBoxNew.waitFor({ timeout: 10000 });
-  await titleBoxNew.click();
-  await titleBoxNew.fill(title);
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(300); // let the ~250ms transform window settle
   await shot(page, "td-01-dialog-open.png");
+  check("capture ⌘⏎ crystallizes into the saved stage", await dialogOpen());
 
   // ===================================================================
   // 1. New editor mounted; NO old MDXEditor element.
@@ -170,8 +173,8 @@ try {
   const slashOpen = (await slashMenu.count()) > 0;
   const dialogDuringSlash = await dialogOpen();
   await shot(page, "td-04-slashmenu.png");
-  // Navigate to "Divider" (last item). Arrow down a few then Enter; or type to
-  // filter. Filtering is more robust than counting arrow presses.
+  // Navigate to "Divider" (last item). Filtering is more robust than counting
+  // arrow presses.
   await page.keyboard.type("divider");
   await page.waitForTimeout(300);
   await page.keyboard.press("Enter");
@@ -279,7 +282,8 @@ try {
   check("6c. second Esc closes the dialog (saves)", !dialogAfterEsc2);
   await shot(page, "td-06b-after-second-esc.png");
 
-  // Reopen the task → content persisted.
+  // Reopen the todo → content persisted. A Todos row is a role=button labelled
+  // with the todo title.
   const reopen = page.getByText(title, { exact: false }).first();
   await reopen.waitFor({ timeout: 10000 });
   await reopen.click();
@@ -351,7 +355,7 @@ try {
   // ===================================================================
   // 8. Focus flows: Enter in title → body; click empty area → body end.
   // ===================================================================
-  const titleBox = page.locator('textarea[aria-label="Task title"]');
+  const titleBox = page.locator('textarea[aria-label="Todo title"]');
   await titleBox.click();
   await page.waitForTimeout(100);
   await page.keyboard.press("Enter");
@@ -406,9 +410,9 @@ try {
   failures++;
   await shot(page, "td-99-crash.png");
 } finally {
-  // --- Best-effort cleanup: delete the scratch task -------------------------
+  // --- Best-effort cleanup: delete the scratch todo -------------------------
   try {
-    // If the dialog is closed, reopen the card so the delete menu is reachable.
+    // If the dialog is closed, reopen the todo row so the delete menu is reachable.
     if (!(await dialogOpen())) {
       const c = page.getByText(title, { exact: false }).first();
       if (await c.count()) {
@@ -416,7 +420,7 @@ try {
         await page.waitForTimeout(400);
       }
     }
-    const actions = page.locator('[aria-label="Task actions"]');
+    const actions = page.locator('[aria-label="Todo actions"]');
     if (await actions.count()) {
       await actions.first().click();
       await page.waitForTimeout(200);

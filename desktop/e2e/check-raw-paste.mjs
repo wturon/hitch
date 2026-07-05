@@ -34,7 +34,7 @@ function pasteScript({ name, type, b64 }) {
   const file = new File([bytes], name, { type });
   const dt = new DataTransfer();
   dt.items.add(file);
-  const ta = document.querySelector('textarea[aria-label="Task content"]');
+  const ta = document.querySelector('textarea[aria-label="Todo content"]');
   ta.focus();
   ta.setSelectionRange(ta.value.length, ta.value.length);
   ta.dispatchEvent(
@@ -57,7 +57,7 @@ const rawHas = (re) =>
   page.waitForFunction(
     (src) =>
       new RegExp(src).test(
-        document.querySelector('textarea[aria-label="Task content"]')?.value ??
+        document.querySelector('textarea[aria-label="Todo content"]')?.value ??
           "",
       ),
     re,
@@ -65,23 +65,24 @@ const rawHas = (re) =>
   );
 
 try {
-  const addTask = page.locator('[aria-label="Add task"]').first();
-  await addTask.waitFor({ timeout: 25000 });
-  await addTask.click();
-  const newInput = page.locator('input[aria-label="Task title"]');
-  await newInput.fill(title);
-  await newInput.press("Enter");
-  const card = page.getByText(title, { exact: false }).first();
-  await card.waitFor({ timeout: 10000 });
-  await card.click();
-  await page.locator('.hitch-mdx-content[contenteditable="true"]').waitFor({
-    timeout: 10000,
-  });
+  // Capture a scratch todo (body-only), then ⌘⏎ crystallizes it into the saved
+  // stage where the ⋯ menu (Raw markdown) lives.
+  const addTodo = page.getByRole("button", { name: "Add a todo…" }).first();
+  await addTodo.waitFor({ timeout: 25000 });
+  await addTodo.click();
+  const bodyEditor = page.locator(".hitch-editor-content").first();
+  await bodyEditor.waitFor({ timeout: 10000 });
+  await bodyEditor.click();
+  await page.keyboard.type(title);
+  await page.keyboard.press("Meta+Enter");
+  await page
+    .locator('textarea[aria-label="Todo title"]')
+    .waitFor({ timeout: 10000 });
 
   // Switch to raw markdown view.
-  await page.locator('[aria-label="Task actions"]').click();
+  await page.locator('[aria-label="Todo actions"]').click();
   await page.getByRole("menuitem", { name: "Raw markdown" }).click();
-  await page.locator('textarea[aria-label="Task content"]').waitFor({
+  await page.locator('textarea[aria-label="Todo content"]').waitFor({
     timeout: 5000,
   });
   check("raw view open", true);
@@ -98,7 +99,7 @@ try {
       check(
         "raw paste of PDF → [report.pdf](attachments/report.pdf)",
         false,
-        `raw=${(await page.locator('textarea[aria-label="Task content"]').inputValue()).replace(/\n/g, "\\n").slice(0, 160)}`,
+        `raw=${(await page.locator('textarea[aria-label="Todo content"]').inputValue()).replace(/\n/g, "\\n").slice(0, 160)}`,
       ),
     );
 
@@ -114,14 +115,14 @@ try {
       check(
         "raw paste of image → ![](attachments/image-1.png)",
         false,
-        `raw=${(await page.locator('textarea[aria-label="Task content"]').inputValue()).replace(/\n/g, "\\n").slice(0, 200)}`,
+        `raw=${(await page.locator('textarea[aria-label="Todo content"]').inputValue()).replace(/\n/g, "\\n").slice(0, 200)}`,
       ),
     );
 } catch (err) {
   check("run completed without throwing", false, String(err));
 } finally {
   try {
-    const actions = page.locator('[aria-label="Task actions"]');
+    const actions = page.locator('[aria-label="Todo actions"]');
     if (await actions.count()) {
       await actions.click();
       await page.getByRole("menuitem", { name: "Delete" }).click();

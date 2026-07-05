@@ -74,18 +74,20 @@ describe("taskCountedGroup — frontmatter-only mode (no index)", () => {
     expect(taskCountedGroup("no frontmatter at all")).toBeNull();
   });
 
-  describe("compat shim (legacy status:)", () => {
-    it("legacy done/archived are uncounted", () => {
+  // The compat shim died with the board in slice 6b — `status:` is inert. It
+  // never counts and never overrides the chat-derived group; only the
+  // `completed-at:`/`archived-at:` timestamps the migration writes matter.
+  describe("legacy status: is inert (post-slice-6b)", () => {
+    it("status: done / archived alone → uncounted backlog (null)", () => {
       expect(taskCountedGroup(fm({ status: "done" }))).toBeNull();
       expect(taskCountedGroup(fm({ status: "archived" }))).toBeNull();
-      // legacy done wins over a live working chat, same as completed-at
-      expect(taskCountedGroup(fm({ ...CHAT, "chat-status": "working", status: "done" }))).toBeNull();
     });
 
-    it("any other legacy status is ignored (falls through to its chat state)", () => {
-      // unknown legacy status alone → backlog (uncounted)
-      expect(taskCountedGroup(fm({ status: "in-review" }))).toBeNull();
-      // unknown legacy status + a bound working chat → still working
+    it("status: never overrides a bound working chat", () => {
+      // Previously `status: done` masked the chat; now the chat state wins.
+      expect(
+        taskCountedGroup(fm({ ...CHAT, "chat-status": "working", status: "done" })),
+      ).toBe("working");
       expect(
         taskCountedGroup(fm({ ...CHAT, "chat-status": "working", status: "in-review" })),
       ).toBe("working");
@@ -123,7 +125,7 @@ describe("taskCountedGroup — index-supplied mode (live rows authoritative)", (
     expect(taskCountedGroup(fm({ ...CHAT, "chat-status": "waiting" }), chats)).toBe(
       "working",
     );
-    // unknown legacy status: ignored by the shim, live row still wins
+    // legacy status: is inert, live row still wins
     expect(taskCountedGroup(fm({ ...CHAT, status: "in-review" }), chats)).toBe(
       "working",
     );

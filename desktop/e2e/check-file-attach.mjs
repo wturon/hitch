@@ -44,7 +44,7 @@ function dragEventScript(eventType) {
     const dt = new DataTransfer();
     dt.items.add(file);
     const target =
-      document.querySelector('.hitch-mdx-content[contenteditable="true"]') ??
+      document.querySelector('.hitch-editor-content') ??
       document.body;
     target.dispatchEvent(
       new DragEvent(ev, { dataTransfer: dt, bubbles: true, cancelable: true }),
@@ -64,18 +64,20 @@ const drag = (ev, file) =>
   page.evaluate(dragEventScript(ev), { ...file, ev });
 
 try {
-  const addTask = page.locator('[aria-label="Add task"]').first();
-  await addTask.waitFor({ timeout: 25000 });
-  await addTask.click();
-  const newInput = page.locator('input[aria-label="Task title"]');
-  await newInput.fill(title);
-  await newInput.press("Enter");
-  const card = page.getByText(title, { exact: false }).first();
-  await card.waitFor({ timeout: 10000 });
-  await card.click();
-  const body = page.locator('.hitch-mdx-content[contenteditable="true"]');
+  // Capture a scratch todo (body-only), then ⌘⏎ crystallizes it into the saved
+  // stage where the editor + ⋯ menu live.
+  const addTodo = page.getByRole("button", { name: "Add a todo…" }).first();
+  await addTodo.waitFor({ timeout: 25000 });
+  await addTodo.click();
+  const body = page.locator(".hitch-editor-content").first();
   await body.waitFor({ timeout: 10000 });
-  check("opens task dialog", true);
+  await body.click();
+  await page.keyboard.type(title);
+  await page.keyboard.press("Meta+Enter");
+  await page
+    .locator('textarea[aria-label="Todo title"]')
+    .waitFor({ timeout: 10000 });
+  check("opens todo dialog", true);
 
   // --- Hover affordance -----------------------------------------------------
   await drag("dragenter", { name: "report.pdf", type: "application/pdf", b64: PDF_B64 });
@@ -89,15 +91,15 @@ try {
   // Overlay should clear after drop.
   await overlay.waitFor({ state: "hidden", timeout: 4000 }).catch(() => {});
   // Wait for the link reference to land in the body markdown.
-  await page.locator('[aria-label="Task actions"]').click();
+  await page.locator('[aria-label="Todo actions"]').click();
   await page.getByRole("menuitem", { name: "Raw markdown" }).click();
-  const raw = page.locator('textarea[aria-label="Task content"]');
+  const raw = page.locator('textarea[aria-label="Todo content"]');
   await raw.waitFor({ timeout: 5000 });
   await page
     .waitForFunction(
       () =>
         /\[report\.pdf\]\(attachments\/report\.pdf\)/.test(
-          document.querySelector('textarea[aria-label="Task content"]')?.value ??
+          document.querySelector('textarea[aria-label="Todo content"]')?.value ??
             "",
         ),
       { timeout: 20000 },
@@ -112,7 +114,7 @@ try {
     );
 
   // --- Drop an image → inline image markdown --------------------------------
-  await page.locator('[aria-label="Task actions"]').click();
+  await page.locator('[aria-label="Todo actions"]').click();
   await page.getByRole("menuitem", { name: "Formatted view" }).click();
   await body.waitFor({ timeout: 5000 });
   await drag("drop", { name: "shot.png", type: "image/png", b64: PNG_B64 });
@@ -130,7 +132,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/file-99-error.png` }).catch(() => {});
 } finally {
   try {
-    const actions = page.locator('[aria-label="Task actions"]');
+    const actions = page.locator('[aria-label="Todo actions"]');
     if (await actions.count()) {
       await actions.click();
       await page.getByRole("menuitem", { name: "Delete" }).click();
