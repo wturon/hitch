@@ -1,10 +1,14 @@
-// The close path pairs each surface with the workspace that owns it (close-surface
-// only resolves a surface UUID within a workspace scope), by walking `cmux tree
-// --all --id-format both` output in order. This exercises that pure parse against
-// real tree shapes.
+// The close-chat path's two pure pieces:
+// - parseSurfacePlacements pairs each surface with the workspace that owns it
+//   (close-surface only resolves a surface UUID within a workspace scope), by
+//   walking `cmux tree --all --id-format both` output in order.
+// - closeChatSkipReason is the execution-time staleness guard: a queued close
+//   must be dropped when the task was unchecked or relinked before the daemon
+//   claimed the command.
 
 import assert from "node:assert/strict";
 import { parseSurfacePlacements } from "../src/cmux.js";
+import { closeChatSkipReason } from "../src/daemon.js";
 
 // Verbatim shape of `tree --all --id-format both`: windows nest workspaces nest
 // panes nest surfaces; annotations ([current], [terminal], tty=…) ride along.
@@ -54,5 +58,48 @@ assert.deepEqual(
   ),
   [],
 );
+
+// --- closeChatSkipReason ---
+
+const SESS = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const task = (fm: string) => `---\n${fm}\n---\nbody\n`;
+
+// Still completed and still bound to this chat → proceed with the close.
+assert.equal(
+  closeChatSkipReason(
+    task(`chat-id: ${SESS}\ncompleted-at: 2026-07-05T18:00:00.000Z`),
+    SESS,
+  ),
+  null,
+);
+
+// Unchecked (completed-at cleared) between enqueue and claim → skip.
+assert.equal(closeChatSkipReason(task(`chat-id: ${SESS}`), SESS), "not-completed");
+
+// Whitespace-only completed-at reads as not completed (presence semantics
+// match the renderer's timestampPresent).
+assert.equal(
+  closeChatSkipReason(task(`chat-id: ${SESS}\ncompleted-at: `), SESS),
+  "not-completed",
+);
+
+// Task relinked to a different chat → this command's tab is no longer the
+// task's chat; skip.
+assert.equal(
+  closeChatSkipReason(
+    task(`chat-id: other-chat\ncompleted-at: 2026-07-05T18:00:00.000Z`),
+    SESS,
+  ),
+  "chat-relinked",
+);
+
+// Chat detached entirely (no chat-id) → skip.
+assert.equal(
+  closeChatSkipReason(task(`completed-at: 2026-07-05T18:00:00.000Z`), SESS),
+  "chat-relinked",
+);
+
+// No frontmatter at all → skip (not completed).
+assert.equal(closeChatSkipReason("just a body\n", SESS), "not-completed");
 
 console.log("cmux-close-placements smoke: OK");

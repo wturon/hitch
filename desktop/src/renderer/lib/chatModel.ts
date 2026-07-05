@@ -23,9 +23,37 @@ export interface ChatRef {
   harness: Harness;
   id: string;
   cwd?: string; // claude-code only: where to resume the session
+  // Which environment owns the live tab (daemon-stamped `chat-env`). Commands
+  // that act on the existing tab (close-chat) pin this so they don't resolve
+  // to the user's *current* launcher preference; absent for environments the
+  // daemon doesn't stamp (editors) or pre-stamp chats.
+  env?: ChatEnvironment;
 }
 
 export const HARNESSES: Harness[] = ["claude-code", "codex"];
+
+// Mirrors the daemon's Environment union (daemon/src/launchers/types.ts). An
+// unrecognized frontmatter value is dropped rather than carried, so a stale or
+// hand-mangled `chat-env` degrades to the daemon's default resolution.
+export type ChatEnvironment =
+  | "cmux"
+  | "codex-app"
+  | "vscode"
+  | "cursor"
+  | "t3code";
+
+const CHAT_ENVIRONMENTS = new Set<string>([
+  "cmux",
+  "codex-app",
+  "vscode",
+  "cursor",
+  "t3code",
+]);
+
+function parseChatEnv(fm: Frontmatter): ChatEnvironment | undefined {
+  const env = (fm["chat-env"] ?? "").trim();
+  return CHAT_ENVIRONMENTS.has(env) ? (env as ChatEnvironment) : undefined;
+}
 
 // Live runtime state of the chat driving a task, written into frontmatter as
 // `chat-status` by the harness's lifecycle hooks (see .claude/hooks/chat-status.mjs):
@@ -165,5 +193,9 @@ export function parseChatRef(fm: Frontmatter): ChatRef | null {
   const id = (fm["chat-id"] ?? "").trim();
   const cwd = (fm["chat-cwd"] ?? "").trim();
   if (!isHarness(harness) || !id) return null;
-  return cwd ? { harness, id, cwd } : { harness, id };
+  const ref: ChatRef = { harness, id };
+  if (cwd) ref.cwd = cwd;
+  const env = parseChatEnv(fm);
+  if (env) ref.env = env;
+  return ref;
 }
