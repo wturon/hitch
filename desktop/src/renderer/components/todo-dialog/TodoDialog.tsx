@@ -35,9 +35,14 @@ import { SavedActions } from "./SavedActions";
 import { TodoDelegateFooter } from "./TodoDelegateFooter";
 import { TodoLinkedFooter, TodoRequestFooter } from "./TodoChatFooter";
 import { TodoEditorArea } from "./TodoEditorArea";
+import {
+  clearCaptureDraft,
+  loadCaptureDraft,
+  saveCaptureDraft,
+} from "./captureDraft";
 import { selectSavedFooterState } from "./footerState";
 import { useCaptureAttachments } from "./useCaptureAttachments";
-import { dismissAction, useDiscardGuard } from "./useDiscardGuard";
+import { dismissAction } from "./useDiscardGuard";
 import { useGrowAnimation } from "./useGrowAnimation";
 
 // A compact "last activity" stamp for the linked footer's status line — bare
@@ -71,7 +76,9 @@ export interface ExistingTodo {
 // component, two stages, transformed IN PLACE:
 //   • capture — a chrome-free 560px card, body-only editor. Nothing exists
 //     anywhere until ⌘⏎ (except a pasted image, which materializes the task dir
-//     early and is deleted on discard). ⏎ newline · ⌘⏎ save · esc cancel.
+//     early and is deleted on esc — Decision 3). ⏎ newline · ⌘⏎ save · esc closes
+//     instantly; any typed text is preserved as a recovery draft (see
+//     captureDraft.ts) rather than guarded behind a second esc.
 //   • saved — the same card grown downward: the captured first line crystallizes
 //     into the 18px title, the body becomes a document, and the coaching strip
 //     becomes the docked delegation panel. Start is fire-and-forget.
@@ -79,13 +86,14 @@ export interface ExistingTodo {
 // This shell owns the single `stage` state (the PRD's one-component contract),
 // the esc/dismiss routing, and the transform orchestration; the pieces live
 // beside it in this directory — TodoEditorArea (document area), CaptureFooter
-// (coaching strip + armed variant), SavedActions (⋯/✕), TodoDelegateFooter
-// (docked compose chrome over the shared useDelegationComposer), and the
-// useDiscardGuard / useGrowAnimation / useCaptureAttachments hooks.
+// (coaching strip), SavedActions (⋯/✕), TodoDelegateFooter (docked compose
+// chrome over the shared useDelegationComposer), and the useGrowAnimation /
+// useCaptureAttachments hooks. captureDraft.ts holds the capture-stage
+// localStorage recovery draft (Decision 4 amendment).
 //
 // The footer render is keyed by explicit state (not booleans): the capture stage
-// owns "coaching"/"coaching-armed" (CaptureFooter); the saved stage's footer is
-// chosen by selectSavedFooterState (compose / linked / requested / failed /
+// owns "coaching" (CaptureFooter); the saved stage's footer is chosen by
+// selectSavedFooterState (compose / linked / requested / failed /
 // linked-completed / none) off the draft's chat/request/completed state, so an
 // existing todo opens on the right band (slice 5).
 type Stage = "capture" | "saved";
@@ -126,8 +134,8 @@ export interface TodoDialogProps {
 
 export function TodoDialog(props: TodoDialogProps) {
   // Route EVERY dismissal (Escape, outside press, the ✕) through the body's
-  // discard-guard / save policy. The body registers its handler here; the Dialog
-  // stays controlled by `open`, so cancelling the Base UI change just hands the
+  // save policy. The body registers its handler here; the Dialog stays
+  // controlled by `open`, so cancelling the Base UI change just hands the
   // decision to the body.
   const dismissRef = useRef<(reason: string) => void>(() => {});
   return (
@@ -140,7 +148,7 @@ export function TodoDialog(props: TodoDialogProps) {
       }}
     >
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
+        <DialogPrimitive.Backdrop className="fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
         <DialogPrimitive.Popup
           data-slot="todo-dialog"
           className="fixed top-[12vh] left-1/2 z-50 w-140 max-w-[calc(100%-2rem)] -translate-x-1/2 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
@@ -174,12 +182,14 @@ function TodoBody({
   registerDismiss: (fn: (reason: string) => void) => void;
 }) {
   const requestDelegation = useMutation(api.chats.requestDelegation);
-  // The document model. A fresh capture opens on an empty draft; an existing
-  // todo (slice 5) seeds from its file content and opens straight in "saved".
-  const draft = useTaskDraft(existing?.content ?? "");
+  // The document model. A fresh capture restores its localStorage recovery
+  // draft if one exists (else opens empty); an existing todo (slice 5) seeds
+  // from its file content and opens straight in "saved".
+  const draft = useTaskDraft(
+    existing?.content ?? loadCaptureDraft(projectId) ?? "",
+  );
 
   const [stage, setStage] = useState<Stage>(existing ? "saved" : "capture");
-  const guard = useDiscardGuard(); // the esc discard machine (Decision 4)
   const [transforming, setTransforming] = useState(false);
   const [view, setView] = useState<View>(loadView);
 
@@ -282,6 +292,8 @@ function TodoBody({
       await write(path, content);
     }
     void prependBacklog(path);
+    // The capture succeeded — the recovery draft's job is done.
+    clearCaptureDraft(projectId);
 
     // Grow the card in place — measure the current height, flip the stage, then
     // animate to the taller layout (useGrowAnimation's layout effect).
@@ -290,16 +302,17 @@ function TodoBody({
     setStage("saved");
     window.setTimeout(() => setTransforming(false), TRANSFORM_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, takenSlugs, write, beginGrow]);
+  }, [draft, takenSlugs, write, beginGrow, projectId]);
 
   // ─── Dismiss policy — the pure decision lives in dismissAction ─────────────
+  // Capture-stage esc now ALWAYS closes instantly (Decision 4 amendment — the
+  // double-esc "armed" guard is gone). Two things still happen on the way out:
+  // the typed body is stashed as a recovery draft (or the draft is cleared if
+  // the capture is empty), and a task dir materialized early by an image paste
+  // is still deleted (Decision 3 is unchanged — esc always discards it).
   const dismiss = useCallback(
     (_reason: string) => {
-      const action = dismissAction({
-        stage: stageRef.current,
-        dirty: draft.body.trim() !== "" || committedRef.current !== null,
-        armed: guard.armed,
-      });
+      const action = dismissAction({ stage: stageRef.current });
       switch (action) {
         case "save-and-close": {
           // The document is saved; esc is free. Persist body edits, then close.
@@ -313,15 +326,8 @@ function TodoBody({
           }
           return;
         }
-        case "close":
-          onClose();
-          return;
-        case "arm":
-          guard.arm();
-          return;
-        case "discard": {
-          // Nothing survives esc-esc — including a dir materialized early by an
-          // image paste (Decision 3).
+        case "close": {
+          saveCaptureDraft(projectId, draft.body);
           const path = committedRef.current;
           onClose();
           if (path) {
@@ -336,7 +342,7 @@ function TodoBody({
         }
       }
     },
-    [guard, draft, onClose, onDeleteTodo, write],
+    [draft, onClose, onDeleteTodo, projectId, write],
   );
 
   useEffect(() => {
@@ -500,12 +506,10 @@ function TodoBody({
   }, [transform]);
 
   // The saved-stage footer band (compose / linked / requested / failed /
-  // linked-completed / none), chosen off the live draft. `completed` honors the
-  // slice-1→5 compat shim (legacy `status: done`) so an unmigrated done todo
-  // still opens ghosted. Only meaningful once `stage === "saved"`.
-  const completed =
-    (draft.frontmatter["completed-at"] ?? "").trim() !== "" ||
-    (draft.frontmatter.status ?? "").trim().toLowerCase() === "done";
+  // linked-completed / none), chosen off the live draft. `completed-at` is the
+  // canonical timestamp (slice 6b retired the legacy `status:` model). Only
+  // meaningful once `stage === "saved"`.
+  const completed = (draft.frontmatter["completed-at"] ?? "").trim() !== "";
   const savedFooter = selectSavedFooterState({
     hasChat: draft.chat !== null,
     request: draft.request,
@@ -519,14 +523,7 @@ function TodoBody({
   const linkedWhen = relativeTime(existing?.updatedAt ?? Date.now());
 
   return (
-    <div
-      ref={rootRef}
-      onMouseDownCapture={guard.disarm}
-      onKeyDownCapture={(e) => {
-        // Any typing disarms the discard guard (Escape drives it, so leave it be).
-        if (e.key !== "Escape") guard.disarm();
-      }}
-    >
+    <div ref={rootRef}>
       <div
         ref={cardRef}
         className="flex max-h-[76vh] flex-col overflow-hidden rounded-xl border border-[#E4E4E4] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.16)] transition-[height] duration-[250ms] ease-out dark:border-border dark:bg-card"
@@ -551,7 +548,6 @@ function TodoBody({
           stage={stage}
           view={view}
           draft={draft}
-          disarm={guard.disarm}
           editorRef={editorRef}
           titleRef={titleRef}
           rawRef={rawRef}
@@ -562,7 +558,7 @@ function TodoBody({
         {/* Footer — capture coaching strip, or the saved-stage band chosen by
             selectSavedFooterState off the draft's chat/request/completed state. */}
         {stage === "capture" ? (
-          <CaptureFooter armed={guard.armed} />
+          <CaptureFooter />
         ) : savedFooter === "linked" || savedFooter === "linked-completed" ? (
           draft.chat && (
             <TodoLinkedFooter
