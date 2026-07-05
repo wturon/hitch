@@ -403,22 +403,32 @@ describe("deriveTodoGroups — live chat index (resolveChatState seam)", () => {
     expect(paths(g.working)).toEqual(["tasks/a/task.md"]);
   });
 
-  it("chat ref with no row in the index stays attached → needs-you via frontmatter fallback, not backlog", () => {
-    // A deleted/missing chats row must not silently un-attach a todo: it parks
-    // in NEEDS YOU until the user detaches deliberately.
+  it("index supplied + no row → needs-you, even when stale frontmatter says working", () => {
+    // A deleted/missing chats row must not silently un-attach a todo (it parks
+    // in NEEDS YOU until the user detaches deliberately) — and with the index
+    // supplied the live table is authoritative, so a leftover projected
+    // `chat-status: working` is NOT read: a dead chat can't strand the todo in
+    // WORKING.
     const chats = indexChats([chatRow("other", "working")]);
     const noStatus = attached("a", "x1");
-    const staleWorking = attached("b", "x2", "working"); // fallback keeps fm status
+    const staleWorking = attached("b", "x2", "working");
     const g = deriveTodoGroups([noStatus, staleWorking], [], chats);
-    expect(paths(g.needsYou)).toEqual(["tasks/a/task.md"]);
-    expect(paths(g.working)).toEqual(["tasks/b/task.md"]);
+    expect(new Set(paths(g.needsYou))).toEqual(
+      new Set(["tasks/a/task.md", "tasks/b/task.md"]),
+    );
+    expect(g.working).toHaveLength(0);
     expect(g.backlog).toHaveLength(0);
+  });
+
+  it("same stale frontmatter WITHOUT an index → working (coexistence mode unchanged)", () => {
+    const g = deriveTodoGroups([attached("b", "x2", "working")], []);
+    expect(paths(g.working)).toEqual(["tasks/b/task.md"]);
   });
 
   it("index keyed by harness too: same chat id on another harness doesn't resolve", () => {
     const chats = indexChats([chatRow("x1", "working", { harness: "codex" })]);
     const g = deriveTodoGroups([attached("a", "x1", "waiting")], [], chats);
-    // claude-code:x1 has no row → frontmatter fallback (waiting) → needs-you.
+    // claude-code:x1 has no row → status unknown → needs-you.
     expect(paths(g.needsYou)).toEqual(["tasks/a/task.md"]);
   });
 
@@ -443,16 +453,17 @@ describe("deriveTodoGroups — live chat index (resolveChatState seam)", () => {
   });
 
   it("unresolved rows fall back to file updatedAt for recency, mixed with resolved ones", () => {
+    // Both land in needs-you: one via a resolved waiting row (recency 100),
+    // one via a missing row (status unknown; recency = file updatedAt 500).
     const chats = indexChats([
-      chatRow("w1", "working", { lastEventAt: 100, updatedAt: 100 }),
+      chatRow("n1", "waiting", { lastEventAt: 100, updatedAt: 100 }),
     ]);
     const files = [
-      task("a", { "chat-harness": "claude-code", "chat-id": "w1", "chat-status": "working" }, { updatedAt: 999 }),
-      // No row → falls back to fm status (working) and file recency 500 > 100.
-      task("b", { "chat-harness": "claude-code", "chat-id": "gone", "chat-status": "working" }, { updatedAt: 500 }),
+      task("a", { "chat-harness": "claude-code", "chat-id": "n1" }, { updatedAt: 999 }),
+      task("b", { "chat-harness": "claude-code", "chat-id": "gone" }, { updatedAt: 500 }),
     ];
     const g = deriveTodoGroups(files, [], chats);
-    expect(paths(g.working)).toEqual(["tasks/b/task.md", "tasks/a/task.md"]);
+    expect(paths(g.needsYou)).toEqual(["tasks/b/task.md", "tasks/a/task.md"]);
   });
 
   it("omitting the index keeps today's frontmatter-only behavior", () => {

@@ -145,18 +145,28 @@ interface ResolvedChatState {
 // `chat-id` whose live row is missing/deleted must still read as attached, so
 // the todo parks in NEEDS YOU until the user detaches it deliberately —
 // resolution failure never silently un-attaches a todo (and the pre-bind
-// `chat-request` flag stays pure frontmatter by the same logic). Status and
-// recency prefer the resolved live row when the index is supplied and the row
-// resolves; otherwise they fall back to the daemon-projected `chat-status` and
-// the file's own recency (i.e. today's behavior when `chats` is omitted).
+// `chat-request` flag stays pure frontmatter by the same logic).
+//
+// Status/recency have two explicit modes:
+// - `chats` NOT supplied (frontmatter-only coexistence mode): status falls back
+//   to the daemon-projected `chat-status`, recency to the file's own updatedAt —
+//   today's read path, unchanged.
+// - `chats` supplied: the live row is authoritative. Row resolves → its
+//   status/recency win over any projected frontmatter. Row missing → status is
+//   unknown (null, i.e. not-working → NEEDS YOU); the stale projected
+//   `chat-status` is deliberately NOT read in this branch, so a dead chat can't
+//   strand the todo in WORKING on a leftover `chat-status: working`.
 function resolveChatState(
   fm: Frontmatter,
   chats?: ReadonlyMap<string, LiveChatRow>,
 ): ResolvedChatState {
   const chat = parseChatRef(fm);
-  const row = chat ? chats?.get(chatKey(chat.harness, chat.id)) : undefined;
-  if (!chat || !row) {
+  if (!chat || !chats) {
     return { chat, chatStatus: parseChatStatus(fm), chatRecency: null };
+  }
+  const row = chats.get(chatKey(chat.harness, chat.id));
+  if (!row) {
+    return { chat, chatStatus: null, chatRecency: null };
   }
   return {
     chat,
