@@ -642,7 +642,17 @@ function TodoBody({
                   className="hitch-autosize mt-10 mb-2 w-full shrink-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-[18px] font-semibold leading-6 tracking-[-0.01em] text-[#0B0B0B] outline-none placeholder:text-muted-foreground/40 dark:text-foreground"
                 />
               )}
-              <div className={stage === "capture" ? "pt-5 pb-3" : "pb-4"}>
+              {/* Capture keeps the card tiny: `hitch-capture-compact` lowers the
+                  editor's 180px min-height floor to JV0-0's compact proportions
+                  (see styles.css); the saved stage is a document and keeps the
+                  default. */}
+              <div
+                className={
+                  stage === "capture"
+                    ? "hitch-capture-compact pt-5 pb-3"
+                    : "pb-4"
+                }
+              >
                 <MarkdownEditor
                   ref={editorRef}
                   value={draft.body}

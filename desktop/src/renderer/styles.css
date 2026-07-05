@@ -315,6 +315,16 @@ select,
   outline: none;
 }
 
+/* Stage-1 capture (TodoDialog): the tiny transactional card is the design
+   identity of the two-stage create — an empty capture must open compact (JV0-0
+   proportions), not at the document editor's 180px floor. Scoped override on
+   the capture wrapper only (two classes beat the base rule above); every other
+   editor surface keeps the default. 100px = four 25px lines; the card still
+   grows freely with content. */
+.hitch-capture-compact .hitch-editor-content {
+  min-height: 100px;
+}
+
 /* Render embedded `\n` inside a text node as a real line break. Our bridge keeps
    soft breaks inside text-node values (only hard breaks become LineBreakNodes),
    so paragraphs must preserve whitespace or a soft-wrapped line would collapse. */

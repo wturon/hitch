@@ -1465,11 +1465,12 @@ function BoardContent({
     setKeepAwake(next);
   }
 
-  // `C` captures a todo. On the Todos tab it opens the two-stage capture card
-  // into the project's backlog (Decision 10); on the board it opens the legacy
-  // task draft in the first column (untouched until slice 6). Ignored while
-  // typing in a field or with a dialog already open, and when chorded with a
-  // modifier (so ⌘C still copies).
+  // `C` captures a todo from anywhere within a project (Decision 10): every
+  // view opens the two-stage capture card into the project's backlog — except
+  // the board, which keeps its legacy first-column draft until the board (and
+  // this branch with it) dies in slice 6. Ignored while typing in a field or
+  // with a dialog already open, and when chorded with a modifier (so ⌘C still
+  // copies).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "c" && e.key !== "C") return;
@@ -1483,8 +1484,8 @@ function BoardContent({
         return;
       }
       e.preventDefault();
-      if (workspaceView === "todos") setTodoCaptureOpen(true);
-      else setDraftStatus(boardStatuses[0].id);
+      if (workspaceView === "board") setDraftStatus(boardStatuses[0].id);
+      else setTodoCaptureOpen(true);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
