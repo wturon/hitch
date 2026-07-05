@@ -85,6 +85,7 @@ import { DebugView } from "@/components/DebugView";
 import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
 import { TodosView } from "@/components/TodosView";
+import { TodoDialog } from "@/components/todo-dialog/TodoDialog";
 import type { Todo } from "@/lib/todos";
 import {
   CommandPalette,
@@ -1319,6 +1320,10 @@ function BoardContent({
   // status column (opened by `C` or a column's `+`). The draft has no file until
   // it's saved/delegated — see TaskDialog's commitDraft.
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
+  // Todos v1 two-stage capture (the Todos tab's create flow). Opened by the
+  // add-row or `C` on the Todos tab; a transactional capture card that nothing
+  // survives until ⌘⏎ (see TodoDialog).
+  const [todoCaptureOpen, setTodoCaptureOpen] = useState(false);
   // Per-project tab: the Kanban board, or the Notes two-pane view.
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("board");
   // The global command palette (⌘K) and its one-shot request to NotesView to
@@ -1460,14 +1465,17 @@ function BoardContent({
     setKeepAwake(next);
   }
 
-  // `C` opens the task dialog on a fresh draft in the first column for
-  // keyboard-driven capture. Ignored while typing in a field or with a dialog
-  // already open, and when chorded with a modifier (so ⌘C still copies).
+  // `C` captures a todo from anywhere within a project (Decision 10): every
+  // view opens the two-stage capture card into the project's backlog — except
+  // the board, which keeps its legacy first-column draft until the board (and
+  // this branch with it) dies in slice 6. Ignored while typing in a field or
+  // with a dialog already open, and when chorded with a modifier (so ⌘C still
+  // copies).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "c" && e.key !== "C") return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (selectedPath || draftStatus !== null) return;
+      if (selectedPath || draftStatus !== null || todoCaptureOpen) return;
       const el = e.target as HTMLElement | null;
       if (
         el &&
@@ -1476,11 +1484,12 @@ function BoardContent({
         return;
       }
       e.preventDefault();
-      setDraftStatus(boardStatuses[0].id);
+      if (workspaceView === "board") setDraftStatus(boardStatuses[0].id);
+      else setTodoCaptureOpen(true);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [boardStatuses, selectedPath, draftStatus]);
+  }, [boardStatuses, selectedPath, draftStatus, todoCaptureOpen, workspaceView]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1968,6 +1977,16 @@ function BoardContent({
     }
   }
 
+  // Delete a todo folder by slug (attachments + task.md tombstone). Used by the
+  // two-stage capture's discard-cleanup of a pasted-early draft (Decision 3) and
+  // its ⋯ Delete action. Same cascade path as deleteCard, keyed off the slug the
+  // dialog owns rather than a board Card.
+  async function deleteTodo(slug: string) {
+    await cascadeDeleteAttachments(slug);
+    const path = taskBodyPath(slug);
+    await upsertFile({ projectId, path, content: "", hash: "", deleted: true });
+  }
+
   // Delete every archived task in one shot. Fires the deletes concurrently
   // through the same tombstone path `deleteCard` uses; the optimistic update
   // drops each card immediately.
@@ -2313,7 +2332,7 @@ function BoardContent({
             projectId={projectId}
             files={files}
             onOpenTodo={(path) => setSelectedPath(path)}
-            onAddTodo={() => setDraftStatus(boardStatuses[0]?.id ?? "todo")}
+            onAddTodo={() => setTodoCaptureOpen(true)}
             onToggleCompleted={(todo, completed) =>
               void setTodoCompleted(todo, completed)
             }
@@ -2484,6 +2503,17 @@ function BoardContent({
           }}
           onArchive={selected ? () => void setArchived(selected, true) : undefined}
           onDelete={selected ? () => void deleteCard(selected) : undefined}
+          onManagePrompts={() => openGlobalSettings("starting-prompts")}
+          onManageHarnesses={() => openGlobalSettings("harnesses")}
+        />
+
+        <TodoDialog
+          open={todoCaptureOpen}
+          projectId={projectId}
+          takenSlugs={cards.map((card) => card.slug)}
+          onClose={() => setTodoCaptureOpen(false)}
+          onWrite={materializeDraftFile}
+          onDeleteTodo={deleteTodo}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
           onManageHarnesses={() => openGlobalSettings("harnesses")}
         />

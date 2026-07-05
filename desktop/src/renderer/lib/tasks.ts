@@ -57,6 +57,43 @@ export function deriveTitleFromBody(body: string, maxWords = 6): string {
   return cleaned.split(" ").filter(Boolean).slice(0, maxWords).join(" ");
 }
 
+// Split captured stage-1 text into an independent title + remaining body at the
+// FIRST newline (Todos v1, Decision 2 — "Option B, split once at ⌘⏎"). The first
+// line crystallizes into the `title:` frontmatter; everything after it stays in
+// the body. A one-line capture yields a title and an empty body. A run-on first
+// line with no early newline is capped near `cap` chars (preferring the last word
+// boundary within reach, else a hard cut) so a wall-of-text first line can't
+// become the whole title — the overflow rejoins the body ahead of any later
+// lines. Title and body never rewrite each other after this one split.
+//
+// Both halves are returned verbatim apart from trimming the title's own outer
+// whitespace (a YAML scalar) and the single blank line the split consumes; body
+// spacing is otherwise preserved so pasted markdown round-trips.
+export function splitCaptureText(
+  text: string,
+  cap = 120,
+): { title: string; body: string } {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const nlIndex = normalized.indexOf("\n");
+  const firstLine = nlIndex === -1 ? normalized : normalized.slice(0, nlIndex);
+  const rest = nlIndex === -1 ? "" : normalized.slice(nlIndex + 1);
+  const titleRaw = firstLine.trim();
+
+  if (titleRaw.length <= cap) {
+    return { title: titleRaw, body: rest };
+  }
+
+  // Run-on first line: break near `cap`, preferring the last space at/under it so
+  // a word isn't sliced. Fall back to a hard cut when the nearest boundary is too
+  // far back to be a sensible title.
+  let breakAt = titleRaw.lastIndexOf(" ", cap);
+  if (breakAt < cap * 0.6) breakAt = cap;
+  const title = titleRaw.slice(0, breakAt).trim();
+  const overflow = titleRaw.slice(breakAt).trim();
+  const body = rest ? `${overflow}\n${rest}` : overflow;
+  return { title, body };
+}
+
 // A slug for `title` that doesn't collide with `taken`, appending -2, -3, …
 // Falls back to `fallback` ("task" by default) when the title has no slug-able
 // characters — notes pass "note" so an untitled note reads sensibly.
