@@ -188,8 +188,12 @@ export default defineSchema({
   commands: defineTable({
     projectId: v.id("projects"),
     host: v.optional(v.string()), // target machine; unset = any daemon for the project
-    kind: v.string(), // "open-chat" (resume existing) | "start-chat" (spawn fresh)
+    kind: v.string(), // "open-chat" (resume existing) | "start-chat" (spawn fresh) | "close-chat"
     harness: v.string(), // "claude-code" | "codex"
+    // Pins the environment that owns the live chat (from the task's chat-env),
+    // overriding the daemon's current launcher preference. close-chat needs
+    // this: closing targets the tab that exists, not the preferred opener.
+    environment: v.optional(v.string()),
     launchId: v.optional(v.string()), // start-chat: pending chat row correlation id
     automationRunId: v.optional(v.id("automationRuns")),
     sessionId: v.optional(v.string()), // the chat to resume; unset for start-chat

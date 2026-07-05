@@ -16,6 +16,7 @@ export const t3codeCodexLauncher: Launcher = {
   traits: {
     reopen: true,
     startNew: true,
+    close: false,
     pinsSessionId: true,
     autoSubmits: true,
     needsWorkspaceOpen: false,

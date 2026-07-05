@@ -17,6 +17,7 @@ export const t3codeClaudeLauncher: Launcher = {
   traits: {
     reopen: true,
     startNew: true,
+    close: false,
     pinsSessionId: true, // we generate the threadId in the dispatch command
     autoSubmits: true, // thread.turn.start runs the first turn
     needsWorkspaceOpen: false,

@@ -65,6 +65,7 @@ function makeEditorClaudeLauncher(config: EditorConfig): Launcher {
     traits: {
       reopen: true,
       startNew: true,
+      close: false,
       pinsSessionId: false, // extension owns the id → claim + discover
       autoSubmits: false, // prompt pre-fills; user presses Enter
       needsWorkspaceOpen: true,

@@ -380,6 +380,33 @@ async function workspaceUuids(): Promise<Set<string>> {
   return new Set(matchAll(await tree(), WORKSPACE_LINE_RE));
 }
 
+export interface CmuxSurfacePlacement {
+  surface: string;
+  workspace: string | null;
+}
+
+// Pair each surface with the workspace that owns it by walking the tree text in
+// order: a surface belongs to the most recent workspace line above it. The
+// workspace matters because close-surface only resolves a surface UUID within a
+// workspace scope (an unscoped UUID gets "Surface not found"). Pure, exported
+// for the smoke test.
+export function parseSurfacePlacements(
+  treeText: string,
+): CmuxSurfacePlacement[] {
+  const placements: CmuxSurfacePlacement[] = [];
+  let workspace: string | null = null;
+  for (const line of treeText.split(/\r?\n/)) {
+    const ws = /workspace\s+workspace:\d+\s+([0-9A-Fa-f-]{36})/.exec(line);
+    if (ws) {
+      workspace = ws[1];
+      continue;
+    }
+    const surface = /surface\s+surface:\d+\s+([0-9A-Fa-f-]{36})/.exec(line);
+    if (surface) placements.push({ surface: surface[1], workspace });
+  }
+  return placements;
+}
+
 // We tag the workspace that owns a project's chats with this in its cmux
 // "description" field, then match on it. Using the description (not the title)
 // as the key means the user can rename the workspace and we still find it; and
@@ -723,6 +750,67 @@ async function openChatInner(spec: OpenSpec): Promise<OpenResult> {
     return "spawned";
   } finally {
     spawning.delete(spec.sessionId);
+  }
+}
+
+export interface CloseSpec {
+  sessionId: string;
+  // Optional, for the debug trace only — correlates cmux calls to this close.
+  launchId?: string | null;
+}
+
+export type CloseResult = "closed" | "not-open";
+
+// Close the chat's tab, killing its process. The transcript on disk is
+// untouched — openChat() resumes it later — so closing is always reversible.
+// "not-open" is success too: the goal state (no tab for this chat) already
+// holds, e.g. the user closed it by hand or it lives on another machine.
+export async function closeChat(spec: CloseSpec): Promise<CloseResult> {
+  return withCmuxContext(
+    { chatId: spec.sessionId, launchId: spec.launchId ?? null },
+    () => closeChatInner(spec),
+  );
+}
+
+async function closeChatInner(spec: CloseSpec): Promise<CloseResult> {
+  const placements = parseSurfacePlacements(await tree());
+  let match: CmuxSurfacePlacement | null = null;
+  for (const placement of placements) {
+    if ((await checkpointOf(placement.surface)) === spec.sessionId) {
+      match = placement;
+      break;
+    }
+  }
+  // Forget the spawn memo either way: after a close (or a scan that found no
+  // tab), a later "open" must respawn rather than grace-focus a dead workspace.
+  recentSpawns.delete(spec.sessionId);
+  if (!match) {
+    log(`close sess=${short(spec.sessionId)} → not open anywhere (no-op)`);
+    return "not-open";
+  }
+  const scope = match.workspace ? ["--workspace", match.workspace] : [];
+  try {
+    await cmux(["close-surface", "--surface", match.surface, ...scope]);
+    log(
+      `close sess=${short(spec.sessionId)} → closed surface ${short(match.surface)}`,
+    );
+    return "closed";
+  } catch (err) {
+    // cmux refuses to close a workspace's last surface ("invalid_state: Cannot
+    // close the last surface"); the right move there is to close the now
+    // single-chat workspace itself.
+    if (
+      err instanceof CmuxError &&
+      /last surface/i.test(err.message) &&
+      match.workspace
+    ) {
+      await cmux(["close-workspace", "--workspace", match.workspace]);
+      log(
+        `close sess=${short(spec.sessionId)} → closed workspace ${short(match.workspace)} (last tab)`,
+      );
+      return "closed";
+    }
+    throw err;
   }
 }
 

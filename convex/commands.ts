@@ -79,6 +79,8 @@ export const enqueueCommand = mutation({
     host: v.optional(v.string()),
     kind: v.string(),
     harness: v.string(),
+    // Pins the environment owning the chat's tab (see schema); close-chat only.
+    environment: v.optional(v.string()),
     launchId: v.optional(v.string()),
     sessionId: v.optional(v.string()),
     path: v.optional(v.string()),

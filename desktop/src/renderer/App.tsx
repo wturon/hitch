@@ -711,6 +711,10 @@ function WorkspaceContent({
       );
     },
   );
+  // Close-on-done: checking a todo done enqueues a close-chat command so the
+  // daemon can kill the chat's cmux tab (stray tabs eat memory). Fire-and-forget
+  // — a close that can't run just leaves the tab open, never blocks the check.
+  const enqueueCommand = useMutation(api.commands.enqueueCommand);
   // Attachment rows for the project (image blobs live outside `files`). We only
   // need them to drive the delete cascade: when a task is removed, tombstone its
   // attachment rows so the daemon cleans up the local files + empty folders.
@@ -1098,6 +1102,30 @@ function WorkspaceContent({
       hash: await sha256(nextContent),
       deleted: false,
     });
+    // Done means done: close the chat's tab too, even mid-turn — the transcript
+    // survives on disk, so clicking the chat later resumes it (fully
+    // reversible). Only manual checks close; agent-stamped `completed-at`
+    // doesn't pass through here, so an agent finishing its own task is never
+    // killed mid-final-message. The command carries the lifecycle invariants
+    // rather than trusting this moment: `environment` pins the environment
+    // that owns the live tab (not the launcher preference at execution time),
+    // and `linkedPath` lets the daemon re-check at execution that the task is
+    // still completed and still bound to this chat (a quick uncheck between
+    // enqueue and claim drops the close instead of killing the tab).
+    if (completed && todo.chat) {
+      void enqueueCommand({
+        projectId,
+        kind: "close-chat",
+        harness: todo.chat.harness,
+        environment: todo.chat.env,
+        sessionId: todo.chat.id,
+        cwd: todo.chat.cwd,
+        linkedType: "task",
+        linkedPath: todo.path,
+      }).catch((err) =>
+        console.error("Failed to enqueue close-chat for done todo", err),
+      );
+    }
   }
 
   // Unarchive a todo: clear its `archived-at:` timestamp so the derivation

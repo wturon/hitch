@@ -34,6 +34,15 @@ export interface ReopenCtx {
   project: ProjectRef;
 }
 
+// Close the presented chat — kill its tab/window in the environment. The
+// harness transcript on disk is untouched, so reopen() can resume it later;
+// close is always reversible. Only introspectable environments (cmux) can
+// implement this; launchers that can't simply omit it.
+export interface CloseCtx {
+  sessionId: string;
+  project: ProjectRef;
+}
+
 // Start a brand-new chat seeded with a prompt. Linking rides on callbacks because
 // some harnesses (codex) only learn their session/thread id mid-launch, so the
 // daemon can't link the task before the launch call returns — the launcher fires
@@ -69,6 +78,7 @@ export interface LaunchOutcome {
 export interface LauncherTraits {
   reopen: boolean;
   startNew: boolean;
+  close: boolean; // can kill the chat's tab (the transcript survives on disk)
   pinsSessionId: boolean; // we choose the id up front → can pre-link the task
   autoSubmits: boolean; // startNew runs the first turn vs. user presses Enter
   needsWorkspaceOpen: boolean; // reopen needs the folder already open (vscode)
@@ -85,4 +95,5 @@ export interface Launcher {
   probe?(): Promise<{ available: boolean; reason?: string }>;
   reopen?(ctx: ReopenCtx): Promise<LaunchOutcome>;
   startNew?(ctx: StartCtx): Promise<LaunchOutcome>;
+  close?(ctx: CloseCtx): Promise<LaunchOutcome>;
 }

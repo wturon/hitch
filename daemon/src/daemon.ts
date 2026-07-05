@@ -462,6 +462,26 @@ export function projectedChatFrontmatter(
   return updates;
 }
 
+// A close-chat command is enqueued the moment a todo is checked done, but it
+// executes later — usually seconds, up to the 5-min command TTL after a daemon
+// hiccup. The world can move under it: the user unchecks the todo, or the task
+// gets relinked to a different chat. So the daemon re-reads the linked task at
+// execution time and skips the close unless the task is still completed AND
+// still bound to the same chat. Returns the skip reason, or null to proceed.
+// Pure (content in, verdict out) for the smoke test; the caller reads the file.
+export function closeChatSkipReason(
+  content: string,
+  sessionId: string,
+): string | null {
+  if (!(frontmatterValue(content, "completed-at") ?? "").trim()) {
+    return "not-completed";
+  }
+  if (frontmatterValue(content, "chat-id") !== sessionId) {
+    return "chat-relinked";
+  }
+  return null;
+}
+
 export function frontmatterAlreadyProjected(
   content: string,
   updates: Record<string, string | undefined>,
@@ -1471,6 +1491,41 @@ async function startHitchBinding({
         });
         await complete(cmd, "done", result);
         logger.info(`[hitch:${projectLabel}] ⮑ open-chat ${sessionId} → ${result}`);
+      } else if (cmd.kind === "close-chat") {
+        if (!launcher.close) {
+          throw new Error(
+            `close not supported for ${cmd.harness}/${launcher.environment}`,
+          );
+        }
+        if (!cmd.sessionId) throw new Error("close-chat requires sessionId");
+        // Staleness guard (see closeChatSkipReason): re-read the linked task
+        // now and drop the close if it's no longer a completed task bound to
+        // this chat. A task file that vanished skips too — never fail open into
+        // killing a tab the task no longer vouches for.
+        if (cmd.linkedPath) {
+          const content = await readFile(toAbs(cmd.linkedPath), "utf8").catch(
+            () => null,
+          );
+          const skip =
+            content === null
+              ? "task-missing"
+              : closeChatSkipReason(content, cmd.sessionId);
+          if (skip) {
+            await complete(cmd, "done", `skipped-stale:${skip}`);
+            logger.info(
+              `[hitch:${projectLabel}] ⮑ close-chat ${cmd.sessionId} → skipped (${skip})`,
+            );
+            return;
+          }
+        }
+        const { result } = await launcher.close({
+          sessionId: cmd.sessionId,
+          project,
+        });
+        await complete(cmd, "done", result);
+        logger.info(
+          `[hitch:${projectLabel}] ⮑ close-chat ${cmd.sessionId} → ${result}`,
+        );
       } else if (cmd.kind === "start-chat") {
         if (!launcher.startNew) {
           throw new Error(`start-chat not supported for ${cmd.harness}`);
