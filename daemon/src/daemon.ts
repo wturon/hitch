@@ -35,6 +35,8 @@ import type { ChatLifecycleStore, LocalChatRow } from "./chatLifecycleStore.js";
 import { createDebugApi, type DebugApi } from "./debugApi.js";
 import { ChatStateObserver } from "./observer/index.js";
 import { startSkillSync } from "./skills.js";
+import { frontmatterValue, setFrontmatterKeys } from "./frontmatter.js";
+import { runTaskFrontmatterMigration } from "./taskFrontmatterMigration.js";
 
 if (!globalThis.WebSocket) {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
@@ -307,8 +309,6 @@ export function loadHitchConfig(path: string, cwd = process.cwd()): RuntimeConfi
 const hashOf = (content: string): string =>
   createHash("sha256").update(content).digest("hex");
 
-const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
-
 // The fire-and-forget "summoning" flag the server stamps on a task/note when a
 // delegation is requested (see convex requestDelegation + lib/chat.ts). The
 // daemon owns its teardown: it clears these when a real chat binds (the chat-*
@@ -362,44 +362,6 @@ export function isPrunableBodyPath(relPath: string): boolean {
   return PRUNABLE_BODY_RE.test(relPath);
 }
 
-function setFrontmatterKeys(
-  content: string,
-  updates: Record<string, string | undefined>,
-): string {
-  const eol = content.includes("\r\n") ? "\r\n" : "\n";
-  const match = content.match(FRONTMATTER_RE);
-  let lines = match ? match[1].split(/\r?\n/) : [];
-  const body = match ? match[2] : content;
-  const touched = new Set(Object.keys(updates));
-
-  lines = lines.filter((line) => {
-    const idx = line.indexOf(":");
-    return idx === -1 || !touched.has(line.slice(0, idx).trim());
-  });
-
-  for (const [key, value] of Object.entries(updates)) {
-    if (value != null && value !== "") lines.push(`${key}: ${value}`);
-  }
-
-  return `---${eol}${lines.join(eol)}${eol}---${eol}${body}`;
-}
-
-function frontmatterValue(content: string, key: string): string | undefined {
-  const match = content.match(FRONTMATTER_RE);
-  if (!match) return undefined;
-
-  for (const line of match[1].split(/\r?\n/)) {
-    const idx = line.indexOf(":");
-    if (idx === -1) continue;
-    if (line.slice(0, idx).trim() !== key) continue;
-    return line
-      .slice(idx + 1)
-      .trim()
-      .replace(/^["']|["']$/g, "");
-  }
-  return undefined;
-}
-
 const execFileP = promisify(execFile);
 const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
 function isProcessAlive(pid: number): boolean {
@@ -442,8 +404,19 @@ function taskStatus(content: string): string {
     .replace(/\s+/g, "-");
 }
 
+// A task is in a terminal state once it is completed or archived. Todos v1
+// (slice 6a) makes the `completed-at:`/`archived-at:` timestamps the source of
+// truth; the legacy `status: done|archived` read is kept as a fallback because
+// the board can still write `status: archived` until slice 6b — remove the
+// legacy `taskStatus`/`TERMINAL_TASK_STATUSES` branch there.
+function isTerminalTaskState(content: string): boolean {
+  if (frontmatterValue(content, "completed-at")) return true;
+  if (frontmatterValue(content, "archived-at")) return true;
+  return TERMINAL_TASK_STATUSES.has(taskStatus(content)); // legacy; dies in slice 6b
+}
+
 function settledChatStatus(content: string): string | undefined {
-  return TERMINAL_TASK_STATUSES.has(taskStatus(content)) ? undefined : "waiting";
+  return isTerminalTaskState(content) ? undefined : "waiting";
 }
 
 export function projectedChatStatus(
@@ -1195,6 +1168,27 @@ async function startHitchBinding({
       },
       (err) =>
         logError(logger, `[hitch:${projectLabel}] files subscription failed: ${String(err)}`),
+    ),
+  );
+
+  // Todos v1 (slice 6a): one-time frontmatter migration rewriting legacy
+  // `status:` into `completed-at:`/`archived-at:` timestamps. Runs once per
+  // project (gated by a synced `todosSchemaVersion` marker in project.json),
+  // here — after the files subscription is attached — so each rewrite pushes up
+  // through the normal path (pushLocal → Convex → other machines). Non-fatal to
+  // startup: a failure logs and leaves the marker unwritten, so the intrinsically
+  // idempotent walk simply resumes next boot. See PRD §4 "Migration mechanics".
+  void runTaskFrontmatterMigration({
+    hitchPath: root.hitchPath,
+    pushLocal,
+    logger: {
+      info: (message) => logger.info(`[hitch:${projectLabel}] ${message}`),
+      error: (message) => logError(logger, `[hitch:${projectLabel}] ${message}`),
+    },
+  }).catch((err) =>
+    logError(
+      logger,
+      `[hitch:${projectLabel}] task frontmatter migration failed: ${String(err)}`,
     ),
   );
 
