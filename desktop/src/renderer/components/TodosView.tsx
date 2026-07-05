@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "convex/react";
 import { CheckIcon, PlusIcon } from "lucide-react";
 import { api } from "@convex/_generated/api";
@@ -9,6 +9,7 @@ import { parseChatOpenState } from "@/lib/chat";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import {
   deriveTodoGroups,
+  indexChats,
   type FileRow,
   type Todo,
   type TodoGroups,
@@ -291,7 +292,22 @@ export function TodosView({
 }) {
   const [showAllDone, setShowAllDone] = useState(false);
   const order = useQuery(api.backlogOrders.getBacklogOrder, { projectId }) ?? [];
-  const groups: TodoGroups = deriveTodoGroups(files, order);
+
+  // The live-chat rows backing the derivation's index-supplied mode
+  // (chats.listForTodos is deliberately complete — see its comment; a truncated
+  // feed would misgroup working chats into NEEDS YOU).
+  const chatRows = useQuery(api.chats.listForTodos, { projectId });
+  // LOADING GUARD (load-bearing, non-obvious): while the subscription is still
+  // undefined, derive WITHOUT the index (frontmatter coexistence mode) — NOT
+  // with an empty map. Under slice 1's index-supplied semantics an empty map
+  // means "every chat-id is a dead chat", which would flash every working todo
+  // into NEEDS YOU for a frame. Only once rows arrive does the live index
+  // become authoritative.
+  const chats = useMemo(
+    () => (chatRows === undefined ? undefined : indexChats(chatRows)),
+    [chatRows],
+  );
+  const groups: TodoGroups = deriveTodoGroups(files, order, chats);
 
   const isEmpty =
     groups.needsYou.length +
