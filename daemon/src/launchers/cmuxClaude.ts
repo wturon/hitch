@@ -6,7 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import { openChat, startChat } from "../cmux.js";
+import { closeChat, openChat, startChat } from "../cmux.js";
 import type { Launcher } from "./types.js";
 
 export const cmuxClaudeLauncher: Launcher = {
@@ -15,6 +15,7 @@ export const cmuxClaudeLauncher: Launcher = {
   traits: {
     reopen: true,
     startNew: true,
+    close: true,
     pinsSessionId: true,
     autoSubmits: true,
     needsWorkspaceOpen: false,
@@ -48,6 +49,11 @@ export const cmuxClaudeLauncher: Launcher = {
       projectName: ctx.project.projectName,
       launchId: ctx.launchId,
     });
+    return { result };
+  },
+
+  async close(ctx) {
+    const result = await closeChat({ sessionId: ctx.sessionId });
     return { result };
   },
 };

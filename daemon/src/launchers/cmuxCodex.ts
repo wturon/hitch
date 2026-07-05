@@ -2,7 +2,7 @@
 // Hitch's Codex hook: the daemon records an exact cwd+prompt launch claim before
 // spawning Codex, and the hook consumes it when Codex reports the real session id.
 
-import { openChat, startCommand } from "../cmux.js";
+import { closeChat, openChat, startCommand } from "../cmux.js";
 import {
   recordCodexCmuxLaunchClaim,
   updateCodexCmuxLaunchClaim,
@@ -75,6 +75,7 @@ export const cmuxCodexLauncher: Launcher = {
   traits: {
     reopen: true,
     startNew: true,
+    close: true,
     pinsSessionId: false,
     autoSubmits: true,
     needsWorkspaceOpen: false,
@@ -131,6 +132,13 @@ export const cmuxCodexLauncher: Launcher = {
       projectName: ctx.project.projectName,
       launchId: ctx.launchId,
     });
+    return { result };
+  },
+
+  // The cmux resume binding keys on the harness-native chat id for Codex too
+  // (checkpoint_id = thread id), so the same scan-and-close works unchanged.
+  async close(ctx) {
+    const result = await closeChat({ sessionId: ctx.sessionId });
     return { result };
   },
 };

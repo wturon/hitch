@@ -11,6 +11,7 @@ export const codexAppLauncher: Launcher = {
   traits: {
     reopen: true,
     startNew: true,
+    close: false,
     pinsSessionId: true,
     autoSubmits: true,
     needsWorkspaceOpen: false,

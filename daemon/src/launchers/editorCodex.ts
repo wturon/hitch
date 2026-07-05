@@ -62,6 +62,7 @@ function makeEditorCodexLauncher(config: EditorConfig): Launcher {
     traits: {
       reopen: true,
       startNew: true,
+      close: false,
       pinsSessionId: true,
       autoSubmits: true,
       needsWorkspaceOpen: true,

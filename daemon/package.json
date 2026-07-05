@@ -30,6 +30,7 @@
     "smoke:automation-prune-path": "tsx scripts/automation-prune-path-smoke.ts",
     "smoke:chat-lifecycle-wakeup": "tsx scripts/chat-lifecycle-wakeup-smoke.ts",
     "smoke:codex-cmux-command": "tsx scripts/codex-cmux-command-smoke.ts",
+    "smoke:cmux-close-placements": "tsx scripts/cmux-close-placements-smoke.ts",
     "smoke:observer-derive": "tsx scripts/observer-derive-smoke.ts",
     "smoke:observer-tail": "tsx scripts/observer-tail-smoke.ts",
     "smoke:observer-store": "tsx scripts/observer-store-smoke.ts",

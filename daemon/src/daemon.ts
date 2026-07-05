@@ -1471,6 +1471,21 @@ async function startHitchBinding({
         });
         await complete(cmd, "done", result);
         logger.info(`[hitch:${projectLabel}] ⮑ open-chat ${sessionId} → ${result}`);
+      } else if (cmd.kind === "close-chat") {
+        if (!launcher.close) {
+          throw new Error(
+            `close not supported for ${cmd.harness}/${launcher.environment}`,
+          );
+        }
+        if (!cmd.sessionId) throw new Error("close-chat requires sessionId");
+        const { result } = await launcher.close({
+          sessionId: cmd.sessionId,
+          project,
+        });
+        await complete(cmd, "done", result);
+        logger.info(
+          `[hitch:${projectLabel}] ⮑ close-chat ${cmd.sessionId} → ${result}`,
+        );
       } else if (cmd.kind === "start-chat") {
         if (!launcher.startNew) {
           throw new Error(`start-chat not supported for ${cmd.harness}`);
