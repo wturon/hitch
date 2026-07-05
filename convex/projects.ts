@@ -1,7 +1,6 @@
 import {
   mutation,
   query,
-  internalMutation,
   type MutationCtx,
 } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
@@ -306,22 +305,5 @@ export const create = mutation({
     const project = await ctx.db.get(projectId);
     if (project) await upsertProjectConfigFile(ctx, project);
     return await ctx.db.get(projectId);
-  },
-});
-
-// Todos v1 cleanup: unset the deprecated `projects.statuses` field on every
-// project doc so the schema field can be dropped in a follow-up PR. Small table,
-// so a full collect is fine. Run once by the overseer post-deploy.
-export const clearLegacyStatuses = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const projects = await ctx.db.query("projects").collect();
-    let cleared = 0;
-    for (const project of projects) {
-      if (project.statuses === undefined) continue;
-      await ctx.db.patch(project._id, { statuses: undefined });
-      cleared++;
-    }
-    return { cleared, total: projects.length };
   },
 });
