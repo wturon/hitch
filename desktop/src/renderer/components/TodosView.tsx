@@ -1,7 +1,20 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useQuery } from "convex/react";
+import { useMemo, useState, type CSSProperties } from "react";
+import { useMutation, useQuery } from "convex/react";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { CheckIcon, PlusIcon } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
@@ -10,6 +23,7 @@ import { parseFrontmatter } from "@/lib/frontmatter";
 import {
   deriveTodoGroups,
   indexChats,
+  reorderBacklog,
   type FileRow,
   type Todo,
   type TodoGroups,
@@ -81,6 +95,8 @@ function TodoCheckbox({
       role="checkbox"
       aria-checked={checked}
       aria-label={checked ? "Mark not done" : "Mark done"}
+      // Keep the tap on the checkbox from arming the row's drag sensor.
+      onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         onToggle();
@@ -126,7 +142,11 @@ function RowChip({
   }
   if (!chip) return <span className="w-6 shrink-0" aria-hidden />;
   return (
-    <span className={cn("flex shrink-0 justify-end", ghost && "opacity-35")}>
+    <span
+      // The chip opens the linked chat; keep its pointerdown from arming a drag.
+      onPointerDown={(e) => e.stopPropagation()}
+      className={cn("flex shrink-0 justify-end", ghost && "opacity-35")}
+    >
       {chip}
     </span>
   );
@@ -140,12 +160,25 @@ function TodoRow({
   projectId,
   onOpen,
   onToggleCompleted,
+  drag,
 }: {
   todo: Todo;
   variant: RowVariant;
   projectId: Id<"projects">;
   onOpen: (path: string) => void;
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
+  // Present only for BACKLOG rows, which are drag-reorderable. Wires dnd-kit's
+  // sortable node/transform onto the whole row (whole-row drag, like the board's
+  // cards) while the checkbox / chip / row-click stay live — interactive
+  // children stop pointerdown so a drag can't start from them, and PointerSensor's
+  // activation distance lets a plain click through to open.
+  drag?: {
+    setNodeRef: (node: HTMLElement | null) => void;
+    style: CSSProperties;
+    attributes: Record<string, unknown>;
+    listeners: Record<string, unknown> | undefined;
+    dragging: boolean;
+  };
 }) {
   const done = variant === "done";
   // A requested (pre-bind) row folds into WORKING extra-ghosted; a bound working
@@ -159,6 +192,10 @@ function TodoRow({
 
   return (
     <div
+      ref={drag?.setNodeRef}
+      style={drag?.style}
+      {...drag?.attributes}
+      {...drag?.listeners}
       role="button"
       tabIndex={0}
       aria-label={todo.title}
@@ -173,6 +210,10 @@ function TodoRow({
       className={cn(
         "group flex cursor-pointer items-center gap-3 rounded-lg px-2.5 transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none",
         twoLine ? "min-h-[54px] py-1.5" : "h-[42px]",
+        // A dragged backlog row lifts subtly — opaque over its neighbours, a
+        // hair of shadow — no new chrome, no handle. Quiet.
+        drag?.dragging &&
+          "relative z-10 bg-background shadow-sm ring-1 ring-border/70",
       )}
     >
       <TodoCheckbox
@@ -201,6 +242,44 @@ function TodoRow({
       </div>
       <RowChip todo={todo} projectId={projectId} ghost={done} />
     </div>
+  );
+}
+
+// A BACKLOG row wrapped in dnd-kit sortable wiring so the group can be manually
+// reordered (Decision "The list": backlog is the one group with manual order).
+// Mirrors AppSidebar's SortablePinnedRow — whole-row drag, transform/transition
+// handed to TodoRow's root. Keyed by the task path (its sortable id).
+function SortableTodoRow({
+  todo,
+  projectId,
+  onOpen,
+  onToggleCompleted,
+}: {
+  todo: Todo;
+  projectId: Id<"projects">;
+  onOpen: (path: string) => void;
+  onToggleCompleted: (todo: Todo, completed: boolean) => void;
+}) {
+  const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
+    useSortable({ id: todo.path });
+  return (
+    <TodoRow
+      todo={todo}
+      variant="backlog"
+      projectId={projectId}
+      onOpen={onOpen}
+      onToggleCompleted={onToggleCompleted}
+      drag={{
+        setNodeRef,
+        style: {
+          transform: CSS.Transform.toString(transform),
+          transition,
+        },
+        attributes: attributes as unknown as Record<string, unknown>,
+        listeners: listeners as unknown as Record<string, unknown> | undefined,
+        dragging: isDragging,
+      }}
+    />
   );
 }
 
@@ -293,6 +372,27 @@ export function TodosView({
   const [showAllDone, setShowAllDone] = useState(false);
   const order = useQuery(api.backlogOrders.getBacklogOrder, { projectId }) ?? [];
 
+  // Whole-list-replace mutation with an optimistic update: the drop reflects
+  // instantly by patching the cached getBacklogOrder before the round trip, so
+  // the list doesn't flicker while the mutation flies (same pattern the sidebar
+  // uses for pin reordering). `args.order` IS the next full ordered list, so
+  // the derivation re-runs against it directly.
+  const setBacklogOrder = useMutation(
+    api.backlogOrders.setBacklogOrder,
+  ).withOptimisticUpdate((store, args) => {
+    store.setQuery(
+      api.backlogOrders.getBacklogOrder,
+      { projectId: args.projectId },
+      args.order,
+    );
+  });
+
+  // A small activation distance keeps a plain click (open the todo / toggle the
+  // checkbox) from being read as a drag — matching the sidebar's sortable list.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
+
   // The live-chat rows backing the derivation's index-supplied mode
   // (chats.listForTodos is deliberately complete — see its comment; a truncated
   // feed would misgroup working chats into NEEDS YOU).
@@ -323,6 +423,26 @@ export function TodosView({
 
   const rowProps = { projectId, onOpen: onOpenTodo, onToggleCompleted };
 
+  // The sortable ids = the currently-shown backlog paths in rendered order
+  // (sortBacklog has already interleaved ordered rows + updatedAt-desc absentees).
+  const backlogPaths = groups.backlog.map((t) => t.path);
+
+  function onBacklogDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const from = backlogPaths.indexOf(String(active.id));
+    const to = backlogPaths.indexOf(String(over.id));
+    if (from === -1 || to === -1) return;
+    // Persist the WHOLE currently-shown list, reordered — a full replace. This
+    // pins every shown row (including absentees) and naturally drops any stale
+    // path from the stored order (opportunistic compaction), since backlogPaths
+    // only contains present paths.
+    void setBacklogOrder({
+      projectId,
+      order: reorderBacklog(backlogPaths, from, to),
+    });
+  }
+
   return (
     <div className="-mx-4 flex min-h-0 flex-1 flex-col overflow-y-auto sm:-mx-6 lg:-mx-8">
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-6 pt-7 pb-16">
@@ -349,9 +469,25 @@ export function TodosView({
         <section className="flex flex-col">
           <GroupHeader label="BACKLOG" />
           <AddTodoRow onAdd={onAddTodo} />
-          {groups.backlog.map((todo) => (
-            <TodoRow key={todo.path} todo={todo} variant="backlog" {...rowProps} />
-          ))}
+          <DndContext
+            sensors={sensors}
+            onDragEnd={onBacklogDragEnd}
+          >
+            <SortableContext
+              items={backlogPaths}
+              strategy={verticalListSortingStrategy}
+            >
+              {groups.backlog.map((todo) => (
+                <SortableTodoRow
+                  key={todo.path}
+                  todo={todo}
+                  projectId={projectId}
+                  onOpen={onOpenTodo}
+                  onToggleCompleted={onToggleCompleted}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
           {isEmpty && <EmptyHint />}
         </section>
 

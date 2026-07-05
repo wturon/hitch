@@ -333,6 +333,41 @@ function sortBacklog(backlog: Todo[], order: string[]): Todo[] {
   return ordered.concat(absentees);
 }
 
+// Compute the next full ordered array of task-paths to persist via
+// `setBacklogOrder` after the user drags a backlog row from `fromIndex` to
+// `toIndex`. The input MUST be the *currently-shown* backlog paths in their
+// rendered order — i.e. `deriveTodoGroups(...).backlog.map(t => t.path)`, which
+// already interleaves `order`-listed rows with the updatedAt-desc absentee block
+// (sortBacklog). Because the input is that full rendered list, the returned
+// array pins EVERY currently-shown row — ordered rows and absentees alike — so:
+//   • it's the whole-list replace the write contract wants (setBacklogOrder is a
+//     dumb replace, no server-side merge);
+//   • stale paths in the old stored `order` (deleted/completed/relinked tasks)
+//     are simply never included → opportunistic compaction happens for free, the
+//     stored array can't grow unbounded with tombstones;
+//   • dragging an absentee (an agent-created task the user never touched) lands
+//     it pinned like any other row, and pins the rest of the list with it.
+// A no-op drop or out-of-range index returns the list unchanged (a fresh copy).
+export function reorderBacklog(
+  paths: string[],
+  fromIndex: number,
+  toIndex: number,
+): string[] {
+  const next = paths.slice();
+  if (
+    fromIndex === toIndex ||
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= next.length ||
+    toIndex >= next.length
+  ) {
+    return next;
+  }
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, moved);
+  return next;
+}
+
 // The sidebar-badge projection of the group predicate: the counted attention
 // group for ONE task body's raw content — "working" / "needs-you" / null
 // (done, archived, or backlog: uncounted). This is the same predicate chain
