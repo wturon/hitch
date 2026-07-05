@@ -61,6 +61,18 @@ export default defineSchema({
     .index("by_project", ["projectId"])
     .index("by_key", ["projectId", "path"]),
 
+  // Manual Backlog ordering for the Todos list (todos-v1). Pure UI state, one
+  // row per project: an ordered list of task rel-paths, front = top of backlog.
+  // Isolated in its own table (not a `projects` field) so a reorder write never
+  // re-renders everything subscribed to the project doc. Lossy against the
+  // filesystem by design — agents never need it, and read-time reconciliation
+  // (lib/todos.ts sortBacklog) prunes stale paths and appends unlisted tasks.
+  backlogOrders: defineTable({
+    projectId: v.id("projects"),
+    order: v.array(v.string()),
+    updatedAt: v.number(),
+  }).index("by_project", ["projectId"]),
+
   // Derived read model for synced `.hitch/automations/<slug>/index.md`
   // definitions. The markdown file remains the editable source of truth; this
   // table stores normalized frontmatter and schedule state for UI/scheduler

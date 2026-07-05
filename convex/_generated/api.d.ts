@@ -15,6 +15,7 @@ import type * as automationDefinitions from "../automationDefinitions.js";
 import type * as automationScheduler from "../automationScheduler.js";
 import type * as automationSchedules from "../automationSchedules.js";
 import type * as automations from "../automations.js";
+import type * as backlogOrders from "../backlogOrders.js";
 import type * as chats from "../chats.js";
 import type * as commands from "../commands.js";
 import type * as crons from "../crons.js";
@@ -24,6 +25,7 @@ import type * as http from "../http.js";
 import type * as projects from "../projects.js";
 import type * as skills from "../skills.js";
 import type * as status from "../status.js";
+import type * as todoGroups from "../todoGroups.js";
 import type * as users from "../users.js";
 
 import type {
@@ -40,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   automationScheduler: typeof automationScheduler;
   automationSchedules: typeof automationSchedules;
   automations: typeof automations;
+  backlogOrders: typeof backlogOrders;
   chats: typeof chats;
   commands: typeof commands;
   crons: typeof crons;
@@ -49,6 +52,7 @@ declare const fullApi: ApiFromModules<{
   projects: typeof projects;
   skills: typeof skills;
   status: typeof status;
+  todoGroups: typeof todoGroups;
   users: typeof users;
 }>;
 

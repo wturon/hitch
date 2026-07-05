@@ -84,6 +84,8 @@ import { ChatsView } from "@/components/ChatsView";
 import { DebugView } from "@/components/DebugView";
 import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
+import { TodosView } from "@/components/TodosView";
+import type { Todo } from "@/lib/todos";
 import {
   CommandPalette,
   WORKSPACE_VIEWS,
@@ -1895,6 +1897,24 @@ function BoardContent({
     }
   }
 
+  // Check/uncheck a todo: stamp (or clear) `completed-at` in the task.md
+  // frontmatter through the same optimistic upsert everything else uses, so the
+  // row moves between BACKLOG/… and DONE instantly. Unchecking clears the field
+  // (Backlog-top prepend is slice 5); an agent writing `completed-at` itself is
+  // honored the same way (Decision 7).
+  async function setTodoCompleted(todo: Todo, completed: boolean) {
+    const nextContent = setFrontmatterKeys(todo.content, {
+      "completed-at": completed ? new Date().toISOString() : undefined,
+    });
+    await upsertFile({
+      projectId,
+      path: todo.path,
+      content: nextContent,
+      hash: await sha256(nextContent),
+      deleted: false,
+    });
+  }
+
   async function setArchived(card: Card, archived: boolean) {
     const { frontmatter } = parseFrontmatter(card.content);
     const restoreStatus = columnFor(frontmatter.archivedFrom, boardStatuses);
@@ -2288,7 +2308,17 @@ function BoardContent({
           </section>
         )}
 
-        {workspaceView === "notes" ? (
+        {workspaceView === "todos" ? (
+          <TodosView
+            projectId={projectId}
+            files={files}
+            onOpenTodo={(path) => setSelectedPath(path)}
+            onAddTodo={() => setDraftStatus(boardStatuses[0]?.id ?? "todo")}
+            onToggleCompleted={(todo, completed) =>
+              void setTodoCompleted(todo, completed)
+            }
+          />
+        ) : workspaceView === "notes" ? (
           <NotesView
             projectId={projectId}
             files={files}

@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireProjectAccess, requireUser } from "./authz";
 import { projectSyncedAutomationFile } from "./automations";
+import { taskCountedGroup } from "./todoGroups";
 
 // Insert or update a file by its (projectId, path) key. A delete is just an
 // upsert with deleted: true (a tombstone) so other machines learn to remove the
@@ -77,53 +78,20 @@ export const listFiles = query({
 // Task bodies live at `tasks/<slug>/task.md`; other files in a task folder
 // aren't cards. Mirrors lib/tasks.ts TASK_RE.
 const TASK_BODY_RE = /^tasks\/[^/]+\/task\.md$/;
-// Leading YAML frontmatter block. Mirrors lib/frontmatter.ts FRONTMATTER_RE,
-// but we only need the raw block, not the body.
-const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
 
-// Pull and normalize just the `chat-status` field from a task body's
-// frontmatter. Server-side twin of parseFrontmatter + normalizeChatStatus in
-// the renderer (lib/frontmatter.ts, lib/chat.ts) — kept narrow so the sidebar
-// count query never has to ship full task contents to the client. Keep the
-// status vocabulary (and aliases) in sync with lib/chat.ts.
-function taskChatStatus(content: string): "working" | "needs-input" | null {
-  const match = content.match(FRONTMATTER_RE);
-  if (!match) return null;
-  for (const line of match[1].split(/\r?\n/)) {
-    const idx = line.indexOf(":");
-    if (idx === -1 || line.slice(0, idx).trim() !== "chat-status") continue;
-    const value = line
-      .slice(idx + 1)
-      .trim()
-      .replace(/^["']|["']$/g, "")
-      .toLowerCase()
-      .replace(/\s+/g, "-");
-    if (
-      value === "working" ||
-      value === "active" ||
-      value === "busy" ||
-      value === "running"
-    )
-      return "working";
-    if (
-      value === "needs-input" ||
-      value === "needs_input" ||
-      value === "needs-help"
-    )
-      return "needs-input";
-    // "waiting"/"ready"/"idle" and anything else don't count toward attention.
-    return null;
-  }
-  return null;
-}
-
-// Per-project tallies of tasks whose chat is mid-turn ("working") or blocked on
-// the human ("needs-input"), for the at-a-glance sidebar. Computed server-side
-// and returned as small counts keyed by project id, so the client never has to
-// subscribe to every project's full file contents just to show a badge.
-// Reactive: re-runs when membership changes or any task in any of the user's
-// projects is written. Projects with no attention-worthy tasks still get a
-// {0,0} entry so the UI can tell "idle" apart from "still loading".
+// Per-project tallies for the at-a-glance sidebar badges: tasks in the WORKING
+// group (spinner count) and the NEEDS YOU group (amber count). Under todos-v1
+// these are DERIVED, not raw `chat-status` reads: `working` = a pending/failed
+// summon flag OR a bound chat that is mid-turn; `needs-you` = a bound chat that
+// isn't working and isn't completed/archived. The predicate lives in the pure
+// ./todoGroups module (server-side twin of lib/todos.ts groupOf, honoring the
+// slice-1→5 compat shim) so the badges match the Todos list exactly. Computed
+// server-side and returned as small counts keyed by project id, so the client
+// never has to subscribe to every project's full file contents. Reactive:
+// re-runs when membership changes or any task is written. Projects with no
+// attention-worthy tasks still get a {0,0} entry so the UI can tell "idle" apart
+// from "still loading". The `needsInput` key name is retained for the existing
+// AppSidebar consumer; it now carries the NEEDS YOU group count.
 export const chatStatusCounts = query({
   args: {},
   handler: async (ctx) => {
@@ -143,9 +111,9 @@ export const chatStatusCounts = query({
       let needsInput = 0;
       for (const file of files) {
         if (file.deleted || !TASK_BODY_RE.test(file.path)) continue;
-        const status = taskChatStatus(file.content);
-        if (status === "working") working++;
-        else if (status === "needs-input") needsInput++;
+        const group = taskCountedGroup(file.content);
+        if (group === "working") working++;
+        else if (group === "needs-you") needsInput++;
       }
       counts[membership.projectId] = { working, needsInput };
     }
