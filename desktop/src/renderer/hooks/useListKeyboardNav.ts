@@ -35,10 +35,16 @@ export type ListKeyboardNav = {
 // submit). Plain buttons, links and `role="button"` rows are NOT deferred to:
 // arrows are meaningless on them, so nav keeps working "from anywhere" even when
 // stray focus lands on a button (e.g. a dialog restoring focus to its trigger).
-// The ↵ handler's preventDefault then also suppresses that button's activation.
+// The Enter handler's preventDefault then also suppresses that button's activation.
 function defaultIgnoreTarget(target: HTMLElement | null): boolean {
   if (!target) return false;
-  if (target.closest('[role="dialog"],[role="menu"]')) return true;
+  if (
+    target.closest(
+      '[role="dialog"],[role="alertdialog"],[role="menu"]',
+    )
+  ) {
+    return true;
+  }
   return Boolean(
     target.closest('input,textarea,select,[contenteditable="true"]'),
   );
@@ -94,6 +100,7 @@ export function useListKeyboardNav({
   // re-binding on every render.
   const handlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
   handlerRef.current = (e) => {
+    if (e.defaultPrevented) return;
     if (ignoreTarget(e.target as HTMLElement | null)) return;
     if (onKeyDown?.(e, { selected, setSelected })) return;
     if (e.key === "ArrowDown") {
