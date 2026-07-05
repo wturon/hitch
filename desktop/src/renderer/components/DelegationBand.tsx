@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
@@ -16,17 +16,9 @@ import {
   BUILTIN_STARTING_PROMPTS,
   HARNESSES,
   MODELS_BY_HARNESS,
-  buildStartPrompt,
   chatActivity,
-  defaultEnvironment,
-  defaultReasoning,
   environmentLabel,
-  loadLastAgent,
-  saveLastAgent,
   harnessLabel,
-  honorsLaunchParams,
-  isEnvironment,
-  loadCustomPrompts,
   modelLabel,
   promptDescription,
   reasoningLabel,
@@ -36,10 +28,12 @@ import {
   type ChatRef,
   type ChatStatus,
   type DelegationRequest,
-  type Environment,
   type Harness,
-  type StartingPrompt,
 } from "@/lib/chat";
+import {
+  MANAGE_PROMPTS_VALUE,
+  useDelegationComposer,
+} from "@/hooks/useDelegationComposer";
 import { HarnessIcon } from "@/components/HarnessIcon";
 import { ChatLaunch } from "@/components/ChatLaunch";
 import { Button } from "@/components/ui/button";
@@ -57,10 +51,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-
-// Sentinel value for the dropdown's footer action. It's not a real preset id —
-// selecting it jumps to the Settings prompt manager instead of picking a prompt.
-const MANAGE_PROMPTS_VALUE = "__manage_prompts__";
 
 // The calm live status shown next to a linked agent. Monochrome by design:
 // working/idle stay muted; amber is reserved for the one "your turn" moment
@@ -100,6 +90,12 @@ function DelegatedStatus({ activity }: { activity: ChatActivity }) {
 //   • compose / minimized — pick a preset + agent and Send in one click
 //   • compose / expanded — the editable prompt grows above the controls
 //   • delegated — the linked agent with Clear + Open
+//
+// The compose STATE MACHINE (agent seeding + persistence, prompt preset
+// loading/selection, effort defaults, launch-param honoring, the start latch,
+// and the global ⌘⏎ arming) lives in the shared useDelegationComposer; this
+// component is only the band's chrome over it. The todo dialog's docked footer
+// renders different chrome over the same hook.
 export function DelegationBand({
   projectId,
   chat,
@@ -136,167 +132,35 @@ export function DelegationBand({
   onManagePrompts?: () => void;
   onManageHarnesses?: () => void;
 }) {
-  // Seed the pickers from the user's last delegation, not a hardcoded default, so
-  // "the defaults are already selected" means their defaults. Read once on mount.
-  const [harness, setHarness] = useState<Harness>(() => loadLastAgent().harness);
-  const [model, setModel] = useState(() => loadLastAgent().model);
-  const [effort, setEffort] = useState(() => loadLastAgent().effort);
-  // Per-harness run environment, read from the local daemon bridge. Claude in an
-  // editor extension can't take model/effort at launch, so we disable those
-  // controls for that case and point the user at the editor.
-  const [harnessEnvs, setHarnessEnvs] = useState<Record<string, string>>({});
-  const [prompts, setPrompts] = useState<StartingPrompt[]>(
-    BUILTIN_STARTING_PROMPTS,
-  );
-  const [promptId, setPromptId] = useState(BUILTIN_STARTING_PROMPTS[0].id);
-  const [prompt, setPrompt] = useState(() =>
-    buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }),
-  );
-  // Whether a Send is in flight (the mutation round-trip only). This is not a
-  // launch state — the durable "summoning" state rides `request`, driven off the
-  // files subscription, so it survives the dialog closing. This flag exists only
-  // to disable the Send button between click and the mutation resolving.
-  const [sending, setSending] = useState(false);
-  // Latched once a delegation is fired and NOT reset on success. The durable
-  // `request` flag can lag the mutation (files round-trip) — or, for a dirty
-  // existing task, never adopt while the editor stays open — leaving a window
-  // where Send/⌘↩ would fire a *second* launch. The latch closes that window: it
-  // stays set until the band remounts (keyed per task) or a chat/request appears
-  // and swaps the whole view. Only a failed submit unlatches it (retry allowed).
-  const [submitted, setSubmitted] = useState(false);
-  // Whether the prompt editor is revealed. Minimized is the default calm state.
+  // The shared compose model. ⌘⏎ arms only while the band is in its compose
+  // state (no chat linked, no launch in flight) and the task is delegable; the
+  // hook's phase latch closes the double-fire window on top of that.
+  const {
+    phase,
+    harness,
+    model,
+    effort,
+    setEffort,
+    prompts,
+    promptId,
+    prompt,
+    setPrompt,
+    chooseAgent,
+    choosePreset,
+    start,
+    paramsHonored,
+    currentEnv,
+  } = useDelegationComposer({
+    title,
+    path,
+    canStart: canDelegate,
+    keyboardArmed: !chat && !request && canDelegate,
+    onStart,
+    onManagePrompts,
+  });
+  // Whether the prompt editor is revealed. Minimized is the default calm state
+  // — pure chrome, so it lives here rather than in the composer.
   const [expanded, setExpanded] = useState(false);
-
-  // Load the user's custom prompts once. The band remounts per task (its parent
-  // is keyed by the task path), so a mount-time load also refreshes after a
-  // settings edit reopens the dialog. Kept out of the title/path effect below so
-  // typing a draft's title doesn't re-hit the bridge on every keystroke.
-  useEffect(() => {
-    let active = true;
-    void loadCustomPrompts().then((custom) => {
-      if (active) setPrompts([...BUILTIN_STARTING_PROMPTS, ...custom]);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // Refill the preview prompt from the first built-in whenever the target task
-  // changes — the preamble embeds the title + file path, and a fresh draft's
-  // prospective path resolves as its title is typed. Manual edits are one-off and
-  // replaced on the next preset pick or task change (prior behavior).
-  useEffect(() => {
-    setPromptId(BUILTIN_STARTING_PROMPTS[0].id);
-    setPrompt(buildStartPrompt(BUILTIN_STARTING_PROMPTS[0], { title, path }));
-  }, [title, path]);
-
-  // Read the per-harness environment preference once, so we know whether the
-  // selected harness honors launch params (Claude in vscode/cursor does not).
-  useEffect(() => {
-    const bridge =
-      typeof window !== "undefined"
-        ? (
-            window as unknown as {
-              hitchDaemon?: {
-                getHarnessEnvironments?: () => Promise<Record<string, string>>;
-              };
-            }
-          ).hitchDaemon
-        : undefined;
-    if (!bridge?.getHarnessEnvironments) return;
-    void bridge
-      .getHarnessEnvironments()
-      .then((map) => setHarnessEnvs(map ?? {}))
-      .catch(() => {});
-  }, []);
-
-  // The combined agent dropdown picks a (harness, model) pair at once. Switching
-  // either resets reasoning to that model's default, since Codex exposes effort
-  // as model capability metadata.
-  function chooseAgent(value: string) {
-    const sep = value.indexOf("|");
-    const nextHarness = value.slice(0, sep) as Harness;
-    const nextModel = value.slice(sep + 1);
-    setModel(nextModel);
-    if (nextHarness !== harness) {
-      setHarness(nextHarness);
-    }
-    if (nextHarness !== harness || nextModel !== model) {
-      setEffort(defaultReasoning(nextHarness, nextModel));
-    }
-  }
-
-  // Picking a preset refills the textarea, which stays freely editable for
-  // one-off tweaks — edits never write back to the saved preset. The sentinel
-  // value is a footer action (jump to settings), not a real preset.
-  function choosePreset(id: string) {
-    if (id === MANAGE_PROMPTS_VALUE) {
-      onManagePrompts?.();
-      return;
-    }
-    const preset = prompts.find((p) => p.id === id);
-    if (!preset) return;
-    setPromptId(id);
-    setPrompt(buildStartPrompt(preset, { title, path }));
-  }
-
-  // Fire the delegation and return to rest. We don't track a launch phase here:
-  // the moment onStart's mutation resolves, the doc carries `chat-request:
-  // requested`, and the card/band reflect it off the subscription — durable and
-  // dialog-independent. `sending` only guards against a double-click mid-flight.
-  const start = useCallback(async () => {
-    if (sending || submitted || !canDelegate) return;
-    setSending(true);
-    setSubmitted(true);
-    try {
-      await onStart({ harness, model, effort, prompt });
-      // Remember this exact combination for the next task's bar.
-      saveLastAgent({ harness, model, effort });
-    } catch (error) {
-      // The launch never left — unlatch so the user can retry.
-      setSubmitted(false);
-      throw error;
-    } finally {
-      setSending(false);
-    }
-  }, [sending, submitted, canDelegate, effort, harness, model, onStart, prompt]);
-
-  // While the task dialog is open and no agent is linked or in flight yet,
-  // Cmd+Enter sends the current delegation prompt from anywhere in the dialog.
-  useEffect(() => {
-    if (chat || request || submitted || !canDelegate) return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (
-        e.key !== "Enter" ||
-        !e.metaKey ||
-        e.shiftKey ||
-        e.altKey ||
-        e.repeat
-      ) {
-        return;
-      }
-      if (
-        document.querySelector(
-          '[role="alertdialog"],[role="menu"],[role="listbox"]',
-        )
-      ) {
-        return;
-      }
-      e.preventDefault();
-      e.stopPropagation();
-      void start();
-    }
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [canDelegate, chat, request, submitted, start]);
-
-  // Whether the current (harness, environment) pair accepts model/effort at
-  // launch. Unset env falls back to the harness default.
-  const storedEnv = harnessEnvs[harness];
-  const currentEnv: Environment = isEnvironment(storedEnv ?? "")
-    ? (storedEnv as Environment)
-    : defaultEnvironment(harness);
-  const paramsHonored = honorsLaunchParams(harness, currentEnv);
 
   // Shared floating-surface chrome: white, hairline border, soft drop shadow.
   const surface =
@@ -556,16 +420,17 @@ export function DelegationBand({
 
         <div className="flex min-w-0 shrink-0 items-center gap-2">
           {/* Send — the primary one-click trigger. Black rounded square, up-arrow,
-              no text. */}
+              no text. `phase !== "idle"` covers both the in-flight mutation and
+              the post-submit latch (exactly the old sending/submitted pair). */}
           <Tooltip>
             <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
               <Button
                 onClick={start}
-                disabled={sending || submitted || !canDelegate}
+                disabled={phase !== "idle" || !canDelegate}
                 aria-label="Delegate to agent"
                 className="size-8 shrink-0 rounded-lg p-0"
               >
-                {sending || submitted ? (
+                {phase !== "idle" ? (
                   <LoaderCircle className="animate-spin" />
                 ) : (
                   <ArrowUp className="size-4" strokeWidth={2.5} />

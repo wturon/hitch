@@ -85,7 +85,7 @@ import { DebugView } from "@/components/DebugView";
 import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
 import { TodosView } from "@/components/TodosView";
-import { TodoDialog } from "@/components/TodoDialog";
+import { TodoDialog } from "@/components/todo-dialog/TodoDialog";
 import type { Todo } from "@/lib/todos";
 import {
   CommandPalette,
