@@ -15,11 +15,29 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { CheckIcon, PlusIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  CheckIcon,
+  CircleCheckIcon,
+  CircleIcon,
+  CopyIcon,
+  PlusIcon,
+  SquareArrowOutUpRightIcon,
+  Trash2Icon,
+  Unlink2Icon,
+} from "lucide-react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
-import { parseChatOpenState } from "@/lib/chat";
-import { parseFrontmatter } from "@/lib/frontmatter";
+import { clearChatFields, parseChatOpenState } from "@/lib/chat";
+import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
+import { taskSlug } from "@/lib/tasks";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   deriveTodoGroups,
   indexChats,
@@ -160,6 +178,8 @@ function TodoRow({
   projectId,
   onOpen,
   onToggleCompleted,
+  onWriteTodo,
+  onDeleteTodo,
   drag,
 }: {
   todo: Todo;
@@ -167,6 +187,11 @@ function TodoRow({
   projectId: Id<"projects">;
   onOpen: (path: string) => void;
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
+  // The right-click menu's write/delete actions, threaded from App (Archive and
+  // Detach are frontmatter writes; Delete removes the file) — the same handlers
+  // the TodoDialog's ⋯ menu uses, so a row's options match the open dialog's.
+  onWriteTodo: (path: string, content: string) => void;
+  onDeleteTodo: (slug: string) => void;
   // Present only for BACKLOG rows, which are drag-reorderable. Wires dnd-kit's
   // sortable node/transform onto the whole row (whole-row drag, like the board's
   // cards) while the checkbox / chip / row-click stay live — interactive
@@ -190,58 +215,113 @@ function TodoRow({
     ? `${todo.chatStatus === "needs-input" ? "Needs your input" : "Waiting for you"} · ${relativeTime(recency)}`
     : null;
 
+  // The right-click menu's options, mirroring the TodoDialog ⋯ menu (SavedActions)
+  // plus the row-native primaries (Open / Mark done). Detach only shows when
+  // there's a chat or request to strip; Delete needs a resolvable slug.
+  const canDetach = todo.chat !== null || todo.request !== null;
+  const slug = taskSlug(todo.path);
+  const copyPath = () =>
+    void navigator.clipboard.writeText(todo.path).catch(() => {});
+  const archive = () =>
+    onWriteTodo(
+      todo.path,
+      setFrontmatterKeys(todo.content, {
+        "archived-at": new Date().toISOString(),
+      }),
+    );
+  const detach = () => onWriteTodo(todo.path, clearChatFields(todo.content));
+  const del = () => {
+    if (slug) onDeleteTodo(slug);
+  };
+
   return (
-    <div
-      ref={drag?.setNodeRef}
-      style={drag?.style}
-      {...drag?.attributes}
-      {...drag?.listeners}
-      role="button"
-      tabIndex={0}
-      aria-label={todo.title}
-      onClick={() => onOpen(todo.path)}
-      onKeyDown={(e) => {
-        if (e.key !== "Enter" && e.key !== " ") return;
-        const target = e.target as HTMLElement | null;
-        if (target?.closest('[role="checkbox"],button')) return;
-        e.preventDefault();
-        onOpen(todo.path);
-      }}
-      className={cn(
-        "group flex cursor-pointer items-center gap-3 rounded-lg px-2.5 transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none",
-        twoLine ? "min-h-[54px] py-1.5" : "h-[42px]",
-        // A dragged backlog row lifts subtly — opaque over its neighbours, a
-        // hair of shadow — no new chrome, no handle. Quiet.
-        drag?.dragging &&
-          "relative z-10 bg-background shadow-sm ring-1 ring-border/70",
-      )}
-    >
-      <TodoCheckbox
-        checked={done}
-        onToggle={() => onToggleCompleted(todo, !done)}
-      />
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span
+    <ContextMenu>
+      <ContextMenuTrigger className="block">
+        <div
+          ref={drag?.setNodeRef}
+          style={drag?.style}
+          {...drag?.attributes}
+          {...drag?.listeners}
+          role="button"
+          tabIndex={0}
+          aria-label={todo.title}
+          onClick={() => onOpen(todo.path)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            const target = e.target as HTMLElement | null;
+            if (target?.closest('[role="checkbox"],button')) return;
+            e.preventDefault();
+            onOpen(todo.path);
+          }}
           className={cn(
-            "truncate text-[13.5px] leading-[18px]",
-            variant === "needs-you" && "font-medium text-foreground",
-            variant === "backlog" && "text-foreground",
-            variant === "working" &&
-              (ghostTitle ? "text-muted-foreground/70" : "text-muted-foreground"),
-            done &&
-              "text-neutral-400 line-through decoration-1 dark:text-neutral-500",
+            "group flex cursor-pointer items-center gap-3 rounded-lg px-2.5 transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none",
+            twoLine ? "min-h-[54px] py-1.5" : "h-[42px]",
+            // A dragged backlog row lifts subtly — opaque over its neighbours, a
+            // hair of shadow — no new chrome, no handle. Quiet.
+            drag?.dragging &&
+              "relative z-10 bg-background shadow-sm ring-1 ring-border/70",
           )}
         >
-          {todo.title}
-        </span>
-        {subtitle && (
-          <span className="truncate text-[12px] leading-4 text-muted-foreground">
-            {subtitle}
-          </span>
+          <TodoCheckbox
+            checked={done}
+            onToggle={() => onToggleCompleted(todo, !done)}
+          />
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span
+              className={cn(
+                "truncate text-[13.5px] leading-[18px]",
+                variant === "needs-you" && "font-medium text-foreground",
+                variant === "backlog" && "text-foreground",
+                variant === "working" &&
+                  (ghostTitle
+                    ? "text-muted-foreground/70"
+                    : "text-muted-foreground"),
+                done &&
+                  "text-neutral-400 line-through decoration-1 dark:text-neutral-500",
+              )}
+            >
+              {todo.title}
+            </span>
+            {subtitle && (
+              <span className="truncate text-[12px] leading-4 text-muted-foreground">
+                {subtitle}
+              </span>
+            )}
+          </div>
+          <RowChip todo={todo} projectId={projectId} ghost={done} />
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={() => onOpen(todo.path)}>
+          <SquareArrowOutUpRightIcon />
+          Open
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => onToggleCompleted(todo, !done)}>
+          {done ? <CircleIcon /> : <CircleCheckIcon />}
+          {done ? "Mark not done" : "Mark done"}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={copyPath}>
+          <CopyIcon />
+          Copy task path
+        </ContextMenuItem>
+        {canDetach && (
+          <ContextMenuItem onClick={detach}>
+            <Unlink2Icon />
+            Detach chat
+          </ContextMenuItem>
         )}
-      </div>
-      <RowChip todo={todo} projectId={projectId} ghost={done} />
-    </div>
+        <ContextMenuItem onClick={archive}>
+          <ArchiveIcon />
+          Archive
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem variant="destructive" onClick={del}>
+          <Trash2Icon />
+          Delete
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -254,11 +334,15 @@ function SortableTodoRow({
   projectId,
   onOpen,
   onToggleCompleted,
+  onWriteTodo,
+  onDeleteTodo,
 }: {
   todo: Todo;
   projectId: Id<"projects">;
   onOpen: (path: string) => void;
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
+  onWriteTodo: (path: string, content: string) => void;
+  onDeleteTodo: (slug: string) => void;
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
     useSortable({ id: todo.path });
@@ -269,6 +353,8 @@ function SortableTodoRow({
       projectId={projectId}
       onOpen={onOpen}
       onToggleCompleted={onToggleCompleted}
+      onWriteTodo={onWriteTodo}
+      onDeleteTodo={onDeleteTodo}
       drag={{
         setNodeRef,
         style: {
@@ -362,12 +448,19 @@ export function TodosView({
   onOpenTodo,
   onAddTodo,
   onToggleCompleted,
+  onWriteTodo,
+  onDeleteTodo,
 }: {
   projectId: Id<"projects">;
   files: FileRow[];
   onOpenTodo: (path: string) => void;
   onAddTodo: () => void;
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
+  // Row context-menu writes (Archive/Detach) and delete — the same App-level
+  // handlers the TodoDialog uses, so a row's right-click options stay in sync
+  // with the open dialog's ⋯ menu.
+  onWriteTodo: (path: string, content: string) => void;
+  onDeleteTodo: (slug: string) => void;
 }) {
   const [showAllDone, setShowAllDone] = useState(false);
   const order = useQuery(api.backlogOrders.getBacklogOrder, { projectId }) ?? [];
@@ -421,7 +514,13 @@ export function TodosView({
     : groups.done.slice(0, DONE_PREVIEW);
   const hiddenDone = groups.done.length - doneVisible.length;
 
-  const rowProps = { projectId, onOpen: onOpenTodo, onToggleCompleted };
+  const rowProps = {
+    projectId,
+    onOpen: onOpenTodo,
+    onToggleCompleted,
+    onWriteTodo,
+    onDeleteTodo,
+  };
 
   // The sortable ids = the currently-shown backlog paths in rendered order
   // (sortBacklog has already interleaved ordered rows + updatedAt-desc absentees).
@@ -484,6 +583,8 @@ export function TodosView({
                   projectId={projectId}
                   onOpen={onOpenTodo}
                   onToggleCompleted={onToggleCompleted}
+                  onWriteTodo={onWriteTodo}
+                  onDeleteTodo={onDeleteTodo}
                 />
               ))}
             </SortableContext>

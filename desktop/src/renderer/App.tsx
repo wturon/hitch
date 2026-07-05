@@ -1442,6 +1442,10 @@ function WorkspaceContent({
             onToggleCompleted={(todo, completed) =>
               void setTodoCompleted(todo, completed)
             }
+            onWriteTodo={(path, content) =>
+              void materializeDraftFile(path, content)
+            }
+            onDeleteTodo={(slug) => void deleteTodo(slug)}
           />
         )}
 
