@@ -17,7 +17,6 @@ export function TodoEditorArea({
   stage,
   view,
   draft,
-  disarm,
   editorRef,
   titleRef,
   rawRef,
@@ -27,8 +26,6 @@ export function TodoEditorArea({
   stage: "capture" | "saved";
   view: "raw" | "formatted";
   draft: TaskDraft;
-  // Any edit disarms the discard guard (Decision 4).
-  disarm: () => void;
   editorRef: React.RefObject<MarkdownEditorHandle | null>;
   titleRef: React.RefObject<HTMLTextAreaElement | null>;
   rawRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -42,10 +39,7 @@ export function TodoEditorArea({
           ref={rawRef}
           aria-label="Todo content"
           value={draft.raw}
-          onChange={(e) => {
-            disarm();
-            draft.setRaw(e.target.value);
-          }}
+          onChange={(e) => draft.setRaw(e.target.value)}
           spellCheck={false}
           className="hitch-autosize min-h-[180px] w-full shrink-0 resize-none overflow-hidden bg-transparent px-5 pt-10 pb-4 font-mono text-xs leading-relaxed outline-none"
         />
@@ -57,10 +51,7 @@ export function TodoEditorArea({
               aria-label="Todo title"
               rows={1}
               value={draft.title}
-              onChange={(e) => {
-                disarm();
-                draft.setTitle(e.target.value);
-              }}
+              onChange={(e) => draft.setTitle(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -84,10 +75,7 @@ export function TodoEditorArea({
             <MarkdownEditor
               ref={editorRef}
               value={draft.body}
-              onChange={(v) => {
-                disarm();
-                draft.setBody(v);
-              }}
+              onChange={draft.setBody}
               placeholder={
                 stage === "capture"
                   ? "What needs doing?"
