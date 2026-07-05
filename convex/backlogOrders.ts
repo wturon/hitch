@@ -27,8 +27,8 @@ export const getBacklogOrder = query({
   },
 });
 
-// Replace a project's whole Backlog order (last-writer-wins, matching
-// projects.updateStatuses). The client owns and sends the full ordered list —
+// Replace a project's whole Backlog order (last-writer-wins). The client owns
+// and sends the full ordered list —
 // there is no partial/patch shape. Upserts the single `by_project` row.
 export const setBacklogOrder = mutation({
   args: { projectId: v.id("projects"), order: v.array(v.string()) },

@@ -209,24 +209,32 @@ try {
   check("run completed without throwing", false, String(err));
   await page.screenshot({ path: `${SHOTS}/99-error.png` }).catch(() => {});
 } finally {
-  // --- Best-effort cleanup: delete the scratch task -----------------------
-  // It's archived (archived-at, no status:), so it's gone from the Todos list
-  // but shows on the BOARD as a normal card (the board keys off status:). Delete
-  // it there.
+  // --- Best-effort cleanup: delete the scratch todo -----------------------
+  // It's archived (archived-at), so it's out of the four Todos groups but
+  // reachable from the Todos view's Archived sheet. Delete it there, scoped to
+  // the scratch title so a real archived todo is never touched.
   try {
-    // Dismiss any open dialog/backdrop so the tab click isn't intercepted.
+    // Dismiss any open dialog/backdrop so the header click isn't intercepted.
     await page.keyboard.press("Escape").catch(() => {});
     await page.waitForTimeout(300);
-    await page.getByRole("button", { name: "Tasks" }).first().click();
-    await page.waitForTimeout(500);
-    const card = page.getByText(title, { exact: false }).first();
-    if (await card.count()) {
-      await card.click();
-      await page.locator('[aria-label="Task actions"]').click();
-      await page.getByRole("menuitem", { name: "Delete" }).click();
-      log("cleanup: deleted scratch task via board");
+    const archivedBtn = page.getByRole("button", { name: "Archived" }).first();
+    if (await archivedBtn.count()) {
+      await archivedBtn.click();
+      await page.waitForTimeout(400);
+      // The ArchivedRow div carries the title text and its own Delete button.
+      const row = page
+        .locator("div")
+        .filter({ hasText: title })
+        .filter({ has: page.getByRole("button", { name: "Delete" }) })
+        .last();
+      if (await row.count()) {
+        await row.getByRole("button", { name: "Delete" }).click();
+        log("cleanup: deleted scratch todo via Archived sheet");
+      } else {
+        log("cleanup: scratch todo not found in Archived sheet (may already be gone)");
+      }
     } else {
-      log("cleanup: scratch task not found on board (may already be gone)");
+      log("cleanup: Archived control unavailable");
     }
   } catch (e) {
     log(`cleanup: best-effort delete failed — ${String(e)}`);

@@ -1,46 +1,22 @@
 "use client";
 
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type FormEvent,
   type ReactNode,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type SyntheticEvent,
 } from "react";
-import { useAction, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
-import {
-  DndContext,
-  DragOverlay,
-  PointerSensor,
-  useDraggable,
-  useDroppable,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-  arrayMove,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import {
   AlertCircleIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
   Code2Icon,
-  CopyIcon,
-  EllipsisIcon,
   ExternalLinkIcon,
   FolderSyncIcon,
   LogOutIcon,
@@ -56,29 +32,10 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
-import {
-  clearChatFields,
-  parseChatOpenState,
-  parseChatRef,
-  parseChatStatus,
-  parseDelegationRequest,
-} from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
-import {
-  parseProjectConfig,
-  PROJECT_CONFIG_PATH,
-  type ProjectStatus,
-} from "@/lib/projectConfig";
-import {
-  isKnownStatusId,
-  statusNameFromId,
-  statusFrontmatterLine,
-  statusesForProject,
-  uniqueStatusId,
-} from "@/lib/statuses";
-import { taskBodyPath, taskSlug, uniqueSlug } from "@/lib/tasks";
+import { parseProjectConfig, PROJECT_CONFIG_PATH } from "@/lib/projectConfig";
+import { taskBodyPath, taskSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
-import { TaskDialog, type TaskTarget } from "@/components/TaskDialog";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
 import { ChatsView } from "@/components/ChatsView";
 import { DebugView } from "@/components/DebugView";
@@ -86,7 +43,7 @@ import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
 import { TodosView } from "@/components/TodosView";
 import { TodoDialog } from "@/components/todo-dialog/TodoDialog";
-import { prependBacklogPath, type Todo } from "@/lib/todos";
+import { deriveTodoGroups, prependBacklogPath, type Todo } from "@/lib/todos";
 import {
   CommandPalette,
   WORKSPACE_VIEWS,
@@ -97,13 +54,6 @@ import {
   useAutomationActions,
   useAutomationDefinitions,
 } from "@/hooks/useAutomations";
-import {
-  CARD_CLASS,
-  CardChat,
-  CardContents,
-  CardSummary,
-  type Card,
-} from "@/components/TaskCard";
 import {
   GlobalSettingsDialog,
   type GlobalHarnessSetupStatus,
@@ -116,10 +66,6 @@ import {
 } from "@/components/ProjectDetailsDialog";
 import { AppSidebar, CreateProjectDialog } from "@/components/AppSidebar";
 import { ProjectConflictDialog } from "@/components/ProjectConflictDialog";
-import {
-  StatusMigrationDialog,
-  type StatusMigrationRequest,
-} from "@/components/StatusMigrationDialogs";
 import type { KeepAwakeState, ProjectNavEntry } from "@/lib/types";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { getStoredTheme, setTheme } from "@/lib/theme";
@@ -130,20 +76,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import {
-  Menu,
-  MenuContent,
-  MenuItem,
-  MenuSeparator,
-  MenuTrigger,
-} from "@/components/ui/menu";
-import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -151,24 +83,6 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { Toaster } from "@/components/ui/sonner";
-
-function columnFor(
-  status: string | undefined,
-  statuses: ProjectStatus[],
-): string {
-  const s = (status ?? "").toLowerCase();
-  // Restore paths need a safe configured fallback when the remembered status
-  // is stale; the board grouping path below preserves explicit unknown ids.
-  return isKnownStatusId(s, statuses) ? s : statuses[0].id;
-}
-
-function boardColumnFor(
-  status: string | undefined,
-  statuses: ProjectStatus[],
-): string {
-  const s = (status ?? "").toLowerCase();
-  return s || statuses[0].id;
-}
 
 interface HitchBinding {
   projectId: Id<"projects">;
@@ -212,89 +126,6 @@ function keepAwakeBridge(): KeepAwakeApi | undefined {
     : undefined;
 }
 
-function isInteractiveTarget(
-  target: EventTarget | null,
-  currentTarget: EventTarget | null,
-): boolean {
-  if (!(target instanceof Element)) return false;
-  const interactiveTarget = target.closest(
-    'button, a, input, select, textarea, [role="button"], [role="link"], [data-card-drag-ignore]',
-  );
-  return interactiveTarget !== null && interactiveTarget !== currentTarget;
-}
-
-type BoardFocusColumn = {
-  id: string;
-  cardIds: string[];
-};
-
-function isTextEditingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return (
-    target.isContentEditable ||
-    /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)
-  );
-}
-
-function findFocusedBoardCardId(
-  cardNodes: Map<string, HTMLDivElement>,
-): string | null {
-  const active = document.activeElement;
-  if (!(active instanceof HTMLElement)) return null;
-  for (const [cardId, node] of cardNodes) {
-    if (node === active) return cardId;
-  }
-  return null;
-}
-
-function firstBoardCardId(columns: BoardFocusColumn[]): string | null {
-  for (const column of columns) {
-    if (column.cardIds.length > 0) return column.cardIds[0];
-  }
-  return null;
-}
-
-function nextBoardCardId(
-  columns: BoardFocusColumn[],
-  currentCardId: string | null,
-  key: string,
-): string | null {
-  if (!currentCardId) return firstBoardCardId(columns);
-
-  const columnIndex = columns.findIndex((column) =>
-    column.cardIds.includes(currentCardId),
-  );
-  if (columnIndex < 0) return firstBoardCardId(columns);
-
-  const column = columns[columnIndex];
-  const rowIndex = column.cardIds.indexOf(currentCardId);
-  if (key === "ArrowUp") {
-    return column.cardIds[Math.max(0, rowIndex - 1)] ?? currentCardId;
-  }
-  if (key === "ArrowDown") {
-    return (
-      column.cardIds[Math.min(column.cardIds.length - 1, rowIndex + 1)] ??
-      currentCardId
-    );
-  }
-
-  const step = key === "ArrowLeft" ? -1 : 1;
-  for (
-    let i = columnIndex + step;
-    i >= 0 && i < columns.length;
-    i += step
-  ) {
-    const candidateColumn = columns[i];
-    if (candidateColumn.cardIds.length === 0) continue;
-    return (
-      candidateColumn.cardIds[
-        Math.min(rowIndex, candidateColumn.cardIds.length - 1)
-      ] ?? null
-    );
-  }
-  return currentCardId;
-}
-
 function WindowDragRegion() {
   return <div className="window-drag-region" aria-hidden />;
 }
@@ -325,7 +156,7 @@ function SignInScreen() {
               Sign in to Hitch
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Use GitHub to open your live project board.
+              Use GitHub to open your live workspace.
             </p>
           </div>
           <Button onClick={startGitHubSignIn} disabled={signingIn}>
@@ -424,7 +255,7 @@ function AppShell({
     );
   }, [collapsed]);
 
-  // ⌘\ (Ctrl+\ on Windows/Linux) toggles the rail. Unlike the board's `c`
+  // ⌘\ (Ctrl+\ on Windows/Linux) toggles the rail. Unlike the `C` capture
   // shortcut this fires even while typing, since it's a chrome-level control
   // and `\` chorded with a modifier never produces text.
   useEffect(() => {
@@ -526,7 +357,7 @@ function NoProjectWelcome({
   );
 }
 
-function AuthenticatedBoard() {
+function AuthenticatedWorkspace() {
   const { isLoading, isAuthenticated } = useConvexAuth();
 
   if (isLoading) {
@@ -648,7 +479,7 @@ function ProjectWorkspace() {
   }
 
   return (
-    <BoardContent
+    <WorkspaceContent
       projectId={selectedProject._id}
       projects={projects}
       creatingProject={creatingProject}
@@ -660,161 +491,46 @@ function ProjectWorkspace() {
   );
 }
 
-interface DraggableCardProps {
-  card: Card;
-  projectId: Id<"projects">;
-  pending: boolean;
-  registerCardNode: (cardId: string, node: HTMLDivElement | null) => void;
-  onOpen: (card: Card) => void;
-  onArchiveToggle: (card: Card, archived: boolean) => void;
-  onDuplicate: (card: Card) => void;
-  onDelete: (card: Card) => void;
+// An archived todo, the minimal shape the archived sheet renders and acts on.
+// `content` is the raw task.md so Unarchive can clear its `archived-at:`.
+interface ArchivedTodo {
+  path: string; // tasks/<slug>/task.md
+  slug: string;
+  title: string;
+  content: string;
 }
 
-function copyTaskPath(card: Card) {
-  void navigator.clipboard.writeText(`.hitch/${card.path}`).catch(() => {
-    // Clipboard can be unavailable (e.g. no permission); silently ignore.
-  });
-}
-
-// A board card that can be picked up from any non-interactive surface (left-drag,
-// 1px threshold so a plain click still opens it) and dropped on another column.
-// Right-click keeps the existing archive/delete menu — PointerSensor ignores
-// non-primary buttons, so the menu and dragging don't fight. Defined at module
-// scope (not inside Board) so it isn't a fresh component type each render, which
-// would remount mid-drag.
-function DraggableCard({
-  card,
-  projectId,
-  pending,
-  registerCardNode,
-  onOpen,
-  onArchiveToggle,
-  onDuplicate,
-  onDelete,
-}: DraggableCardProps) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: card.id,
-  });
-  const setCardRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      setNodeRef(node);
-      registerCardNode(card.id, node);
-    },
-    [card.id, registerCardNode, setNodeRef],
-  );
-  const dragListeners = useMemo(() => {
-    return Object.fromEntries(
-      Object.entries(listeners ?? {}).map(([eventName, listener]) => [
-        eventName,
-        (event: SyntheticEvent) => {
-          if (isInteractiveTarget(event.target, event.currentTarget)) return;
-          listener(event);
-        },
-      ]),
-    );
-  }, [listeners]);
-
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger className="block">
-        <div
-          ref={setCardRef}
-          {...attributes}
-          {...dragListeners}
-          data-board-card-id={card.id}
-          role="button"
-          tabIndex={0}
-          onClick={(event) => {
-            if (isInteractiveTarget(event.target, event.currentTarget)) return;
-            onOpen(card);
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            if (isInteractiveTarget(event.target, event.currentTarget)) return;
-            event.preventDefault();
-            onOpen(card);
-          }}
-          className={cn(
-            CARD_CLASS,
-            "group relative cursor-default transition-shadow hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring",
-            isDragging && "opacity-40",
-          )}
-        >
-          <CardSummary card={card} />
-          <CardChat card={card} projectId={projectId} />
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem disabled={pending} onClick={() => copyTaskPath(card)}>
-          <CopyIcon />
-          Copy path
-        </ContextMenuItem>
-        <ContextMenuItem
-          disabled={pending}
-          onClick={() => onArchiveToggle(card, !card.archived)}
-        >
-          {card.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
-          {card.archived ? "Unarchive" : "Archive"}
-        </ContextMenuItem>
-        <ContextMenuItem disabled={pending} onClick={() => onDuplicate(card)}>
-          <CopyIcon />
-          Duplicate
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          disabled={pending}
-          variant="destructive"
-          onClick={() => onDelete(card)}
-        >
-          <Trash2Icon />
-          Delete
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
-  );
-}
-
-// A single row in the archived sheet: the task's title/path plus inline
-// unarchive and delete actions. Kept compact (one row per task) since the sheet
-// is a management surface, not the board — there's no drag or open-on-click.
+// A single row in the archived sheet: the todo's title/path plus inline
+// unarchive and delete actions. Kept compact (one row per todo) since the sheet
+// is a management surface — there's no drag or open-on-click.
 function ArchivedRow({
-  card,
-  pending,
+  todo,
   onUnarchive,
   onDelete,
 }: {
-  card: Card;
-  pending: boolean;
-  onUnarchive: (card: Card) => void;
-  onDelete: (card: Card) => void;
+  todo: ArchivedTodo;
+  onUnarchive: (todo: ArchivedTodo) => void;
+  onDelete: (todo: ArchivedTodo) => void;
 }) {
   return (
     <div className="flex items-center gap-2 rounded-lg bg-card p-3 ring-1 ring-border">
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-card-foreground">
-          {card.title}
+          {todo.title}
         </p>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {card.owner ? `${card.owner} · ` : ""}
-          {card.path}
+          {todo.path}
         </p>
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={pending}
-        onClick={() => onUnarchive(card)}
-      >
+      <Button variant="outline" size="sm" onClick={() => onUnarchive(todo)}>
         <ArchiveRestoreIcon />
         Unarchive
       </Button>
       <Button
         variant="ghost"
         size="sm"
-        disabled={pending}
         className="text-muted-foreground hover:text-destructive"
-        onClick={() => onDelete(card)}
+        onClick={() => onDelete(todo)}
       >
         <Trash2Icon />
         Delete
@@ -823,25 +539,23 @@ function ArchivedRow({
   );
 }
 
-// The side sheet listing every archived task with per-row unarchive/delete and
-// a "Delete all" action in the header. Replaces the old bottom-of-board archived
-// grouping. "Delete all" arms a confirmation on first click (it's irreversible)
-// and confirms on the second; the armed state resets whenever the sheet closes.
+// The side sheet listing every archived todo with per-row unarchive/delete and
+// a "Delete all" action in the header — the Todos view's archived surface.
+// "Delete all" arms a confirmation on first click (it's irreversible) and
+// confirms on the second; the armed state resets whenever the sheet closes.
 function ArchivedSheet({
   open,
   onOpenChange,
-  cards,
-  pendingCardId,
+  todos,
   onUnarchive,
   onDelete,
   onDeleteAll,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  cards: Card[];
-  pendingCardId: string | null;
-  onUnarchive: (card: Card) => void;
-  onDelete: (card: Card) => void;
+  todos: ArchivedTodo[];
+  onUnarchive: (todo: ArchivedTodo) => void;
+  onDelete: (todo: ArchivedTodo) => void;
   onDeleteAll: () => void;
 }) {
   const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
@@ -855,9 +569,8 @@ function ArchivedSheet({
       }}
     >
       <ArchivedSheetContent
-        cards={cards}
+        todos={todos}
         confirmingDeleteAll={confirmingDeleteAll}
-        pendingCardId={pendingCardId}
         onUnarchive={onUnarchive}
         onDelete={onDelete}
         onDeleteAll={onDeleteAll}
@@ -868,19 +581,17 @@ function ArchivedSheet({
 }
 
 function ArchivedSheetContent({
-  cards,
+  todos,
   confirmingDeleteAll,
-  pendingCardId,
   onUnarchive,
   onDelete,
   onDeleteAll,
   onConfirmingDeleteAllChange,
 }: {
-  cards: Card[];
+  todos: ArchivedTodo[];
   confirmingDeleteAll: boolean;
-  pendingCardId: string | null;
-  onUnarchive: (card: Card) => void;
-  onDelete: (card: Card) => void;
+  onUnarchive: (todo: ArchivedTodo) => void;
+  onDelete: (todo: ArchivedTodo) => void;
   onDeleteAll: () => void;
   onConfirmingDeleteAllChange: (confirming: boolean) => void;
 }) {
@@ -889,9 +600,9 @@ function ArchivedSheetContent({
       <SheetHeader>
         <SheetTitle>Archived</SheetTitle>
         <SheetDescription>
-          {cards.length} archived task{cards.length === 1 ? "" : "s"}
+          {todos.length} archived todo{todos.length === 1 ? "" : "s"}
         </SheetDescription>
-        {cards.length > 0 && (
+        {todos.length > 0 && (
           <Button
             variant={confirmingDeleteAll ? "destructive" : "outline"}
             size="sm"
@@ -907,20 +618,19 @@ function ArchivedSheetContent({
           >
             <Trash2Icon />
             {confirmingDeleteAll
-              ? `Delete all ${cards.length}? Click to confirm`
+              ? `Delete all ${todos.length}? Click to confirm`
               : "Delete all"}
           </Button>
         )}
       </SheetHeader>
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
-        {cards.length === 0 ? (
+        {todos.length === 0 ? (
           <p className="text-sm text-muted-foreground">Nothing archived.</p>
         ) : (
-          cards.map((card) => (
+          todos.map((todo) => (
             <ArchivedRow
-              key={card.id}
-              card={card}
-              pending={pendingCardId === card.id}
+              key={todo.path}
+              todo={todo}
               onUnarchive={onUnarchive}
               onDelete={onDelete}
             />
@@ -931,286 +641,7 @@ function ArchivedSheetContent({
   );
 }
 
-// A column that accepts dropped cards. Its droppable id IS the status value, so
-// the drop handler can read the destination status straight off `over.id`.
-function DroppableColumn({
-  status,
-  count,
-  onAdd,
-  isRenaming,
-  onTitleClick,
-  onRename,
-  onRenameCommit,
-  onCopyStatusId,
-  onManageStatuses,
-  onDeleteStatus,
-  onArchiveAll,
-  onDeleteAll,
-  children,
-}: {
-  status: ProjectStatus;
-  count: number;
-  onAdd: () => void;
-  isRenaming: boolean;
-  onTitleClick: () => void;
-  onRename: () => void;
-  onRenameCommit: (name: string) => void;
-  onCopyStatusId: () => void;
-  onManageStatuses: () => void;
-  onDeleteStatus: () => void;
-  onArchiveAll: () => void;
-  onDeleteAll: () => void;
-  children: ReactNode;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: status.id });
-  const [renameValue, setRenameValue] = useState(status.name);
-  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
-  const cancelledRename = useRef(false);
-  const renameInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    setRenameValue(status.name);
-  }, [status.id, status.name]);
-
-  useEffect(() => {
-    if (!isRenaming) return;
-    const input = renameInputRef.current;
-    if (!input) return;
-    cancelledRename.current = false;
-    input.focus();
-    input.select();
-  }, [isRenaming]);
-
-  function commitRename() {
-    if (cancelledRename.current) {
-      setRenameValue(status.name);
-      onRenameCommit(status.name);
-      return;
-    }
-    const trimmed = renameValue.trim().replace(/\s+/g, " ");
-    if (!trimmed) {
-      setRenameValue(status.name);
-      onRenameCommit(status.name);
-      return;
-    }
-    onRenameCommit(trimmed);
-  }
-
-  function onRenameKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      event.currentTarget.blur();
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      cancelledRename.current = true;
-      setRenameValue(status.name);
-      event.currentTarget.blur();
-    }
-  }
-
-  return (
-    <section
-      ref={setNodeRef}
-      className="relative flex w-[18rem] shrink-0 flex-col gap-3 rounded-[12px] bg-muted/60 p-3 transition-colors dark:bg-muted"
-    >
-      <div className="relative z-20 flex items-center justify-between px-1">
-        <h2 className="min-w-0 flex-1">
-          {isRenaming ? (
-            <input
-              ref={renameInputRef}
-              value={renameValue}
-              onChange={(event) => setRenameValue(event.target.value)}
-              onBlur={commitRename}
-              onKeyDown={onRenameKeyDown}
-              aria-label={`Rename status ${status.name}`}
-              spellCheck={false}
-              className="h-7 w-full rounded-md border border-border bg-background px-2 text-[13px] font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={onTitleClick}
-              className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[13px] font-medium text-foreground/80 outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <span className="min-w-0 truncate">{status.name}</span>
-              <span className="shrink-0 font-normal text-muted-foreground">
-                {count}
-              </span>
-            </button>
-          )}
-        </h2>
-        <div className="flex items-center gap-0.5">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  onClick={onAdd}
-                  aria-label="Add task"
-                />
-              }
-            >
-              <PlusIcon />
-            </TooltipTrigger>
-            <TooltipContent>add task… (C)</TooltipContent>
-          </Tooltip>
-          <Menu
-            onOpenChange={(open) => {
-              if (!open) setConfirmingDeleteAll(false);
-            }}
-          >
-            <MenuTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label="Column actions"
-                />
-              }
-            >
-              <EllipsisIcon />
-            </MenuTrigger>
-            <MenuContent align="end" className="min-w-52">
-              <MenuItem onClick={onRename}>
-                <PencilIcon />
-                Rename
-              </MenuItem>
-              <MenuItem onClick={onCopyStatusId}>
-                <CopyIcon />
-                <span className="min-w-0 flex-1">Copy id</span>
-                <span className="ml-2 max-w-24 truncate font-mono text-xs text-muted-foreground">
-                  {status.id}
-                </span>
-              </MenuItem>
-              <MenuItem onClick={onManageStatuses}>
-                <SettingsIcon />
-                Manage statuses…
-              </MenuItem>
-              <MenuSeparator />
-              <MenuItem
-                onClick={onDeleteStatus}
-                className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
-              >
-                <Trash2Icon />
-                Delete status
-              </MenuItem>
-              {count > 0 && (
-                <>
-                  <MenuSeparator />
-                  <MenuItem onClick={onArchiveAll}>
-                    <ArchiveIcon />
-                    Archive all cards · {count}
-                  </MenuItem>
-                  <MenuItem
-                    closeOnClick={confirmingDeleteAll}
-                    onClick={() => {
-                      if (!confirmingDeleteAll) {
-                        setConfirmingDeleteAll(true);
-                        return;
-                      }
-                      onDeleteAll();
-                    }}
-                    className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
-                  >
-                    <Trash2Icon />
-                    {confirmingDeleteAll
-                      ? `Click again to delete ${count} cards`
-                      : `Delete all cards · ${count}`}
-                  </MenuItem>
-                </>
-              )}
-            </MenuContent>
-          </Menu>
-        </div>
-      </div>
-      <div className="-m-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-1">
-        {children}
-        {count === 0 && (
-          <p className="px-1 text-xs text-muted-foreground/70">No tasks</p>
-        )}
-      </div>
-
-      {/* While a card is hovering this column, fade its cards and explain that
-          drop position isn't user-controlled — the board sorts by last update,
-          so there's no "drop here" slot the way a manually-ordered board has. */}
-      {isOver && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-muted/70 backdrop-blur-[1px]">
-          <div className="text-center">
-            <p className="text-sm font-medium text-foreground">
-              Ordered by last updated
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Drop anywhere to move here
-            </p>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function UnknownStatusColumn({
-  statusId,
-  count,
-  onAddAsStatus,
-  onMoveCards,
-  children,
-}: {
-  statusId: string;
-  count: number;
-  onAddAsStatus: () => void;
-  onMoveCards: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <section className="relative flex w-[18rem] shrink-0 flex-col gap-3 rounded-[12px] border border-dashed border-amber-300/80 bg-amber-50/70 p-3 text-amber-950 dark:border-amber-400/40 dark:bg-amber-950/20 dark:text-amber-100">
-      <div className="flex items-center justify-between gap-3 px-1">
-        <h2 className="flex min-w-0 items-center gap-2 text-[13px] font-semibold">
-          <AlertCircleIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-300" />
-          <span className="min-w-0 truncate">Unknown</span>
-          <span className="shrink-0 font-normal text-amber-700 dark:text-amber-300">
-            {count}
-          </span>
-        </h2>
-        <code className="max-w-28 truncate rounded bg-amber-100 px-1.5 py-1 font-mono text-[11px] text-amber-800 dark:bg-amber-900/60 dark:text-amber-200">
-          {statusId}
-        </code>
-      </div>
-
-      <div className="rounded-md border border-amber-200/80 bg-background/75 p-2.5 text-xs leading-5 text-foreground shadow-sm dark:border-amber-400/30 dark:bg-background/80">
-        <p>
-          These cards use{" "}
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
-            {statusFrontmatterLine(statusId)}
-          </code>
-          , which isn't a status in this project.
-        </p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          <Button type="button" size="sm" onClick={onAddAsStatus}>
-            Add "{statusId}" as a status
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={onMoveCards}
-          >
-            Move cards to…
-          </Button>
-        </div>
-      </div>
-
-      <div className="-m-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-1">
-        {children}
-      </div>
-    </section>
-  );
-}
-
-function BoardContent({
+function WorkspaceContent({
   projectId,
   projects,
   creatingProject,
@@ -1233,20 +664,12 @@ function BoardContent({
   )?.project;
   const files = useQuery(api.files.listFiles, { projectId });
   const ensureProjectConfig = useMutation(api.projects.ensureProjectConfig);
-  const updateStatuses = useMutation(api.projects.updateStatuses);
-  const renameStatusWithMigration = useMutation(
-    api.projects.renameStatusWithMigration,
-  );
-  const deleteStatusWithMigration = useMutation(
-    api.projects.deleteStatusWithMigration,
-  );
-  const moveCardsWithStatus = useMutation(api.projects.moveCardsWithStatus);
-  // Optimistically patch the cached file so a drag/archive/delete — and a brand
-  // new task — reflects instantly instead of waiting on the frontmatter →
-  // daemon → Convex round trip. Bumping updatedAt lands the card at the top of
-  // its (destination) column, matching how the server-stamped value will sort
-  // once it settles. A create hits the same path: no row matches the key, so we
-  // append a fabricated one (real _id arrives when the daemon round-trips).
+  // Optimistically patch the cached file so a checkbox/archive/delete — and a
+  // brand new todo — reflects instantly instead of waiting on the frontmatter →
+  // daemon → Convex round trip. Bumping updatedAt lands the row at the top of
+  // its group, matching how the server-stamped value will sort once it settles.
+  // A create hits the same path: no row matches the key, so we append a
+  // fabricated one (real _id arrives when the daemon round-trips).
   const upsertFile = useMutation(api.files.upsertFile).withOptimisticUpdate(
     (localStore, args) => {
       const existing = localStore.getQuery(api.files.listFiles, {
@@ -1293,9 +716,6 @@ function BoardContent({
   // attachment rows so the daemon cleans up the local files + empty folders.
   const attachments = useQuery(api.attachments.listAttachments, { projectId });
   const tombstoneAttachment = useMutation(api.attachments.tombstoneAttachment);
-  const duplicateTaskWithAttachments = useAction(
-    api.attachments.duplicateTaskWithAttachments,
-  );
   // Backlog manual order — read for the uncheck→backlog-top prepend (slice 5,
   // Decision 8). Whole-list-replace with an optimistic patch so the row lands at
   // the top instantly (same pattern TodosView uses for drag reorders).
@@ -1312,7 +732,6 @@ function BoardContent({
       args.order,
     );
   });
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   // The Notes view's Archived sheet, opened from the same top-right header slot.
   const [showNotesArchived, setShowNotesArchived] = useState(false);
@@ -1327,25 +746,16 @@ function BoardContent({
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [projectDetailsTab, setProjectDetailsTab] =
     useState<ProjectDetailsTab>("general");
-  const [statusMigrationRequest, setStatusMigrationRequest] =
-    useState<StatusMigrationRequest | null>(null);
-  const [pendingCardId, setPendingCardId] = useState<string | null>(null);
-  const [renamingStatusId, setRenamingStatusId] = useState<string | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  // When set, the task dialog is open on a fresh unsaved draft seeded to this
-  // status column (opened by `C` or a column's `+`). The draft has no file until
-  // it's saved/delegated — see TaskDialog's commitDraft.
-  const [draftStatus, setDraftStatus] = useState<string | null>(null);
   // Todos v1 two-stage capture (the Todos tab's create flow). Opened by the
-  // add-row or `C` on the Todos tab; a transactional capture card that nothing
-  // survives until ⌘⏎ (see TodoDialog).
+  // add-row or `C`; a transactional capture card that nothing survives until ⌘⏎
+  // (see TodoDialog).
   const [todoCaptureOpen, setTodoCaptureOpen] = useState(false);
-  // The existing-todo dialog (Todos v1, slice 5): a row opens the TodoDialog in
-  // its saved stage on this task path (the board still uses TaskDialog). Null =
-  // closed; the file itself comes from the live `files` subscription.
+  // The existing-todo dialog: a row opens the TodoDialog in its saved stage on
+  // this task path. Null = closed; the file itself comes from the live `files`
+  // subscription.
   const [openTodoPath, setOpenTodoPath] = useState<string | null>(null);
-  // Per-project tab: the Kanban board, or the Notes two-pane view.
-  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("board");
+  // The active per-project view (Todos / Notes / Chats / …).
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("todos");
   // The global command palette (⌘K) and its one-shot request to NotesView to
   // open/create a note. A palette-driven "New project" reuses the sidebar's
   // CreateProjectDialog, pre-filled with the typed query.
@@ -1368,27 +778,6 @@ function BoardContent({
   const projectConfig = useMemo(
     () => parseProjectConfig(projectConfigFile?.content, projectId),
     [projectConfigFile?.content, projectId],
-  );
-  const boardStatuses = useMemo(
-    () =>
-      statusesForProject(
-        projectConfig?.tasks?.statuses?.length
-          ? projectConfig.tasks.statuses
-          : currentProject?.statuses,
-      ),
-    [currentProject?.statuses, projectConfig?.tasks?.statuses],
-  );
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 1 } }),
-  );
-  const boardFocusColumnsRef = useRef<BoardFocusColumn[]>([]);
-  const boardCardNodesRef = useRef(new Map<string, HTMLDivElement>());
-  const registerBoardCardNode = useCallback(
-    (cardId: string, node: HTMLDivElement | null) => {
-      if (node) boardCardNodesRef.current.set(cardId, node);
-      else boardCardNodesRef.current.delete(cardId);
-    },
-    [],
   );
   const localConfigReady = localConfig !== null;
   const projectIsHitched = Boolean(
@@ -1458,13 +847,12 @@ function BoardContent({
     };
   }, []);
 
+  // Backfill project.json if it's missing (new project / first sync). The
+  // workspace renders fine without it, so a backfill failure is non-fatal.
   useEffect(() => {
     if (!currentProject || files === undefined) return;
     if (projectConfig) return;
-    void ensureProjectConfig({ projectId }).catch(() => {
-      // The board can still render from project-row status metadata during
-      // migration, so a backfill failure should not block the workspace.
-    });
+    void ensureProjectConfig({ projectId }).catch(() => {});
   }, [
     currentProject,
     ensureProjectConfig,
@@ -1473,15 +861,6 @@ function BoardContent({
     projectConfigFile,
     projectId,
   ]);
-
-  useEffect(() => {
-    if (
-      renamingStatusId !== null &&
-      !boardStatuses.some((status) => status.id === renamingStatusId)
-    ) {
-      setRenamingStatusId(null);
-    }
-  }, [boardStatuses, renamingStatusId]);
 
   async function toggleKeepAwake() {
     const bridge = keepAwakeBridge();
@@ -1492,17 +871,15 @@ function BoardContent({
     setKeepAwake(next);
   }
 
-  // `C` captures a todo from anywhere within a project (Decision 10): every
-  // view opens the two-stage capture card into the project's backlog — except
-  // the board, which keeps its legacy first-column draft until the board (and
-  // this branch with it) dies in slice 6. Ignored while typing in a field or
-  // with a dialog already open, and when chorded with a modifier (so ⌘C still
-  // copies).
+  // `C` captures a todo from anywhere within a project (Decision 10): opens the
+  // two-stage capture card into the project's backlog. Ignored while typing in a
+  // field or with a todo dialog already open, and when chorded with a modifier
+  // (so ⌘C still copies).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "c" && e.key !== "C") return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (selectedPath || draftStatus !== null || todoCaptureOpen) return;
+      if (todoCaptureOpen || openTodoPath !== null) return;
       const el = e.target as HTMLElement | null;
       if (
         el &&
@@ -1511,54 +888,11 @@ function BoardContent({
         return;
       }
       e.preventDefault();
-      if (workspaceView === "board") setDraftStatus(boardStatuses[0].id);
-      else setTodoCaptureOpen(true);
+      setTodoCaptureOpen(true);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [boardStatuses, selectedPath, draftStatus, todoCaptureOpen, workspaceView]);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (
-        e.key !== "ArrowUp" &&
-        e.key !== "ArrowDown" &&
-        e.key !== "ArrowLeft" &&
-        e.key !== "ArrowRight"
-      ) {
-        return;
-      }
-      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-      if (workspaceView !== "board" || selectedPath || draftStatus !== null)
-        return;
-      if (
-        document.querySelector(
-          '[role="dialog"],[role="alertdialog"],[role="menu"]',
-        )
-      ) {
-        return;
-      }
-      if (isTextEditingTarget(e.target)) return;
-
-      const columns = boardFocusColumnsRef.current;
-      if (columns.length === 0) return;
-
-      const cardNodes = boardCardNodesRef.current;
-      const focusedCardId = findFocusedBoardCardId(cardNodes);
-      const nextCardId = nextBoardCardId(columns, focusedCardId, e.key);
-      if (!nextCardId) return;
-
-      const nextNode = cardNodes.get(nextCardId);
-      if (!nextNode) return;
-
-      e.preventDefault();
-      nextNode.focus();
-      nextNode.scrollIntoView({ block: "nearest", inline: "nearest" });
-    }
-
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [draftStatus, selectedPath, workspaceView]);
+  }, [todoCaptureOpen, openTodoPath]);
 
   // ⌘K (Ctrl+K) toggles the command palette. When it's already open, close it
   // (the footer advertises ⌘K). When closed, suppress only where ⌘K means
@@ -1642,10 +976,6 @@ function BoardContent({
   const automationActions = useAutomationActions(projectId, files ?? []);
 
   if (!currentProject || files === undefined) {
-    boardFocusColumnsRef.current = [];
-  }
-
-  if (!currentProject || files === undefined) {
     return (
       <AppShell
         projects={projects}
@@ -1684,203 +1014,52 @@ function BoardContent({
     );
   }
 
-  // A card is a task body (tasks/<slug>/task.md). Drop tombstones and any file
-  // that isn't a canonical task body; parse frontmatter; bucket by status.
-  const cards = files
-    .reduce<Card[]>((acc, f) => {
-      if (f.deleted) return acc;
-      const slug = taskSlug(f.path);
-      if (slug === null) return acc;
-      const { frontmatter } = parseFrontmatter(f.content);
-      const status = frontmatter.status?.toLowerCase();
-      acc.push({
-        id: `tasks/${slug}`,
-        slug,
-        title: frontmatter.title || slug,
-        owner: frontmatter.owner,
-        path: f.path,
-        content: f.content,
-        chat: parseChatRef(frontmatter),
-        chatStatus: parseChatStatus(frontmatter),
-        chatOpenState: parseChatOpenState(frontmatter),
-        request: parseDelegationRequest(frontmatter),
-        column: boardColumnFor(status, boardStatuses),
-        archived: status === "archived",
-        updatedAt: f.updatedAt,
-      });
-      return acc;
-    }, [])
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+  // Task bodies (tasks/<slug>/task.md). Drop tombstones and any file that isn't
+  // a canonical task body. The board is gone; the Todos view derives its own
+  // groups, so here we only need slug-uniqueness and the archived surface.
+  const taskFiles = files.filter(
+    (f) => !f.deleted && taskSlug(f.path) !== null,
+  );
+  const takenSlugs = taskFiles.map((f) => taskSlug(f.path) as string);
 
-  const activeCards = cards.filter((card) => !card.archived);
-  const archivedCards = cards.filter((card) => card.archived);
-  // Archived count for the active view: tasks on the Board, notes on Notes.
+  // Archived todos surface in the Todos view's Archived sheet. Archived is the
+  // `archived-at:` timestamp now (Todos v1) — the board's `status: archived` is
+  // gone. Unarchive clears the timestamp; Delete tombstones the folder.
+  const archivedTodos: ArchivedTodo[] = taskFiles
+    .map((f) => ({
+      file: f,
+      slug: taskSlug(f.path) as string,
+      frontmatter: parseFrontmatter(f.content).frontmatter,
+    }))
+    .filter(
+      ({ frontmatter }) => (frontmatter["archived-at"] ?? "").trim() !== "",
+    )
+    .map(({ file, slug, frontmatter }) => ({
+      path: file.path,
+      slug,
+      title: frontmatter.title || slug,
+      content: file.content,
+    }));
+
+  // Archived count for the active view: todos on the Todos view, notes on Notes.
   const archivedNoteCount = noteDocs(files).filter((d) => d.archived).length;
-  // The header's Archived control is board/notes-specific — the Chats tab keeps
-  // its archived group inside its own "View all" screen, so it reads 0 here
-  // (disabling the button) on the Chats view.
+  // The header's Archived control is Todos/Notes-specific — the Chats tab keeps
+  // its archived group inside its own "View all" screen, so it reads 0 (and the
+  // button is disabled) on other views.
   const archivedCount =
-    workspaceView === "board"
-      ? archivedCards.length
+    workspaceView === "todos"
+      ? archivedTodos.length
       : workspaceView === "notes"
         ? archivedNoteCount
         : 0;
-  const unknownStatusIds = [...new Set(
-    activeCards
-      .map((card) => card.column)
-      .filter((statusId) => !isKnownStatusId(statusId, boardStatuses)),
-  )].sort((a, b) => a.localeCompare(b));
-  const boardColumnIds = [
-    ...boardStatuses.map((status) => status.id),
-    ...unknownStatusIds,
-  ];
-  const byColumn = Object.fromEntries(
-    boardColumnIds.map((statusId) => [
-      statusId,
-      activeCards.filter((card) => card.column === statusId),
-    ]),
-  ) as Record<string, Card[]>;
-  boardFocusColumnsRef.current = boardColumnIds.map((statusId) => ({
-    id: statusId,
-    cardIds: byColumn[statusId].map((card) => card.id),
-  }));
 
-  function copyStatusId(statusId: string) {
-    void navigator.clipboard.writeText(statusFrontmatterLine(statusId)).catch(() => {
-      // Clipboard failures are non-fatal; the menu displays the bare id.
-    });
-  }
+  // The command palette's task list = the derived todo groups (frontmatter-only
+  // mode; the palette isn't perf-sensitive and needs no live chat index).
+  const todoGroups = deriveTodoGroups(files, backlogOrder);
 
-  async function commitStatusRename(status: ProjectStatus, nextName: string) {
-    const trimmed = nextName.trim().replace(/\s+/g, " ");
-    setRenamingStatusId(null);
-    if (!trimmed || trimmed === status.name) return;
-
-    const cardCount = byColumn[status.id]?.length ?? 0;
-    try {
-      if (cardCount === 0) {
-        await updateStatuses({
-          projectId,
-          statuses: boardStatuses.map((item) =>
-            item.id === status.id ? { ...item, name: trimmed } : item,
-          ),
-        });
-        return;
-      }
-
-      setStatusMigrationRequest({
-        kind: "rename",
-        status,
-        initialName: trimmed,
-        cardCount,
-        statuses: boardStatuses,
-        onConfirm: async (name) => {
-          await renameStatusWithMigration({
-            projectId,
-            statusId: status.id,
-            name,
-          });
-        },
-      });
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function addUnknownStatus(statusId: string) {
-    if (isKnownStatusId(statusId, boardStatuses)) return;
-    const name = statusNameFromId(statusId);
-    const adoptedStatusId = uniqueStatusId(name, boardStatuses);
-    try {
-      await updateStatuses({
-        projectId,
-        statuses: [...boardStatuses, { id: statusId, name }],
-      });
-      if (adoptedStatusId !== statusId) {
-        await moveCardsWithStatus({
-          projectId,
-          statusId,
-          destinationStatusId: adoptedStatusId,
-        });
-      }
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  function moveUnknownStatusCards(statusId: string) {
-    const cardCount = byColumn[statusId]?.length ?? 0;
-    if (cardCount === 0) return;
-    setStatusMigrationRequest({
-      kind: "move",
-      status: { id: statusId, name: "Unknown" },
-      cardCount,
-      statuses: boardStatuses,
-      onConfirm: async (destinationStatusId) => {
-        await moveCardsWithStatus({
-          projectId,
-          statusId,
-          destinationStatusId,
-        });
-      },
-    });
-  }
-
-  async function deleteStatus(status: ProjectStatus) {
-    if (boardStatuses.length <= 1) return;
-    const cardCount = byColumn[status.id]?.length ?? 0;
-
-    if (cardCount > 0) {
-      setStatusMigrationRequest({
-        kind: "delete",
-        status,
-        cardCount,
-        statuses: boardStatuses,
-        onConfirm: async (destinationStatusId) => {
-          await deleteStatusWithMigration({
-            projectId,
-            statusId: status.id,
-            destinationStatusId,
-          });
-        },
-      });
-      return;
-    }
-
-    const confirmed = window.confirm(`Delete "${status.name}"?`);
-    if (!confirmed) return;
-
-    try {
-      await deleteStatusWithMigration({ projectId, statusId: status.id });
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  const selected = selectedPath
-    ? (cards.find((card) => card.path === selectedPath) ?? null)
-    : null;
-  // A fresh draft (C / `+`) takes precedence: an empty in-memory task seeded to
-  // its column, with no file yet. Otherwise the dialog reflects the selected card.
-  const target: TaskTarget | null =
-    draftStatus !== null
-      ? {
-          projectId,
-          path: "",
-          title: "",
-          content: setFrontmatterKeys("", { status: draftStatus }),
-          isDraft: true,
-        }
-      : selected && {
-          projectId,
-          path: selected.path,
-          title: selected.title,
-          content: selected.content,
-        };
-
-  // Write a keyboard-captured draft's file (path + full content already resolved
-  // by the dialog) through the optimistic upsert, so the new card lands on the
-  // board instantly — the dialog reopens on it after a draft is delegated.
+  // Write a todo's materialized file (path + full content already resolved by
+  // the TodoDialog) through the optimistic upsert, so the row reflects instantly
+  // — the capture dialog uses this to persist a saved/delegated todo.
   async function materializeDraftFile(path: string, content: string) {
     await upsertFile({
       projectId,
@@ -1889,48 +1068,6 @@ function BoardContent({
       hash: await sha256(content),
       deleted: false,
     });
-  }
-
-  // Create a task by writing a fresh `tasks/<slug>/task.md` through the same
-  // upsert path everything else uses; the daemon writes the file and the live
-  // query renders the card (instantly, via the optimistic insert above).
-  async function createTask(column: string, title: string) {
-    const taken = new Set(cards.map((card) => card.slug));
-    const slug = uniqueSlug(title, taken);
-    const content = setFrontmatterKeys("", { title, status: column });
-    await upsertFile({
-      projectId,
-      path: taskBodyPath(slug),
-      content,
-      hash: await sha256(content),
-      deleted: false,
-    });
-  }
-
-  // Duplicate a task: write a fresh `tasks/<slug>/task.md` that keeps the
-  // original body, status, and other frontmatter, but with a "COPY OF: …" title
-  // and the source's coding-chat link cleared so the copy starts un-linked. Same
-  // upsert path as createTask — the live query renders the new card instantly via
-  // the optimistic insert.
-  async function duplicateTask(card: Card) {
-    const taken = new Set(cards.map((c) => c.slug));
-    const title = `COPY OF: ${card.title}`;
-    const slug = uniqueSlug(title, taken);
-    const content = setFrontmatterKeys(clearChatFields(card.content), {
-      title,
-    });
-    setPendingCardId(card.id);
-    try {
-      await duplicateTaskWithAttachments({
-        projectId,
-        fromPrefix: `tasks/${card.slug}/attachments/`,
-        taskPath: taskBodyPath(slug),
-        taskContent: content,
-        taskHash: await sha256(content),
-      });
-    } finally {
-      setPendingCardId(null);
-    }
   }
 
   // Check/uncheck a todo: stamp (or clear) `completed-at` in the task.md
@@ -1963,26 +1100,19 @@ function BoardContent({
     });
   }
 
-  async function setArchived(card: Card, archived: boolean) {
-    const { frontmatter } = parseFrontmatter(card.content);
-    const restoreStatus = columnFor(frontmatter.archivedFrom, boardStatuses);
-    const nextContent = setFrontmatterKeys(card.content, {
-      status: archived ? "archived" : restoreStatus,
-      archivedFrom: archived ? card.column : undefined,
+  // Unarchive a todo: clear its `archived-at:` timestamp so the derivation
+  // regroups it. Todos v1 archived model — this never writes `status:`.
+  async function unarchiveTodo(todo: ArchivedTodo) {
+    const nextContent = setFrontmatterKeys(todo.content, {
+      "archived-at": undefined,
     });
-
-    setPendingCardId(card.id);
-    try {
-      await upsertFile({
-        projectId,
-        path: card.path,
-        content: nextContent,
-        hash: await sha256(nextContent),
-        deleted: false,
-      });
-    } finally {
-      setPendingCardId(null);
-    }
+    await upsertFile({
+      projectId,
+      path: todo.path,
+      content: nextContent,
+      hash: await sha256(nextContent),
+      deleted: false,
+    });
   }
 
   // Tombstone every (non-deleted) attachment row under a task's folder. The
@@ -2000,136 +1130,43 @@ function BoardContent({
     );
   }
 
-  async function deleteCard(card: Card) {
-    setPendingCardId(card.id);
-    try {
-      await cascadeDeleteAttachments(card.slug);
-      await upsertFile({
-        projectId,
-        path: card.path,
-        content: "",
-        hash: "",
-        deleted: true,
-      });
-    } finally {
-      setPendingCardId(null);
-    }
-  }
-
   // Delete a todo folder by slug (attachments + task.md tombstone). Used by the
-  // two-stage capture's discard-cleanup of a pasted-early draft (Decision 3) and
-  // its ⋯ Delete action. Same cascade path as deleteCard, keyed off the slug the
-  // dialog owns rather than a board Card.
+  // capture dialog's discard-cleanup of a pasted-early draft (Decision 3), its
+  // ⋯ Delete action, and the archived sheet's per-row Delete.
   async function deleteTodo(slug: string) {
     await cascadeDeleteAttachments(slug);
     const path = taskBodyPath(slug);
     await upsertFile({ projectId, path, content: "", hash: "", deleted: true });
   }
 
-  // Delete every archived task in one shot. Fires the deletes concurrently
-  // through the same tombstone path `deleteCard` uses; the optimistic update
-  // drops each card immediately.
+  // Delete every archived todo in one shot. Fires the tombstones concurrently
+  // through the same path `deleteTodo` uses; the optimistic update drops each
+  // row immediately.
   async function deleteAllArchived() {
-    await Promise.all(
-      archivedCards.map(async (card) => {
-        await cascadeDeleteAttachments(card.slug);
-        await upsertFile({
-          projectId,
-          path: card.path,
-          content: "",
-          hash: "",
-          deleted: true,
-        });
-      }),
-    );
+    await Promise.all(archivedTodos.map((todo) => deleteTodo(todo.slug)));
   }
-
-  // Archive every card in one column at once. Same frontmatter rewrite as the
-  // archive branch of `setArchived` (status → "archived", remembering the source
-  // column in `archivedFrom` so Unarchive restores it), fired concurrently so
-  // the column empties immediately via the optimistic update.
-  async function archiveAllInColumn(columnCards: Card[]) {
-    await Promise.all(
-      columnCards.map(async (card) => {
-        const nextContent = setFrontmatterKeys(card.content, {
-          status: "archived",
-          archivedFrom: card.column,
-        });
-        await upsertFile({
-          projectId,
-          path: card.path,
-          content: nextContent,
-          hash: await sha256(nextContent),
-          deleted: false,
-        });
-      }),
-    );
-  }
-
-  // Permanently delete every card in one column. Mirrors `deleteAllArchived`,
-  // sliced to a single column — the tombstone path each card already uses.
-  async function deleteAllInColumn(columnCards: Card[]) {
-    await Promise.all(
-      columnCards.map(async (card) => {
-        await cascadeDeleteAttachments(card.slug);
-        await upsertFile({
-          projectId,
-          path: card.path,
-          content: "",
-          hash: "",
-          deleted: true,
-        });
-      }),
-    );
-  }
-
-  // Move a card to another column by rewriting just its `status` frontmatter.
-  // Chat lifecycle fields are owned by the harness hooks, so a board move
-  // should never reset or replay them from this card snapshot.
-  async function setStatus(card: Card, status: string) {
-    const nextContent = setFrontmatterKeys(card.content, { status });
-
-    setPendingCardId(card.id);
-    try {
-      await upsertFile({
-        projectId,
-        path: card.path,
-        content: nextContent,
-        hash: await sha256(nextContent),
-        deleted: false,
-      });
-    } finally {
-      setPendingCardId(null);
-    }
-  }
-
-  function onDragEnd(event: DragEndEvent) {
-    setActiveId(null);
-    const { active, over } = event;
-    if (!over) return;
-    // Dropping anywhere onto an archived card's origin or the same column is a
-    // no-op. `over.id` is always a column id (only columns are droppable).
-    const card = cards.find((c) => c.id === active.id);
-    const dest = String(over.id);
-    if (!boardStatuses.some((status) => status.id === dest)) return;
-    if (!card || (card.column === dest && !card.archived)) return;
-    void setStatus(card, dest);
-  }
-
-  const activeCard = activeId
-    ? (cards.find((c) => c.id === activeId) ?? null)
-    : null;
 
   // Command palette (⌘K) data + actions. Active-project scoped: its task/note
-  // lists are the live cards/notes; the project list drives the switcher.
+  // lists are the live todos/notes; the project list drives the switcher.
   const paletteProjects = projects.map(({ project }) => ({
     id: project._id,
     name: project.name,
   }));
-  const paletteTasks = activeCards.map((card) => ({
-    path: card.path,
-    title: card.title,
-    meta: boardStatuses.find((s) => s.id === card.column)?.name ?? card.column,
+  const PALETTE_GROUP_LABEL: Record<Todo["group"], string> = {
+    "needs-you": "Needs you",
+    working: "Working",
+    backlog: "Backlog",
+    done: "Done",
+  };
+  const paletteTasks = [
+    ...todoGroups.needsYou,
+    ...todoGroups.working,
+    ...todoGroups.backlog,
+    ...todoGroups.done,
+  ].map((todo) => ({
+    path: todo.path,
+    title: todo.title,
+    meta: PALETTE_GROUP_LABEL[todo.group],
   }));
   const paletteNotes = noteDocs(files)
     .filter((doc) => !doc.archived)
@@ -2241,17 +1278,16 @@ function BoardContent({
     },
   ];
 
-  // Open a task: show the board first so the dialog floats over it (not Notes).
+  // Open a todo: switch to the Todos view and open the TodoDialog over it.
   function paletteOpenTask(path: string) {
-    setWorkspaceView("board");
-    setSelectedPath(path);
+    setWorkspaceView("todos");
+    setOpenTodoPath(path);
   }
-  // New task → default column. With a title, create it directly; with none, open
-  // the task dialog on a fresh draft so the user can capture it from the keyboard.
-  function paletteCreateTask(title: string) {
-    setWorkspaceView("board");
-    if (title) void createTask(boardStatuses[0].id, title);
-    else setDraftStatus(boardStatuses[0].id);
+  // New todo: switch to the Todos view and open the two-stage capture card. The
+  // capture card is body-only (Decision 10), so the typed query isn't seeded.
+  function paletteCreateTask(_title: string) {
+    setWorkspaceView("todos");
+    setTodoCaptureOpen(true);
   }
   // Open / create a note: hand the request to NotesView (which owns the editor +
   // draft-flush lifecycle) after switching to the Notes view.
@@ -2325,7 +1361,7 @@ function BoardContent({
               size="sm"
               disabled={archivedCount === 0}
               onClick={() =>
-                workspaceView === "board"
+                workspaceView === "todos"
                   ? setShowArchived(true)
                   : setShowNotesArchived(true)
               }
@@ -2366,7 +1402,38 @@ function BoardContent({
           </section>
         )}
 
-        {workspaceView === "todos" ? (
+        {workspaceView === "notes" ? (
+          <NotesView
+            projectId={projectId}
+            files={files}
+            showArchived={showNotesArchived}
+            onShowArchivedChange={setShowNotesArchived}
+            onExit={() => setWorkspaceView("todos")}
+            intent={noteIntent}
+            onIntentHandled={() => setNoteIntent(null)}
+          />
+        ) : workspaceView === "chats" ? (
+          <ChatsView
+            projectId={projectId}
+            onManageHarnesses={() => openGlobalSettings("harnesses")}
+            onExit={() => setWorkspaceView("todos")}
+          />
+        ) : workspaceView === "automations" ? (
+          <AutomationsView
+            projectId={projectId}
+            files={files}
+            intent={automationIntent}
+            onIntentHandled={() => setAutomationIntent(null)}
+            onExit={() => setWorkspaceView("todos")}
+          />
+        ) : workspaceView === "debug" ? (
+          <DebugView
+            projectId={projectId}
+            onExit={() => setWorkspaceView("todos")}
+          />
+        ) : workspaceView === "editor-sandbox" ? (
+          <SandboxEditor onExit={() => setWorkspaceView("todos")} />
+        ) : (
           <TodosView
             projectId={projectId}
             files={files}
@@ -2376,134 +1443,14 @@ function BoardContent({
               void setTodoCompleted(todo, completed)
             }
           />
-        ) : workspaceView === "notes" ? (
-          <NotesView
-            projectId={projectId}
-            files={files}
-            showArchived={showNotesArchived}
-            onShowArchivedChange={setShowNotesArchived}
-            onExit={() => setWorkspaceView("board")}
-            intent={noteIntent}
-            onIntentHandled={() => setNoteIntent(null)}
-          />
-        ) : workspaceView === "chats" ? (
-          <ChatsView
-            projectId={projectId}
-            onManageHarnesses={() => openGlobalSettings("harnesses")}
-            onExit={() => setWorkspaceView("notes")}
-          />
-        ) : workspaceView === "automations" ? (
-          <AutomationsView
-            projectId={projectId}
-            files={files}
-            intent={automationIntent}
-            onIntentHandled={() => setAutomationIntent(null)}
-            onExit={() => setWorkspaceView("board")}
-          />
-        ) : workspaceView === "debug" ? (
-          <DebugView
-            projectId={projectId}
-            onExit={() => setWorkspaceView("board")}
-          />
-        ) : workspaceView === "editor-sandbox" ? (
-          <SandboxEditor onExit={() => setWorkspaceView("board")} />
-        ) : (
-        <DndContext
-          sensors={sensors}
-          onDragStart={(event: DragStartEvent) =>
-            setActiveId(String(event.active.id))
-          }
-          onDragEnd={onDragEnd}
-          onDragCancel={() => setActiveId(null)}
-        >
-          <div className="-mx-4 flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
-            {boardStatuses.map((col) => (
-              <DroppableColumn
-                key={col.id}
-                status={col}
-                count={byColumn[col.id].length}
-                onAdd={() => setDraftStatus(col.id)}
-                isRenaming={renamingStatusId === col.id}
-                onTitleClick={() => openProjectDetails("statuses")}
-                onRename={() => setRenamingStatusId(col.id)}
-                onRenameCommit={(name) => void commitStatusRename(col, name)}
-                onCopyStatusId={() => copyStatusId(col.id)}
-                onManageStatuses={() => openProjectDetails("statuses")}
-                onDeleteStatus={() => void deleteStatus(col)}
-                onArchiveAll={() => void archiveAllInColumn(byColumn[col.id])}
-                onDeleteAll={() => void deleteAllInColumn(byColumn[col.id])}
-              >
-                {byColumn[col.id].map((card) => (
-                  <DraggableCard
-                    key={card.id}
-                    card={card}
-                    projectId={projectId}
-                    pending={pendingCardId === card.id}
-                    registerCardNode={registerBoardCardNode}
-                    onOpen={(card) => setSelectedPath(card.path)}
-                    onArchiveToggle={(c, archived) =>
-                      void setArchived(c, archived)
-                    }
-                    onDuplicate={(c) => void duplicateTask(c)}
-                    onDelete={(c) => void deleteCard(c)}
-                  />
-                ))}
-              </DroppableColumn>
-            ))}
-            {unknownStatusIds.map((statusId) => (
-              <UnknownStatusColumn
-                key={statusId}
-                statusId={statusId}
-                count={byColumn[statusId].length}
-                onAddAsStatus={() => void addUnknownStatus(statusId)}
-                onMoveCards={() => moveUnknownStatusCards(statusId)}
-              >
-                {byColumn[statusId].map((card) => (
-                  <DraggableCard
-                    key={card.id}
-                    card={card}
-                    projectId={projectId}
-                    pending={pendingCardId === card.id}
-                    registerCardNode={registerBoardCardNode}
-                    onOpen={(card) => setSelectedPath(card.path)}
-                    onArchiveToggle={(c, archived) =>
-                      void setArchived(c, archived)
-                    }
-                    onDuplicate={(c) => void duplicateTask(c)}
-                    onDelete={(c) => void deleteCard(c)}
-                  />
-                ))}
-              </UnknownStatusColumn>
-            ))}
-          </div>
-
-          {/* dropAnimation={null}: the dragged card's DOM node never leaves its
-            origin column (we only dim it), so dnd-kit's default drop animation
-            would fly the overlay back to column 1 before the re-rendered card
-            appears in its new column. Killing it makes the move read as instant,
-            Linear-style. */}
-          <DragOverlay dropAnimation={null}>
-            {activeCard ? (
-              <div
-                className={cn(
-                  CARD_CLASS,
-                  "cursor-grabbing shadow-lg ring-foreground/20",
-                )}
-              >
-                <CardContents card={activeCard} projectId={projectId} />
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
         )}
 
         <ArchivedSheet
           open={showArchived}
           onOpenChange={setShowArchived}
-          cards={archivedCards}
-          pendingCardId={pendingCardId}
-          onUnarchive={(c) => void setArchived(c, false)}
-          onDelete={(c) => void deleteCard(c)}
+          todos={archivedTodos}
+          onUnarchive={(todo) => void unarchiveTodo(todo)}
+          onDelete={(todo) => void deleteTodo(todo.slug)}
           onDeleteAll={() => void deleteAllArchived()}
         />
 
@@ -2524,32 +1471,10 @@ function BoardContent({
           initialTab={projectDetailsTab}
         />
 
-        <TaskDialog
-          task={target}
-          takenSlugs={cards.map((card) => card.slug)}
-          onMaterialize={materializeDraftFile}
-          onOpenChange={(open) => {
-            if (!open) {
-              setSelectedPath(null);
-              setDraftStatus(null);
-            }
-          }}
-          onDraftDelegated={(path) => {
-            // The draft is now a real card: drop draft mode and reopen the dialog
-            // on it so the bar reflects the linked chat.
-            setDraftStatus(null);
-            setSelectedPath(path);
-          }}
-          onArchive={selected ? () => void setArchived(selected, true) : undefined}
-          onDelete={selected ? () => void deleteCard(selected) : undefined}
-          onManagePrompts={() => openGlobalSettings("starting-prompts")}
-          onManageHarnesses={() => openGlobalSettings("harnesses")}
-        />
-
         <TodoDialog
           open={todoCaptureOpen}
           projectId={projectId}
-          takenSlugs={cards.map((card) => card.slug)}
+          takenSlugs={takenSlugs}
           onClose={() => setTodoCaptureOpen(false)}
           onWrite={materializeDraftFile}
           onDeleteTodo={deleteTodo}
@@ -2557,15 +1482,15 @@ function BoardContent({
           onManageHarnesses={() => openGlobalSettings("harnesses")}
         />
 
-        {/* The existing-todo dialog (slice 5): a Todos row opens the same
-            TodoDialog in its saved stage on the on-disk file. The file comes
-            from the live subscription, so its footer flips as the daemon links a
-            chat / projects status. If the file vanishes (deleted elsewhere), the
-            dialog closes. The board keeps TaskDialog until slice 6. */}
+        {/* The existing-todo dialog: a Todos row opens the TodoDialog in its
+            saved stage on the on-disk file. The file comes from the live
+            subscription, so its footer flips as the daemon links a chat /
+            projects status. If the file vanishes (deleted elsewhere), the dialog
+            closes. */}
         <TodoDialog
           open={openTodoFile !== undefined}
           projectId={projectId}
-          takenSlugs={cards.map((card) => card.slug)}
+          takenSlugs={takenSlugs}
           existing={
             openTodoFile
               ? {
@@ -2580,11 +1505,6 @@ function BoardContent({
           onDeleteTodo={deleteTodo}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
           onManageHarnesses={() => openGlobalSettings("harnesses")}
-        />
-
-        <StatusMigrationDialog
-          request={statusMigrationRequest}
-          onClose={() => setStatusMigrationRequest(null)}
         />
 
         <CommandPalette
@@ -2625,10 +1545,10 @@ function BoardContent({
   );
 }
 
-export default function Board() {
+export default function AppRoot() {
   return (
     <>
-      <AuthenticatedBoard />
+      <AuthenticatedWorkspace />
       <ProjectConflictDialog />
       <Toaster richColors position="bottom-right" />
     </>

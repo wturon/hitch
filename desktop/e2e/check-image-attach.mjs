@@ -1,6 +1,6 @@
 // DISPOSABLE check for inline image attachments (Path A). Drives the real app
 // against the real Convex deployment and asserts the renderer upload path:
-// pasting an image into the task editor uploads it, writes a standard
+// pasting an image into the TodoDialog editor uploads it, writes a standard
 // `![](attachments/image-N.png)` reference into the body, and renders it inline
 // via a resolved (signed) URL.
 //
@@ -44,21 +44,25 @@ const watchdog = setTimeout(() => {
 }, 120000);
 
 try {
-  const addTask = page.locator('[aria-label="Add task"]').first();
-  await addTask.waitFor({ timeout: 25000 });
-  check("boots signed-in (board renders)", true);
+  // Fresh boot lands on the Todos view. Its borderless capture affordance opens
+  // the two-stage capture card.
+  const addTodo = page.getByRole("button", { name: "Add a todo…" }).first();
+  await addTodo.waitFor({ timeout: 25000 });
+  check("boots signed-in (Todos view renders)", true);
 
-  await addTask.click();
-  const newInput = page.locator('input[aria-label="Task title"]');
-  await newInput.fill(title);
-  await newInput.press("Enter");
-  const card = page.getByText(title, { exact: false }).first();
-  await card.waitFor({ timeout: 10000 });
-  check("creates a task", true);
-
-  await card.click();
-  const body = page.locator('.hitch-mdx-content[contenteditable="true"]');
+  await addTodo.click();
+  // Capture stage: body-only MarkdownEditor. Type the title-line, then ⌘⏎ saves
+  // (crystallizes the first line into the title and flips to the saved stage).
+  const body = page.locator(".hitch-editor-content").first();
   await body.waitFor({ timeout: 10000 });
+  await body.click();
+  await page.keyboard.type(title);
+  await page.keyboard.press("Meta+Enter");
+  // Saved stage: the title textarea now carries the crystallized first line.
+  const titleField = page.locator('textarea[aria-label="Todo title"]');
+  await titleField.waitFor({ timeout: 10000 });
+  check("captures a todo (⌘⏎ → saved stage)", true);
+
   await body.click();
 
   // Synthesize a clipboard paste of a PNG onto the editor surface — the same
@@ -70,9 +74,7 @@ try {
     const file = new File([bytes], "image.png", { type: "image/png" });
     const dt = new DataTransfer();
     dt.items.add(file);
-    const el = document.querySelector(
-      '.hitch-mdx-content[contenteditable="true"]',
-    );
+    const el = document.querySelector(".hitch-editor-content");
     el.dispatchEvent(
       new ClipboardEvent("paste", {
         clipboardData: dt,
@@ -96,9 +98,9 @@ try {
   await page.screenshot({ path: `${SHOTS}/img-01-inline.png` });
 
   // The body markdown must carry a standard relative reference.
-  await page.locator('[aria-label="Task actions"]').click();
+  await page.locator('[aria-label="Todo actions"]').click();
   await page.getByRole("menuitem", { name: "Raw markdown" }).click();
-  const raw = page.locator('textarea[aria-label="Task content"]');
+  const raw = page.locator('textarea[aria-label="Todo content"]');
   await raw.waitFor({ timeout: 5000 });
   const rawVal = await raw.inputValue();
   check(
@@ -111,8 +113,9 @@ try {
   await page.screenshot({ path: `${SHOTS}/img-99-error.png` }).catch(() => {});
 } finally {
   try {
-    // Reopen formatted (raw view has no actions menu delete? it does) then delete.
-    const actions = page.locator('[aria-label="Task actions"]');
+    // The ⋯ menu's Delete tombstones the scratch todo (works in raw or
+    // formatted view).
+    const actions = page.locator('[aria-label="Todo actions"]');
     if (await actions.count()) {
       await actions.click();
       await page.getByRole("menuitem", { name: "Delete" }).click();

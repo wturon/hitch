@@ -3,7 +3,7 @@
 // from fix/slash-menu-hyphen-and-order:
 //   - Fix 1 (width): the widened menu (min-w-[300px]/max-w-[400px]) doesn't
 //     truncate a moderately long skill name the way the old min-w-[220px] did.
-//   - Fix 2 (z-index): the menu paints ON TOP of a TaskDialog (a modal Base UI
+//   - Fix 2 (z-index): the menu paints ON TOP of a TodoDialog (a modal Base UI
 //     dialog) rather than behind it — the typeahead's anchor <div> now carries
 //     `anchorClassName="z-[90]"` (see SlashMenuPlugin.tsx).
 //   - Fix 3 (hyphen): typing a hyphen (e.g. `/be-` toward `be-concise`) no
@@ -13,8 +13,8 @@
 //     (they're used more often), so the flat keyboard-nav list is
 //     [...skills, ...commands] instead of the old [...commands, ...skills].
 //
-// The TaskDialog check runs FIRST (fresh boot lands on the Board), then the
-// script switches to the Editor Sandbox's "component" mode — the production
+// The TodoDialog check runs FIRST (fresh boot lands on the Todos view), then
+// the script switches to the Editor Sandbox's "component" mode — the production
 // <MarkdownEditor> fed a hardcoded SAMPLE_SKILLS array (so the Skills section
 // is exercisable without Convex/the daemon) — for the rest of the original
 // Skills-autocomplete assertions plus the width check. It verifies that
@@ -62,7 +62,7 @@ const editorText = (page) =>
 // `useMenuAnchorRef`) carries `role="listbox"` + `aria-label="Typeahead menu"`
 // via `setContainerDivAttributes`, and our `SlashMenuList` portals in as its
 // sole child — so this selector reaches the actual painted dropdown box
-// regardless of which host page (Sandbox or TaskDialog) it's opened in.
+// regardless of which host page (Sandbox or TodoDialog) it's opened in.
 const menuRoot = (page) =>
   page.locator('[aria-label="Typeahead menu"] > div').first();
 
@@ -89,66 +89,50 @@ try {
   await shot(page, "skills-00-boot.png");
 
   // =========================================================================
-  // Fix 2: the slash menu must paint ON TOP of a modal TaskDialog, not behind
-  // it. Create a scratch task, open its dialog, type `/`, and prove the menu
-  // is actually visible at the top of the stack (not just present in the DOM).
+  // Fix 2: the slash menu must paint ON TOP of a modal TodoDialog, not behind
+  // it. Open the two-stage capture card (transactional — nothing persists until
+  // ⌘⏎), type `/` in its editor, and prove the menu is actually visible at the
+  // top of the stack (not just present in the DOM). Because we never ⌘⏎, esc
+  // discards the card and leaves NO task file — no cleanup delete needed.
   // =========================================================================
-  const title = `e2e-slashmenu-zindex-${Date.now()}`;
+  const scratch = `e2e-slashmenu-zindex-${Date.now()}`;
   const dialogOpen = () =>
-    page.locator('[data-slot="dialog-content"]').count().then((n) => n > 0);
+    page.locator('[data-slot="todo-dialog"]').count().then((n) => n > 0);
   try {
-    const addTask = page.locator('[aria-label="Add task"]').first();
-    await addTask.waitFor({ timeout: 25000 });
-    await addTask.click();
+    const addTodo = page.getByRole("button", { name: "Add a todo…" }).first();
+    await addTodo.waitFor({ timeout: 25000 });
+    await addTodo.click();
     const editor = page.locator(".hitch-editor-content");
     await editor.first().waitFor({ timeout: 10000 });
-    const titleBox = page.locator('textarea[aria-label="Task title"]');
-    await titleBox.waitFor({ timeout: 10000 });
-    await titleBox.click();
-    await titleBox.fill(title);
     await page.waitForTimeout(200);
-    check("TaskDialog opens for the scratch task", await dialogOpen());
+    check("TodoDialog capture opens", await dialogOpen());
 
     await editor.first().click();
-    await page.keyboard.press("End");
+    await page.keyboard.type(scratch);
+    await page.keyboard.press("Enter");
     await page.keyboard.type("/");
     await page.waitForTimeout(350);
     const rowCount = await page.locator('[role="option"]').count();
-    check("slash menu opens inside the TaskDialog", rowCount > 0, `rows=${rowCount}`);
-    await shot(page, "skills-10-taskdialog-menu-open.png");
+    check("slash menu opens inside the TodoDialog", rowCount > 0, `rows=${rowCount}`);
+    await shot(page, "skills-10-tododialog-menu-open.png");
 
     const { onTop, box } = await menuIsVisibleOnTop(page);
     check(
-      "slash menu paints ON TOP of the TaskDialog (elementFromPoint hits the menu, not the dialog behind it)",
+      "slash menu paints ON TOP of the TodoDialog (elementFromPoint hits the menu, not the dialog behind it)",
       onTop,
       box ? `box=${JSON.stringify(box)}` : "no menu box found",
     );
 
-    // Close the menu and the dialog, then delete the scratch task — leave no
-    // trace in the user's real board.
+    // Close the menu, then discard the capture card. Capture is transactional,
+    // so esc leaves no task file in the user's real project.
     await page.keyboard.press("Escape"); // closes the slash menu (Lexical KEY_ESCAPE)
     await page.waitForTimeout(150);
-    await page.keyboard.press("Escape"); // closes the TaskDialog (saves)
+    await page.keyboard.press("Escape"); // discards the capture card
     await page.waitForTimeout(400);
-  } finally {
-    try {
-      if (!(await dialogOpen())) {
-        const card = page.getByText(title, { exact: false }).first();
-        if (await card.count()) {
-          await card.click();
-          await page.waitForTimeout(400);
-        }
-      }
-      const actions = page.locator('[aria-label="Task actions"]');
-      if (await actions.count()) {
-        await actions.first().click();
-        await page.waitForTimeout(200);
-        await page.getByRole("menuitem", { name: "Delete" }).first().click();
-        await page.waitForTimeout(300);
-      }
-    } catch (e) {
-      log("scratch task cleanup failed (non-fatal):", String(e));
-    }
+  } catch (e) {
+    log("TodoDialog z-index check failed:", String(e));
+    failures++;
+    await shot(page, "skills-10-tododialog-error.png");
   }
 
   // --- Open the Editor Sandbox from the account menu, then switch to the

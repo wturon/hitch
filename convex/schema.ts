@@ -7,6 +7,9 @@ export default defineSchema({
 
   projects: defineTable({
     name: v.string(),
+    // DEPRECATED (todos-v1): unread since slice 6b; dropped after
+    // clearLegacyStatuses runs. Existing project docs still carry data, so the
+    // field stays optional until the follow-up PR removes it.
     statuses: v.optional(
       v.array(
         v.object({

@@ -363,7 +363,6 @@ export function isPrunableBodyPath(relPath: string): boolean {
 }
 
 const execFileP = promisify(execFile);
-const TERMINAL_TASK_STATUSES = new Set(["archived", "done"]);
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -397,22 +396,13 @@ async function isAgentAlive(pid: number, harness: string): Promise<boolean> {
   return command.includes(needle);
 }
 
-function taskStatus(content: string): string {
-  return (frontmatterValue(content, "status") ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-");
-}
-
 // A task is in a terminal state once it is completed or archived. Todos v1
-// (slice 6a) makes the `completed-at:`/`archived-at:` timestamps the source of
-// truth; the legacy `status: done|archived` read is kept as a fallback because
-// the board can still write `status: archived` until slice 6b — remove the
-// legacy `taskStatus`/`TERMINAL_TASK_STATUSES` branch there.
+// makes the `completed-at:`/`archived-at:` timestamps the sole source of truth;
+// the legacy `status: done|archived` read died with the board in slice 6b.
 function isTerminalTaskState(content: string): boolean {
   if (frontmatterValue(content, "completed-at")) return true;
   if (frontmatterValue(content, "archived-at")) return true;
-  return TERMINAL_TASK_STATUSES.has(taskStatus(content)); // legacy; dies in slice 6b
+  return false;
 }
 
 function settledChatStatus(content: string): string | undefined {

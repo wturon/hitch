@@ -9,7 +9,7 @@ Coding agents are great at reading and writing files in a repo. But task/status 
 - A **git-ignored folder** (e.g. `.hitch/`) lives in your repo's working directory. Because it's untracked, it sits at the same path regardless of which branch is checked out.
 - **Agents write greppable files** into that folder — their progress and context — using the file access they're already good at. No MCP required.
 - A **local daemon** watches the folder and syncs it, in real time, to a shared backend.
-- A **desktop app** runs the daemon and renders those files live as a Kanban board, so humans can read and collaborate at the task level without checking out a branch.
+- A **desktop app** runs the daemon and renders those files live as a grouped todo list, so humans can read and collaborate at the task level without checking out a branch.
 
 ## Architecture (v0)
 

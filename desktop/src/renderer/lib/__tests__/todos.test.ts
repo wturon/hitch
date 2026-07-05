@@ -168,19 +168,24 @@ describe("deriveTodoGroups — group predicate (top-down, first match wins)", ()
   });
 });
 
-describe("deriveTodoGroups — compat shim (legacy status:)", () => {
-  it("status: done → done", () => {
+// The compat shim died with the board in slice 6b: `status:` is now inert. The
+// daemon migration (slice 6a) rewrites any surviving `status:` into
+// `completed-at:`/`archived-at:` timestamps, which are the only signals the
+// derivation reads. These fixtures pin that `status:` no longer moves a todo.
+describe("deriveTodoGroups — legacy status: is inert (post-slice-6b)", () => {
+  it("status: done alone → backlog (no completed-at)", () => {
     const g = deriveTodoGroups([task("a", { status: "done" })], []);
-    expect(paths(g.done)).toEqual(["tasks/a/task.md"]);
+    expect(paths(g.done)).toEqual([]);
+    expect(paths(g.backlog)).toEqual(["tasks/a/task.md"]);
   });
 
-  it("status: archived → archived (excluded + counted)", () => {
+  it("status: archived alone → backlog, not archived (no archived-at)", () => {
     const g = deriveTodoGroups([task("a", { status: "archived" })], []);
-    expect(g.archivedCount).toBe(1);
-    expect(g.backlog).toHaveLength(0);
+    expect(g.archivedCount).toBe(0);
+    expect(paths(g.backlog)).toEqual(["tasks/a/task.md"]);
   });
 
-  it("status: <unknown> is ignored → backlog", () => {
+  it("any status value is ignored → backlog", () => {
     const g = deriveTodoGroups(
       [task("a", { status: "waiting" }), task("b", { status: "review" })],
       [],
@@ -195,13 +200,12 @@ describe("deriveTodoGroups — compat shim (legacy status:)", () => {
     expect(paths(g.backlog)).toEqual(["tasks/a/task.md"]);
   });
 
-  it("case-insensitive legacy status (DONE / Archived)", () => {
+  it("completed-at wins regardless of a stale status:", () => {
     const g = deriveTodoGroups(
-      [task("a", { status: "DONE" }), task("b", { status: "Archived" })],
+      [task("a", { status: "in-progress", "completed-at": "2026-07-05" })],
       [],
     );
     expect(paths(g.done)).toEqual(["tasks/a/task.md"]);
-    expect(g.archivedCount).toBe(1);
   });
 });
 

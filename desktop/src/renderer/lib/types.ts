@@ -1,14 +1,12 @@
 import type { Id } from "@convex/_generated/dataModel";
-import type { ProjectStatus } from "@/lib/projectConfig";
 
 // One project as it appears in the app rail: the project itself, the viewer's
 // membership (null while a just-created project's membership is still syncing),
-// and pin state. Shared between App's board state and the sidebar components.
+// and pin state. Shared between App's workspace state and the sidebar components.
 export interface ProjectNavEntry {
   project: {
     _id: Id<"projects">;
     name: string;
-    statuses?: ProjectStatus[];
   };
   membership: {
     role: "owner" | "member";

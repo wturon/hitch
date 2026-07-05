@@ -94,7 +94,7 @@ const TASK_BODY_RE = /^tasks\/[^/]+\/task\.md$/;
 // (lib/todos.ts taskCountedGroup): `working` = a pending/failed summon flag OR
 // a bound chat whose LIVE row is mid-turn; `needs-you` = a bound chat that
 // isn't working (including a frontmatter chat-id whose row is missing — a dead
-// chat) and isn't completed/archived (compat shim honored). Computed
+// chat) and isn't completed/archived. Computed
 // server-side and returned as small counts keyed by project id, so the client
 // never has to subscribe to every project's full file contents. Reactive:
 // re-runs when membership changes or any task/chat is written. Projects with no

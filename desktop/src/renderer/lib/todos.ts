@@ -102,27 +102,6 @@ export interface TodoGroups {
   archivedCount: number; // for the header's Archived control (App.tsx:1684 analog)
 }
 
-// COMPAT SHIM — delete in slice 6 (todos-v1 migration). Reads the legacy
-// `status:` field only as a fallback so unmigrated task.md files still group
-// correctly while both models coexist (slices 1→5). `done` = completed-at
-// populated OR legacy `status: done`; `archived` = archived-at populated OR
-// legacy `status: archived`; every other `status:` value is ignored (the task
-// falls through to backlog). Kept behind this single object so slice 6 deletes
-// it in one place. `present` = the timestamp field is populated (non-empty),
-// regardless of whether it parses — presence decides the group.
-export const legacyCompat = {
-  done(fm: Frontmatter, present: boolean): boolean {
-    return present || legacyStatus(fm) === "done";
-  },
-  archived(fm: Frontmatter, present: boolean): boolean {
-    return present || legacyStatus(fm) === "archived";
-  },
-};
-
-function legacyStatus(fm: Frontmatter): string {
-  return (fm.status ?? "").trim().toLowerCase();
-}
-
 // A frontmatter timestamp field is "populated" when it holds any non-empty
 // value. Population is what the group predicates key off (Decision 7: agent
 // frontmatter edits are honored, even a malformed date); parsing below only
@@ -188,7 +167,6 @@ function resolveChatState(
 // caller can count it instead of grouping it. Presence booleans — not parsed
 // timestamps — drive predicates 1–2.
 function groupOf(args: {
-  fm: Frontmatter;
   archivedPresent: boolean;
   completedPresent: boolean;
   request: DelegationRequest | null;
@@ -196,9 +174,9 @@ function groupOf(args: {
   chatStatus: ChatStatus | null;
 }): TodoGroup | null {
   // 1. archived → excluded from all groups (counted separately).
-  if (legacyCompat.archived(args.fm, args.archivedPresent)) return null;
+  if (args.archivedPresent) return null;
   // 2. completed → done (chat or not).
-  if (legacyCompat.done(args.fm, args.completedPresent)) return "done";
+  if (args.completedPresent) return "done";
   // 3. a pending/failed summon flag → working (the "Requested" fold-in; a
   //    `failed` request still lives here and renders the failed RequestChip).
   if (args.request) return "working";
@@ -206,8 +184,7 @@ function groupOf(args: {
   if (args.chat && args.chatStatus === "working") return "working";
   // 5. a bound chat that isn't working → needs-you.
   if (args.chat) return "needs-you";
-  // 6. no chat, no request, not done/archived → backlog. Any unrecognized
-  //    legacy `status:` also lands here (the compat shim ignores it).
+  // 6. no chat, no request, not done/archived → backlog.
   return "backlog";
 }
 
@@ -253,7 +230,6 @@ export function deriveTodoGroups(
     const archivedPresent = timestampPresent(frontmatter["archived-at"]);
 
     const group = groupOf({
-      fm: frontmatter,
       archivedPresent,
       completedPresent,
       request,
@@ -395,7 +371,6 @@ export function taskCountedGroup(
   const { frontmatter } = parseFrontmatter(content);
   const { chat, chatStatus } = resolveChatState(frontmatter, chats);
   const group = groupOf({
-    fm: frontmatter,
     archivedPresent: timestampPresent(frontmatter["archived-at"]),
     completedPresent: timestampPresent(frontmatter["completed-at"]),
     request: parseDelegationRequest(frontmatter),
