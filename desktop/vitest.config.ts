@@ -27,6 +27,7 @@ export default defineConfig({
     include: [
       "src/renderer/editor/bridge/__tests__/**/*.test.ts",
       "src/renderer/editor/__tests__/**/*.test.{ts,tsx}",
+      "src/renderer/lib/__tests__/**/*.test.ts",
     ],
     environment: "node",
   },
