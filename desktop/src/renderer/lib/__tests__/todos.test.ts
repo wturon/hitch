@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { deriveTodoGroups, type FileRow } from "../todos";
+import {
+  deriveTodoGroups,
+  indexChats,
+  type FileRow,
+  type LiveChatRow,
+} from "../todos";
+import type { Harness } from "../chat";
 
 // Build a task FileRow at tasks/<slug>/task.md with the given frontmatter keys
 // and an optional body. Keys with `undefined` values are omitted so a fixture
@@ -23,6 +29,21 @@ function task(
 }
 
 const paths = (todos: { path: string }[]) => todos.map((t) => t.path);
+
+// A live chats-table row for the optional index input.
+function chatRow(
+  chatId: string,
+  status: string,
+  opts: { harness?: Harness; lastEventAt?: number; updatedAt?: number } = {},
+): LiveChatRow {
+  return {
+    harness: opts.harness ?? "claude-code",
+    chatId,
+    status,
+    lastEventAt: opts.lastEventAt ?? 0,
+    updatedAt: opts.updatedAt ?? 0,
+  };
+}
 
 describe("deriveTodoGroups — group predicate (top-down, first match wins)", () => {
   it("archived (archived-at) is excluded from all groups and counted", () => {
@@ -358,5 +379,116 @@ describe("deriveTodoGroups — Todo projection", () => {
     expect(byPath.a.title).toBe("Real Title");
     expect(byPath.a.content).toBe(withTitle.content);
     expect(byPath.b.title).toBe("b"); // slug fallback
+  });
+});
+
+describe("deriveTodoGroups — live chat index (resolveChatState seam)", () => {
+  const attached = (slug: string, chatId: string, fmStatus?: string) =>
+    task(slug, {
+      "chat-harness": "claude-code",
+      "chat-id": chatId,
+      "chat-status": fmStatus,
+    });
+
+  it("live row wins over stale projected frontmatter: fm working, row idle → needs-you", () => {
+    const chats = indexChats([chatRow("x1", "idle")]);
+    const g = deriveTodoGroups([attached("a", "x1", "working")], [], chats);
+    expect(paths(g.needsYou)).toEqual(["tasks/a/task.md"]);
+    expect(g.working).toHaveLength(0);
+  });
+
+  it("live row wins in the other direction too: fm waiting, row working → working", () => {
+    const chats = indexChats([chatRow("x1", "working")]);
+    const g = deriveTodoGroups([attached("a", "x1", "waiting")], [], chats);
+    expect(paths(g.working)).toEqual(["tasks/a/task.md"]);
+  });
+
+  it("chat ref with no row in the index stays attached → needs-you via frontmatter fallback, not backlog", () => {
+    // A deleted/missing chats row must not silently un-attach a todo: it parks
+    // in NEEDS YOU until the user detaches deliberately.
+    const chats = indexChats([chatRow("other", "working")]);
+    const noStatus = attached("a", "x1");
+    const staleWorking = attached("b", "x2", "working"); // fallback keeps fm status
+    const g = deriveTodoGroups([noStatus, staleWorking], [], chats);
+    expect(paths(g.needsYou)).toEqual(["tasks/a/task.md"]);
+    expect(paths(g.working)).toEqual(["tasks/b/task.md"]);
+    expect(g.backlog).toHaveLength(0);
+  });
+
+  it("index keyed by harness too: same chat id on another harness doesn't resolve", () => {
+    const chats = indexChats([chatRow("x1", "working", { harness: "codex" })]);
+    const g = deriveTodoGroups([attached("a", "x1", "waiting")], [], chats);
+    // claude-code:x1 has no row → frontmatter fallback (waiting) → needs-you.
+    expect(paths(g.needsYou)).toEqual(["tasks/a/task.md"]);
+  });
+
+  it("chat recency from rows drives needs-you/working sorts, overriding file updatedAt order", () => {
+    const chats = indexChats([
+      chatRow("w1", "working", { lastEventAt: 100, updatedAt: 50 }),
+      chatRow("w2", "working", { lastEventAt: 20, updatedAt: 900 }), // max = 900
+      chatRow("n1", "waiting", { lastEventAt: 10, updatedAt: 10 }),
+      chatRow("n2", "waiting", { lastEventAt: 700, updatedAt: 5 }), // max = 700
+    ]);
+    const files = [
+      // File recency says a > b, row recency says b (900) > a (100).
+      task("a", { "chat-harness": "claude-code", "chat-id": "w1" }, { updatedAt: 500 }),
+      task("b", { "chat-harness": "claude-code", "chat-id": "w2" }, { updatedAt: 400 }),
+      // Same inversion in needs-you: file says c > d, rows say d (700) > c (10).
+      task("c", { "chat-harness": "claude-code", "chat-id": "n1" }, { updatedAt: 300 }),
+      task("d", { "chat-harness": "claude-code", "chat-id": "n2" }, { updatedAt: 200 }),
+    ];
+    const g = deriveTodoGroups(files, [], chats);
+    expect(paths(g.working)).toEqual(["tasks/b/task.md", "tasks/a/task.md"]);
+    expect(paths(g.needsYou)).toEqual(["tasks/d/task.md", "tasks/c/task.md"]);
+  });
+
+  it("unresolved rows fall back to file updatedAt for recency, mixed with resolved ones", () => {
+    const chats = indexChats([
+      chatRow("w1", "working", { lastEventAt: 100, updatedAt: 100 }),
+    ]);
+    const files = [
+      task("a", { "chat-harness": "claude-code", "chat-id": "w1", "chat-status": "working" }, { updatedAt: 999 }),
+      // No row → falls back to fm status (working) and file recency 500 > 100.
+      task("b", { "chat-harness": "claude-code", "chat-id": "gone", "chat-status": "working" }, { updatedAt: 500 }),
+    ];
+    const g = deriveTodoGroups(files, [], chats);
+    expect(paths(g.working)).toEqual(["tasks/b/task.md", "tasks/a/task.md"]);
+  });
+
+  it("omitting the index keeps today's frontmatter-only behavior", () => {
+    const g = deriveTodoGroups([attached("a", "x1", "working")], []);
+    expect(paths(g.working)).toEqual(["tasks/a/task.md"]);
+  });
+});
+
+describe("deriveTodoGroups — populated-but-unparseable timestamps", () => {
+  it("completed-at: not-a-date → still done (presence groups, parse only sorts)", () => {
+    const parseable = task("ok", { "completed-at": "2026-02-01T00:00:00Z" }, { updatedAt: 1 });
+    const badNew = task("bad-new", { "completed-at": "not-a-date" }, { updatedAt: 300 });
+    const badOld = task("bad-old", { "completed-at": "garbage" }, { updatedAt: 200 });
+    const g = deriveTodoGroups([badOld, parseable, badNew], []);
+    // Unparseable rows are done but sink below parseable ones, tie-broken by
+    // updatedAt desc among themselves.
+    expect(paths(g.done)).toEqual([
+      "tasks/ok/task.md",
+      "tasks/bad-new/task.md",
+      "tasks/bad-old/task.md",
+    ]);
+    expect(g.backlog).toHaveLength(0);
+  });
+
+  it("archived-at: garbage → still excluded from all groups and counted", () => {
+    const g = deriveTodoGroups([task("a", { "archived-at": "garbage" })], []);
+    expect(g.archivedCount).toBe(1);
+    expect(g.backlog).toHaveLength(0);
+    expect(g.done).toHaveLength(0);
+  });
+
+  it("equal completed-at ties break by updatedAt desc", () => {
+    const ts = "2026-01-01T00:00:00Z";
+    const old = task("old", { "completed-at": ts }, { updatedAt: 10 });
+    const recent = task("recent", { "completed-at": ts }, { updatedAt: 90 });
+    const g = deriveTodoGroups([old, recent], []);
+    expect(paths(g.done)).toEqual(["tasks/recent/task.md", "tasks/old/task.md"]);
   });
 });

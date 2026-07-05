@@ -1,20 +1,27 @@
 // Todos v1 derivation core (slice 1). A pure fold over the project's synced
 // files into the four attention groups the todo list renders — NEEDS YOU,
 // WORKING, BACKLOG, DONE — plus the archived count. No React, no Convex: it is a
-// deterministic function of `files` + the backlog order list, unit-testable in
-// isolation. It reuses the board's own predicates (`taskSlug`,
-// `parseFrontmatter`, `parseChatRef`, `parseChatStatus`, `parseDelegationRequest`)
-// so the derivation and the board agree on "what is a task" during the
-// slices-2–5 coexistence window.
+// deterministic function of `files` + the backlog order list + (optionally) an
+// index of live chat rows, unit-testable in isolation. It reuses the board's own
+// predicates (`taskSlug`, `parseFrontmatter`, `parseChatRef`, `parseChatStatus`,
+// `parseDelegationRequest`) so the derivation and the board agree on "what is a
+// task" during the slices-2–5 coexistence window.
 //
 // The group model has no `status:` field (Decision 7): groups are derived from
-// state the client already subscribes to. The daemon projects the ground-truth
-// `chats` row into each task's frontmatter (`chat-id`/`chat-status`), so those
-// keys *are* the resolved-row values the derivation keys off — no `chats` table
-// input, no client-side join.
+// state the client already subscribes to. All chat state flows through one seam,
+// `resolveChatState`: *attachment* is frontmatter-driven (`chat-id`), while
+// *status* and *recency* prefer the resolved live `chats` row when the caller
+// supplies the index, falling back to the daemon-projected frontmatter
+// (`chat-status`) / file recency otherwise — so calling without `chats` matches
+// today's read path exactly.
 
-import type { ChatRef, ChatStatus, DelegationRequest } from "./chat";
-import { parseChatRef, parseChatStatus, parseDelegationRequest } from "./chat";
+import type { ChatRef, ChatStatus, DelegationRequest, Harness } from "./chat";
+import {
+  normalizeChatStatus,
+  parseChatRef,
+  parseChatStatus,
+  parseDelegationRequest,
+} from "./chat";
 import type { Frontmatter } from "./frontmatter";
 import { parseFrontmatter } from "./frontmatter";
 import { taskSlug } from "./tasks";
@@ -31,18 +38,55 @@ export interface FileRow {
   updatedAt: number;
 }
 
+// The minimal shape the derivation needs from a live `chats` row — a structural
+// subset of both the raw Convex row and lib/chats.ts's ChatRowViewModel (which
+// this module can't import without dragging in the generated Convex api).
+// `status` is the stored union (which includes "idle"); it's normalized on read.
+export interface LiveChatRow {
+  harness: Harness;
+  chatId?: string;
+  status: string;
+  lastEventAt: number;
+  updatedAt: number;
+}
+
+// Index key for a live chat row: harness + harness-native chat id — the same
+// pair `parseChatRef` reads from frontmatter and the daemon's observer keys by
+// (daemon/src/observer/index.ts: `${harness}:${chatId}`). Host is deliberately
+// not part of the key: frontmatter carries no host, and one todo binds one chat.
+export function chatKey(harness: Harness, chatId: string): string {
+  return `${harness}:${chatId}`;
+}
+
+// Build the chat index from any live-row collection (pass non-deleted rows).
+// Rows still pending (no harness-native chatId yet) can't be referenced by
+// frontmatter, so they are skipped.
+export function indexChats(
+  rows: Iterable<LiveChatRow>,
+): Map<string, LiveChatRow> {
+  const index = new Map<string, LiveChatRow>();
+  for (const row of rows) {
+    if (row.chatId) index.set(chatKey(row.harness, row.chatId), row);
+  }
+  return index;
+}
+
 export interface Todo {
   path: string; // tasks/<slug>/task.md — what the dialog writes back
   slug: string;
   title: string; // frontmatter.title || slug
   content: string; // raw file text (the dialog opens on it)
-  chat: ChatRef | null; // parseChatRef
-  chatStatus: ChatStatus | null; // parseChatStatus
+  chat: ChatRef | null; // parseChatRef (attachment is frontmatter-driven)
+  chatStatus: ChatStatus | null; // live row preferred, frontmatter fallback
+  chatRecency: number | null; // live row recency; null when no row resolved
   request: DelegationRequest | null; // the pre-link summoning flag
-  completedAt: number | null; // frontmatter["completed-at"], ms epoch
-  archivedAt: number | null; // frontmatter["archived-at"], ms epoch
+  // Parsed `completed-at`/`archived-at` SORT KEYS — null when the raw value is
+  // absent OR unparseable. Presence (which decides the group) is checked on the
+  // raw frontmatter value, never on these.
+  completedAt: number | null;
+  archivedAt: number | null;
   group: TodoGroup;
-  updatedAt: number; // files row updatedAt (recency proxy for chat activity)
+  updatedAt: number; // files row updatedAt
 }
 
 export interface TodoGroups {
@@ -55,16 +99,18 @@ export interface TodoGroups {
 
 // COMPAT SHIM — delete in slice 6 (todos-v1 migration). Reads the legacy
 // `status:` field only as a fallback so unmigrated task.md files still group
-// correctly while both models coexist (slices 1→5). `done` = completed-at OR
-// legacy `status: done`; `archived` = archived-at OR legacy `status: archived`;
-// every other `status:` value is ignored (the task falls through to backlog).
-// Kept behind this single object so slice 6 deletes it in one place.
+// correctly while both models coexist (slices 1→5). `done` = completed-at
+// populated OR legacy `status: done`; `archived` = archived-at populated OR
+// legacy `status: archived`; every other `status:` value is ignored (the task
+// falls through to backlog). Kept behind this single object so slice 6 deletes
+// it in one place. `present` = the timestamp field is populated (non-empty),
+// regardless of whether it parses — presence decides the group.
 export const legacyCompat = {
-  done(fm: Frontmatter, completedAt: number | null): boolean {
-    return completedAt != null || legacyStatus(fm) === "done";
+  done(fm: Frontmatter, present: boolean): boolean {
+    return present || legacyStatus(fm) === "done";
   },
-  archived(fm: Frontmatter, archivedAt: number | null): boolean {
-    return archivedAt != null || legacyStatus(fm) === "archived";
+  archived(fm: Frontmatter, present: boolean): boolean {
+    return present || legacyStatus(fm) === "archived";
   },
 };
 
@@ -72,32 +118,79 @@ function legacyStatus(fm: Frontmatter): string {
   return (fm.status ?? "").trim().toLowerCase();
 }
 
-// Parse a frontmatter timestamp to ms epoch, or null when absent/unparseable.
-// (Guards against Date.parse's NaN; epoch 0 is treated as a real timestamp.)
+// A frontmatter timestamp field is "populated" when it holds any non-empty
+// value. Population is what the group predicates key off (Decision 7: agent
+// frontmatter edits are honored, even a malformed date); parsing below only
+// supplies the sort key.
+function timestampPresent(raw: string | undefined): boolean {
+  return (raw ?? "").trim() !== "";
+}
+
+// Parse a frontmatter timestamp to a ms-epoch sort key, or null when
+// absent/unparseable. (Guards against Date.parse's NaN; epoch 0 is real.)
 function parseTimestamp(raw: string | undefined): number | null {
-  if (!raw) return null;
-  const t = Date.parse(raw.trim());
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return null;
+  const t = Date.parse(trimmed);
   return Number.isNaN(t) ? null : t;
+}
+
+interface ResolvedChatState {
+  chat: ChatRef | null;
+  chatStatus: ChatStatus | null;
+  chatRecency: number | null;
+}
+
+// THE chat-state seam. Attachment stays frontmatter-driven on purpose: a
+// `chat-id` whose live row is missing/deleted must still read as attached, so
+// the todo parks in NEEDS YOU until the user detaches it deliberately —
+// resolution failure never silently un-attaches a todo (and the pre-bind
+// `chat-request` flag stays pure frontmatter by the same logic). Status and
+// recency prefer the resolved live row when the index is supplied and the row
+// resolves; otherwise they fall back to the daemon-projected `chat-status` and
+// the file's own recency (i.e. today's behavior when `chats` is omitted).
+function resolveChatState(
+  fm: Frontmatter,
+  chats?: ReadonlyMap<string, LiveChatRow>,
+): ResolvedChatState {
+  const chat = parseChatRef(fm);
+  const row = chat ? chats?.get(chatKey(chat.harness, chat.id)) : undefined;
+  if (!chat || !row) {
+    return { chat, chatStatus: parseChatStatus(fm), chatRecency: null };
+  }
+  return {
+    chat,
+    // The stored union includes "idle"; normalizeChatStatus maps it (and any
+    // other alias) into the client ChatStatus — idle reads as not-working.
+    chatStatus: normalizeChatStatus(row.status),
+    // Mirrors lib/chats.ts chatSortTime: the freshest of event vs row write.
+    chatRecency: Math.max(row.lastEventAt, row.updatedAt),
+  };
 }
 
 // Assign the group for one task, evaluated top-down (first match wins), per
 // Decision 7's exact predicate. Archived is signalled by a null return so the
-// caller can count it instead of grouping it.
-function groupOf(
-  fm: Frontmatter,
-  todo: Omit<Todo, "group">,
-): TodoGroup | null {
+// caller can count it instead of grouping it. Presence booleans — not parsed
+// timestamps — drive predicates 1–2.
+function groupOf(args: {
+  fm: Frontmatter;
+  archivedPresent: boolean;
+  completedPresent: boolean;
+  request: DelegationRequest | null;
+  chat: ChatRef | null;
+  chatStatus: ChatStatus | null;
+}): TodoGroup | null {
   // 1. archived → excluded from all groups (counted separately).
-  if (legacyCompat.archived(fm, todo.archivedAt)) return null;
+  if (legacyCompat.archived(args.fm, args.archivedPresent)) return null;
   // 2. completed → done (chat or not).
-  if (legacyCompat.done(fm, todo.completedAt)) return "done";
+  if (legacyCompat.done(args.fm, args.completedPresent)) return "done";
   // 3. a pending/failed summon flag → working (the "Requested" fold-in; a
   //    `failed` request still lives here and renders the failed RequestChip).
-  if (todo.request) return "working";
+  if (args.request) return "working";
   // 4. a bound chat that is actively mid-turn → working.
-  if (todo.chat && todo.chatStatus === "working") return "working";
+  if (args.chat && args.chatStatus === "working") return "working";
   // 5. a bound chat that isn't working → needs-you.
-  if (todo.chat) return "needs-you";
+  if (args.chat) return "needs-you";
   // 6. no chat, no request, not done/archived → backlog. Any unrecognized
   //    legacy `status:` also lands here (the compat shim ignores it).
   return "backlog";
@@ -111,12 +204,20 @@ function needsYouBlockedFirst(t: Todo): number {
   return t.chatStatus === "needs-input" || t.request?.state === "failed" ? 0 : 1;
 }
 
-const byUpdatedDesc = (a: Todo, b: Todo) => b.updatedAt - a.updatedAt;
+// Chat recency when a live row resolved, the file's own recency otherwise.
+const recency = (t: Todo) => t.chatRecency ?? t.updatedAt;
+const byRecencyDesc = (a: Todo, b: Todo) => recency(b) - recency(a);
 
 // order = the per-project ordered task-path list (backlog manual order). May be
 // stale (paths for deleted/completed/relinked tasks) or partial (agent-created
 // tasks the user never touched). Both are reconciled at read time here.
-export function deriveTodoGroups(files: FileRow[], order: string[]): TodoGroups {
+// chats = optional live-chat index (see indexChats); omitted → frontmatter-only,
+// which keeps the function's output a pure fold over `files` + `order`.
+export function deriveTodoGroups(
+  files: FileRow[],
+  order: string[],
+  chats?: ReadonlyMap<string, LiveChatRow>,
+): TodoGroups {
   const todos: Todo[] = [];
   let archivedCount = 0;
 
@@ -128,25 +229,40 @@ export function deriveTodoGroups(files: FileRow[], order: string[]): TodoGroups 
     if (slug === null) continue;
 
     const { frontmatter } = parseFrontmatter(f.content);
-    const base: Omit<Todo, "group"> = {
-      path: f.path,
-      slug,
-      title: frontmatter.title || slug,
-      content: f.content,
-      chat: parseChatRef(frontmatter),
-      chatStatus: parseChatStatus(frontmatter),
-      request: parseDelegationRequest(frontmatter),
-      completedAt: parseTimestamp(frontmatter["completed-at"]),
-      archivedAt: parseTimestamp(frontmatter["archived-at"]),
-      updatedAt: f.updatedAt,
-    };
+    const { chat, chatStatus, chatRecency } = resolveChatState(
+      frontmatter,
+      chats,
+    );
+    const request = parseDelegationRequest(frontmatter);
+    const completedPresent = timestampPresent(frontmatter["completed-at"]);
+    const archivedPresent = timestampPresent(frontmatter["archived-at"]);
 
-    const group = groupOf(frontmatter, base);
+    const group = groupOf({
+      fm: frontmatter,
+      archivedPresent,
+      completedPresent,
+      request,
+      chat,
+      chatStatus,
+    });
     if (group === null) {
       archivedCount++;
       continue;
     }
-    todos.push({ ...base, group });
+    todos.push({
+      path: f.path,
+      slug,
+      title: frontmatter.title || slug,
+      content: f.content,
+      chat,
+      chatStatus,
+      chatRecency,
+      request,
+      completedAt: parseTimestamp(frontmatter["completed-at"]),
+      archivedAt: parseTimestamp(frontmatter["archived-at"]),
+      group,
+      updatedAt: f.updatedAt,
+    });
   }
 
   const needsYou = todos
@@ -154,16 +270,21 @@ export function deriveTodoGroups(files: FileRow[], order: string[]): TodoGroups 
     .sort(
       (a, b) =>
         needsYouBlockedFirst(a) - needsYouBlockedFirst(b) ||
-        b.updatedAt - a.updatedAt,
+        byRecencyDesc(a, b),
     );
 
-  const working = todos.filter((t) => t.group === "working").sort(byUpdatedDesc);
+  const working = todos.filter((t) => t.group === "working").sort(byRecencyDesc);
 
   const done = todos
     .filter((t) => t.group === "done")
-    // completedAt is non-null for every done row (predicate 2 / compat shim);
-    // fall back to 0 defensively so the sort never sees NaN.
-    .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
+    // Sort key first; rows with an absent/unparseable `completed-at` (or legacy
+    // `status: done`) fall to the bottom and tie-break by updatedAt desc, which
+    // also deterministically breaks exact completed-at ties.
+    .sort(
+      (a, b) =>
+        (b.completedAt ?? 0) - (a.completedAt ?? 0) ||
+        b.updatedAt - a.updatedAt,
+    );
 
   const backlog = sortBacklog(
     todos.filter((t) => t.group === "backlog"),
@@ -192,7 +313,7 @@ function sortBacklog(backlog: Todo[], order: string[]): Todo[] {
   }
   const absentees = backlog
     .filter((t) => !inOrder.has(t.path))
-    .sort(byUpdatedDesc);
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 
   return ordered.concat(absentees);
 }
