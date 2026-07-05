@@ -415,6 +415,37 @@ export const getChat = query({
   },
 });
 
+// The live-chat index feed for the Todos derivation (lib/todos.ts
+// indexChats/resolveChatState): every bound, non-deleted chat in the project,
+// projected down to the five fields the derivation reads. Unlike
+// listHome/listHistory this is deliberately COMPLETE — no limit, no pagination,
+// no search — because completeness is a correctness requirement: the derivation
+// treats "frontmatter chat-id with no row in the index" as a dead chat and
+// parks the todo in NEEDS YOU, so a truncated result would misgroup every
+// working chat beyond the cap. Do not add a limit here. Archived chats are
+// included (an archived row is still ground truth for an attached todo);
+// pending rows (no harness-native chatId yet) are excluded since frontmatter
+// can't reference them. The projection keeps the payload tiny (no transcripts,
+// titles, or resume payloads), so the full scan stays cheap.
+export const listForTodos = query({
+  args: {
+    projectId: v.id("projects"),
+    deviceToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const rows = await projectChats(ctx, args);
+    return rows
+      .filter((chat) => !isDeleted(chat) && chat.chatId !== undefined)
+      .map((chat) => ({
+        harness: chat.harness,
+        chatId: chat.chatId,
+        status: chat.status,
+        lastEventAt: chat.lastEventAt,
+        updatedAt: chat.updatedAt,
+      }));
+  },
+});
+
 export const startChat = mutation({
   args: {
     projectId: v.id("projects"),

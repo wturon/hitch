@@ -9,6 +9,7 @@ import {
   CornerDownLeftIcon,
   FileTextIcon,
   HashIcon,
+  ListTodoIcon,
   MessageCircleIcon,
   PlusIcon,
 } from "lucide-react";
@@ -57,6 +58,7 @@ export interface PaletteAction {
 // they're internal surfaces (the account menu / a ⌘K action), not per-project
 // tabs, so they stay out of the header pills, ⌘-number jumps, and Ctrl+Tab cycle.
 export type WorkspaceView =
+  | "todos"
   | "board"
   | "notes"
   | "chats"
@@ -74,6 +76,7 @@ export const WORKSPACE_VIEWS: {
   title: string;
   Icon: typeof BookIcon;
 }[] = [
+  { view: "todos", title: "Todos", Icon: ListTodoIcon },
   { view: "board", title: "Tasks", Icon: Columns2Icon },
   { view: "notes", title: "Notes", Icon: BookIcon },
   { view: "chats", title: "Chats", Icon: MessageCircleIcon },

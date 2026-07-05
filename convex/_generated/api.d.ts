@@ -15,6 +15,7 @@ import type * as automationDefinitions from "../automationDefinitions.js";
 import type * as automationScheduler from "../automationScheduler.js";
 import type * as automationSchedules from "../automationSchedules.js";
 import type * as automations from "../automations.js";
+import type * as backlogOrders from "../backlogOrders.js";
 import type * as chats from "../chats.js";
 import type * as commands from "../commands.js";
 import type * as crons from "../crons.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   automationScheduler: typeof automationScheduler;
   automationSchedules: typeof automationSchedules;
   automations: typeof automations;
+  backlogOrders: typeof backlogOrders;
   chats: typeof chats;
   commands: typeof commands;
   crons: typeof crons;
