@@ -1465,6 +1465,10 @@ function WorkspaceContent({
           <TodosView
             projectId={projectId}
             files={files}
+            // ↑↓/↵ list nav is live only when no todo dialog is over the list.
+            // (Other overlays — palette, archived sheet — are role="dialog" and
+            // the hook's own target guard defers to them.)
+            active={openTodoPath === null && !todoCaptureOpen}
             onOpenTodo={(path) => setOpenTodoPath(path)}
             onAddTodo={() => setTodoCaptureOpen(true)}
             onToggleCompleted={(todo, completed) =>

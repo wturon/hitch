@@ -27,6 +27,7 @@ import {
 import { noteBodyPath, noteSlug } from "@/lib/notes";
 import { uniqueSlug } from "@/lib/tasks";
 import { useFrontmatterDocument } from "@/hooks/useFrontmatterDocument";
+import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import { useAttachments } from "@/hooks/useAttachments";
 import { useSkills } from "@/hooks/useSkills";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
@@ -517,9 +518,6 @@ function NotesIndex({
   onExit: () => void;
 }) {
   const [query, setQuery] = useState("");
-  // -1 means "no row highlighted yet": rows stay uniform until the user arrows
-  // (or hovers). Enter still acts on the obvious target — see onInputKeyDown.
-  const [selected, setSelected] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -533,98 +531,80 @@ function NotesIndex({
     return list;
   }, [results, query]);
 
-  // Keep the selection in range as the list changes (typing, recency updates).
-  // A -1 (nothing highlighted) is preserved.
-  useEffect(() => {
-    setSelected((i) => Math.min(i, items.length - 1));
-  }, [items.length]);
-
-  // Refocus the search input whenever the index becomes the visible view (mount
-  // and every Esc-back from the editor).
-  useEffect(() => {
-    if (active) inputRef.current?.focus();
-  }, [active]);
-
-  // Keep the highlighted row in view during keyboard navigation.
-  useEffect(() => {
-    if (selected < 0) return;
-    listRef.current
-      ?.querySelector(`[data-idx="${selected}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [selected]);
-
   function activate(item: IndexItem | undefined) {
     if (!item) return;
     if (item.kind === "note") onOpen(item.doc.slug);
     else onCreate(item.title);
   }
 
-  // Drive the keyboard loop from a window listener instead of the input's
-  // onKeyDown, so ↑↓/↵/esc work no matter where focus is — clicking the header
-  // (settings, tabs) or empty space no longer kills the keys. Printable keys
-  // refocus the field and keep filtering, so it behaves like a command palette.
-  // Held in a ref so the listener always sees current state without re-binding.
-  const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
-  keyHandlerRef.current = (e) => {
-    const target = e.target as HTMLElement | null;
-    // Let an open overlay (the Archived sheet, a menu) handle its own keys.
-    if (target?.closest('[role="dialog"],[role="menu"]')) return;
-    // The row action trigger is inside the command-list row. Let it own Enter
-    // instead of also activating the selected note through this global handler.
-    if (target?.closest("[data-notes-index-actions]")) return;
-    if (
-      target?.closest("button,a,input,textarea,select") &&
-      target !== inputRef.current
-    )
-      return;
-    const input = inputRef.current;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      if (items.length)
-        setSelected((i) => (i < 0 ? 0 : Math.min(i + 1, items.length - 1)));
-      input?.focus();
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      if (items.length)
-        setSelected((i) => (i < 0 ? items.length - 1 : Math.max(i - 1, 0)));
-      input?.focus();
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      // The highlighted row, or — when the user typed but hasn't arrowed — the
-      // top item (type-and-enter opens the best match, or creates).
-      const target =
-        selected >= 0 ? items[selected] : query.trim() ? items[0] : undefined;
-      activate(target);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      // First Esc clears an active query; a second (empty) Esc leaves Notes for
-      // the Board — esc takes you all the way back out.
-      if (query) {
-        setQuery("");
-        setSelected(-1);
-      } else {
-        onExit();
+  // Shared ↑↓/↵ + highlight core. The Notes-only keys (search box, Esc, and
+  // type-and-enter) ride the onKeyDown pre-handler; everything generic (the -1
+  // sentinel, clamp, scroll-into-view, window listener) lives in the hook.
+  // `selected` here is the hook's, so aria-activedescendant/highlight track it.
+  const { selected, setSelected, itemProps } = useListKeyboardNav({
+    count: items.length,
+    active,
+    containerRef: listRef,
+    onActivate: (i) => activate(items[i]),
+    // The search input IS part of the nav — allow ↑↓/↵ while it's focused; still
+    // bail on overlays and the per-row action trigger (it owns its own Enter).
+    ignoreTarget: (target) => {
+      if (!target) return false;
+      if (target.closest('[role="dialog"],[role="menu"]')) return true;
+      if (target.closest("[data-notes-index-actions]")) return true;
+      const control = target.closest("button,a,input,textarea,select");
+      return Boolean(control) && control !== inputRef.current;
+    },
+    onKeyDown: (e, ctx) => {
+      const input = inputRef.current;
+      // Keep the field focused as you arrow so typing resumes filtering — the
+      // hook still does the actual move (we return false).
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        input?.focus();
+        return false;
       }
-    } else if (
-      e.key.length === 1 &&
-      !e.metaKey &&
-      !e.ctrlKey &&
-      !e.altKey &&
-      document.activeElement !== input
-    ) {
-      // Typing anywhere resumes filtering: focus the field and append the
-      // character (it was dispatched away from the now-unfocused input).
-      e.preventDefault();
-      setQuery((q) => q + e.key);
-      setSelected(-1);
-      input?.focus();
-    }
-  };
+      if (e.key === "Enter" && ctx.selected < 0) {
+        // Type-and-enter with no explicit highlight opens the best match (or
+        // creates); a highlighted row falls through to the hook's onActivate.
+        e.preventDefault();
+        activate(query.trim() ? items[0] : undefined);
+        return true;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        // First Esc clears an active query; a second (empty) Esc leaves Notes
+        // for the Board — esc takes you all the way back out.
+        if (query) {
+          setQuery("");
+          ctx.setSelected(-1);
+        } else {
+          onExit();
+        }
+        return true;
+      }
+      if (
+        e.key.length === 1 &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        document.activeElement !== input
+      ) {
+        // Typing anywhere resumes filtering: focus the field and append the
+        // character (it was dispatched away from the now-unfocused input).
+        e.preventDefault();
+        setQuery((q) => q + e.key);
+        ctx.setSelected(-1);
+        input?.focus();
+        return true;
+      }
+      return false;
+    },
+  });
+
+  // Refocus the search input whenever the index becomes the visible view (mount
+  // and every Esc-back from the editor).
   useEffect(() => {
-    if (!active) return;
-    const handler = (e: KeyboardEvent) => keyHandlerRef.current(e);
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    if (active) inputRef.current?.focus();
   }, [active]);
 
   const optionId = (i: number) => `notes-index-option-${i}`;
@@ -669,10 +649,8 @@ function NotesIndex({
                 <ContextMenuTrigger className="block">
                   <div
                     id={optionId(i)}
-                    data-idx={i}
                     role="option"
-                    aria-selected={i === selected}
-                    onMouseMove={() => setSelected(i)}
+                    {...itemProps(i)}
                     onClick={() => activate(item)}
                     className={cn(
                       "group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5",
@@ -769,10 +747,8 @@ function NotesIndex({
               <div
                 key="__create"
                 id={optionId(i)}
-                data-idx={i}
                 role="option"
-                aria-selected={i === selected}
-                onMouseMove={() => setSelected(i)}
+                {...itemProps(i)}
                 onClick={() => activate(item)}
                 className={cn(
                   "flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import { useMutation, useQuery } from "convex/react";
 import {
   DndContext,
@@ -47,6 +47,7 @@ import {
   type TodoGroups,
 } from "@/lib/todos";
 import { HarnessChip, RequestChip } from "@/components/HarnessChip";
+import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import { cn } from "@/lib/utils";
 
 // How many completed todos the collapsed DONE group previews before the
@@ -172,6 +173,18 @@ function RowChip({
 
 type RowVariant = "needs-you" | "working" | "backlog" | "done";
 
+// Keyboard-nav highlight wiring, supplied only for rows that take part in ↑↓
+// navigation (TodosView's flat nav list). Absent → the row isn't navigable
+// (e.g. collapsed DONE overflow) — it stays clickable, just not arrow-reachable.
+type RowNav = {
+  selected: boolean;
+  itemProps: {
+    "data-idx": number;
+    "aria-selected": boolean;
+    onMouseMove: () => void;
+  };
+};
+
 function TodoRow({
   todo,
   variant,
@@ -181,6 +194,7 @@ function TodoRow({
   onWriteTodo,
   onDeleteTodo,
   drag,
+  nav,
 }: {
   todo: Todo;
   variant: RowVariant;
@@ -204,6 +218,9 @@ function TodoRow({
     listeners: Record<string, unknown> | undefined;
     dragging: boolean;
   };
+  // Keyboard-nav highlight + data-idx/aria-selected/hover wiring, when this row
+  // is part of the ↑↓ list.
+  nav?: RowNav;
 }) {
   const done = variant === "done";
   // A requested (pre-bind) row folds into WORKING extra-ghosted; a bound working
@@ -242,6 +259,7 @@ function TodoRow({
           style={drag?.style}
           {...drag?.attributes}
           {...drag?.listeners}
+          {...nav?.itemProps}
           role="button"
           tabIndex={0}
           aria-label={todo.title}
@@ -256,6 +274,9 @@ function TodoRow({
           className={cn(
             "group flex cursor-pointer items-center gap-3 rounded-lg px-2.5 transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none",
             twoLine ? "min-h-[54px] py-1.5" : "h-[42px]",
+            // Keyboard highlight. Hover sets the same selection (onMouseMove), so
+            // mouse and keyboard converge on one highlighted row.
+            nav?.selected && "bg-muted",
             // A dragged backlog row lifts subtly — opaque over its neighbours, a
             // hair of shadow — no new chrome, no handle. Quiet.
             drag?.dragging &&
@@ -336,6 +357,7 @@ function SortableTodoRow({
   onToggleCompleted,
   onWriteTodo,
   onDeleteTodo,
+  nav,
 }: {
   todo: Todo;
   projectId: Id<"projects">;
@@ -343,6 +365,7 @@ function SortableTodoRow({
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
   onWriteTodo: (path: string, content: string) => void;
   onDeleteTodo: (slug: string) => void;
+  nav?: RowNav;
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
     useSortable({ id: todo.path });
@@ -355,6 +378,7 @@ function SortableTodoRow({
       onToggleCompleted={onToggleCompleted}
       onWriteTodo={onWriteTodo}
       onDeleteTodo={onDeleteTodo}
+      nav={nav}
       drag={{
         setNodeRef,
         style: {
@@ -445,6 +469,7 @@ function EmptyHint() {
 export function TodosView({
   projectId,
   files,
+  active,
   onOpenTodo,
   onAddTodo,
   onToggleCompleted,
@@ -453,6 +478,9 @@ export function TodosView({
 }: {
   projectId: Id<"projects">;
   files: FileRow[];
+  // Whether the Todos surface is live for keyboard nav — false while a dialog
+  // (an open todo, the capture card) is up, so ↑↓/↵ don't fire underneath it.
+  active: boolean;
   onOpenTodo: (path: string) => void;
   onAddTodo: () => void;
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
@@ -514,6 +542,38 @@ export function TodosView({
     : groups.done.slice(0, DONE_PREVIEW);
   const hiddenDone = groups.done.length - doneVisible.length;
 
+  // The flat ↑↓ order = every VISIBLE row, top-to-bottom, matching render order
+  // (collapsed DONE rows are deliberately out — they aren't shown, so they
+  // aren't arrow-reachable). Paths are unique, so a path→index map drives each
+  // row's highlight without threading a running counter through the JSX.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const navPaths = useMemo(
+    () =>
+      [
+        ...groups.needsYou,
+        ...groups.working,
+        ...groups.backlog,
+        ...doneVisible,
+      ].map((t) => t.path),
+    [groups.needsYou, groups.working, groups.backlog, doneVisible],
+  );
+  const navIndexByPath = useMemo(
+    () => new Map(navPaths.map((path, i) => [path, i])),
+    [navPaths],
+  );
+  const { selected, itemProps } = useListKeyboardNav({
+    count: navPaths.length,
+    active,
+    containerRef: scrollRef,
+    onActivate: (i) => onOpenTodo(navPaths[i]),
+  });
+  // Per-row highlight wiring, or undefined for rows outside the nav list.
+  const rowNav = (path: string): RowNav | undefined => {
+    const i = navIndexByPath.get(path);
+    if (i === undefined) return undefined;
+    return { selected: selected === i, itemProps: itemProps(i) };
+  };
+
   const rowProps = {
     projectId,
     onOpen: onOpenTodo,
@@ -543,13 +603,22 @@ export function TodosView({
   }
 
   return (
-    <div className="-mx-4 flex min-h-0 flex-1 flex-col overflow-y-auto sm:-mx-6 lg:-mx-8">
+    <div
+      ref={scrollRef}
+      className="-mx-4 flex min-h-0 flex-1 flex-col overflow-y-auto sm:-mx-6 lg:-mx-8"
+    >
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-6 pt-7 pb-16">
         {groups.needsYou.length > 0 && (
           <section className="flex flex-col">
             <GroupHeader label="NEEDS YOU" amber />
             {groups.needsYou.map((todo) => (
-              <TodoRow key={todo.path} todo={todo} variant="needs-you" {...rowProps} />
+              <TodoRow
+                key={todo.path}
+                todo={todo}
+                variant="needs-you"
+                nav={rowNav(todo.path)}
+                {...rowProps}
+              />
             ))}
           </section>
         )}
@@ -558,7 +627,13 @@ export function TodosView({
           <section className="flex flex-col">
             <GroupHeader label="WORKING" />
             {groups.working.map((todo) => (
-              <TodoRow key={todo.path} todo={todo} variant="working" {...rowProps} />
+              <TodoRow
+                key={todo.path}
+                todo={todo}
+                variant="working"
+                nav={rowNav(todo.path)}
+                {...rowProps}
+              />
             ))}
           </section>
         )}
@@ -585,6 +660,7 @@ export function TodosView({
                   onToggleCompleted={onToggleCompleted}
                   onWriteTodo={onWriteTodo}
                   onDeleteTodo={onDeleteTodo}
+                  nav={rowNav(todo.path)}
                 />
               ))}
             </SortableContext>
@@ -596,7 +672,13 @@ export function TodosView({
           <section className="flex flex-col">
             <GroupHeader label="DONE" />
             {doneVisible.map((todo) => (
-              <TodoRow key={todo.path} todo={todo} variant="done" {...rowProps} />
+              <TodoRow
+                key={todo.path}
+                todo={todo}
+                variant="done"
+                nav={rowNav(todo.path)}
+                {...rowProps}
+              />
             ))}
             {(hiddenDone > 0 || showAllDone) && (
               <button
