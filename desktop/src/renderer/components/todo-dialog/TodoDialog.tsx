@@ -148,7 +148,12 @@ export function TodoDialog(props: TodoDialogProps) {
       }}
     >
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Backdrop className="fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
+        {/* data-closed:fill-mode-forwards holds the exit fade at 0 — the
+            backdrop's 100ms animation ends before the popup's 150ms one, and
+            Base UI unmounts the portal only when the popup settles; without it
+            the backdrop snaps back to full tint+blur for that gap (the close
+            "flash"). */}
+        <DialogPrimitive.Backdrop className="fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 data-closed:fill-mode-forwards" />
         <DialogPrimitive.Popup
           data-slot="todo-dialog"
           className="fixed top-[12vh] left-1/2 z-50 w-140 max-w-[calc(100%-2rem)] -translate-x-1/2 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
