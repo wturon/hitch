@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveTodoGroups,
   indexChats,
+  reorderBacklog,
   type FileRow,
   type LiveChatRow,
 } from "../todos";
@@ -501,5 +502,79 @@ describe("deriveTodoGroups — populated-but-unparseable timestamps", () => {
     const recent = task("recent", { "completed-at": ts }, { updatedAt: 90 });
     const g = deriveTodoGroups([old, recent], []);
     expect(paths(g.done)).toEqual(["tasks/recent/task.md", "tasks/old/task.md"]);
+  });
+});
+
+describe("reorderBacklog — drag from index A to index B → next order array", () => {
+  const list = ["a", "b", "c", "d"];
+
+  it("moves a middle row up (drag c above b)", () => {
+    expect(reorderBacklog(list, 2, 1)).toEqual(["a", "c", "b", "d"]);
+  });
+
+  it("moves a middle row down (drag b below c)", () => {
+    expect(reorderBacklog(list, 1, 2)).toEqual(["a", "c", "b", "d"]);
+  });
+
+  it("drag to the very top", () => {
+    expect(reorderBacklog(list, 3, 0)).toEqual(["d", "a", "b", "c"]);
+  });
+
+  it("drag to the very bottom", () => {
+    expect(reorderBacklog(list, 0, 3)).toEqual(["b", "c", "d", "a"]);
+  });
+
+  it("no-op drop (fromIndex === toIndex) returns the list unchanged", () => {
+    expect(reorderBacklog(list, 2, 2)).toEqual(list);
+  });
+
+  it("returns a fresh copy, never mutating the input", () => {
+    const input = [...list];
+    const out = reorderBacklog(input, 0, 3);
+    expect(input).toEqual(list); // input untouched
+    expect(out).not.toBe(input);
+  });
+
+  it("out-of-range indices return the list unchanged (defensive)", () => {
+    expect(reorderBacklog(list, -1, 2)).toEqual(list);
+    expect(reorderBacklog(list, 1, 99)).toEqual(list);
+  });
+
+  // The write contract's whole point: the input is the FULL rendered backlog
+  // (ordered rows + updatedAt-desc absentees), so the result pins every
+  // currently-shown path — including an absentee that was never in the stored
+  // `order`. This is what makes the setBacklogOrder write both a full replace
+  // and opportunistic compaction (a stale stored path simply isn't in the input,
+  // so it's dropped).
+  it("dragging an absentee (below the ordered rows) pins ALL currently-shown rows", () => {
+    // Simulate the rendered backlog: two manually-ordered rows, then one
+    // agent-created absentee tacked on the end by sortBacklog.
+    const rendered = ["ordered-1", "ordered-2", "absentee"];
+    const draggedToTop = reorderBacklog(rendered, 2, 0);
+    expect(draggedToTop).toEqual(["absentee", "ordered-1", "ordered-2"]);
+    // Every currently-shown path is present in the write — nothing is lost, and
+    // the absentee is now pinned like the rest.
+    expect([...draggedToTop].sort()).toEqual([...rendered].sort());
+  });
+
+  // End-to-end with the derivation: derive the backlog, feed its paths to
+  // reorderBacklog, and confirm the resulting order is a full-list replace whose
+  // stored form drops a stale path that isn't shown anymore.
+  it("integrates with deriveTodoGroups: writes the full shown list, dropping stale order paths", () => {
+    const files: FileRow[] = [
+      { path: "tasks/x/task.md", content: "---\n---\n", updatedAt: 1 },
+      { path: "tasks/y/task.md", content: "---\n---\n", updatedAt: 2 },
+    ];
+    // `order` still references a completed/deleted task ("z") that no longer
+    // shows in the backlog — a stale path.
+    const order = ["tasks/x/task.md", "tasks/z/task.md", "tasks/y/task.md"];
+    const g = deriveTodoGroups(files, order);
+    const shown = g.backlog.map((t) => t.path);
+    expect(shown).toEqual(["tasks/x/task.md", "tasks/y/task.md"]); // z pruned on read
+    // Drag y above x, then persist the full shown list.
+    const next = reorderBacklog(shown, 1, 0);
+    expect(next).toEqual(["tasks/y/task.md", "tasks/x/task.md"]);
+    // The write no longer carries the stale "z" path (compaction).
+    expect(next).not.toContain("tasks/z/task.md");
   });
 });
