@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -42,6 +43,14 @@ import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
 import { TodosView } from "@/components/TodosView";
 import { TodoDialog } from "@/components/todo-dialog/TodoDialog";
+import {
+  closedState,
+  commitState,
+  createState,
+  editState,
+  reconcileState,
+  type TodoDialogState,
+} from "@/components/todo-dialog/dialogState";
 import { deriveTodoGroups, prependBacklogPath, type Todo } from "@/lib/todos";
 import {
   CommandPalette,
@@ -751,14 +760,31 @@ function WorkspaceContent({
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [projectDetailsTab, setProjectDetailsTab] =
     useState<ProjectDetailsTab>("general");
-  // Todos v1 two-stage capture (the Todos tab's create flow). Opened by the
-  // add-row or `C`; a transactional capture card that nothing survives until ⌘⏎
-  // (see TodoDialog).
-  const [todoCaptureOpen, setTodoCaptureOpen] = useState(false);
-  // The existing-todo dialog: a row opens the TodoDialog in its saved stage on
-  // this task path. Null = closed; the file itself comes from the live `files`
-  // subscription.
-  const [openTodoPath, setOpenTodoPath] = useState<string | null>(null);
+  // The Todos tab mounts ONE TodoDialog, driven by this discriminated union
+  // (see dialogState). It replaced the old two cells — a `todoCaptureOpen`
+  // boolean and an `openTodoPath` string — that mounted the dialog TWICE: a
+  // capture instance with no live row (which, after ⌘⏎, ran forever on its own
+  // local draft and never saw external writes) and an existing instance fed by
+  // the live query. Now a capture that commits transitions create→edit and binds
+  // to the same live row, so the daemon's generated title, chat-link stamps, and
+  // deletes reach the open card.
+  const [todoDialog, setTodoDialog] = useState<TodoDialogState>(closedState);
+  // Monotonic session token minted on every FRESH open (capture / row click /
+  // palette). It's the dialog body's React key; a capture→edit commit keeps the
+  // same token, so that transition does not remount (see dialogState).
+  const sessionRef = useRef(0);
+  const openCapture = useCallback(() => {
+    setTodoDialog(createState(++sessionRef.current));
+  }, []);
+  const openTodo = useCallback((path: string) => {
+    setTodoDialog(editState(++sessionRef.current, path));
+  }, []);
+  const closeTodoDialog = useCallback(() => setTodoDialog(closedState), []);
+  // A capture's ⌘⏎ write persisted `path`; bind the dialog to the live row,
+  // keeping its session (no remount).
+  const commitTodoDialog = useCallback((path: string) => {
+    setTodoDialog((prev) => commitState(prev, path));
+  }, []);
   // The active per-project view (Todos / Notes / …).
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("todos");
   // The global command palette (⌘K) and its one-shot request to NotesView to
@@ -773,13 +799,35 @@ function WorkspaceContent({
   const projectConfigFile = files?.find(
     (file) => file.path === PROJECT_CONFIG_PATH && !file.deleted,
   );
-  // The live file backing the open existing-todo dialog (slice 5). Kept live
-  // (not snapshotted) so the dialog adopts external writes — the daemon linking
-  // a chat or projecting a status flips the footer while the dialog is open.
+  // The live file backing the dialog when it's editing a persisted task (a row
+  // click, the palette, OR a capture that committed). Kept live (not snapshotted)
+  // so the dialog follows external writes — the daemon auto-titling the task or
+  // linking a chat flips the header/footer while the dialog is open. This is now
+  // the ONLY source of truth for a persisted todo (no second capture instance
+  // forking its own copy).
   const openTodoFile =
-    openTodoPath !== null
-      ? files?.find((file) => file.path === openTodoPath && !file.deleted)
+    todoDialog.mode === "edit"
+      ? files?.find((file) => file.path === todoDialog.path && !file.deleted)
       : undefined;
+  const openTodoRow =
+    openTodoFile !== undefined
+      ? {
+          path: openTodoFile.path,
+          content: openTodoFile.content,
+          updatedAt: openTodoFile.updatedAt,
+        }
+      : undefined;
+  // Close-on-vanish: once files have loaded, if the edited row is gone (deleted
+  // here or elsewhere, or tombstoned by the daemon) drop the dialog AND reset the
+  // union to closed — the old code hid the existing dialog via `open` but left
+  // `openTodoPath` lingering. This now also closes a capture-born saved card if
+  // its task is deleted elsewhere (it became edit-mode on commit) — an intended
+  // improvement over the old fork, which had no live row to react to.
+  useEffect(() => {
+    setTodoDialog((prev) =>
+      reconcileState(prev, openTodoFile !== undefined, files !== undefined),
+    );
+  }, [openTodoFile, files]);
   const projectConfig = useMemo(
     () => parseProjectConfig(projectConfigFile?.content, projectId),
     [projectConfigFile?.content, projectId],
@@ -884,7 +932,7 @@ function WorkspaceContent({
     function onKey(e: KeyboardEvent) {
       if (e.key !== "c" && e.key !== "C") return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (todoCaptureOpen || openTodoPath !== null) return;
+      if (todoDialog.mode !== "closed") return;
       const el = e.target as HTMLElement | null;
       if (
         el &&
@@ -893,11 +941,11 @@ function WorkspaceContent({
         return;
       }
       e.preventDefault();
-      setTodoCaptureOpen(true);
+      openCapture();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [todoCaptureOpen, openTodoPath]);
+  }, [todoDialog.mode, openCapture]);
 
   // ⌘K (Ctrl+K) toggles the command palette. When it's already open, close it
   // (the footer advertises ⌘K). When closed, suppress only where ⌘K means
@@ -1394,13 +1442,13 @@ function WorkspaceContent({
   // Open a todo: switch to the Todos view and open the TodoDialog over it.
   function paletteOpenTask(path: string) {
     setWorkspaceView("todos");
-    setOpenTodoPath(path);
+    openTodo(path);
   }
   // New todo: switch to the Todos view and open the two-stage capture card. The
   // capture card is body-only (Decision 10), so the typed query isn't seeded.
   function paletteCreateTask(_title: string) {
     setWorkspaceView("todos");
-    setTodoCaptureOpen(true);
+    openCapture();
   }
   // Open / create a note: hand the request to NotesView (which owns the editor +
   // draft-flush lifecycle) after switching to the Notes view.
@@ -1547,9 +1595,9 @@ function WorkspaceContent({
             // ↑↓/↵ list nav is live only when no todo dialog is over the list.
             // (Other overlays — palette, archived sheet — are role="dialog" and
             // the hook's own target guard defers to them.)
-            active={openTodoPath === null && !todoCaptureOpen}
-            onOpenTodo={(path) => setOpenTodoPath(path)}
-            onAddTodo={() => setTodoCaptureOpen(true)}
+            active={todoDialog.mode === "closed"}
+            onOpenTodo={(path) => openTodo(path)}
+            onAddTodo={() => openCapture()}
             onToggleCompleted={(todo, completed) =>
               void setTodoCompleted(todo, completed)
             }
@@ -1586,37 +1634,22 @@ function WorkspaceContent({
           initialTab={projectDetailsTab}
         />
 
+        {/* ONE TodoDialog for the whole Todos tab (single-binding). It's a fresh
+            two-stage capture in create mode; in edit mode it's bound to the live
+            `files` row (`openTodoRow`) — a row click, the palette, OR a capture
+            that just committed (onCommitted flips create→edit). The row comes
+            from the live subscription, so the header/footer follow external
+            writes (the daemon auto-titling, linking a chat, projecting status).
+            If the row vanishes, the close-on-vanish effect above resets to
+            closed. There is no longer a second instance forking a private copy of
+            a persisted todo. */}
         <TodoDialog
-          open={todoCaptureOpen}
+          state={todoDialog}
           projectId={projectId}
+          row={openTodoRow}
           takenSlugs={takenSlugs}
-          onClose={() => setTodoCaptureOpen(false)}
-          onWrite={materializeDraftFile}
-          onDeleteTodo={deleteTodo}
-          onUserDeleteTodo={(slug) => void deleteTodoWithUndo(slug)}
-          onManagePrompts={() => openGlobalSettings("starting-prompts")}
-          onManageHarnesses={() => openGlobalSettings("harnesses")}
-        />
-
-        {/* The existing-todo dialog: a Todos row opens the TodoDialog in its
-            saved stage on the on-disk file. The file comes from the live
-            subscription, so its footer flips as the daemon links a chat /
-            projects status. If the file vanishes (deleted elsewhere), the dialog
-            closes. */}
-        <TodoDialog
-          open={openTodoFile !== undefined}
-          projectId={projectId}
-          takenSlugs={takenSlugs}
-          existing={
-            openTodoFile
-              ? {
-                  path: openTodoFile.path,
-                  content: openTodoFile.content,
-                  updatedAt: openTodoFile.updatedAt,
-                }
-              : undefined
-          }
-          onClose={() => setOpenTodoPath(null)}
+          onClose={closeTodoDialog}
+          onCommitted={commitTodoDialog}
           onWrite={materializeDraftFile}
           onDeleteTodo={deleteTodo}
           onUserDeleteTodo={(slug) => void deleteTodoWithUndo(slug)}

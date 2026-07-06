@@ -41,6 +41,7 @@ import {
 } from "./captureDraft";
 import { selectSavedFooterState } from "./footerState";
 import { useCaptureAttachments } from "./useCaptureAttachments";
+import { type TodoDialogState } from "./dialogState";
 import { dismissAction } from "./useDiscardGuard";
 import { useGrowAnimation } from "./useGrowAnimation";
 
@@ -62,9 +63,13 @@ function relativeTime(ts: number): string {
   });
 }
 
-// A todo already on disk, opened directly into the saved stage (slice 5). The
-// dialog seeds its document model from `content` and pins `path`; `updatedAt` is
-// the files row's recency, shown in the linked footer's status line.
+// The live query row backing a persisted task (Todos v1, slice 5 + the
+// single-binding change). In edit mode the dialog seeds its document model from
+// `content` and pins `path`, and — critically — keeps FOLLOWING `content` as the
+// live query updates it (the daemon's generated title, a chat-link stamp, a
+// footer status). `updatedAt` is the row's recency, shown in the linked footer.
+// This is App's projection of the `files` row; it is `undefined` in create mode
+// until the capture's ⌘⏎ persists the file and App resolves the row.
 export interface ExistingTodo {
   path: string;
   content: string;
@@ -114,15 +119,24 @@ function loadView(): View {
 const TRANSFORM_MS = 260;
 
 export interface TodoDialogProps {
-  open: boolean;
+  // The single source of truth for what the dialog is showing (see dialogState).
+  // App mounts ONE TodoDialog and drives it entirely through this union.
+  state: TodoDialogState;
   projectId: Id<"projects">;
-  // When set, the dialog opens an EXISTING todo directly in the saved stage on
-  // this file (slice 5). Absent = a fresh two-stage capture (slice 4).
-  existing?: ExistingTodo;
+  // The live query row for an edit-mode (or committed-capture) dialog, resolved
+  // by App from the `files` subscription so external writes keep flowing in.
+  // `undefined` in create mode until the capture commits — see onCommitted.
+  row: ExistingTodo | undefined;
   // Slugs already on disk, so a fresh capture mints a non-colliding one on save.
   takenSlugs: string[];
-  // Close the dialog (the parent owns the `open` flag).
+  // Close the dialog (App resets the union to { mode: "closed" }).
   onClose: () => void;
+  // Called after a capture's ⌘⏎ write SUCCEEDS, handing App the persisted path
+  // so it transitions create→edit (KEEPING the same session, so this component
+  // is not remounted) and starts feeding the live row. Never called from a
+  // failed write, and never from an early image-paste materialize — binding
+  // starts at SAVE, not at file materialization.
+  onCommitted: (path: string) => void;
   // Optimistic upsert by path+content — used for the materialize on ⌘⏎, the
   // early materialize on image paste, and body autosave on close.
   onWrite: (path: string, content: string) => Promise<void>;
@@ -138,6 +152,24 @@ export interface TodoDialogProps {
 }
 
 export function TodoDialog(props: TodoDialogProps) {
+  const { state, row } = props;
+  // The dialog is open in create mode always, and in edit mode only while the
+  // live row is present — mirroring the old `open={openTodoFile !== undefined}`
+  // close-on-vanish semantics for existing todos (App also resets the union to
+  // closed via reconcileState, so a vanished row doesn't just hide the dialog
+  // but clears the lingering state). A committed capture stays open across the
+  // create→edit flip because the row it just wrote resolves immediately.
+  const open =
+    state.mode === "create" || (state.mode === "edit" && row !== undefined);
+  // TodoBody's React key. Minted fresh per open, but PRESERVED across the
+  // capture→edit commit (same session), so the transform doesn't remount — the
+  // grow animation and Lexical editor state survive. Opening a different todo is
+  // a new session, so it does remount fresh. See dialogState.
+  const session = state.mode === "closed" ? null : state.session;
+  // In edit mode (including a just-committed capture) the body follows the live
+  // row; in create mode it runs on a local draft (row is undefined here).
+  const existing = state.mode === "edit" ? row : undefined;
+
   // Route EVERY dismissal (Escape, outside press, the ✕) through the body's
   // save policy. The body registers its handler here; the Dialog stays
   // controlled by `open`, so cancelling the Base UI change just hands the
@@ -145,7 +177,7 @@ export function TodoDialog(props: TodoDialogProps) {
   const dismissRef = useRef<(reason: string) => void>(() => {});
   return (
     <DialogPrimitive.Root
-      open={props.open}
+      open={open}
       onOpenChange={(next, details) => {
         if (next) return;
         details.cancel();
@@ -163,12 +195,24 @@ export function TodoDialog(props: TodoDialogProps) {
           data-slot="todo-dialog"
           className="fixed top-[12vh] left-1/2 z-50 w-140 max-w-[calc(100%-2rem)] -translate-x-1/2 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
         >
-          {props.open && (
+          {open && session !== null && (
             <TodoBody
-              // Keyed so opening a different existing todo remounts fresh — the
-              // document model seeds from `content` once (useFrontmatterDocument).
-              key={props.existing?.path ?? "capture"}
-              {...props}
+              // Keyed by the session token, NOT by path: a capture that commits
+              // to a path keeps its session, so it does NOT remount (the whole
+              // point — the document model quietly re-binds from local draft to
+              // live row via the `existing` prop). Opening a different todo is a
+              // fresh session and remounts.
+              key={session}
+              projectId={props.projectId}
+              existing={existing}
+              takenSlugs={props.takenSlugs}
+              onClose={props.onClose}
+              onCommitted={props.onCommitted}
+              onWrite={props.onWrite}
+              onDeleteTodo={props.onDeleteTodo}
+              onUserDeleteTodo={props.onUserDeleteTodo}
+              onManagePrompts={props.onManagePrompts}
+              onManageHarnesses={props.onManageHarnesses}
               registerDismiss={(fn) => (dismissRef.current = fn)}
             />
           )}
@@ -178,25 +222,52 @@ export function TodoDialog(props: TodoDialogProps) {
   );
 }
 
+// TodoBody's props: the resolved document view, not the raw union. `existing`
+// arrives undefined for a fresh capture and flips to the live row on commit
+// (same key, no remount); the mount-time initializers below seed once per
+// session off whatever `existing` is at mount (undefined = capture).
+interface TodoBodyProps {
+  projectId: Id<"projects">;
+  existing?: ExistingTodo;
+  takenSlugs: string[];
+  onClose: () => void;
+  onCommitted: (path: string) => void;
+  onWrite: (path: string, content: string) => Promise<void>;
+  onDeleteTodo: (slug: string) => Promise<void>;
+  onUserDeleteTodo: (slug: string) => void;
+  onManagePrompts?: () => void;
+  onManageHarnesses?: () => void;
+  registerDismiss: (fn: (reason: string) => void) => void;
+}
+
 function TodoBody({
   projectId,
   existing,
   takenSlugs,
   onClose,
+  onCommitted,
   onWrite,
   onDeleteTodo,
   onUserDeleteTodo,
   onManagePrompts,
   onManageHarnesses,
   registerDismiss,
-}: TodoDialogProps & {
-  registerDismiss: (fn: (reason: string) => void) => void;
-}) {
+}: TodoBodyProps) {
   const requestDelegation = useMutation(api.chats.requestDelegation);
   const enqueueGenerateTitle = useMutation(api.commands.enqueueGenerateTitle);
-  // The document model. A fresh capture restores its localStorage recovery
-  // draft if one exists (else opens empty); an existing todo (slice 5) seeds
-  // from its file content and opens straight in "saved".
+  // The document model. Two seeds, chosen once at mount (this component is keyed
+  // by session, so mount == a fresh open):
+  //   • create — no `existing`, so it restores the localStorage recovery draft
+  //     if one exists (else opens empty) and starts in "capture".
+  //   • edit   — `existing` is the live row, so it seeds from its file content
+  //     and opens straight in "saved".
+  // The `content` argument is REACTIVE (useFrontmatterDocument follows it): after
+  // a capture commits, App flips `existing` from undefined to the live row, so
+  // this same still-mounted body starts receiving the row's content. The first
+  // such change (right after the ⌘⏎ write) is a no-op merge — the write already
+  // put those exact bytes here — which rebases the dirty baseline; later external
+  // writes (the daemon's generated title ~15s on) then adopt cleanly. This is the
+  // single source of truth: once persisted, the document follows the live query.
   const draft = useTaskDraft(
     existing?.content ?? loadCaptureDraft(projectId) ?? "",
   );
@@ -324,14 +395,32 @@ function TodoBody({
     // The capture succeeded — the recovery draft's job is done.
     clearCaptureDraft(projectId);
 
-    // Grow the card in place — measure the current height, flip the stage, then
-    // animate to the taller layout (useGrowAnimation's layout effect).
+    // Grow the card in place — measure the current height FIRST (FLIP first-rect),
+    // then flip the stage so the layout effect animates to the taller layout.
     beginGrow();
+    // Bind to the live query row now that the write has persisted. App flips its
+    // union create→edit(path) KEEPING the same session, so this component is NOT
+    // remounted — the grow animation and Lexical state survive — and `existing`
+    // arrives so the document model starts following the live row. Called only
+    // AFTER the awaited write succeeded (a throw above skips this, leaving the
+    // dialog in capture with the recovery draft intact). This is the moment the
+    // fork ends: from here the document has exactly one source of truth. NB: this
+    // batches with the setStage/setTransforming below (React 18), so the commit,
+    // the stage flip, and the incoming (no-op) row merge land in one re-render.
+    onCommitted(path);
     setTransforming(true);
     setStage("saved");
     window.setTimeout(() => setTransforming(false), TRANSFORM_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, takenSlugs, write, beginGrow, projectId, enqueueGenerateTitle]);
+  }, [
+    draft,
+    takenSlugs,
+    write,
+    beginGrow,
+    projectId,
+    enqueueGenerateTitle,
+    onCommitted,
+  ]);
 
   // ─── Dismiss policy — the pure decision lives in dismissAction ─────────────
   // Capture-stage esc now ALWAYS closes instantly (Decision 4 amendment — the
@@ -487,6 +576,13 @@ function TodoBody({
   // File paste/drop → materialize early + upload (Decision 3). The provisional
   // title commit stays here (it owns slug minting + the optimistic write); the
   // listener plumbing lives in the hook.
+  //
+  // Binding boundary: this writes a provisional file WITHOUT leaving the capture
+  // stage, and esc deletes that dir (dismiss "close"). So it deliberately does
+  // NOT call onCommitted — binding to the live query starts at SAVE (transform),
+  // not at file materialization. A provisionally materialized capture is still a
+  // draft: it may be discarded whole on esc. onCommitted fires only on the ⌘⏎
+  // that promotes the draft into a persisted document.
   useCaptureAttachments({
     rootRef,
     draft,
