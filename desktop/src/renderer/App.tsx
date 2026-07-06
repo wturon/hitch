@@ -59,10 +59,6 @@ import {
   type WorkspaceView,
 } from "@/components/CommandPalette";
 import {
-  useAutomationActions,
-  useAutomationDefinitions,
-} from "@/hooks/useAutomations";
-import {
   GlobalSettingsDialog,
   type GlobalHarnessSetupStatus,
   type IntegrationHealth,
@@ -1023,11 +1019,6 @@ function WorkspaceContent({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const { automations: automationRecords } = useAutomationDefinitions(projectId, {
-    includeInvalid: true,
-  });
-  const automationActions = useAutomationActions(projectId, files ?? []);
-
   if (!currentProject || files === undefined) {
     return (
       <AppShell
@@ -1332,11 +1323,6 @@ function WorkspaceContent({
   const paletteNotes = noteDocs(files)
     .filter((doc) => !doc.archived)
     .map((doc) => ({ slug: doc.slug, title: doc.title, meta: doc.type }));
-  const paletteAutomations = automationRecords.map((automation) => ({
-    path: automation.automationPath,
-    title: automation.name,
-    meta: automation.enabled ? automation.scheduleDescription : "paused",
-  }));
   const keepAwakeAvailable = keepAwake !== null && Boolean(keepAwakeBridge());
   const paletteActions: PaletteAction[] = [
     {
@@ -1459,14 +1445,6 @@ function WorkspaceContent({
   function paletteCreateNote(title: string) {
     setWorkspaceView("notes");
     setNoteIntent({ type: "create", title });
-  }
-  function paletteOpenAutomation(path: string) {
-    setWorkspaceView("automations");
-    setAutomationIntent(path);
-  }
-  function paletteCreateAutomation(title: string) {
-    setWorkspaceView("automations");
-    void automationActions.createAutomation(title).then(setAutomationIntent);
   }
 
   return (
@@ -1666,7 +1644,6 @@ function WorkspaceContent({
           currentView={workspaceView}
           tasks={paletteTasks}
           notes={paletteNotes}
-          automations={paletteAutomations}
           actions={paletteActions}
           onSelectProject={onSelectProject}
           onSelectView={setWorkspaceView}
@@ -1674,8 +1651,6 @@ function WorkspaceContent({
           onCreateTask={paletteCreateTask}
           onOpenNote={paletteOpenNote}
           onCreateNote={paletteCreateNote}
-          onOpenAutomation={paletteOpenAutomation}
-          onCreateAutomation={paletteCreateAutomation}
           onCreateProject={(name) => setCreateProjectName(name)}
         />
 
