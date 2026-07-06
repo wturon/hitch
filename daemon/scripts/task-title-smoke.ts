@@ -34,7 +34,8 @@ assert.equal(clamped.length, TASK_TITLE_MAX_LENGTH);
 assert.equal(clamped.endsWith("..."), true);
 
 // ── titleFromCliResult ────────────────────────────────────────────────────────
-// structured_output wins (present when --json-schema is supplied).
+// The prompt asks for bare text, so a raw-title `result` is the expected path;
+// the structured/JSON shapes below are recognized defensively and win if present.
 assert.equal(
   titleFromCliResult(
     JSON.stringify({

@@ -18,9 +18,12 @@ export const TASK_TITLE_MAX_LENGTH = CHAT_TITLE_MAX_LENGTH;
 // word title.
 export const TITLE_PROMPT_MAX_CHARS = 8000;
 
+// Plain text response, NOT --json-schema: the CLI's structured-output mode runs
+// a multi-turn negotiation (measured 5 API round trips, ~8.5s) while a bare
+// "reply with only the title" one-shot is a single turn (~2-3s).
 const PROMPT_PREAMBLE = [
   "You write concise task titles for a developer's todo list.",
-  "Return a JSON object with key: title. Rules:",
+  "Reply with ONLY the title text on a single line, nothing else. Rules:",
   "- Title should summarize the task, not restate it verbatim.",
   "- Keep it short and specific (3-8 words).",
   "- Avoid quotes, filler, prefixes, and trailing punctuation.",
@@ -51,12 +54,12 @@ export function sanitizeGeneratedTitle(raw: string | null | undefined): string {
   return `${normalized.slice(0, TASK_TITLE_MAX_LENGTH - 3).trimEnd()}...`;
 }
 
-// Extract the title from `claude -p --output-format json` output. The wrapper
-// puts the structured result in `structured_output` (already parsed, when a
-// --json-schema was supplied) and a JSON string in `result`. We try the parsed
-// field first, then parse `result` as `{title}`, then fall back to treating
-// `result` as the raw title. Returns a sanitized title, or "" when nothing usable
-// is present (a hard failure the caller reports).
+// Extract the title from `claude -p --output-format json` output. The prompt
+// asks for bare title text, so `result` holding the raw title is the expected
+// path. We still check `structured_output` and a JSON-shaped `result` first,
+// defensively — a model that returns `{"title": ...}` anyway shouldn't produce
+// a title that literally starts with `{"title"`. Returns a sanitized title, or
+// "" when nothing usable is present (a hard failure the caller reports).
 export function titleFromCliResult(stdout: string): string {
   let wrapper: unknown;
   try {

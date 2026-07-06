@@ -386,36 +386,37 @@ function claudeBin(): string {
   return "claude";
 }
 
-// Force the model to return exactly `{ "title": string }` via --json-schema, so
-// the wrapper hands back a parsed `structured_output` we can read without hoping
-// the prose came out as clean JSON. titleFromCliResult still parses defensively.
-const TITLE_JSON_SCHEMA = JSON.stringify({
-  type: "object",
-  properties: { title: { type: "string" } },
-  required: ["title"],
-  additionalProperties: false,
-});
 const TITLE_GEN_TIMEOUT_MS = 60_000;
 
 // Ask the cheap model for a task title. Non-interactive `claude -p`, JSON output,
-// haiku, a hard timeout. Throws on a missing CLI, nonzero exit, timeout, or an
-// unparseable/empty result — every failure is caught by the caller and marks the
-// command failed; title generation must never take anything else down with it.
+// haiku, a hard timeout. The invocation mirrors t3code's text-generation shape,
+// tuned for a single fast turn (measured ~3s vs ~8.5s before):
+//   - NO --json-schema: structured output runs a multi-turn negotiation; a bare
+//     "reply with only the title" prompt is one turn and we sanitize the text.
+//   - alwaysThinkingEnabled:false: no reasoning tokens for a 6-word title.
+//   - --strict-mcp-config: don't boot the user's MCP servers for this.
+//   - prompt via stdin (no argv-length concerns for long bodies).
+// Throws on a missing CLI, nonzero exit, timeout, or an unparseable/empty
+// result — every failure is caught by the caller and marks the command failed;
+// title generation must never take anything else down with it.
 async function generateTitleViaClaude(prompt: string): Promise<string> {
-  const { stdout } = await execFileP(
+  const pending = execFileP(
     claudeBin(),
     [
       "-p",
-      prompt,
       "--output-format",
       "json",
       "--model",
       "claude-haiku-4-5",
-      "--json-schema",
-      TITLE_JSON_SCHEMA,
+      "--settings",
+      JSON.stringify({ alwaysThinkingEnabled: false }),
+      "--strict-mcp-config",
+      "--dangerously-skip-permissions",
     ],
     { timeout: TITLE_GEN_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
   );
+  pending.child.stdin?.end(prompt);
+  const { stdout } = await pending;
   const title = titleFromCliResult(stdout);
   if (!title) throw new Error("empty or unparseable title output");
   return title;
