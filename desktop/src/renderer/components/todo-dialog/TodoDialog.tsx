@@ -42,7 +42,7 @@ import {
 import { selectSavedFooterState } from "./footerState";
 import { useCaptureAttachments } from "./useCaptureAttachments";
 import { type TodoDialogState } from "./dialogState";
-import { dismissAction } from "./useDiscardGuard";
+import { dismissAction, shouldSaveOnClose } from "./useDiscardGuard";
 import { useGrowAnimation } from "./useGrowAnimation";
 
 // A compact "last activity" stamp for the linked footer's status line — bare
@@ -444,10 +444,21 @@ function TodoBody({
       switch (action) {
         case "save-and-close": {
           // The document is saved; esc is free. Persist body edits, then close.
+          // The write gate (shouldSaveOnClose) also fires when the draft is
+          // dirty against the LIVE row even though it matches our own last
+          // write — the claimed-title case, where the daemon's generated title
+          // is on disk and the kept seed must be written back over it.
           const content = draft.getLatestRaw();
           const path = committedRef.current;
           onClose();
-          if (path && content !== lastWrittenRef.current) {
+          if (
+            path &&
+            shouldSaveOnClose({
+              dirty: draft.dirty,
+              latest: content,
+              lastWritten: lastWrittenRef.current,
+            })
+          ) {
             void write(path, content).catch((err) =>
               console.error("Failed to save todo after closing", err),
             );

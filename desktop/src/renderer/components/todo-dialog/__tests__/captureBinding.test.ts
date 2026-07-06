@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
 import { useTaskDraft } from "@/hooks/useTaskDraft";
+import { shouldSaveOnClose } from "../useDiscardGuard";
 
 // The bytes the ⌘⏎ transform writes (deriveTitleFromBody-style seed title +
 // verbatim body) and the bytes the daemon writes back ~15s later with a better
@@ -81,6 +82,57 @@ describe("capture→commit→external-title binding", () => {
     expect(bodyOf(result)).toBe(
       "Buy milk and eggs\nfor the cake\nand candles",
     );
+  });
+
+  it("claimed-title race: the kept seed is WRITTEN on close (gate fires despite matching our last write)", () => {
+    // The PR #72 review's integration path, end to end at the hook + gate
+    // level: seed written (lastWritten = SEED) → user FOCUSES the title (claim,
+    // no edit) → daemon writes the generated title → the claimed merge keeps
+    // the local seed, byte-identical to lastWritten — so the old
+    // `latest !== lastWritten` close gate would SKIP the write and the
+    // forfeited generation would survive on disk. shouldSaveOnClose must fire
+    // off `dirty` (draft ≠ live row) instead.
+    let claimed: readonly string[] = [];
+    const { result, rerender } = renderHook(
+      ({ c }) => useTaskDraft(c, { claimedKeys: () => claimed }),
+      { initialProps: { c: "" } },
+    );
+    act(() => {
+      result.current.setTitle("Buy milk and");
+      result.current.setBody("Buy milk and eggs\nfor the cake");
+    });
+    rerender({ c: SEED }); // commit → clean baseline; the write set lastWritten = SEED
+    const lastWritten = SEED;
+
+    claimed = ["title"]; // the user focuses the title input (no edit)
+    rerender({ c: RENAMED }); // the daemon's generated title lands on disk
+
+    // The claim held: the draft still carries the seed title…
+    expect(titleOf(result)).toBe("Buy milk and");
+    // …which is byte-identical to our last write (the old gate's blind spot)…
+    expect(result.current.getLatestRaw()).toBe(lastWritten);
+    // …but dirty against the live row, so the close gate MUST write.
+    expect(result.current.dirty).toBe(true);
+    expect(
+      shouldSaveOnClose({
+        dirty: result.current.dirty,
+        latest: result.current.getLatestRaw(),
+        lastWritten,
+      }),
+    ).toBe(true);
+  });
+
+  it("unchanged existing todo still skips the close write (no-op close stays free)", () => {
+    const { result } = renderHook(({ c }) => useTaskDraft(c), {
+      initialProps: { c: SEED },
+    });
+    expect(
+      shouldSaveOnClose({
+        dirty: result.current.dirty,
+        latest: result.current.getLatestRaw(),
+        lastWritten: SEED, // an existing todo initializes lastWritten to its content
+      }),
+    ).toBe(false);
   });
 
   it("opening a DIFFERENT todo is a fresh seed (a new session remounts the hook)", () => {
