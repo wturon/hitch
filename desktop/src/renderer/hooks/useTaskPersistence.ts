@@ -67,6 +67,7 @@ export function useTaskPersistence({
   onMaterialize: (path: string, content: string) => Promise<void>;
 }): TaskPersistence {
   const upsertFile = useMutation(api.files.upsertFile);
+  const enqueueGenerateTitle = useMutation(api.commands.enqueueGenerateTitle);
   const [state, setState] = useState<TaskFileState>(() =>
     isDraft ? { status: "draft" } : { status: "committed", path: initialPath },
   );
@@ -114,6 +115,14 @@ export function useTaskPersistence({
     setState(next);
     stateRef.current = next;
     await onMaterialize(path, content);
+    // Seed-then-upgrade auto-title (see commands.enqueueGenerateTitle). Skip when
+    // the body is empty — a title-only task is its own content and must not be
+    // rewritten. Fire-and-forget: enqueue failure never affects the save.
+    if (draft.body.trim() !== "") {
+      void enqueueGenerateTitle({ projectId, path, title }).catch((err) =>
+        console.error("Failed to enqueue title generation", err),
+      );
+    }
     return path;
   }
 

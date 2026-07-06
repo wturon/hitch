@@ -115,6 +115,58 @@ export const enqueueCommand = mutation({
   },
 });
 
+// Enqueue a generate-title command: the desktop fires this right after creating
+// a task, carrying the SEED title (the first line of the capture). A daemon
+// claims it, asks a cheap model for a better title, and rewrites task.md's
+// frontmatter — but only if the on-disk title still equals that seed (the
+// daemon's seed guard), so a user rename between creation and generation always
+// wins. The desktop skips one-line captures (no body → the title IS the whole
+// task and must not be rewritten).
+export const enqueueGenerateTitle = mutation({
+  args: {
+    projectId: v.id("projects"),
+    path: v.string(), // the task's rel path, tasks/<slug>/task.md
+    title: v.string(), // the seed — the title at creation time
+  },
+  handler: async (ctx, args) => {
+    const access = await requireProjectMemberById(ctx, args.projectId);
+    const now = Date.now();
+
+    // Idempotency backstop (mirrors requestDelegation): never stack two title
+    // generations on one task — a double-fire, or a re-committed draft. An
+    // unclaimed pending one already covers this task; a claimed one is in flight.
+    const pending = await ctx.db
+      .query("commands")
+      .withIndex("by_project_status", (q) =>
+        q.eq("projectId", access.project._id).eq("status", "pending"),
+      )
+      .collect();
+    const duplicate = pending.find(
+      (cmd) =>
+        cmd.kind === "generate-title" &&
+        cmd.path === args.path &&
+        cmd.claimedAt === undefined,
+    );
+    if (duplicate) return duplicate._id;
+
+    return await ctx.db.insert("commands", {
+      projectId: access.project._id,
+      kind: "generate-title",
+      // generate-title always shells out to `claude`; the column is required and
+      // the daemon ignores it for this kind.
+      harness: "claude-code",
+      path: args.path,
+      linkedType: "task",
+      linkedPath: args.path,
+      title: args.title,
+      status: "pending",
+      expiresAt: commandExpiry(now),
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+
 // The unclaimed, unexpired pending commands for a project. This is only a queue
 // view; daemons must claim a command before executing it.
 export const pendingCommands = query({
