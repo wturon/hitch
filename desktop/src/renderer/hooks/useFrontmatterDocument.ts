@@ -43,6 +43,12 @@ function rawTitle(content: string): string {
 // chosen body IS the local body, byte-identical to the draft's current body, so
 // the controlled MarkdownEditor's `value` prop doesn't change and the Lexical
 // body editor is not reset out from under the typing user.
+//
+// `claimedKeys` strengthens the contract for keys the user has CLAIMED without
+// necessarily editing (e.g. focusing the title input): a claimed key is treated
+// as user-edited unconditionally, so the LOCAL value is spliced into the result
+// even when local equals the synced baseline — the external value is never
+// adopted. Claimed keys should be a subset of userOwnedKeys.
 export function mergeFrontmatterUpdate(input: {
   local: string; // the current dirty draft
   synced: string; // the baseline the draft was last reconciled against
@@ -50,8 +56,12 @@ export function mergeFrontmatterUpdate(input: {
   // The frontmatter keys the caller's UI lets the user edit. Only these can hold
   // a protected local edit; every other key adopts external unconditionally.
   userOwnedKeys: readonly string[];
+  // User-owned keys the user has claimed ownership of this session (see above):
+  // kept local even when untouched.
+  claimedKeys?: readonly string[];
 }): string {
   const { local, synced, external, userOwnedKeys } = input;
+  const claimed = new Set(input.claimedKeys ?? []);
 
   const bodyEdited =
     splitFrontmatter(local).body !== splitFrontmatter(synced).body;
@@ -60,13 +70,16 @@ export function mergeFrontmatterUpdate(input: {
     : splitFrontmatter(external).body;
 
   // A user-owned key is kept local only if it was actually edited (local ≠
-  // synced for that key). An untouched key isn't spliced at all, so it adopts
-  // whatever the external frontmatter carries — including absence. A locally-
-  // cleared key splices "", which setFrontmatterKeys drops, honoring the removal.
+  // synced for that key) OR claimed. An untouched, unclaimed key isn't spliced
+  // at all, so it adopts whatever the external frontmatter carries — including
+  // absence. A locally-cleared key splices "", which setFrontmatterKeys drops,
+  // honoring the removal.
   const editedKeys: Record<string, string> = {};
   for (const key of userOwnedKeys) {
     const localValue = rawKeyValue(local, key);
-    if (localValue !== rawKeyValue(synced, key)) editedKeys[key] = localValue;
+    if (claimed.has(key) || localValue !== rawKeyValue(synced, key)) {
+      editedKeys[key] = localValue;
+    }
   }
 
   // Rebuild on the external frontmatter (machine keys always win); splice the
@@ -136,6 +149,11 @@ export interface FrontmatterDocumentOptions {
   // frontmatter MUST declare it or a dirty merge will adopt external over the
   // user's in-progress edit.
   userOwnedKeys?: readonly string[];
+  // A getter (read at merge time, like userOwnedKeys) for the user-owned keys
+  // the user has CLAIMED this session without necessarily editing — e.g. a
+  // focused-but-untouched title input. A claimed key never adopts an external
+  // write, even into a clean draft (see mergeFrontmatterUpdate).
+  claimedKeys?: () => readonly string[];
 }
 
 const DEFAULT_USER_OWNED_KEYS: readonly string[] = ["title"];
@@ -161,29 +179,35 @@ export function useFrontmatterDocument(
 
   // Mirror the declared user-owned keys so the adoption effect (deps: [content])
   // always merges with the caller's latest declaration, even when it's an inline
-  // array literal recreated every render.
+  // array literal recreated every render. Same for the claimed-keys getter.
   const userOwnedKeysRef = useRef(userOwnedKeys);
   userOwnedKeysRef.current = userOwnedKeys;
+  const claimedKeysRef = useRef(options?.claimedKeys);
+  claimedKeysRef.current = options?.claimedKeys;
 
   // Live-following: another writer (e.g. an agent, or the daemon auto-titling a
   // task, or honoring a direct disk edit) can edit the open file. A clean editor
-  // adopts the external write wholesale. A DIRTY editor no longer drops the update
-  // — it merges per field (mergeFrontmatterUpdate): the user's outstanding edits
-  // to the body and the declared user-owned keys survive, while machine-owned
-  // frontmatter and the fields the user hasn't touched adopt the external value.
-  // Either way we rebase the dirty baseline onto the incoming content, so `dirty`
-  // stays coherent (the draft remains dirty iff a user-edited field still differs
-  // from external). Adoption is purely string-level: a controlled MarkdownEditor
-  // picks up a changed body through its `value` prop — and the merge keeps the
-  // body byte-identical when it was locally edited, so the editor isn't reset
-  // mid-type.
+  // with no claimed keys adopts the external write wholesale. A DIRTY editor no
+  // longer drops the update — it merges per field (mergeFrontmatterUpdate): the
+  // user's outstanding edits to the body and the declared user-owned keys
+  // survive, while machine-owned frontmatter and the fields the user hasn't
+  // touched adopt the external value. A CLEAN draft with claimed keys takes the
+  // merge path too — that's exactly the focused-but-untouched case, where the
+  // claimed key must keep its local value instead of being swapped out from
+  // under the user's cursor. Either way we rebase the dirty baseline onto the
+  // incoming content, so `dirty` stays coherent (the draft remains dirty iff a
+  // user-edited or claimed field still differs from external). Adoption is
+  // purely string-level: a controlled MarkdownEditor picks up a changed body
+  // through its `value` prop — and the merge keeps the body byte-identical when
+  // it was locally edited, so the editor isn't reset mid-type.
   useEffect(() => {
     if (content === syncedContentRef.current) return; // our own echo / mount
     const synced = syncedContentRef.current;
     const local = draftRef.current;
     const userEdited = local !== synced;
+    const claimed = claimedKeysRef.current?.() ?? [];
     syncedContentRef.current = content;
-    if (!userEdited) {
+    if (!userEdited && claimed.length === 0) {
       updateDraft(content);
       return;
     }
@@ -193,6 +217,7 @@ export function useFrontmatterDocument(
         synced,
         external: content,
         userOwnedKeys: userOwnedKeysRef.current,
+        claimedKeys: claimed,
       }),
     );
   }, [content]);

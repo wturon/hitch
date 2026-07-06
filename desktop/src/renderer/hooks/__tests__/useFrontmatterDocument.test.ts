@@ -117,6 +117,38 @@ describe("mergeFrontmatterUpdate (tasks: title user-owned)", () => {
     expect(bodyOf(merged)).toBe("typing…");
   });
 
+  it("keeps a CLAIMED title local even when untouched (focus forfeits generation)", () => {
+    // The user focused the title input but hasn't typed: local === synced for
+    // title, but the claim splices the LOCAL value anyway — the daemon's
+    // generated title is never adopted. Machine keys still ride through.
+    const synced = doc({ title: "Seed", chatId: "a", body: "hi" });
+    const external = doc({ title: "Generated", chatId: "b", body: "hi" });
+    const merged = mergeFrontmatterUpdate({
+      local: synced,
+      synced,
+      external,
+      userOwnedKeys: TASK_KEYS,
+      claimedKeys: ["title"],
+    });
+    expect(fm(merged).title).toBe("Seed"); // local survives despite no edit
+    expect(fm(merged)["chat-id"]).toBe("b"); // machine key still adopts external
+    expect(bodyOf(merged)).toBe("hi");
+  });
+
+  it("adopts the external title when unclaimed and untouched (existing behavior intact)", () => {
+    const synced = doc({ title: "Seed", chatId: "a", body: "hi" });
+    const external = doc({ title: "Generated", chatId: "b", body: "hi" });
+    const merged = mergeFrontmatterUpdate({
+      local: synced,
+      synced,
+      external,
+      userOwnedKeys: TASK_KEYS,
+      claimedKeys: [],
+    });
+    expect(fm(merged).title).toBe("Generated");
+    expect(fm(merged)["chat-id"]).toBe("b");
+  });
+
   it("treats an UNDECLARED key as machine-owned even when locally edited", () => {
     // A task declares only `title`, so a local `type` edit (impossible through
     // the task UI, but the contract must hold) is NOT protected — external wins.
@@ -222,6 +254,27 @@ describe("useFrontmatterDocument adoption", () => {
     expect(result.current.title).toBe("My title");
     expect(result.current.frontmatter["chat-id"]).toBe("b");
     expect(result.current.dirty).toBe(true);
+  });
+
+  it("does NOT adopt an external title into a CLEAN draft when the title is claimed", () => {
+    // The wholesale-adopt bypass is closed: a clean draft with a claimed title
+    // must go through the merge, keeping the local (seed) title while machine
+    // keys still adopt. This is the focused-but-untouched race: the daemon's
+    // generated title must not swap the text under the user's cursor.
+    let claimed: readonly string[] = [];
+    const { result, rerender } = renderHook(
+      ({ content }) =>
+        useFrontmatterDocument(content, {
+          userOwnedKeys: ["title"],
+          claimedKeys: () => claimed,
+        }),
+      { initialProps: { content: doc({ title: "Seed", body: "hi" }) } },
+    );
+    claimed = ["title"]; // the user focuses the title input (no edit yet)
+    rerender({ content: doc({ title: "Generated", chatId: "b", body: "hi" }) });
+    expect(result.current.title).toBe("Seed"); // generation forfeits
+    expect(result.current.frontmatter["chat-id"]).toBe("b"); // machine key adopts
+    expect(result.current.dirty).toBe(true); // close-time save restores the seed on disk
   });
 
   it("keeps a note's dirty type edit through an external machine-key stamp", () => {

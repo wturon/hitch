@@ -35,11 +35,24 @@ export interface TaskDraft extends FrontmatterDocument {
   clearChat: () => string;
 }
 
-export function useTaskDraft(content: string): TaskDraft {
+export interface TaskDraftOptions {
+  // Passed through to useFrontmatterDocument: a getter for user-owned keys the
+  // user has claimed this session (e.g. a focused title input), which never
+  // adopt an external write.
+  claimedKeys?: () => readonly string[];
+}
+
+export function useTaskDraft(
+  content: string,
+  options?: TaskDraftOptions,
+): TaskDraft {
   // Tasks let the user edit exactly one frontmatter key — the title. Every other
   // key (chat-*, completed-at, …) is machine-owned, so an external write into a
   // dirty editor always refreshes them (see mergeFrontmatterUpdate).
-  const doc = useFrontmatterDocument(content, { userOwnedKeys: ["title"] });
+  const doc = useFrontmatterDocument(content, {
+    userOwnedKeys: ["title"],
+    claimedKeys: options?.claimedKeys,
+  });
 
   function clearChat(): string {
     // Recompute from the live draft, then write it back through the generic
