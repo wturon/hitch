@@ -78,9 +78,11 @@ export function useTaskPersistence({
     state.status === "committed" ? state.path : null;
   const slug = committedPath ? taskSlug(committedPath) : null;
 
-  // Resolve the title a save/derive would use right now (typed title wins, else
-  // the body's first line). Shared by prospectivePath and commitDraft so the slug
-  // they compute always agrees.
+  // Resolve the title a save/derive would use right now. A typed title wins; else
+  // the title is a NON-DESTRUCTIVE seed from the body's first words. Either way the
+  // body is left whole — capture text is sacred; the title is additive metadata;
+  // nothing is ever moved out of the body to make a title. Shared by
+  // prospectivePath and commitDraft so the slug they compute always agrees.
   const resolveTitle = () => draft.title.trim() || deriveTitleFromBody(draft.body);
 
   const prospectivePath =
@@ -115,9 +117,10 @@ export function useTaskPersistence({
     setState(next);
     stateRef.current = next;
     await onMaterialize(path, content);
-    // Seed-then-upgrade auto-title (see commands.enqueueGenerateTitle). Skip when
-    // the body is empty — a title-only task is its own content and must not be
-    // rewritten. Fire-and-forget: enqueue failure never affects the save.
+    // Seed-then-upgrade auto-title (see commands.enqueueGenerateTitle). Enqueue
+    // for every task with body content — the body always holds the full text, so
+    // a rewritten title never loses anything (the old empty-body skip is obsolete).
+    // Fire-and-forget: enqueue failure never affects the save.
     if (draft.body.trim() !== "") {
       void enqueueGenerateTitle({ projectId, path, title }).catch((err) =>
         console.error("Failed to enqueue title generation", err),

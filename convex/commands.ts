@@ -116,12 +116,13 @@ export const enqueueCommand = mutation({
 });
 
 // Enqueue a generate-title command: the desktop fires this right after creating
-// a task, carrying the SEED title (the first line of the capture). A daemon
-// claims it, asks a cheap model for a better title, and rewrites task.md's
-// frontmatter — but only if the on-disk title still equals that seed (the
-// daemon's seed guard), so a user rename between creation and generation always
-// wins. The desktop skips one-line captures (no body → the title IS the whole
-// task and must not be rewritten).
+// a task, carrying the SEED title (a non-destructive derivation of the body's
+// first words). A daemon claims it, asks a cheap model for a better title, and
+// rewrites task.md's frontmatter — but only if the on-disk title still equals
+// that seed (the daemon's seed guard), so a user rename between creation and
+// generation always wins. The desktop enqueues for EVERY capture with content:
+// the captured text always lives in the body verbatim, so rewriting the title
+// never loses anything (capture text is sacred; the title is additive metadata).
 export const enqueueGenerateTitle = mutation({
   args: {
     projectId: v.id("projects"),

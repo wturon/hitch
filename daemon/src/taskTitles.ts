@@ -13,9 +13,9 @@ import { CHAT_TITLE_MAX_LENGTH } from "./chatTitles.js";
 
 export const TASK_TITLE_MAX_LENGTH = CHAT_TITLE_MAX_LENGTH;
 
-// The task content (seed + body) handed to the model is capped so a huge pasted
-// task can't blow the prompt up; the first 8000 chars carry more than enough
-// signal for a 3-8 word title.
+// The task body handed to the model is capped so a huge pasted task can't blow
+// the prompt up; the first 8000 chars carry more than enough signal for a 3-8
+// word title.
 export const TITLE_PROMPT_MAX_CHARS = 8000;
 
 const PROMPT_PREAMBLE = [
@@ -26,10 +26,12 @@ const PROMPT_PREAMBLE = [
   "- Avoid quotes, filler, prefixes, and trailing punctuation.",
 ].join("\n");
 
-// Build the -p prompt from the seed title + task body, capped. The seed leads so
-// the model still anchors on the user's own words when the body is thin.
-export function buildTitlePrompt(seed: string, body: string): string {
-  const content = `${seed}\n${body}`.slice(0, TITLE_PROMPT_MAX_CHARS);
+// Build the -p prompt from the task body alone, capped. The body IS the verbatim
+// capture text, and the seed the desktop stamped is itself derived from the
+// body's first words — so passing the seed too would only duplicate them. The
+// model titles the body directly.
+export function buildTitlePrompt(body: string): string {
+  const content = body.slice(0, TITLE_PROMPT_MAX_CHARS);
   return `${PROMPT_PREAMBLE}\n\nTask content:\n${content}`;
 }
 

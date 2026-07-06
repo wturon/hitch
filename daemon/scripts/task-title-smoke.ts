@@ -60,16 +60,17 @@ assert.equal(titleFromCliResult(JSON.stringify({ result: 42 })), "");
 assert.equal(titleFromCliResult(JSON.stringify({ nothing: true })), "");
 
 // ── buildTitlePrompt ──────────────────────────────────────────────────────────
-const prompt = buildTitlePrompt("Seed title", "Body line one\nBody line two");
+// The prompt now titles the verbatim body alone (the seed is derived from it, so
+// passing it too would only duplicate the body's first words).
+const prompt = buildTitlePrompt("Body line one\nBody line two");
 assert.equal(prompt.includes("concise task titles"), true);
-assert.equal(prompt.includes("Seed title"), true);
 assert.equal(prompt.includes("Body line one"), true);
-// Content half (seed + "\n" + body) is capped at TITLE_PROMPT_MAX_CHARS, so a
-// huge body is truncated — the seed + newline consume the first few chars.
+assert.equal(prompt.includes("Body line two"), true);
+// The body is capped at TITLE_PROMPT_MAX_CHARS, so a huge body is truncated.
 const bigBody = "a".repeat(TITLE_PROMPT_MAX_CHARS * 2);
-const bigPrompt = buildTitlePrompt("seed", bigBody);
-assert.equal(bigPrompt.includes(`seed\n${"a".repeat(TITLE_PROMPT_MAX_CHARS - 5)}`), true);
-assert.equal(bigPrompt.includes("a".repeat(TITLE_PROMPT_MAX_CHARS)), false);
+const bigPrompt = buildTitlePrompt(bigBody);
+assert.equal(bigPrompt.includes("a".repeat(TITLE_PROMPT_MAX_CHARS)), true);
+assert.equal(bigPrompt.includes("a".repeat(TITLE_PROMPT_MAX_CHARS + 1)), false);
 
 // ── titleGuardAllows (the seed guard) ─────────────────────────────────────────
 assert.equal(titleGuardAllows("Seed title", "Seed title"), true);

@@ -19,7 +19,6 @@ import { sha256 } from "@/lib/hash";
 import { setFrontmatterKeys } from "@/lib/frontmatter";
 import {
   deriveTitleFromBody,
-  splitCaptureText,
   taskBodyPath,
   taskSlug,
   uniqueSlug,
@@ -79,9 +78,11 @@ export interface ExistingTodo {
 //     early and is deleted on esc — Decision 3). ⏎ newline · ⌘⏎ save · esc closes
 //     instantly; any typed text is preserved as a recovery draft (see
 //     captureDraft.ts) rather than guarded behind a second esc.
-//   • saved — the same card grown downward: the captured first line crystallizes
-//     into the 18px title, the body becomes a document, and the coaching strip
-//     becomes the docked delegation panel. Start is fire-and-forget.
+//   • saved — the same card grown downward: the captured text becomes the body
+//     verbatim, a seed title (its first ~6 words) is stamped into the 18px title
+//     line, and the coaching strip becomes the docked delegation panel. Start is
+//     fire-and-forget. (Capture text is sacred; the title is additive metadata —
+//     nothing is ever carved out of the body. See transform.)
 //
 // This shell owns the single `stage` state (the PRD's one-component contract),
 // the esc/dismiss routing, and the transform orchestration; the pieces live
@@ -276,22 +277,29 @@ function TodoBody({
   // The capture→saved grow (FLIP on the card's height; see useGrowAnimation).
   const beginGrow = useGrowAnimation(cardRef, stage);
 
-  // ⌘⏎ in the capture stage: split the first line into `title:` (Decision 2),
-  // materialize the file, prepend it to the backlog, and grow the card into the
-  // saved stage. Idempotent against the pasted-early case (the file already
-  // exists — we just persist the split + prepend). Swallowed while transforming.
+  // ⌘⏎ in the capture stage: materialize the file, prepend it to the backlog, and
+  // grow the card into the saved stage. Idempotent against the pasted-early case
+  // (the file already exists — we just persist + prepend). Swallowed while
+  // transforming.
+  //
+  // Invariant (supersedes Todos v1 Decision 2's "split once at ⌘⏎", which carved
+  // the first line into `title:` and left only the remainder as the body — a
+  // split mid-sentence mutated what the user wrote): capture text is sacred; the
+  // title is additive metadata; nothing is ever moved out of the body. The
+  // captured text becomes the body VERBATIM (only CRLFs normalized, so pasted
+  // markdown round-trips); the title is a non-destructive seed derived from the
+  // body's first words (deriveTitleFromBody), upgraded asynchronously by the
+  // generate-title pipeline (PR #71).
   const transform = useCallback(async () => {
     if (transformingRef.current || stageRef.current !== "capture") return;
     const captured = draft.body;
     const already = committedRef.current;
     if (captured.trim() === "" && !already) return; // ⌘⏎ on empty = no-op
 
-    const split = splitCaptureText(captured);
-    // A run-on with no first line (leading newline) still deserves a title —
-    // fall back to the body's first words, so the saved card never reads "Untitled".
-    const title = split.title.trim() || deriveTitleFromBody(split.body);
+    const body = captured.replace(/\r\n/g, "\n");
+    const title = deriveTitleFromBody(body);
     draft.setTitle(title);
-    draft.setBody(split.body);
+    draft.setBody(body);
     const content = draft.getLatestRaw();
 
     let path = already;
@@ -304,10 +312,11 @@ function TodoBody({
     }
     void prependBacklog(path);
     // Seed-then-upgrade auto-title: hand the daemon the seed so it can propose a
-    // better one. Skip one-line captures — with an empty body the title IS the
-    // whole task and must not be rewritten out from under the user. Fire-and-
-    // forget: a failed enqueue must never touch the save path.
-    if (split.body.trim() !== "") {
+    // better one. EVERY capture with content enqueues now (the old empty-body
+    // skip is obsolete): the body always holds the full captured text, so a
+    // one-liner's words live there — rewriting the title never loses anything.
+    // Fire-and-forget: a failed enqueue must never touch the save path.
+    if (body.trim() !== "") {
       void enqueueGenerateTitle({ projectId, path, title }).catch((err) =>
         console.error("Failed to enqueue title generation", err),
       );

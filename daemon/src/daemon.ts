@@ -1534,7 +1534,7 @@ async function startHitchBinding({
     const body = content.match(FRONTMATTER_RE)?.[2] ?? content;
     let generated: string;
     try {
-      generated = await generateTitleViaClaude(buildTitlePrompt(seed, body));
+      generated = await generateTitleViaClaude(buildTitlePrompt(body));
     } catch (err) {
       await complete(cmd, "error", `title generation failed: ${String(err)}`);
       logger.info(
