@@ -192,6 +192,7 @@ function TodoBody({
   registerDismiss: (fn: (reason: string) => void) => void;
 }) {
   const requestDelegation = useMutation(api.chats.requestDelegation);
+  const enqueueGenerateTitle = useMutation(api.commands.enqueueGenerateTitle);
   // The document model. A fresh capture restores its localStorage recovery
   // draft if one exists (else opens empty); an existing todo (slice 5) seeds
   // from its file content and opens straight in "saved".
@@ -302,6 +303,15 @@ function TodoBody({
       await write(path, content);
     }
     void prependBacklog(path);
+    // Seed-then-upgrade auto-title: hand the daemon the seed so it can propose a
+    // better one. Skip one-line captures — with an empty body the title IS the
+    // whole task and must not be rewritten out from under the user. Fire-and-
+    // forget: a failed enqueue must never touch the save path.
+    if (split.body.trim() !== "") {
+      void enqueueGenerateTitle({ projectId, path, title }).catch((err) =>
+        console.error("Failed to enqueue title generation", err),
+      );
+    }
     // The capture succeeded — the recovery draft's job is done.
     clearCaptureDraft(projectId);
 
@@ -312,7 +322,7 @@ function TodoBody({
     setStage("saved");
     window.setTimeout(() => setTransforming(false), TRANSFORM_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, takenSlugs, write, beginGrow, projectId]);
+  }, [draft, takenSlugs, write, beginGrow, projectId, enqueueGenerateTitle]);
 
   // ─── Dismiss policy — the pure decision lives in dismissAction ─────────────
   // Capture-stage esc now ALWAYS closes instantly (Decision 4 amendment — the

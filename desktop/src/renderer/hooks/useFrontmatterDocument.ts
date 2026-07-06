@@ -18,6 +18,46 @@ function rawTitle(content: string): string {
   return match ? match[1].replace(/^ /, "") : "";
 }
 
+// Field-aware merge of an external write into a DIRTY draft. The user can only
+// edit two fields through the UI — the frontmatter `title` and the body — so
+// those are the only fields whose local edits we protect. Every OTHER frontmatter
+// key is machine-owned (chat-*, completed-at, chat-request…) and is ALWAYS taken
+// from the external write. That last part also closes a pre-existing hole: the
+// old all-or-nothing guard skipped a dirty editor's update entirely, so the
+// eventual whole-doc save on close clobbered any daemon frontmatter stamp landed
+// meanwhile (e.g. a chat binding). Now those keys ride through untouched.
+//
+// For title and body: keep the local value when the user changed it from the
+// last-synced baseline, else adopt the external value. The result is rebuilt from
+// the EXTERNAL frontmatter with the chosen title spliced in and the chosen body
+// appended — so machine keys stay current while the outstanding user edit(s)
+// survive. Crucially, when the body was locally edited the chosen body IS the
+// local body, byte-identical to the draft's current body, so the controlled
+// MarkdownEditor's `value` prop doesn't change and the Lexical body editor is not
+// reset out from under the typing user.
+export function mergeFrontmatterUpdate(input: {
+  local: string; // the current dirty draft
+  synced: string; // the baseline the draft was last reconciled against
+  external: string; // the incoming external content
+}): string {
+  const { local, synced, external } = input;
+
+  const titleEdited = rawTitle(local) !== rawTitle(synced);
+  const bodyEdited =
+    splitFrontmatter(local).body !== splitFrontmatter(synced).body;
+
+  const chosenTitle = titleEdited ? rawTitle(local) : rawTitle(external);
+  const chosenBody = bodyEdited
+    ? splitFrontmatter(local).body
+    : splitFrontmatter(external).body;
+
+  // Rebuild on the external frontmatter (machine keys always win); splice in the
+  // chosen title in place, then swap the body for the chosen one.
+  const withTitle = setFrontmatterKeys(external, { title: chosenTitle });
+  const { frontmatterBlock } = splitFrontmatter(withTitle);
+  return frontmatterBlock + chosenBody;
+}
+
 // The in-memory document model for a single open frontmatter markdown file. It
 // owns ONLY the document: the whole-file draft (frontmatter + body), the views
 // derived from it, the generic mutations that edit it, the dirty flag, and
@@ -47,7 +87,9 @@ export interface FrontmatterDocument {
   title: string;
   frontmatter: Frontmatter;
   // True when the draft diverges from the live file content. Baseline is the
-  // current `content` prop, so an adopted external write resets it to clean.
+  // current `content` prop: a wholesale adopt (clean editor) resets it to clean; a
+  // field-aware merge (dirty editor) leaves it dirty iff a user-edited field still
+  // differs from external.
   dirty: boolean;
   // Replace the body, recombining with the verbatim frontmatter block.
   setBody: (body: string) => void;
@@ -77,18 +119,28 @@ export function useFrontmatterDocument(content: string): FrontmatterDocument {
     setDraft(next);
   }
 
-  // Live-following: another writer (e.g. an agent, or the daemon honoring a
-  // direct disk edit) can edit the open file. Adopt the external change only
-  // when the user has no in-progress edits — never clobber a dirty editor. The
-  // human's draft wins on close (last-write-wins). Adoption is purely
-  // string-level: a controlled MarkdownEditor picks up the new body through its
-  // `value` prop on its own.
+  // Live-following: another writer (e.g. an agent, or the daemon auto-titling a
+  // task, or honoring a direct disk edit) can edit the open file. A clean editor
+  // adopts the external write wholesale. A DIRTY editor no longer drops the update
+  // — it merges per field (mergeFrontmatterUpdate): the user's outstanding title /
+  // body edits survive, while machine-owned frontmatter and the fields the user
+  // hasn't touched adopt the external value. Either way we rebase the dirty
+  // baseline onto the incoming content, so `dirty` stays coherent (the draft
+  // remains dirty iff a user-edited field still differs from external). Adoption
+  // is purely string-level: a controlled MarkdownEditor picks up a changed body
+  // through its `value` prop — and the merge keeps the body byte-identical when it
+  // was locally edited, so the editor isn't reset mid-type.
   useEffect(() => {
     if (content === syncedContentRef.current) return; // our own echo / mount
-    const userEdited = draftRef.current !== syncedContentRef.current;
+    const synced = syncedContentRef.current;
+    const local = draftRef.current;
+    const userEdited = local !== synced;
     syncedContentRef.current = content;
-    if (userEdited) return;
-    updateDraft(content);
+    if (!userEdited) {
+      updateDraft(content);
+      return;
+    }
+    updateDraft(mergeFrontmatterUpdate({ local, synced, external: content }));
   }, [content]);
 
   const frontmatter = parseFrontmatter(draft).frontmatter;
