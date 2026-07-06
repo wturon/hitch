@@ -59,7 +59,7 @@ try {
   await page.keyboard.type(title);
   await page.keyboard.press("Meta+Enter");
   // Saved stage: the title textarea now carries the crystallized first line.
-  const titleField = page.locator('textarea[aria-label="Todo title"]');
+  const titleField = page.locator('input[aria-label="Todo title"]');
   await titleField.waitFor({ timeout: 10000 });
   check("captures a todo (⌘⏎ → saved stage)", true);
 

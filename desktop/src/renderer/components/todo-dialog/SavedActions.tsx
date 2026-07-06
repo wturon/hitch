@@ -15,7 +15,8 @@ import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 
 // The saved-stage top-right chrome: the ⋯ overflow menu (Raw markdown · Copy
 // task path · Detach chat · Archive · Delete — the existing-todo menu, L-menu
-// artboard) and the ✕. Rendered above the title, never sharing its line (KRN-0).
+// artboard) and the ✕. Composes inline at the right end of the shell's header
+// row (TodoDialog), sharing the line with the de-emphasized title input.
 // Capture is chrome-free, so the shell mounts this only in the saved stage.
 // `onDetach` is present only when a chat is linked OR a request exists (nothing
 // to detach otherwise); it strips every chat-* frontmatter key (including the
@@ -38,7 +39,7 @@ export function SavedActions({
   onClose: () => void;
 }) {
   return (
-    <div className="absolute top-2.5 right-2.5 z-20 flex items-center gap-1">
+    <div className="flex shrink-0 items-center gap-1">
       <Menu>
         <MenuTrigger
           render={

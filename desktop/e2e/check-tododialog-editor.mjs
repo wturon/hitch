@@ -87,7 +87,7 @@ try {
   await editor.first().click();
   await page.keyboard.type(title);
   await page.keyboard.press("Meta+Enter");
-  const titleBoxNew = page.locator('textarea[aria-label="Todo title"]');
+  const titleBoxNew = page.locator('input[aria-label="Todo title"]');
   await titleBoxNew.waitFor({ timeout: 10000 });
   await page.waitForTimeout(300); // let the ~250ms transform window settle
   await shot(page, "td-01-dialog-open.png");
@@ -355,7 +355,7 @@ try {
   // ===================================================================
   // 8. Focus flows: Enter in title → body; click empty area → body end.
   // ===================================================================
-  const titleBox = page.locator('textarea[aria-label="Todo title"]');
+  const titleBox = page.locator('input[aria-label="Todo title"]');
   await titleBox.click();
   await page.waitForTimeout(100);
   await page.keyboard.press("Enter");
