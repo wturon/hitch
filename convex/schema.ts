@@ -189,7 +189,11 @@ export default defineSchema({
     projectId: v.id("projects"),
     host: v.optional(v.string()), // target machine; unset = any daemon for the project
     kind: v.string(), // "open-chat" (resume existing) | "start-chat" (spawn fresh) | "close-chat" | "generate-title" (auto-title a task)
-    harness: v.string(), // "claude-code" | "codex"
+    // "claude-code" | "codex". Set by launch kinds (the daemon resolves the
+    // launcher from it); unset for generate-title, where the daemon picks the
+    // CLI from the local text-generation preference at claim time and records
+    // the model actually used in `result`.
+    harness: v.optional(v.string()),
     // Pins the environment that owns the live chat (from the task's chat-env),
     // overriding the daemon's current launcher preference. close-chat needs
     // this: closing targets the tab that exists, not the preferred opener.

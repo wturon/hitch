@@ -153,9 +153,8 @@ export const enqueueGenerateTitle = mutation({
     return await ctx.db.insert("commands", {
       projectId: access.project._id,
       kind: "generate-title",
-      // generate-title always shells out to `claude`; the column is required and
-      // the daemon ignores it for this kind.
-      harness: "claude-code",
+      // No harness: the daemon picks the CLI from the local text-generation
+      // preference at claim time and records the model used in `result`.
       path: args.path,
       linkedType: "task",
       linkedPath: args.path,
