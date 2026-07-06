@@ -8,53 +8,73 @@ import {
   type Frontmatter,
 } from "@/lib/frontmatter";
 
-// Read the frontmatter `title` WITHOUT trimming. The title input is controlled by
-// this value, and `parseFrontmatter` trims — so a trailing space the user just
+// Read a frontmatter key's value WITHOUT trimming. The title input is controlled
+// by this value, and `parseFrontmatter` trims — so a trailing space the user just
 // typed would be stripped on the round-trip, making the spacebar look broken in
-// the title. Reading the raw line (minus the single separator space) preserves it.
-function rawTitle(content: string): string {
+// the title. Reading the raw line (minus the single separator space) preserves
+// it. Generalized over `key` so the merge below applies the same untrimmed
+// comparison to every caller-declared user-owned key.
+function rawKeyValue(content: string, key: string): string {
   const { frontmatterBlock } = splitFrontmatter(content);
-  const match = frontmatterBlock.match(/^title:(.*)$/m);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = frontmatterBlock.match(new RegExp(`^${escaped}:(.*)$`, "m"));
   return match ? match[1].replace(/^ /, "") : "";
 }
 
-// Field-aware merge of an external write into a DIRTY draft. The user can only
-// edit two fields through the UI — the frontmatter `title` and the body — so
-// those are the only fields whose local edits we protect. Every OTHER frontmatter
-// key is machine-owned (chat-*, completed-at, chat-request…) and is ALWAYS taken
-// from the external write. That last part also closes a pre-existing hole: the
-// old all-or-nothing guard skipped a dirty editor's update entirely, so the
-// eventual whole-doc save on close clobbered any daemon frontmatter stamp landed
-// meanwhile (e.g. a chat binding). Now those keys ride through untouched.
+function rawTitle(content: string): string {
+  return rawKeyValue(content, "title");
+}
+
+// Field-aware merge of an external write into a DIRTY draft. The contract:
+// callers DECLARE which frontmatter keys their UI lets the user edit
+// (`userOwnedKeys` — ["title"] for tasks, ["title", "type"] for notes); the body
+// is always user-owned. Everything NOT declared is machine-owned (chat-*,
+// completed-at, chat-request…) and is ALWAYS taken from the external write. That
+// last part also closes a pre-existing hole: the old all-or-nothing guard skipped
+// a dirty editor's update entirely, so the eventual whole-doc save on close
+// clobbered any daemon frontmatter stamp landed meanwhile (e.g. a chat binding).
+// Now those keys ride through untouched.
 //
-// For title and body: keep the local value when the user changed it from the
-// last-synced baseline, else adopt the external value. The result is rebuilt from
-// the EXTERNAL frontmatter with the chosen title spliced in and the chosen body
-// appended — so machine keys stay current while the outstanding user edit(s)
-// survive. Crucially, when the body was locally edited the chosen body IS the
-// local body, byte-identical to the draft's current body, so the controlled
-// MarkdownEditor's `value` prop doesn't change and the Lexical body editor is not
-// reset out from under the typing user.
+// Per user-owned field: keep the local value only when the user actually edited
+// it from the last-synced baseline, else adopt the external value. The result is
+// rebuilt from the EXTERNAL frontmatter with only the *edited* user keys spliced
+// back in and the chosen body appended — so machine keys stay current while
+// outstanding user edits survive. Crucially, when the body was locally edited the
+// chosen body IS the local body, byte-identical to the draft's current body, so
+// the controlled MarkdownEditor's `value` prop doesn't change and the Lexical
+// body editor is not reset out from under the typing user.
 export function mergeFrontmatterUpdate(input: {
   local: string; // the current dirty draft
   synced: string; // the baseline the draft was last reconciled against
   external: string; // the incoming external content
+  // The frontmatter keys the caller's UI lets the user edit. Only these can hold
+  // a protected local edit; every other key adopts external unconditionally.
+  userOwnedKeys: readonly string[];
 }): string {
-  const { local, synced, external } = input;
+  const { local, synced, external, userOwnedKeys } = input;
 
-  const titleEdited = rawTitle(local) !== rawTitle(synced);
   const bodyEdited =
     splitFrontmatter(local).body !== splitFrontmatter(synced).body;
-
-  const chosenTitle = titleEdited ? rawTitle(local) : rawTitle(external);
   const chosenBody = bodyEdited
     ? splitFrontmatter(local).body
     : splitFrontmatter(external).body;
 
-  // Rebuild on the external frontmatter (machine keys always win); splice in the
-  // chosen title in place, then swap the body for the chosen one.
-  const withTitle = setFrontmatterKeys(external, { title: chosenTitle });
-  const { frontmatterBlock } = splitFrontmatter(withTitle);
+  // A user-owned key is kept local only if it was actually edited (local ≠
+  // synced for that key). An untouched key isn't spliced at all, so it adopts
+  // whatever the external frontmatter carries — including absence. A locally-
+  // cleared key splices "", which setFrontmatterKeys drops, honoring the removal.
+  const editedKeys: Record<string, string> = {};
+  for (const key of userOwnedKeys) {
+    const localValue = rawKeyValue(local, key);
+    if (localValue !== rawKeyValue(synced, key)) editedKeys[key] = localValue;
+  }
+
+  // Rebuild on the external frontmatter (machine keys always win); splice the
+  // edited user keys back in place, then swap the body for the chosen one.
+  const withEdits = Object.keys(editedKeys).length
+    ? setFrontmatterKeys(external, editedKeys)
+    : external;
+  const { frontmatterBlock } = splitFrontmatter(withEdits);
   return frontmatterBlock + chosenBody;
 }
 
@@ -65,7 +85,11 @@ export function mergeFrontmatterUpdate(input: {
 // (Convex), any dialog's close policy, or the editor component.
 //
 // This is the primitive-agnostic core shared by tasks and notes. Task-only
-// machinery (chat-* selectors, clearChat) layers on top in useTaskDraft.
+// machinery (chat-* selectors, clearChat) layers on top in useTaskDraft. The one
+// piece of per-caller policy the hook needs is which frontmatter keys the user
+// can edit through the caller's UI (options.userOwnedKeys) — those are protected
+// through a dirty merge; every other key is machine-owned and always adopts an
+// external write.
 //
 // `content` is the live file text from the query. The hook is mounted fresh per
 // document (the editor is keyed by path), so `useState(() => content)` is the
@@ -104,7 +128,23 @@ export interface FrontmatterDocument {
   setFrontmatter: (updates: Record<string, string | undefined>) => string;
 }
 
-export function useFrontmatterDocument(content: string): FrontmatterDocument {
+export interface FrontmatterDocumentOptions {
+  // The frontmatter keys this document's UI lets the user edit — the fields the
+  // dirty-merge protects (see mergeFrontmatterUpdate). Tasks declare ["title"];
+  // notes declare ["title", "type"] (the type pill). Defaults to ["title"], the
+  // one key the hook itself edits via setTitle; callers with more user-editable
+  // frontmatter MUST declare it or a dirty merge will adopt external over the
+  // user's in-progress edit.
+  userOwnedKeys?: readonly string[];
+}
+
+const DEFAULT_USER_OWNED_KEYS: readonly string[] = ["title"];
+
+export function useFrontmatterDocument(
+  content: string,
+  options?: FrontmatterDocumentOptions,
+): FrontmatterDocument {
+  const userOwnedKeys = options?.userOwnedKeys ?? DEFAULT_USER_OWNED_KEYS;
   const [draft, setDraft] = useState(() => content);
 
   // `draftRef` mirrors `draft` synchronously so mutations and the external-edit
@@ -119,17 +159,24 @@ export function useFrontmatterDocument(content: string): FrontmatterDocument {
     setDraft(next);
   }
 
+  // Mirror the declared user-owned keys so the adoption effect (deps: [content])
+  // always merges with the caller's latest declaration, even when it's an inline
+  // array literal recreated every render.
+  const userOwnedKeysRef = useRef(userOwnedKeys);
+  userOwnedKeysRef.current = userOwnedKeys;
+
   // Live-following: another writer (e.g. an agent, or the daemon auto-titling a
   // task, or honoring a direct disk edit) can edit the open file. A clean editor
   // adopts the external write wholesale. A DIRTY editor no longer drops the update
-  // — it merges per field (mergeFrontmatterUpdate): the user's outstanding title /
-  // body edits survive, while machine-owned frontmatter and the fields the user
-  // hasn't touched adopt the external value. Either way we rebase the dirty
-  // baseline onto the incoming content, so `dirty` stays coherent (the draft
-  // remains dirty iff a user-edited field still differs from external). Adoption
-  // is purely string-level: a controlled MarkdownEditor picks up a changed body
-  // through its `value` prop — and the merge keeps the body byte-identical when it
-  // was locally edited, so the editor isn't reset mid-type.
+  // — it merges per field (mergeFrontmatterUpdate): the user's outstanding edits
+  // to the body and the declared user-owned keys survive, while machine-owned
+  // frontmatter and the fields the user hasn't touched adopt the external value.
+  // Either way we rebase the dirty baseline onto the incoming content, so `dirty`
+  // stays coherent (the draft remains dirty iff a user-edited field still differs
+  // from external). Adoption is purely string-level: a controlled MarkdownEditor
+  // picks up a changed body through its `value` prop — and the merge keeps the
+  // body byte-identical when it was locally edited, so the editor isn't reset
+  // mid-type.
   useEffect(() => {
     if (content === syncedContentRef.current) return; // our own echo / mount
     const synced = syncedContentRef.current;
@@ -140,7 +187,14 @@ export function useFrontmatterDocument(content: string): FrontmatterDocument {
       updateDraft(content);
       return;
     }
-    updateDraft(mergeFrontmatterUpdate({ local, synced, external: content }));
+    updateDraft(
+      mergeFrontmatterUpdate({
+        local,
+        synced,
+        external: content,
+        userOwnedKeys: userOwnedKeysRef.current,
+      }),
+    );
   }, [content]);
 
   const frontmatter = parseFrontmatter(draft).frontmatter;

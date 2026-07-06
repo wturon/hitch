@@ -850,7 +850,13 @@ function NoteEditor({
   onDelete: (slug: string) => void;
   onClose: () => void;
 }) {
-  const draft = useFrontmatterDocument(content);
+  // Notes let the user edit two frontmatter keys — the title (textarea below)
+  // and `type` (the TypePill → commitType). Declaring both keeps a dirty merge
+  // from adopting an external value over an in-progress edit to either; all
+  // other keys stay machine-owned (see mergeFrontmatterUpdate).
+  const draft = useFrontmatterDocument(content, {
+    userOwnedKeys: ["title", "type"],
+  });
   const attachments = useAttachments({ projectId, slug, base: "notes" });
   // Installed skills for the `/` menu's Skills section (see useSkills).
   const skills = useSkills(projectId);
