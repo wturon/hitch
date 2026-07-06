@@ -84,10 +84,12 @@ export interface ExistingTodo {
 //     instantly; any typed text is preserved as a recovery draft (see
 //     captureDraft.ts) rather than guarded behind a second esc.
 //   • saved — the same card grown downward: the captured text becomes the body
-//     verbatim, a seed title (its first ~6 words) is stamped into the 18px title
-//     line, and the coaching strip becomes the docked delegation panel. Start is
-//     fire-and-forget. (Capture text is sacred; the title is additive metadata —
-//     nothing is ever carved out of the body. See transform.)
+//     verbatim, a seed title (its first ~6 words) is stamped into the slim
+//     header row's small muted title input (window chrome, not content — the
+//     body stays the card's largest, darkest element), and the coaching strip
+//     becomes the docked delegation panel. Start is fire-and-forget. (Capture
+//     text is sacred; the title is additive metadata — nothing is ever carved
+//     out of the body. See transform.)
 //
 // This shell owns the single `stage` state (the PRD's one-component contract),
 // the esc/dismiss routing, and the transform orchestration; the pieces live
@@ -255,6 +257,14 @@ function TodoBody({
 }: TodoBodyProps) {
   const requestDelegation = useMutation(api.chats.requestDelegation);
   const enqueueGenerateTitle = useMutation(api.commands.enqueueGenerateTitle);
+  // "Focus claims ownership" of the title (the seed→generated race guard): once
+  // the header's title input has been FOCUSED in this dialog session, title
+  // generation forfeits permanently — the draft claims `title`, so the daemon's
+  // incoming generated title is never adopted, even into a clean draft (it would
+  // swap the text under the user's cursor). The claim keeps the draft dirty, so
+  // the close-time save writes the user's/seed title back to disk — which the
+  // daemon-side seed guard already tolerates.
+  const titleClaimedRef = useRef(false);
   // The document model. Two seeds, chosen once at mount (this component is keyed
   // by session, so mount == a fresh open):
   //   • create — no `existing`, so it restores the localStorage recovery draft
@@ -270,6 +280,7 @@ function TodoBody({
   // single source of truth: once persisted, the document follows the live query.
   const draft = useTaskDraft(
     existing?.content ?? loadCaptureDraft(projectId) ?? "",
+    { claimedKeys: () => (titleClaimedRef.current ? ["title"] : []) },
   );
 
   const [stage, setStage] = useState<Stage>(existing ? "saved" : "capture");
@@ -313,7 +324,6 @@ function TodoBody({
   const skills = useSkills(projectId);
 
   const editorRef = useRef<MarkdownEditorHandle>(null);
-  const titleRef = useRef<HTMLTextAreaElement>(null);
   const rawRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -653,20 +663,53 @@ function TodoBody({
         ref={cardRef}
         className="flex max-h-[76vh] flex-col overflow-hidden rounded-xl border border-[#E4E4E4] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.16)] transition-[height] duration-[250ms] ease-out dark:border-border dark:bg-card"
       >
-        {/* ⋯ / ✕ — saved stage only (capture is chrome-free). Above the title. */}
+        {/* Header row — saved stage only (capture is chrome-free). The title is
+            machine-generated metadata (a seed upgraded ~5s later by the daemon's
+            generate-title pipeline), so it's presented as window chrome: small,
+            muted, single-line, inline with the ⋯/✕ — the BODY is the card's
+            largest, darkest element. The seed→generated swap is a quiet in-place
+            value change, no transition. In the raw view the title is edited
+            inside the raw text, so the input yields to a spacer (two controlled
+            editors of the same key on screen would be confusing) and only ⋯/✕
+            remain, right-aligned. */}
         {stage === "saved" && (
-          <SavedActions
-            view={view}
-            onToggleView={() => setView(view === "raw" ? "formatted" : "raw")}
-            onCopyPath={copyPath}
-            // Detach shows only when there's a chat or a request to detach.
-            onDetach={
-              draft.chat || draft.request ? () => void detachChat() : undefined
-            }
-            onArchive={() => void archive()}
-            onDelete={del}
-            onClose={() => dismiss("close-press")}
-          />
+          <div className="flex items-center gap-2 pt-2.5 pr-2.5 pl-5">
+            {view === "raw" ? (
+              <div className="flex-1" />
+            ) : (
+              <input
+                aria-label="Todo title"
+                value={draft.title}
+                onChange={(e) => draft.setTitle(e.target.value)}
+                // Focus claims the title for this session (see titleClaimedRef):
+                // from here on the daemon's generated title is never adopted.
+                onFocus={() => (titleClaimedRef.current = true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    editorRef.current?.focusStart();
+                  }
+                }}
+                placeholder="Untitled"
+                spellCheck={false}
+                className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-[13px] font-medium leading-4 text-muted-foreground outline-none transition-colors hover:text-foreground focus:text-foreground placeholder:text-muted-foreground/40"
+              />
+            )}
+            <SavedActions
+              view={view}
+              onToggleView={() => setView(view === "raw" ? "formatted" : "raw")}
+              onCopyPath={copyPath}
+              // Detach shows only when there's a chat or a request to detach.
+              onDetach={
+                draft.chat || draft.request
+                  ? () => void detachChat()
+                  : undefined
+              }
+              onArchive={() => void archive()}
+              onDelete={del}
+              onClose={() => dismiss("close-press")}
+            />
+          </div>
         )}
 
         <TodoEditorArea
@@ -674,7 +717,6 @@ function TodoBody({
           view={view}
           draft={draft}
           editorRef={editorRef}
-          titleRef={titleRef}
           rawRef={rawRef}
           attachments={attachments}
           skills={skills}

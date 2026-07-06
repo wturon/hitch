@@ -10,15 +10,16 @@ import {
 
 // The dialog's document area across BOTH stages. One MarkdownEditor instance
 // serves capture and saved (it must never remount on the stage flip — focus,
-// caret, and undo history ride through the transform); the title textarea and
-// the raw view exist only once saved. Scrolls near the viewport cap while the
-// shell pins the footer below.
+// caret, and undo history ride through the transform); the raw view exists only
+// once saved. The title lives in the shell's header row (TodoDialog), not here —
+// it's window chrome, not content, so the body is the document area's largest,
+// darkest element. Scrolls near the viewport cap while the shell pins the
+// footer below.
 export function TodoEditorArea({
   stage,
   view,
   draft,
   editorRef,
-  titleRef,
   rawRef,
   attachments,
   skills,
@@ -27,7 +28,6 @@ export function TodoEditorArea({
   view: "raw" | "formatted";
   draft: TaskDraft;
   editorRef: React.RefObject<MarkdownEditorHandle | null>;
-  titleRef: React.RefObject<HTMLTextAreaElement | null>;
   rawRef: React.RefObject<HTMLTextAreaElement | null>;
   attachments: ReturnType<typeof useAttachments>;
   skills: ReadonlyArray<SkillMenuItem>;
@@ -35,41 +35,27 @@ export function TodoEditorArea({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       {view === "raw" && stage === "saved" ? (
+        // pt-4 only: the ⋯/✕ header row sits above in normal flow (it used to
+        // float absolutely, which this textarea's old pt-10 cleared).
         <textarea
           ref={rawRef}
           aria-label="Todo content"
           value={draft.raw}
           onChange={(e) => draft.setRaw(e.target.value)}
           spellCheck={false}
-          className="hitch-autosize min-h-[180px] w-full shrink-0 resize-none overflow-hidden bg-transparent px-5 pt-10 pb-4 font-mono text-xs leading-relaxed outline-none"
+          className="hitch-autosize min-h-[180px] w-full shrink-0 resize-none overflow-hidden bg-transparent px-5 pt-4 pb-4 font-mono text-xs leading-relaxed outline-none"
         />
       ) : (
         <div className="flex flex-col px-5">
-          {stage === "saved" && (
-            <textarea
-              ref={titleRef}
-              aria-label="Todo title"
-              rows={1}
-              value={draft.title}
-              onChange={(e) => draft.setTitle(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  editorRef.current?.focusStart();
-                }
-              }}
-              placeholder="Untitled"
-              spellCheck={false}
-              className="hitch-autosize mt-10 mb-2 w-full shrink-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-[18px] font-semibold leading-6 tracking-[-0.01em] text-[#0B0B0B] outline-none placeholder:text-muted-foreground/40 dark:text-foreground"
-            />
-          )}
           {/* Capture keeps the card tiny: `hitch-capture-compact` lowers the
               editor's 180px min-height floor to JV0-0's compact proportions
               (see styles.css); the saved stage is a document and keeps the
-              default. */}
+              default, sitting pt-3 below the shell's header row. */}
           <div
             className={
-              stage === "capture" ? "hitch-capture-compact pt-5 pb-3" : "pb-4"
+              stage === "capture"
+                ? "hitch-capture-compact pt-5 pb-3"
+                : "pt-3 pb-4"
             }
           >
             <MarkdownEditor

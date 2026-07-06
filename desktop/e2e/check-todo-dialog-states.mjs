@@ -95,7 +95,7 @@ try {
 
   // --- Deliverable 1: a row opens the TodoDialog in the SAVED stage --------
   await row.click();
-  const titleBox = page.locator('textarea[aria-label="Todo title"]');
+  const titleBox = page.locator('input[aria-label="Todo title"]');
   await titleBox.waitFor({ timeout: 10000 });
   const openedTitle = await titleBox.inputValue();
   check(

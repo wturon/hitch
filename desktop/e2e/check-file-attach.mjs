@@ -75,7 +75,7 @@ try {
   await page.keyboard.type(title);
   await page.keyboard.press("Meta+Enter");
   await page
-    .locator('textarea[aria-label="Todo title"]')
+    .locator('input[aria-label="Todo title"]')
     .waitFor({ timeout: 10000 });
   check("opens todo dialog", true);
 
