@@ -82,6 +82,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { Toaster } from "@/components/ui/sonner";
+import { showUndoableToast, useUndoHotkey } from "@/lib/undoToast";
 
 interface HitchBinding {
   projectId: Id<"projects">;
@@ -719,6 +720,7 @@ function WorkspaceContent({
   // attachment rows so the daemon cleans up the local files + empty folders.
   const attachments = useQuery(api.attachments.listAttachments, { projectId });
   const tombstoneAttachment = useMutation(api.attachments.tombstoneAttachment);
+  const registerAttachment = useMutation(api.attachments.registerAttachment);
   // Backlog manual order — read for the uncheck→backlog-top prepend (slice 5,
   // Decision 8). Whole-list-replace with an optimistic patch so the row lands at
   // the top instantly (same pattern TodosView uses for drag reorders).
@@ -1124,6 +1126,20 @@ function WorkspaceContent({
         console.error("Failed to enqueue close-chat for done todo", err),
       );
     }
+    // Offer an undo: a done row drops to the bottom of a truncated DONE group,
+    // so an accidental check is a pain to walk back by hand. Undo re-runs this
+    // with completed=false — which also re-pins the row to the top of Backlog
+    // (above) and, because the close-chat command re-checks `linkedPath` at
+    // execution, a quick undo can still cancel the tab close before it fires
+    // (PR #68). Only manual checks reach here, so an agent finishing its own
+    // task never triggers a toast.
+    if (completed) {
+      showUndoableToast({
+        message: "Task marked done",
+        description: todo.chat ? "Its chat is closing." : undefined,
+        undo: () => void setTodoCompleted(todo, false),
+      });
+    }
   }
 
   // Unarchive a todo: clear its `archived-at:` timestamp so the derivation
@@ -1156,20 +1172,91 @@ function WorkspaceContent({
     );
   }
 
-  // Delete a todo folder by slug (attachments + task.md tombstone). Used by the
-  // capture dialog's discard-cleanup of a pasted-early draft (Decision 3), its
-  // ⋯ Delete action, and the archived sheet's per-row Delete.
+  // Delete a todo folder by slug (attachments + task.md tombstone). The raw,
+  // silent delete — used by the capture dialog's discard-cleanup of a
+  // pasted-early draft (Decision 3), which is an intentional throwaway, not a
+  // "you deleted a task" the user would want to undo.
   async function deleteTodo(slug: string) {
     await cascadeDeleteAttachments(slug);
     const path = taskBodyPath(slug);
     await upsertFile({ projectId, path, content: "", hash: "", deleted: true });
   }
 
-  // Delete every archived todo in one shot. Fires the tombstones concurrently
-  // through the same path `deleteTodo` uses; the optimistic update drops each
-  // row immediately.
+  // Everything needed to bring a deleted todo/note back: its file content plus
+  // the attachment rows that were tombstoned. Tombstoning drops the local blob
+  // but leaves the server blob (GC is out of scope), so re-registering the same
+  // storageId re-points at it — the undo is lossless within the toast window.
+  type DeletedSnapshot = {
+    path: string;
+    content: string;
+    attachments: NonNullable<typeof attachments>;
+  };
+
+  function snapshotTodo(slug: string): DeletedSnapshot {
+    const path = taskBodyPath(slug);
+    const file = files?.find((f) => f.path === path && !f.deleted);
+    const prefix = `tasks/${slug}/attachments/`;
+    return {
+      path,
+      content: file?.content ?? "",
+      attachments: (attachments ?? []).filter(
+        (row) => !row.deleted && row.path.startsWith(prefix),
+      ),
+    };
+  }
+
+  async function restoreDeleted(snap: DeletedSnapshot) {
+    await upsertFile({
+      projectId,
+      path: snap.path,
+      content: snap.content,
+      hash: await sha256(snap.content),
+      deleted: false,
+    });
+    await Promise.all(
+      snap.attachments.map((row) =>
+        registerAttachment({
+          projectId,
+          path: row.path,
+          storageId: row.storageId,
+          hash: row.hash,
+          contentType: row.contentType,
+          size: row.size,
+        }),
+      ),
+    );
+  }
+
+  // The user-facing todo delete (⋯ Delete, archived sheet row): snapshot first,
+  // tombstone, then offer an undo. Distinct from `deleteTodo` so the silent
+  // discard-cleanup path stays toast-free.
+  async function deleteTodoWithUndo(slug: string) {
+    const snap = snapshotTodo(slug);
+    await deleteTodo(slug);
+    showUndoableToast({
+      message: "Task deleted",
+      undo: () =>
+        void restoreDeleted(snap).catch((err) =>
+          console.error("Failed to restore deleted todo", err),
+        ),
+    });
+  }
+
+  // Delete every archived todo in one shot. Snapshots them all first so a single
+  // undo restores the whole batch; the optimistic tombstones drop each row
+  // immediately.
   async function deleteAllArchived() {
+    const snaps = archivedTodos.map((todo) => snapshotTodo(todo.slug));
     await Promise.all(archivedTodos.map((todo) => deleteTodo(todo.slug)));
+    if (snaps.length) {
+      showUndoableToast({
+        message: `${snaps.length} task${snaps.length > 1 ? "s" : ""} deleted`,
+        undo: () =>
+          void Promise.all(snaps.map(restoreDeleted)).catch((err) =>
+            console.error("Failed to restore deleted todos", err),
+          ),
+      });
+    }
   }
 
   // Command palette (⌘K) data + actions. Active-project scoped: its task/note
@@ -1469,7 +1556,7 @@ function WorkspaceContent({
             onWriteTodo={(path, content) =>
               void materializeDraftFile(path, content)
             }
-            onDeleteTodo={(slug) => void deleteTodo(slug)}
+            onDeleteTodo={(slug) => void deleteTodoWithUndo(slug)}
           />
         )}
 
@@ -1478,7 +1565,7 @@ function WorkspaceContent({
           onOpenChange={setShowArchived}
           todos={archivedTodos}
           onUnarchive={(todo) => void unarchiveTodo(todo)}
-          onDelete={(todo) => void deleteTodo(todo.slug)}
+          onDelete={(todo) => void deleteTodoWithUndo(todo.slug)}
           onDeleteAll={() => void deleteAllArchived()}
         />
 
@@ -1506,6 +1593,7 @@ function WorkspaceContent({
           onClose={() => setTodoCaptureOpen(false)}
           onWrite={materializeDraftFile}
           onDeleteTodo={deleteTodo}
+          onUserDeleteTodo={(slug) => void deleteTodoWithUndo(slug)}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
           onManageHarnesses={() => openGlobalSettings("harnesses")}
         />
@@ -1531,6 +1619,7 @@ function WorkspaceContent({
           onClose={() => setOpenTodoPath(null)}
           onWrite={materializeDraftFile}
           onDeleteTodo={deleteTodo}
+          onUserDeleteTodo={(slug) => void deleteTodoWithUndo(slug)}
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
           onManageHarnesses={() => openGlobalSettings("harnesses")}
         />
@@ -1574,6 +1663,10 @@ function WorkspaceContent({
 }
 
 export default function AppRoot() {
+  // ⌘Z fires the undo of whatever undoable toast is currently showing (done
+  // check, delete). Mounted here so it's live across every view; it's inert
+  // unless a toast is up (see useUndoHotkey).
+  useUndoHotkey();
   return (
     <>
       <AuthenticatedWorkspace />

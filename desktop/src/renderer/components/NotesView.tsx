@@ -54,6 +54,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { showUndoableToast } from "@/lib/undoToast";
 
 // A note is a folder under notes/, its body in index.md. This is the in-memory
 // model the index renders, mirroring the board's Card. `content` is the raw
@@ -340,6 +341,8 @@ export function NotesView({
     }
   }
 
+  // Raw, silent delete — used by flushDoc's empty-note auto-discard (an
+  // abandoned blank note is a throwaway, not a "you deleted a note" to undo).
   async function deleteDoc(slug: string) {
     setPendingSlug(slug);
     try {
@@ -354,6 +357,43 @@ export function NotesView({
     } finally {
       setPendingSlug(null);
     }
+  }
+
+  // The user-facing note delete (index row, editor ⋯ Delete, archived sheet):
+  // note delete today has no confirmation and cascades attachment tombstones, so
+  // do-then-undo is the safety net. Snapshot the body + attachment rows before
+  // tombstoning; undo re-writes the body and re-registers each attachment
+  // against its surviving server blob (GC is out of scope).
+  async function deleteDocWithUndo(slug: string) {
+    const path = noteBodyPath(slug);
+    const file = files.find((f) => f.path === path && !f.deleted);
+    const content = file?.content ?? "";
+    const prefix = `notes/${slug}/attachments/`;
+    const revivable = (attachments ?? []).filter(
+      (row) => !row.deleted && row.path.startsWith(prefix),
+    );
+    await deleteDoc(slug);
+    showUndoableToast({
+      message: "Note deleted",
+      undo: () =>
+        void (async () => {
+          await persist(path, content);
+          await Promise.all(
+            revivable.map((row) =>
+              registerAttachment({
+                projectId,
+                path: row.path,
+                storageId: row.storageId,
+                hash: row.hash,
+                contentType: row.contentType,
+                size: row.size,
+              }),
+            ),
+          );
+        })().catch((err) =>
+          console.error("Failed to restore deleted note", err),
+        ),
+    });
   }
 
   // Open a note from the index. Flushing the (possibly) outgoing draft first is a
@@ -389,7 +429,7 @@ export function NotesView({
         onOpen={openDoc}
         onCreate={(title) => void createNote(title)}
         onArchive={(doc) => void setArchived(doc, true)}
-        onDelete={(doc) => void deleteDoc(doc.slug)}
+        onDelete={(doc) => void deleteDocWithUndo(doc.slug)}
         onExit={onExit}
       />
 
@@ -410,7 +450,7 @@ export function NotesView({
               setFrontmatterKeys(content, { archived: "true" }),
             )
           }
-          onDelete={(slug) => void deleteDoc(slug)}
+          onDelete={(slug) => void deleteDocWithUndo(slug)}
           onClose={() => setSelectedSlug(null)}
         />
       )}
@@ -421,7 +461,7 @@ export function NotesView({
         docs={archivedDocs}
         pendingSlug={pendingSlug}
         onUnarchive={(doc) => void setArchived(doc, false)}
-        onDelete={(doc) => void deleteDoc(doc.slug)}
+        onDelete={(doc) => void deleteDocWithUndo(doc.slug)}
       />
     </div>
   );
