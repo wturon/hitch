@@ -11,10 +11,6 @@ type Chat = Doc<"chats">;
 type Harness = Chat["harness"];
 type LinkedType = NonNullable<Chat["linkedType"]>;
 
-const DEFAULT_HOME_LIMIT = 20;
-const DEFAULT_PINNED_LIMIT = 20;
-const DEFAULT_HISTORY_LIMIT = 100;
-const MAX_LIMIT = 250;
 const MAX_TITLE_LENGTH = 72;
 const DEFAULT_COMMAND_TTL_MS = 5 * 60 * 1000;
 
@@ -46,12 +42,6 @@ const resumeKindValidator = v.union(
   v.literal("external"),
 );
 
-function clampLimit(value: number | undefined, fallback: number) {
-  if (value === undefined) return fallback;
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(1, Math.min(MAX_LIMIT, Math.floor(value)));
-}
-
 function isDeleted(chat: Chat) {
   return chat.deletedAt !== undefined;
 }
@@ -60,64 +50,8 @@ function isArchived(chat: Chat) {
   return chat.archivedAt !== undefined;
 }
 
-function isPinned(chat: Chat) {
-  return chat.pinned === true;
-}
-
-function isRunning(chat: Chat) {
-  return chat.status === "working";
-}
-
-function runningRank(chat: Chat) {
-  if (chat.status === "working") return 0;
-  if (chat.status === "needs-input") return 1;
-  return 2;
-}
-
 function eventTime(chat: Chat) {
   return Math.max(chat.lastEventAt, chat.updatedAt);
-}
-
-function comparePinned(a: Chat, b: Chat) {
-  const byPinnedAt = (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
-  if (byPinnedAt !== 0) return byPinnedAt;
-  return eventTime(b) - eventTime(a);
-}
-
-function compareRunningFirst(a: Chat, b: Chat) {
-  const byStatus = runningRank(a) - runningRank(b);
-  if (byStatus !== 0) return byStatus;
-  return eventTime(b) - eventTime(a);
-}
-
-function compareArchived(a: Chat, b: Chat) {
-  const byArchivedAt = (b.archivedAt ?? 0) - (a.archivedAt ?? 0);
-  if (byArchivedAt !== 0) return byArchivedAt;
-  return eventTime(b) - eventTime(a);
-}
-
-function searchableText(chat: Chat) {
-  return [
-    chat.title,
-    chat.harness,
-    chat.status,
-    chat.chatId,
-    chat.launchId,
-    chat.cwd,
-    chat.host,
-    chat.environment,
-    chat.linkedType,
-    chat.linkedPath,
-  ]
-    .filter((part): part is string => typeof part === "string")
-    .join(" ")
-    .toLowerCase();
-}
-
-function matchesSearch(chat: Chat, search: string | undefined) {
-  const needle = search?.trim().toLowerCase();
-  if (!needle) return true;
-  return searchableText(chat).includes(needle);
 }
 
 function normalizeTitle(value: string | undefined, harness: Harness) {
@@ -303,34 +237,6 @@ async function projectChats(
     .collect();
 }
 
-export const listHome = query({
-  args: {
-    projectId: v.id("projects"),
-    search: v.optional(v.string()),
-    pinnedLimit: v.optional(v.number()),
-    recentLimit: v.optional(v.number()),
-    deviceToken: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const rows = await projectChats(ctx, args);
-    const active = rows.filter(
-      (chat) =>
-        !isDeleted(chat) && !isArchived(chat) && matchesSearch(chat, args.search),
-    );
-    const pinnedLimit = clampLimit(args.pinnedLimit, DEFAULT_PINNED_LIMIT);
-    const recentLimit = clampLimit(args.recentLimit, DEFAULT_HOME_LIMIT);
-
-    return {
-      runningCount: active.filter(isRunning).length,
-      pinned: active.filter(isPinned).sort(comparePinned).slice(0, pinnedLimit),
-      recent: active
-        .filter((chat) => !isPinned(chat))
-        .sort(compareRunningFirst)
-        .slice(0, recentLimit),
-    };
-  },
-});
-
 // The single chat linked to a given doc (a note's index.md or a task's task.md),
 // or null. Backed by the `by_link` index so the note foot can ask exactly "does
 // this doc own a chat?" without scraping a recency-truncated home list — the
@@ -367,59 +273,11 @@ export const getChatByLink = query({
   },
 });
 
-export const listHistory = query({
-  args: {
-    projectId: v.id("projects"),
-    search: v.optional(v.string()),
-    limit: v.optional(v.number()),
-    archivedLimit: v.optional(v.number()),
-    deviceToken: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const rows = (await projectChats(ctx, args)).filter(
-      (chat) => !isDeleted(chat) && matchesSearch(chat, args.search),
-    );
-    const limit = clampLimit(args.limit, DEFAULT_HISTORY_LIMIT);
-    const archivedLimit = clampLimit(args.archivedLimit, DEFAULT_HISTORY_LIMIT);
-
-    const active = rows.filter((chat) => !isArchived(chat));
-    return {
-      pinned: active.filter(isPinned).sort(comparePinned).slice(0, limit),
-      all: active
-        .filter((chat) => !isPinned(chat))
-        .sort(compareRunningFirst)
-        .slice(0, limit),
-      archived: rows.filter(isArchived).sort(compareArchived).slice(0, archivedLimit),
-    };
-  },
-});
-
-export const getChat = query({
-  args: {
-    id: v.id("chats"),
-    projectId: v.id("projects"),
-    deviceToken: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const access = await requireProjectAccess(
-      ctx,
-      args.projectId,
-      args.deviceToken,
-    );
-    if (!access.project) throw new Error("Project does not exist");
-    const chat = await ctx.db.get(args.id);
-    if (!chat || chat.projectId !== access.project._id || isDeleted(chat)) {
-      return null;
-    }
-    return chat;
-  },
-});
-
 // The live-chat index feed for the Todos derivation (lib/todos.ts
 // indexChats/resolveChatState): every bound, non-deleted chat in the project,
-// projected down to the five fields the derivation reads. Unlike
-// listHome/listHistory this is deliberately COMPLETE — no limit, no pagination,
-// no search — because completeness is a correctness requirement: the derivation
+// projected down to the five fields the derivation reads. This is deliberately
+// COMPLETE — no limit, no pagination, no search — because completeness is a
+// correctness requirement: the derivation
 // treats "frontmatter chat-id with no row in the index" as a dead chat and
 // parks the todo in NEEDS YOU, so a truncated result would misgroup every
 // working chat beyond the cap. Do not add a limit here. Archived chats are

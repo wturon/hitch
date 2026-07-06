@@ -10,7 +10,6 @@ import {
   FileTextIcon,
   HashIcon,
   ListTodoIcon,
-  MessageCircleIcon,
   PlusIcon,
 } from "lucide-react";
 import type { Id } from "@convex/_generated/dataModel";
@@ -60,7 +59,6 @@ export interface PaletteAction {
 export type WorkspaceView =
   | "todos"
   | "notes"
-  | "chats"
   | "automations"
   | "debug"
   | "editor-sandbox";
@@ -68,7 +66,7 @@ export type WorkspaceView =
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in
 // App.tsx). Adding a view here lights it up everywhere. Title is what the palette
-// query matches against ("todos" / "notes" / "chats" / "automations").
+// query matches against ("todos" / "notes" / "automations").
 export const WORKSPACE_VIEWS: {
   view: WorkspaceView;
   title: string;
@@ -76,7 +74,6 @@ export const WORKSPACE_VIEWS: {
 }[] = [
   { view: "todos", title: "Todos", Icon: ListTodoIcon },
   { view: "notes", title: "Notes", Icon: BookIcon },
-  { view: "chats", title: "Chats", Icon: MessageCircleIcon },
   // Automations is hidden for the release — it stays a valid WorkspaceView (the
   // view, component, and App routing are intact) but is omitted here so it drops
   // out of the header pills, ⌘-number jumps, Ctrl+Tab cycle, and ⌘K palette.

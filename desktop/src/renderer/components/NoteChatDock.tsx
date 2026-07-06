@@ -6,15 +6,16 @@ import type { Id } from "@convex/_generated/dataModel";
 import type { Harness } from "@/lib/chat";
 import type { ChatRowViewModel } from "@/lib/chats";
 import { useChatActions, useChatByLink } from "@/hooks/useChats";
-import { ChatComposer, ChatRow } from "@/components/ChatsView";
+import { ChatComposer } from "@/components/ChatComposer";
+import { ChatRow } from "@/components/ChatRow";
 
 // The foot-of-note chat dock — a self-contained feature so the note editor stays
 // chat-agnostic. Owns its own link lookup, chat actions, and the launcher →
 // composer → linked-row three-way (the locked Notes-chat design):
 //   - no chat → a calm launcher pill;
-//   - clicking it expands the real Chats-tab composer in place, prefilled
+//   - clicking it expands the shared ChatComposer in place, prefilled
 //     "I need your help in <note path> " with the caret after the text;
-//   - a linked chat → the real ChatRow bar, identical to the Chats tab.
+//   - a linked chat → the shared ChatRow bar.
 // One chat per note: `linkedChat` (resolved via the by_link index, so it holds
 // even for an idle chat off the recent window) wins the three-way; archiving or
 // deleting it (linkedChat → null) returns to the launcher, never the composer.
@@ -50,8 +51,7 @@ export function NoteChatDock({
     }
   }, [linkedChat]);
 
-  // Resume/pin/archive/delete for the docked ChatRow — identical to the Chats
-  // tab, so a note's chat behaves exactly like one there. One error policy:
+  // Resume/pin/archive/delete for the docked ChatRow. One error policy:
   // every action is fire-and-forget (resume legitimately throws for a chat
   // that's still pending; the rest rarely throw — all are swallowed uniformly).
   const rowHandlers = useMemo(() => {
@@ -73,7 +73,7 @@ export function NoteChatDock({
     };
   }, [actions, projectId]);
 
-  // Same startChat the Chats tab and TaskDialog use: linkedType "note" + the
+  // Same startChat the TaskDialog uses: linkedType "note" + the
   // note's index.md path, default naming (no title), project cwd resolved by the
   // daemon (no cwd). The collapse effect swaps to the ChatRow when the chat lands.
   async function startNoteChat(params: {

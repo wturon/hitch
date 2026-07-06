@@ -9,9 +9,12 @@ export type ChatDisplayStatus = "working" | "needs-input" | "idle";
 export type ChatLinkedType = "task" | "note" | "automation";
 export type ChatResumeKind = "open-chat-command" | "external";
 
-export type ChatHomeQuery = FunctionReturnType<typeof api.chats.listHome>;
-export type ChatHistoryQuery = FunctionReturnType<typeof api.chats.listHistory>;
-export type ChatRecord = ChatHomeQuery["recent"][number];
+// The raw chat doc as Convex queries return it — anchored to getChatByLink (the
+// one remaining chat-doc query) so the view-model stays typed against the wire
+// shape.
+export type ChatRecord = NonNullable<
+  FunctionReturnType<typeof api.chats.getChatByLink>
+>;
 
 export interface ChatRowViewModel {
   id: Id<"chats">;
@@ -41,20 +44,6 @@ export interface ChatRowViewModel {
   lastStatusAt: number;
   updatedAt: number;
   sortTime: number;
-}
-
-export interface ChatsHomeData {
-  kind: "empty" | "home";
-  runningCount: number;
-  totalVisible: number;
-  pinned: ChatRowViewModel[];
-  recent: ChatRowViewModel[];
-}
-
-export interface ChatsHistoryData {
-  pinned: ChatRowViewModel[];
-  all: ChatRowViewModel[];
-  archived: ChatRowViewModel[];
 }
 
 export interface StartStandaloneChatInput {
@@ -134,26 +123,5 @@ export function chatRowViewModel(chat: ChatRecord): ChatRowViewModel {
     lastStatusAt: chat.lastStatusAt,
     updatedAt: chat.updatedAt,
     sortTime: chatSortTime(chat),
-  };
-}
-
-export function chatsHomeData(home: ChatHomeQuery): ChatsHomeData {
-  const pinned = home.pinned.map(chatRowViewModel);
-  const recent = home.recent.map(chatRowViewModel);
-  const totalVisible = pinned.length + recent.length;
-  return {
-    kind: totalVisible === 0 ? "empty" : "home",
-    runningCount: home.runningCount,
-    totalVisible,
-    pinned,
-    recent,
-  };
-}
-
-export function chatsHistoryData(history: ChatHistoryQuery): ChatsHistoryData {
-  return {
-    pinned: history.pinned.map(chatRowViewModel),
-    all: history.all.map(chatRowViewModel),
-    archived: history.archived.map(chatRowViewModel),
   };
 }

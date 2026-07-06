@@ -37,7 +37,6 @@ import { parseProjectConfig, PROJECT_CONFIG_PATH } from "@/lib/projectConfig";
 import { taskBodyPath, taskSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
-import { ChatsView } from "@/components/ChatsView";
 import { DebugView } from "@/components/DebugView";
 import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
@@ -758,7 +757,7 @@ function WorkspaceContent({
   // this task path. Null = closed; the file itself comes from the live `files`
   // subscription.
   const [openTodoPath, setOpenTodoPath] = useState<string | null>(null);
-  // The active per-project view (Todos / Notes / Chats / …).
+  // The active per-project view (Todos / Notes / …).
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("todos");
   // The global command palette (⌘K) and its one-shot request to NotesView to
   // open/create a note. A palette-driven "New project" reuses the sidebar's
@@ -1047,8 +1046,7 @@ function WorkspaceContent({
 
   // Archived count for the active view: todos on the Todos view, notes on Notes.
   const archivedNoteCount = noteDocs(files).filter((d) => d.archived).length;
-  // The header's Archived control is Todos/Notes-specific — the Chats tab keeps
-  // its archived group inside its own "View all" screen, so it reads 0 (and the
+  // The header's Archived control is Todos/Notes-specific — it reads 0 (and the
   // button is disabled) on other views.
   const archivedCount =
     workspaceView === "todos"
@@ -1439,12 +1437,6 @@ function WorkspaceContent({
             onExit={() => setWorkspaceView("todos")}
             intent={noteIntent}
             onIntentHandled={() => setNoteIntent(null)}
-          />
-        ) : workspaceView === "chats" ? (
-          <ChatsView
-            projectId={projectId}
-            onManageHarnesses={() => openGlobalSettings("harnesses")}
-            onExit={() => setWorkspaceView("todos")}
           />
         ) : workspaceView === "automations" ? (
           <AutomationsView
