@@ -94,6 +94,43 @@ export function titleFromCliResult(stdout: string): string {
   return "";
 }
 
+// The two small models Hitch can drive for auto-titling, and their CLI rails.
+// codex (gpt-5.4-mini) is the default; claude (claude-haiku-4-5) is the alt. The
+// value doubles as the model id passed to each CLI — the two happen to line up,
+// which keeps modelForRail a plain lookup. Mirrors t3code's user-selectable
+// text-generation model with a codex default.
+export const TEXT_GENERATION_MODELS = [
+  "gpt-5.4-mini",
+  "claude-haiku-4-5",
+] as const;
+
+export type TextGenerationModel = (typeof TEXT_GENERATION_MODELS)[number];
+export type TitleRail = "codex" | "claude";
+
+export const DEFAULT_TEXT_GENERATION_MODEL: TextGenerationModel = "gpt-5.4-mini";
+
+// A missing, corrupt, or unrecognized preference falls back to the codex default
+// so behavior is deterministic regardless of what's on disk.
+export function normalizeTextGenerationModel(
+  value: unknown,
+): TextGenerationModel {
+  return value === "gpt-5.4-mini" || value === "claude-haiku-4-5"
+    ? value
+    : DEFAULT_TEXT_GENERATION_MODEL;
+}
+
+// claude-haiku-4-5 → the claude rail; everything else (the default included) →
+// the codex rail.
+export function railForModel(model: TextGenerationModel): TitleRail {
+  return model === "claude-haiku-4-5" ? "claude" : "codex";
+}
+
+// The model id a rail actually invokes, recorded in the command result for
+// diagnosability. Inverse of railForModel over the two supported models.
+export function modelForRail(rail: TitleRail): TextGenerationModel {
+  return rail === "claude" ? "claude-haiku-4-5" : "gpt-5.4-mini";
+}
+
 // The seed-guard invariant: apply a generated title ONLY when the on-disk title
 // still equals the seed the desktop stamped at creation, or is empty/missing (a
 // title the user cleared). Any other value means the task was renamed since, so

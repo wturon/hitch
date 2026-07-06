@@ -1017,6 +1017,25 @@ function setHarnessEnvironment(
   return next;
 }
 
+// Small model Hitch drives to auto-title tasks. Two rails: "gpt-5.4-mini" (Codex,
+// the default) and "claude-haiku-4-5" (Claude Code). The daemon reads this fresh
+// per command from the same preferences.json; a missing/unknown value is the
+// codex default there too, so reads and writes normalize to the known set.
+const DEFAULT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
+function readTextGenerationModel(): string {
+  const stored = readPreferences().textGenerationModel;
+  return stored === "gpt-5.4-mini" || stored === "claude-haiku-4-5"
+    ? stored
+    : DEFAULT_TEXT_GENERATION_MODEL;
+}
+
+function setTextGenerationModel(model: string): string {
+  const next =
+    model === "claude-haiku-4-5" ? "claude-haiku-4-5" : DEFAULT_TEXT_GENERATION_MODEL;
+  writePreferences({ textGenerationModel: next });
+  return next;
+}
+
 // Opt-in experimental feature flags. T3Code is currently hard-blocked, so reads
 // and writes always normalize it to false.
 function readExperimentalFlags(): Record<string, boolean> {
@@ -2894,6 +2913,13 @@ ipcMain.handle(
   "config:set-harness-environment",
   (_event, harness: string, environment: string) =>
     setHarnessEnvironment(harness, environment),
+);
+ipcMain.handle("config:get-text-generation-model", () =>
+  readTextGenerationModel(),
+);
+ipcMain.handle(
+  "config:set-text-generation-model",
+  (_event, model: string) => setTextGenerationModel(model),
 );
 ipcMain.handle("config:get-experimental", () => readExperimentalFlags());
 ipcMain.handle(

@@ -4,9 +4,9 @@
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import dotenv from "dotenv";
@@ -15,7 +15,7 @@ import WebSocket from "ws";
 import { ConvexClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { CmuxError, setCmuxLogger, setCmuxTraceSink } from "./cmux.js";
-import { closeCodexAppServer, latestCodexThread } from "./codex.js";
+import { closeCodexAppServer, codexBin, latestCodexThread } from "./codex.js";
 import { openChatLifecycleStore } from "./chatLifecycleStore.js";
 import { DaemonLifecycleProducer } from "./chatLifecycleProducers.js";
 import { titleFromInitialPrompt } from "./chatTitles.js";
@@ -43,8 +43,13 @@ import {
 import { runTaskFrontmatterMigration } from "./taskFrontmatterMigration.js";
 import {
   buildTitlePrompt,
+  modelForRail,
+  normalizeTextGenerationModel,
+  railForModel,
+  sanitizeGeneratedTitle,
   titleFromCliResult,
   titleGuardAllows,
+  type TitleRail,
 } from "./taskTitles.js";
 
 if (!globalThis.WebSocket) {
@@ -420,6 +425,101 @@ async function generateTitleViaClaude(prompt: string): Promise<string> {
   const title = titleFromCliResult(stdout);
   if (!title) throw new Error("empty or unparseable title output");
   return title;
+}
+
+// Ask the cheap model for a task title via codex — the default rail. The
+// invocation mirrors t3code's text-generation shape exactly (measured ~3.3s):
+//   - exec --ephemeral: a throwaway one-shot, no persisted thread.
+//   - --skip-git-repo-check -s read-only: no repo assumptions, no writes.
+//   - --config model_reasoning_effort="low": the inner quotes are part of the
+//     single argv element codex's parser expects for a string config value.
+//   - --output-last-message <tmpfile>: codex writes the assistant's final text
+//     there; stdout is progress noise, so we read the title from the file.
+//   - prompt via stdin (the trailing "-"), same plain-text prompt as claude
+//     (NO output schema — we sanitize the raw text).
+// Throws on a missing CLI, nonzero exit, timeout, or an empty/unusable title;
+// the caller turns every throw into a command error row.
+export async function generateTitleViaCodex(prompt: string): Promise<string> {
+  const outPath = join(tmpdir(), `hitch-title-${process.pid}-${randomUUID()}.txt`);
+  try {
+    const pending = execFileP(
+      codexBin(),
+      [
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "-s",
+        "read-only",
+        "--model",
+        "gpt-5.4-mini",
+        "--config",
+        'model_reasoning_effort="low"',
+        "--output-last-message",
+        outPath,
+        "-",
+      ],
+      { timeout: TITLE_GEN_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
+    );
+    pending.child.stdin?.end(prompt);
+    await pending;
+    let raw: string;
+    try {
+      raw = await readFile(outPath, "utf8");
+    } catch {
+      throw new Error("codex produced no output message");
+    }
+    const title = sanitizeGeneratedTitle(raw);
+    if (!title) throw new Error("empty or unusable title output");
+    return title;
+  } finally {
+    // Best-effort cleanup — a leaked temp file mustn't fail the command.
+    await rm(outPath, { force: true }).catch(() => {});
+  }
+}
+
+// Is a title-gen CLI actually invokable? An absolute/relative path must exist on
+// disk; a bare name (the common "codex"/"claude" case) is resolved through a
+// cheap `which` lookup. Used to fall back to the other rail before spending a
+// spawn, mirroring t3code's enabled-provider fallback. Never throws.
+async function titleCliAvailable(bin: string): Promise<boolean> {
+  if (bin.includes("/")) return existsSync(bin);
+  try {
+    await execFileP("which", [bin], { timeout: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Pick the rail that will actually run: the preference's rail when its CLI
+// resolves, else the other rail when ITS CLI resolves. If neither resolves, keep
+// the preferred rail so its spawn throws a clean "binary not found" the caller
+// reports — better a truthful error than a silent swap to a second missing CLI.
+async function pickTitleRail(configPath: string): Promise<TitleRail> {
+  const preferred = railForModel(
+    normalizeTextGenerationModel(readTextGenerationModel(configPath)),
+  );
+  const binFor = (rail: TitleRail) =>
+    rail === "codex" ? codexBin() : claudeBin();
+  if (await titleCliAvailable(binFor(preferred))) return preferred;
+  const fallback: TitleRail = preferred === "codex" ? "claude" : "codex";
+  if (await titleCliAvailable(binFor(fallback))) return fallback;
+  return preferred;
+}
+
+// Text-generation model preference, written by the desktop app into the same
+// sibling preferences.json readHarnessEnvironment reads. Read fresh per command
+// so a change in Harness settings takes effect without restarting the daemon.
+// Absent/invalid/corrupt file → the codex default (normalizeTextGenerationModel).
+function readTextGenerationModel(configPath: string): string {
+  try {
+    const prefsPath = join(dirname(configPath), "preferences.json");
+    const raw = JSON.parse(readFileSync(prefsPath, "utf8")) as unknown;
+    if (!isRecord(raw)) return normalizeTextGenerationModel(undefined);
+    return normalizeTextGenerationModel(raw.textGenerationModel);
+  } catch {
+    return normalizeTextGenerationModel(undefined);
+  }
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -1533,9 +1633,17 @@ async function startHitchBinding({
     }
 
     const body = content.match(FRONTMATTER_RE)?.[2] ?? content;
+    // Codex by default; claude when the preference selects it. Fall back to the
+    // other CLI if the preferred one isn't installed, so a missing binary never
+    // fails a title we could still generate.
+    const rail = await pickTitleRail(configPath);
+    const prompt = buildTitlePrompt(body);
     let generated: string;
     try {
-      generated = await generateTitleViaClaude(buildTitlePrompt(body));
+      generated =
+        rail === "codex"
+          ? await generateTitleViaCodex(prompt)
+          : await generateTitleViaClaude(prompt);
     } catch (err) {
       await complete(cmd, "error", `title generation failed: ${String(err)}`);
       logger.info(
@@ -1569,8 +1677,10 @@ async function startHitchBinding({
       await complete(cmd, "error", `title write failed: ${String(err)}`);
       return;
     }
-    await complete(cmd, "done", `titled:${generated}`);
-    logger.info(`[hitch:${projectLabel}] ✎ auto-titled ${relPath} → ${generated}`);
+    await complete(cmd, "done", `titled:${generated} via ${modelForRail(rail)}`);
+    logger.info(
+      `[hitch:${projectLabel}] ✎ auto-titled ${relPath} → ${generated} (${modelForRail(rail)})`,
+    );
   }
 
   // Orchestrate a launch command: resolve the (harness, environment) launcher and

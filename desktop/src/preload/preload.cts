@@ -227,6 +227,8 @@ export interface HitchDaemonApi {
     harness: string,
     environment: string,
   ) => Promise<Record<string, string>>;
+  getTextGenerationModel: () => Promise<string>;
+  setTextGenerationModel: (model: string) => Promise<string>;
   getExperimentalFlags: () => Promise<Record<string, boolean>>;
   setExperimentalFlag: (
     key: string,
@@ -295,6 +297,10 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("config:get-harness-environments"),
   setHarnessEnvironment: (harness, environment) =>
     ipcRenderer.invoke("config:set-harness-environment", harness, environment),
+  getTextGenerationModel: () =>
+    ipcRenderer.invoke("config:get-text-generation-model"),
+  setTextGenerationModel: (model) =>
+    ipcRenderer.invoke("config:set-text-generation-model", model),
   getExperimentalFlags: () => ipcRenderer.invoke("config:get-experimental"),
   setExperimentalFlag: (key, enabled) =>
     ipcRenderer.invoke("config:set-experimental", key, enabled),

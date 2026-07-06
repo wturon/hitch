@@ -17,6 +17,7 @@ import {
   RefreshCwIcon,
   RotateCwIcon,
   ShieldCheckIcon,
+  SparklesIcon,
   SunIcon,
   SunMoonIcon,
   Trash2Icon,
@@ -135,12 +136,23 @@ interface HitchDaemonApi {
     harness: string,
     environment: string,
   ) => Promise<Record<string, string>>;
+  getTextGenerationModel: () => Promise<string>;
+  setTextGenerationModel: (model: string) => Promise<string>;
   getExperimentalFlags: () => Promise<Record<string, boolean>>;
   setExperimentalFlag: (
     key: string,
     enabled: boolean,
   ) => Promise<Record<string, boolean>>;
 }
+
+// The small model that auto-titles tasks. Codex is the default rail; the daemon
+// falls back to the other CLI if the preferred one isn't installed.
+const TEXT_GENERATION_OPTIONS = [
+  { id: "gpt-5.4-mini", label: "GPT-5.4 Mini (Codex)" },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 (Claude Code)" },
+] as const;
+
+const DEFAULT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
 
 // Each harness Hitch can drive renders as one card: a branded header plus its
 // environment and status-hook rows. New harnesses drop in by adding an entry
@@ -319,6 +331,8 @@ export function GlobalSettingsDialog({
                         onError={setError}
                       />
                     ))}
+
+                    <TextGenerationSection bridge={bridge} />
 
                     <ExperimentalSection
                       t3codeEnabled={t3codeEnabled}
@@ -1008,6 +1022,87 @@ function EnvironmentRow({
         </p>
       )}
     </div>
+  );
+}
+
+// The small model Hitch uses to auto-title tasks. Persists to the same local
+// preferences file the daemon reads fresh per command; the choice takes effect
+// on the next title generation without a daemon restart. An unset preference is
+// the codex default, matching the daemon's normalization.
+function TextGenerationSection({
+  bridge,
+}: {
+  bridge: HitchDaemonApi | undefined;
+}) {
+  const [value, setValue] = useState<string>(DEFAULT_TEXT_GENERATION_MODEL);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!bridge) return;
+    void bridge
+      .getTextGenerationModel()
+      .then((model) => {
+        if (TEXT_GENERATION_OPTIONS.some((option) => option.id === model)) {
+          setValue(model);
+        }
+      })
+      .catch(() => {});
+  }, [bridge]);
+
+  async function change(next: string) {
+    setValue(next);
+    if (!bridge) return;
+    setSaving(true);
+    try {
+      await bridge.setTextGenerationModel(next);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="flex flex-col overflow-hidden rounded-xl border bg-card">
+      <div className="flex items-center gap-3 border-b bg-muted/30 px-3.5 py-3">
+        <SparklesIcon className="size-5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold leading-tight">Text generation</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            The small model behind Hitch's quick text tasks.
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-3 px-3.5 py-3">
+        <div className="min-w-0">
+          <p className="text-[0.8rem] font-medium">Text generation model</p>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            Small model used to auto-title tasks.
+          </p>
+        </div>
+        <Select
+          value={value}
+          onValueChange={(next) =>
+            void change(next ?? DEFAULT_TEXT_GENERATION_MODEL)
+          }
+          disabled={!bridge || saving}
+        >
+          <SelectTrigger className="w-64" aria-label="Text generation model">
+            <SelectValue>
+              {(model: string | null) =>
+                TEXT_GENERATION_OPTIONS.find((option) => option.id === model)
+                  ?.label ?? model
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {TEXT_GENERATION_OPTIONS.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </section>
   );
 }
 

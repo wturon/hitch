@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import {
+  DEFAULT_TEXT_GENERATION_MODEL,
   TASK_TITLE_MAX_LENGTH,
   TITLE_PROMPT_MAX_CHARS,
   buildTitlePrompt,
+  modelForRail,
+  normalizeTextGenerationModel,
+  railForModel,
   sanitizeGeneratedTitle,
   titleFromCliResult,
   titleGuardAllows,
@@ -79,5 +83,30 @@ assert.equal(titleGuardAllows("  Seed title  ", "Seed title"), true); // trim-in
 assert.equal(titleGuardAllows("", "Seed title"), true); // cleared/missing → allow
 assert.equal(titleGuardAllows(undefined, "Seed title"), true);
 assert.equal(titleGuardAllows("User renamed it", "Seed title"), false); // human wins
+
+// ── text-generation model selection ───────────────────────────────────────────
+// Missing / unknown / wrong-type values fall back to the codex default.
+assert.equal(DEFAULT_TEXT_GENERATION_MODEL, "gpt-5.4-mini");
+assert.equal(normalizeTextGenerationModel(undefined), "gpt-5.4-mini");
+assert.equal(normalizeTextGenerationModel(null), "gpt-5.4-mini");
+assert.equal(normalizeTextGenerationModel("nonsense"), "gpt-5.4-mini");
+assert.equal(normalizeTextGenerationModel(42), "gpt-5.4-mini");
+// The two supported values pass through unchanged.
+assert.equal(normalizeTextGenerationModel("gpt-5.4-mini"), "gpt-5.4-mini");
+assert.equal(
+  normalizeTextGenerationModel("claude-haiku-4-5"),
+  "claude-haiku-4-5",
+);
+// Model → rail mapping: only claude-haiku routes to the claude CLI.
+assert.equal(railForModel("gpt-5.4-mini"), "codex");
+assert.equal(railForModel("claude-haiku-4-5"), "claude");
+// modelForRail is the inverse over the two supported models.
+assert.equal(modelForRail("codex"), "gpt-5.4-mini");
+assert.equal(modelForRail("claude"), "claude-haiku-4-5");
+assert.equal(modelForRail(railForModel("gpt-5.4-mini")), "gpt-5.4-mini");
+assert.equal(
+  modelForRail(railForModel("claude-haiku-4-5")),
+  "claude-haiku-4-5",
+);
 
 console.log("task title smoke passed");
