@@ -28,6 +28,7 @@ import {
   type DelegationStartParams,
 } from "@/hooks/useDelegationComposer";
 import { HarnessIcon } from "@/components/HarnessIcon";
+import { Kbd } from "@/components/ui/kbd";
 import {
   Select,
   SelectContent,
@@ -267,9 +268,9 @@ export function TodoDelegateFooter({
           ) : (
             <>
               <span className="text-[13px] font-semibold">Start</span>
-              <span className="rounded-[4px] border border-white/20 bg-white/15 px-1.25 py-px font-mono text-[10.5px] leading-none text-white/85 dark:border-background/20 dark:bg-background/15 dark:text-background/85">
+              <Kbd className="border border-white/20 bg-white/15 text-white/85 dark:border-background/20 dark:bg-background/15 dark:text-background/85">
                 ⌘⏎
-              </span>
+              </Kbd>
             </>
           )}
         </button>

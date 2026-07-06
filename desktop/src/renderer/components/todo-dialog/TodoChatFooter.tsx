@@ -12,6 +12,7 @@ import {
   type DelegationRequest,
 } from "@/lib/chat";
 import { useOpenChat } from "@/lib/useOpenChat";
+import { Kbd } from "@/components/ui/kbd";
 import { HarnessIcon } from "@/components/HarnessIcon";
 import { CmuxAccessDialog } from "@/components/CmuxAccessDialog";
 import { cn } from "@/lib/utils";
@@ -26,12 +27,13 @@ const SURFACE =
   "rounded-b-xl border-t border-t-[#E8E8E8] bg-[#F9F9F9] px-5 py-3 dark:border-t-border dark:bg-muted/40";
 
 // The embedded ⌘⏎ chip, matching the Start button's (KRN-0). Reused by the
-// black Open chat / Retry buttons that ⌘⏎ triggers.
+// black Open chat / Retry buttons that ⌘⏎ triggers. Shared shadcn Kbd, tinted
+// translucent so it reads on the dark button (the AppSidebar on-colored pattern).
 function KbdChip() {
   return (
-    <span className="rounded-[4px] border border-white/20 bg-white/15 px-1.25 py-px font-mono text-[10.5px] leading-none text-white/85 dark:border-background/20 dark:bg-background/15 dark:text-background/85">
+    <Kbd className="border border-white/20 bg-white/15 text-white/85 dark:border-background/20 dark:bg-background/15 dark:text-background/85">
       ⌘⏎
-    </span>
+    </Kbd>
   );
 }
 
