@@ -125,9 +125,13 @@ export interface TodoDialogProps {
   // Optimistic upsert by path+content — used for the materialize on ⌘⏎, the
   // early materialize on image paste, and body autosave on close.
   onWrite: (path: string, content: string) => Promise<void>;
-  // Cascade-delete a task folder (attachments + task.md tombstone). Used by the
-  // discard-cleanup of a pasted-early draft (Decision 3) and the ⋯ Delete action.
+  // Silent cascade-delete of a task folder (attachments + task.md tombstone).
+  // Used only for the discard-cleanup of a pasted-early draft (Decision 3) — an
+  // intentional throwaway, so no undo toast.
   onDeleteTodo: (slug: string) => Promise<void>;
+  // The ⋯ Delete action: same delete, but a deliberate user gesture, so it goes
+  // through the undo-toast path.
+  onUserDeleteTodo: (slug: string) => void;
   onManagePrompts?: () => void;
   onManageHarnesses?: () => void;
 }
@@ -180,6 +184,7 @@ function TodoBody({
   onClose,
   onWrite,
   onDeleteTodo,
+  onUserDeleteTodo,
   onManagePrompts,
   onManageHarnesses,
   registerDismiss,
@@ -418,7 +423,7 @@ function TodoBody({
     onClose();
     if (path) {
       const s = taskSlug(path);
-      if (s) void onDeleteTodo(s).catch(() => {});
+      if (s) onUserDeleteTodo(s);
     }
   }
 
