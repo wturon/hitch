@@ -22,6 +22,7 @@
     "smoke:chat-lifecycle-reducer": "tsx scripts/chat-lifecycle-reducer-smoke.ts",
     "smoke:chat-lifecycle-coalesce": "tsx scripts/chat-lifecycle-coalesce-smoke.ts",
     "smoke:chat-title": "tsx scripts/chat-title-smoke.ts",
+    "smoke:task-title": "tsx scripts/task-title-smoke.ts",
     "smoke:chat-frontmatter-projection": "tsx scripts/chat-frontmatter-projection-smoke.ts",
     "smoke:chat-pending-binding": "tsx scripts/chat-pending-binding-smoke.ts",
     "smoke:automation-definition": "tsx scripts/automation-definition-smoke.ts",

@@ -35,8 +35,17 @@ import type { ChatLifecycleStore, LocalChatRow } from "./chatLifecycleStore.js";
 import { createDebugApi, type DebugApi } from "./debugApi.js";
 import { ChatStateObserver } from "./observer/index.js";
 import { startSkillSync } from "./skills.js";
-import { frontmatterValue, setFrontmatterKeys } from "./frontmatter.js";
+import {
+  FRONTMATTER_RE,
+  frontmatterValue,
+  setFrontmatterKeys,
+} from "./frontmatter.js";
 import { runTaskFrontmatterMigration } from "./taskFrontmatterMigration.js";
+import {
+  buildTitlePrompt,
+  titleFromCliResult,
+  titleGuardAllows,
+} from "./taskTitles.js";
 
 if (!globalThis.WebSocket) {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = WebSocket;
@@ -363,6 +372,55 @@ export function isPrunableBodyPath(relPath: string): boolean {
 }
 
 const execFileP = promisify(execFile);
+
+// Resolve the `claude` CLI the way the launchers resolve cmux/codex: an explicit
+// override wins, else fall through to PATH. generate-title shells out to it
+// directly (not through cmux), so the daemon needs its own handle on the binary.
+const CLAUDE_CANDIDATES = [process.env.CLAUDE_BIN, "claude"].filter(
+  (p): p is string => Boolean(p),
+);
+function claudeBin(): string {
+  for (const p of CLAUDE_CANDIDATES) {
+    if (p === "claude" || existsSync(p)) return p;
+  }
+  return "claude";
+}
+
+// Force the model to return exactly `{ "title": string }` via --json-schema, so
+// the wrapper hands back a parsed `structured_output` we can read without hoping
+// the prose came out as clean JSON. titleFromCliResult still parses defensively.
+const TITLE_JSON_SCHEMA = JSON.stringify({
+  type: "object",
+  properties: { title: { type: "string" } },
+  required: ["title"],
+  additionalProperties: false,
+});
+const TITLE_GEN_TIMEOUT_MS = 60_000;
+
+// Ask the cheap model for a task title. Non-interactive `claude -p`, JSON output,
+// haiku, a hard timeout. Throws on a missing CLI, nonzero exit, timeout, or an
+// unparseable/empty result — every failure is caught by the caller and marks the
+// command failed; title generation must never take anything else down with it.
+async function generateTitleViaClaude(prompt: string): Promise<string> {
+  const { stdout } = await execFileP(
+    claudeBin(),
+    [
+      "-p",
+      prompt,
+      "--output-format",
+      "json",
+      "--model",
+      "claude-haiku-4-5",
+      "--json-schema",
+      TITLE_JSON_SCHEMA,
+    ],
+    { timeout: TITLE_GEN_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
+  );
+  const title = titleFromCliResult(stdout);
+  if (!title) throw new Error("empty or unparseable title output");
+  return title;
+}
+
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -1440,6 +1498,80 @@ async function startHitchBinding({
     });
   }
 
+  // Seed-then-upgrade auto-title. Read the task body, ask the cheap model for a
+  // better title, and rewrite task.md's frontmatter — but only while the on-disk
+  // title still equals the seed (the seed guard, checked twice: once before
+  // spending on the CLI, once at write time to catch a rename that raced the
+  // generation). A rename, a cleared file, or a CLI failure resolves the command
+  // without touching the task's title; generation is best-effort and load-bearing
+  // for nothing else. This runs off the same concurrent per-command task the
+  // launch commands do (see the pendingCommands subscription), so its ~seconds of
+  // latency can't delay anything else on the bus.
+  async function runGenerateTitle(cmd: CommandDoc): Promise<void> {
+    const relPath = cmd.path ?? cmd.linkedPath;
+    if (!relPath) {
+      await complete(cmd, "error", "generate-title requires a task path");
+      return;
+    }
+    const seed = cmd.title ?? "";
+    const absPath = toAbs(relPath);
+
+    // File gone (task deleted before we ran) → a no-op success, not a failure.
+    let content: string;
+    try {
+      content = await readFile(absPath, "utf8");
+    } catch {
+      await complete(cmd, "done", "skipped:file-missing");
+      return;
+    }
+    // Pre-flight guard: if the user already renamed away from the seed, don't even
+    // spend the CLI call — their title wins.
+    if (!titleGuardAllows(frontmatterValue(content, "title"), seed)) {
+      await complete(cmd, "done", "skipped:title-changed");
+      return;
+    }
+
+    const body = content.match(FRONTMATTER_RE)?.[2] ?? content;
+    let generated: string;
+    try {
+      generated = await generateTitleViaClaude(buildTitlePrompt(seed, body));
+    } catch (err) {
+      await complete(cmd, "error", `title generation failed: ${String(err)}`);
+      logger.info(
+        `[hitch:${projectLabel}] ⚠ generate-title ${relPath} failed: ${String(err)}`,
+      );
+      return;
+    }
+
+    // Re-read at write time and re-check the guard: the CLI ran for seconds, and a
+    // user rename in that window must still win.
+    let latest: string;
+    try {
+      latest = await readFile(absPath, "utf8");
+    } catch {
+      await complete(cmd, "done", "skipped:file-missing");
+      return;
+    }
+    if (!titleGuardAllows(frontmatterValue(latest, "title"), seed)) {
+      await complete(cmd, "done", "skipped:title-changed");
+      return;
+    }
+    const next = setFrontmatterKeys(latest, { title: generated });
+    if (next === latest) {
+      await complete(cmd, "done", "noop");
+      return;
+    }
+    try {
+      await writeFile(absPath, next, "utf8");
+      await pushLocal(absPath); // → Convex → every open board + other machines
+    } catch (err) {
+      await complete(cmd, "error", `title write failed: ${String(err)}`);
+      return;
+    }
+    await complete(cmd, "done", `titled:${generated}`);
+    logger.info(`[hitch:${projectLabel}] ✎ auto-titled ${relPath} → ${generated}`);
+  }
+
   // Orchestrate a launch command: resolve the (harness, environment) launcher and
   // invoke the requested intent. The launchers wrap the same cmux.ts / codex.ts
   // code the switch used to call inline, so behavior is unchanged; this just makes
@@ -1448,6 +1580,12 @@ async function startHitchBinding({
   // callbacks — codex only learns its thread id mid-launch, so it can't be hoisted.
   async function runCommand(cmd: CommandDoc): Promise<void> {
     try {
+      // generate-title needs no launcher/environment — it shells out to `claude`
+      // directly. Dispatch it before the launch-command machinery below.
+      if (cmd.kind === "generate-title") {
+        await runGenerateTitle(cmd);
+        return;
+      }
       const harness = cmd.harness as Harness;
       if (cmd.environment === "t3code") {
         await complete(
