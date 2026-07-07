@@ -149,6 +149,7 @@ export interface TodoDialogProps {
   // The ⋯ Delete action: same delete, but a deliberate user gesture, so it goes
   // through the undo-toast path.
   onUserDeleteTodo: (slug: string) => void;
+  onUserArchiveTodo: (path: string, content: string) => void;
   onManagePrompts?: () => void;
   onManageHarnesses?: () => void;
 }
@@ -213,6 +214,7 @@ export function TodoDialog(props: TodoDialogProps) {
               onWrite={props.onWrite}
               onDeleteTodo={props.onDeleteTodo}
               onUserDeleteTodo={props.onUserDeleteTodo}
+              onUserArchiveTodo={props.onUserArchiveTodo}
               onManagePrompts={props.onManagePrompts}
               onManageHarnesses={props.onManageHarnesses}
               registerDismiss={(fn) => (dismissRef.current = fn)}
@@ -237,6 +239,7 @@ interface TodoBodyProps {
   onWrite: (path: string, content: string) => Promise<void>;
   onDeleteTodo: (slug: string) => Promise<void>;
   onUserDeleteTodo: (slug: string) => void;
+  onUserArchiveTodo: (path: string, content: string) => void;
   onManagePrompts?: () => void;
   onManageHarnesses?: () => void;
   registerDismiss: (fn: (reason: string) => void) => void;
@@ -251,6 +254,7 @@ function TodoBody({
   onWrite,
   onDeleteTodo,
   onUserDeleteTodo,
+  onUserArchiveTodo,
   onManagePrompts,
   onManageHarnesses,
   registerDismiss,
@@ -567,13 +571,9 @@ function TodoBody({
   async function archive() {
     const path = committedRef.current;
     if (!path) return;
-    const content = setFrontmatterKeys(draft.getLatestRaw(), {
-      "archived-at": new Date().toISOString(),
-    });
+    const content = draft.getLatestRaw();
     onClose();
-    await write(path, content).catch((err) =>
-      console.error("Failed to archive todo", err),
-    );
+    onUserArchiveTodo(path, content);
   }
   function del() {
     const path = committedRef.current;

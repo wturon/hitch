@@ -29,7 +29,7 @@ import {
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import { clearChatFields, parseChatOpenState } from "@/lib/chat";
-import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
+import { parseFrontmatter } from "@/lib/frontmatter";
 import { taskSlug } from "@/lib/tasks";
 import {
   ContextMenu,
@@ -191,6 +191,7 @@ function TodoRow({
   projectId,
   onOpen,
   onToggleCompleted,
+  onArchiveTodo,
   onWriteTodo,
   onDeleteTodo,
   drag,
@@ -201,6 +202,7 @@ function TodoRow({
   projectId: Id<"projects">;
   onOpen: (path: string) => void;
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
+  onArchiveTodo: (todo: Todo) => void;
   // The right-click menu's write/delete actions, threaded from App (Archive and
   // Detach are frontmatter writes; Delete removes the file) — the same handlers
   // the TodoDialog's ⋯ menu uses, so a row's options match the open dialog's.
@@ -239,13 +241,7 @@ function TodoRow({
   const slug = taskSlug(todo.path);
   const copyPath = () =>
     void navigator.clipboard.writeText(todo.path).catch(() => {});
-  const archive = () =>
-    onWriteTodo(
-      todo.path,
-      setFrontmatterKeys(todo.content, {
-        "archived-at": new Date().toISOString(),
-      }),
-    );
+  const archive = () => onArchiveTodo(todo);
   const detach = () => onWriteTodo(todo.path, clearChatFields(todo.content));
   const del = () => {
     if (slug) onDeleteTodo(slug);
@@ -355,6 +351,7 @@ function SortableTodoRow({
   projectId,
   onOpen,
   onToggleCompleted,
+  onArchiveTodo,
   onWriteTodo,
   onDeleteTodo,
   nav,
@@ -363,6 +360,7 @@ function SortableTodoRow({
   projectId: Id<"projects">;
   onOpen: (path: string) => void;
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
+  onArchiveTodo: (todo: Todo) => void;
   onWriteTodo: (path: string, content: string) => void;
   onDeleteTodo: (slug: string) => void;
   nav?: RowNav;
@@ -376,6 +374,7 @@ function SortableTodoRow({
       projectId={projectId}
       onOpen={onOpen}
       onToggleCompleted={onToggleCompleted}
+      onArchiveTodo={onArchiveTodo}
       onWriteTodo={onWriteTodo}
       onDeleteTodo={onDeleteTodo}
       nav={nav}
@@ -477,6 +476,7 @@ export function TodosView({
   onOpenTodo,
   onAddTodo,
   onToggleCompleted,
+  onArchiveTodo,
   onWriteTodo,
   onDeleteTodo,
 }: {
@@ -488,6 +488,7 @@ export function TodosView({
   onOpenTodo: (path: string) => void;
   onAddTodo: () => void;
   onToggleCompleted: (todo: Todo, completed: boolean) => void;
+  onArchiveTodo: (todo: Todo) => void;
   // Row context-menu writes (Archive/Detach) and delete — the same App-level
   // handlers the TodoDialog uses, so a row's right-click options stay in sync
   // with the open dialog's ⋯ menu.
@@ -599,6 +600,7 @@ export function TodosView({
     projectId,
     onOpen: onOpenTodo,
     onToggleCompleted,
+    onArchiveTodo,
     onWriteTodo,
     onDeleteTodo,
   };
@@ -679,6 +681,7 @@ export function TodosView({
                   projectId={projectId}
                   onOpen={onOpenTodo}
                   onToggleCompleted={onToggleCompleted}
+                  onArchiveTodo={onArchiveTodo}
                   onWriteTodo={onWriteTodo}
                   onDeleteTodo={onDeleteTodo}
                   nav={rowNav(todo.path)}

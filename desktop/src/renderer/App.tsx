@@ -37,6 +37,7 @@ import { sha256 } from "@/lib/hash";
 import { parseProjectConfig, PROJECT_CONFIG_PATH } from "@/lib/projectConfig";
 import { taskBodyPath, taskSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
+import { parseChatRef } from "@/lib/chat";
 import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
 import { DebugView } from "@/components/DebugView";
 import { SandboxEditor } from "@/editor";
@@ -504,6 +505,39 @@ interface ArchivedTodo {
   slug: string;
   title: string;
   content: string;
+}
+
+type TaskToastContext = {
+  title: string;
+  chat: ReturnType<typeof parseChatRef>;
+};
+
+function taskToastContext(content: string, fallbackTitle: string): TaskToastContext {
+  const { frontmatter } = parseFrontmatter(content);
+  return {
+    title: frontmatter.title?.trim() || fallbackTitle,
+    chat: parseChatRef(frontmatter),
+  };
+}
+
+function taskToastPayload(
+  context: TaskToastContext,
+  detail?: string,
+): {
+  description: ReactNode;
+  icon?: ReactNode;
+} {
+  return {
+    description: (
+      <span className="flex flex-col gap-1">
+        <span className="font-medium text-foreground">{context.title}</span>
+        {detail ? <span>{detail}</span> : null}
+      </span>
+    ),
+    icon: context.chat ? (
+      <HarnessIcon harness={context.chat.harness} className="size-4" />
+    ) : undefined,
+  };
 }
 
 // A single row in the archived sheet: the todo's title/path plus inline
@@ -1174,21 +1208,59 @@ function WorkspaceContent({
     // (PR #68). Only manual checks reach here, so an agent finishing its own
     // task never triggers a toast.
     if (completed) {
+      const toastContext: TaskToastContext = {
+        title: todo.title,
+        chat: todo.chat,
+      };
       showUndoableToast({
         message: "Task marked done",
-        description: (
-          <span className="flex flex-col gap-1">
-            <span className="font-medium text-foreground">{todo.title}</span>
-            {todo.chat ? <span>Its chat is closing.</span> : null}
-          </span>
+        ...taskToastPayload(
+          toastContext,
+          todo.chat ? "Its chat is closing." : undefined,
         ),
-        icon: todo.chat ? (
-          <HarnessIcon harness={todo.chat.harness} className="size-4" />
-        ) : undefined,
         stack: true,
         undo: () => void setTodoCompleted(todo, false),
       });
     }
+  }
+
+  async function archiveTodoContentWithUndo(
+    path: string,
+    content: string,
+    fallbackTitle: string,
+  ) {
+    const nextContent = setFrontmatterKeys(content, {
+      "archived-at": new Date().toISOString(),
+    });
+    await upsertFile({
+      projectId,
+      path,
+      content: nextContent,
+      hash: await sha256(nextContent),
+      deleted: false,
+    });
+    const toastContext = taskToastContext(content, fallbackTitle);
+    showUndoableToast({
+      message: "Task archived",
+      ...taskToastPayload(toastContext),
+      stack: true,
+      undo: () =>
+        void (async () => {
+          await upsertFile({
+            projectId,
+            path,
+            content,
+            hash: await sha256(content),
+            deleted: false,
+          });
+        })().catch((err) =>
+          console.error("Failed to restore archived todo", err),
+        ),
+    });
+  }
+
+  async function archiveTodoWithUndo(todo: Todo) {
+    await archiveTodoContentWithUndo(todo.path, todo.content, todo.title);
   }
 
   // Unarchive a todo: clear its `archived-at:` timestamp so the derivation
@@ -1281,9 +1353,12 @@ function WorkspaceContent({
   // discard-cleanup path stays toast-free.
   async function deleteTodoWithUndo(slug: string) {
     const snap = snapshotTodo(slug);
+    const toastContext = taskToastContext(snap.content, slug);
     await deleteTodo(slug);
     showUndoableToast({
       message: "Task deleted",
+      ...taskToastPayload(toastContext),
+      stack: true,
       undo: () =>
         void restoreDeleted(snap).catch((err) =>
           console.error("Failed to restore deleted todo", err),
@@ -1589,6 +1664,7 @@ function WorkspaceContent({
             onToggleCompleted={(todo, completed) =>
               void setTodoCompleted(todo, completed)
             }
+            onArchiveTodo={(todo) => void archiveTodoWithUndo(todo)}
             onWriteTodo={(path, content) =>
               void materializeDraftFile(path, content)
             }
@@ -1641,6 +1717,13 @@ function WorkspaceContent({
           onWrite={materializeDraftFile}
           onDeleteTodo={deleteTodo}
           onUserDeleteTodo={(slug) => void deleteTodoWithUndo(slug)}
+          onUserArchiveTodo={(path, content) =>
+            void archiveTodoContentWithUndo(
+              path,
+              content,
+              taskSlug(path) ?? "task",
+            )
+          }
           onManagePrompts={() => openGlobalSettings("starting-prompts")}
           onManageHarnesses={() => openGlobalSettings("harnesses")}
         />
