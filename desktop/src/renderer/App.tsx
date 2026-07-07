@@ -88,6 +88,7 @@ import {
 } from "@/components/ui/sheet";
 import { Toaster } from "@/components/ui/sonner";
 import { showUndoableToast, useUndoHotkey } from "@/lib/undoToast";
+import { HarnessIcon } from "@/components/HarnessIcon";
 
 interface HitchBinding {
   projectId: Id<"projects">;
@@ -1175,7 +1176,16 @@ function WorkspaceContent({
     if (completed) {
       showUndoableToast({
         message: "Task marked done",
-        description: todo.chat ? "Its chat is closing." : undefined,
+        description: (
+          <span className="flex flex-col gap-1">
+            <span className="font-medium text-foreground">{todo.title}</span>
+            {todo.chat ? <span>Its chat is closing.</span> : null}
+          </span>
+        ),
+        icon: todo.chat ? (
+          <HarnessIcon harness={todo.chat.harness} className="size-4" />
+        ) : undefined,
+        stack: true,
         undo: () => void setTodoCompleted(todo, false),
       });
     }
@@ -1679,7 +1689,7 @@ export default function AppRoot() {
     <>
       <AuthenticatedWorkspace />
       <ProjectConflictDialog />
-      <Toaster richColors position="bottom-right" />
+      <Toaster richColors position="bottom-right" expand visibleToasts={6} />
     </>
   );
 }
