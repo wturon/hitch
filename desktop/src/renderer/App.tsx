@@ -88,6 +88,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { Toaster } from "@/components/ui/sonner";
+import { SpellcheckMenu } from "@/components/SpellcheckMenu";
 import { showUndoableToast, useUndoHotkey } from "@/lib/undoToast";
 import { HarnessIcon } from "@/components/HarnessIcon";
 
@@ -1772,6 +1773,9 @@ export default function AppRoot() {
     <>
       <AuthenticatedWorkspace />
       <ProjectConflictDialog />
+      {/* App-styled spellcheck context menu — replaces the native OS menu across
+          every editable surface (title, composer, body editor). */}
+      <SpellcheckMenu />
       <Toaster richColors position="bottom-right" expand visibleToasts={6} />
     </>
   );

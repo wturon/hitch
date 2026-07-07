@@ -260,10 +260,24 @@ export interface HitchDaemonApi {
   stopKeepAwake: () => Promise<KeepAwakeState>;
   setNativeTheme: (mode: "light" | "dark" | "system") => Promise<void>;
   copyImageFromUrl: (url: string) => Promise<void>;
+  // Spellcheck: apply a fix the renderer's custom menu chose, and subscribe to the
+  // main process pushing suggestions on a right-click over a misspelled word.
+  replaceMisspelling: (word: string) => Promise<void>;
+  addWordToDictionary: (word: string) => Promise<void>;
+  onSpellcheckMenu: (
+    callback: (payload: SpellcheckMenuPayload) => void,
+  ) => () => void;
   onState: (callback: (state: DaemonState) => void) => () => void;
   onAuthCallback: (callback: (payload: AuthCallback) => void) => () => void;
   onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => () => void;
   onKeepAwakeState: (callback: (state: KeepAwakeState) => void) => () => void;
+}
+
+interface SpellcheckMenuPayload {
+  word: string;
+  suggestions: string[];
+  x: number;
+  y: number;
 }
 
 const api: HitchDaemonApi = {
@@ -331,6 +345,19 @@ const api: HitchDaemonApi = {
   stopKeepAwake: () => ipcRenderer.invoke("keep-awake:stop"),
   setNativeTheme: (mode) => ipcRenderer.invoke("theme:set-source", mode),
   copyImageFromUrl: (url) => ipcRenderer.invoke("clipboard:copy-image-from-url", url),
+  replaceMisspelling: (word) => ipcRenderer.invoke("spellcheck:replace", word),
+  addWordToDictionary: (word) =>
+    ipcRenderer.invoke("spellcheck:add-to-dictionary", word),
+  onSpellcheckMenu: (callback) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: SpellcheckMenuPayload,
+    ) => {
+      callback(payload);
+    };
+    ipcRenderer.on("spellcheck:show", listener);
+    return () => ipcRenderer.removeListener("spellcheck:show", listener);
+  },
   onState: (callback) => {
     const listener = (_event: IpcRendererEvent, state: DaemonState) => {
       callback(state);

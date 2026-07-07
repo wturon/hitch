@@ -26,6 +26,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -47,6 +48,7 @@ import { BoldIcon, ItalicIcon, LinkIcon, StrikethroughIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils";
 import { LinkEditForm } from "./LinkPopoverPlugin";
+import { spellcheckMenuStore } from "./spellcheckMenuStore";
 
 // A frozen snapshot of the range selection's endpoints. We stash this the moment
 // the user opens link-edit mode: focusing the URL input pulls DOM focus out of the
@@ -142,6 +144,15 @@ export function FloatingFormatToolbarPlugin() {
   // "edit" swaps the button row for the URL input (add-link mode).
   const [mode, setMode] = useState<"toolbar" | "edit">("toolbar");
   const cardRef = useRef<HTMLDivElement>(null);
+
+  // Yield to the spellcheck context menu: right-clicking a misspelled word both
+  // selects it (which would open this toolbar) and raises the spellcheck menu, so
+  // without this the two would stack. While that menu is up we render nothing;
+  // when it closes we re-appear if the selection is still worth a toolbar.
+  const spellcheckOpen = useSyncExternalStore(
+    spellcheckMenuStore.subscribe,
+    spellcheckMenuStore.isOpen,
+  );
 
   // The selection to re-target when the URL input commits (see FrozenRange).
   const frozenRef = useRef<FrozenRange | null>(null);
@@ -325,7 +336,7 @@ export function FloatingFormatToolbarPlugin() {
     editor.focus();
   }, [editor]);
 
-  if (!format) return null;
+  if (!format || spellcheckOpen) return null;
 
   const card =
     mode === "edit" ? (

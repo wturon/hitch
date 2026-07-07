@@ -25,7 +25,6 @@ import {
   clipboard,
   dialog,
   ipcMain,
-  Menu,
   nativeImage,
   nativeTheme,
   shell,
@@ -2855,32 +2854,22 @@ async function createWindow(): Promise<void> {
   });
 
   // Spellcheck suggestions. Chromium already underlines misspellings (spellcheck
-  // is on by default) but never offers corrections without a menu to host them.
-  // On a right-click over a flagged word, pop the native list of suggestions —
-  // each replaces the word in place — plus an "Add to Dictionary" escape hatch.
-  // Right-clicks anywhere else fall through untouched (no misspelledWord → return),
-  // so we don't hijack the default context behavior elsewhere in the app.
+  // is on by default), and its `context-menu` event is the only place it exposes
+  // per-word suggestions. Rather than pop a native OS menu — which stacked as a
+  // second, unstylable surface next to the editor's floating format toolbar — we
+  // forward the word + suggestions + click point to the renderer, which draws its
+  // own app-styled menu (components/SpellcheckMenu) and calls back to the handlers
+  // below to apply a fix. Right-clicks that aren't over a flagged word carry no
+  // misspelledWord, so we send nothing and leave default behavior alone.
   mainWindow.webContents.on("context-menu", (_event, params) => {
-    const { misspelledWord, dictionarySuggestions } = params;
+    const { misspelledWord, dictionarySuggestions, x, y } = params;
     if (!misspelledWord) return;
-    const wc = mainWindow?.webContents;
-    if (!wc) return;
-    const template: Electron.MenuItemConstructorOptions[] =
-      dictionarySuggestions.length > 0
-        ? dictionarySuggestions.map((suggestion) => ({
-            label: suggestion,
-            click: () => wc.replaceMisspelling(suggestion),
-          }))
-        : [{ label: "No suggestions", enabled: false }];
-    template.push(
-      { type: "separator" },
-      {
-        label: "Add to Dictionary",
-        click: () =>
-          wc.session.addWordToSpellCheckerDictionary(misspelledWord),
-      },
-    );
-    Menu.buildFromTemplate(template).popup();
+    mainWindow?.webContents.send("spellcheck:show", {
+      word: misspelledWord,
+      suggestions: dictionarySuggestions,
+      x,
+      y,
+    });
   });
 
   if (isDev) {
@@ -2889,6 +2878,18 @@ async function createWindow(): Promise<void> {
     await mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
 }
+
+// Apply a spellcheck fix chosen in the renderer's SpellcheckMenu. replaceMisspelling
+// swaps the word Chromium's spellchecker currently has selected (the context-menu
+// event selected it) on the webContents that raised the menu; addWord teaches the
+// per-session dictionary. Routed to event.sender so the fix lands in whatever frame
+// was right-clicked.
+ipcMain.handle("spellcheck:replace", (event, word: string) => {
+  event.sender.replaceMisspelling(word);
+});
+ipcMain.handle("spellcheck:add-to-dictionary", (event, word: string) => {
+  event.sender.session.addWordToSpellCheckerDictionary(word);
+});
 
 ipcMain.handle("daemon:get-state", () => state());
 ipcMain.handle("daemon:start", () => startDaemon());
