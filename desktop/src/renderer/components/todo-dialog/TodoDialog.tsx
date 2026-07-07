@@ -358,10 +358,20 @@ function TodoBody({
   // The capture→saved grow (FLIP on the card's height; see useGrowAnimation).
   const beginGrow = useGrowAnimation(cardRef, stage);
 
-  // ⌘⏎ in the capture stage: materialize the file, prepend it to the backlog, and
-  // grow the card into the saved stage. Idempotent against the pasted-early case
-  // (the file already exists — we just persist + prepend). Swallowed while
+  // ⌘⏎ in the capture stage: grow the card into the saved stage, then materialize
+  // the file and prepend it to the backlog. Idempotent against the pasted-early
+  // case (the file already exists — we just persist + prepend). Swallowed while
   // transforming.
+  //
+  // OPTIMISTIC TRANSITION (why the grow no longer waits on the network): the file
+  // write goes through `upsertFile`, whose `withOptimisticUpdate` patches the
+  // `listFiles` cache SYNCHRONOUSLY when the mutation is called — so everything
+  // the saved stage renders is already local the instant we fire the write. We
+  // therefore grow + flip to "saved" IMMEDIATELY and let the write fly in the
+  // background; the perceived ⌘⏎→edit-dialog delay was purely this awaited round
+  // trip. Two things stay gated on the write actually resolving: the create→edit
+  // bind (`onCommitted`) and the recovery-draft cleanup — so a failed write can
+  // roll the card back to capture without a half-committed dialog (see catch).
   //
   // Invariant (supersedes Todos v1 Decision 2's "split once at ⌘⏎", which carved
   // the first line into `title:` and left only the remainder as the body — a
@@ -383,14 +393,40 @@ function TodoBody({
     draft.setBody(body);
     const content = draft.getLatestRaw();
 
-    let path = already;
-    if (path) {
+    const path =
+      already ?? taskBodyPath(uniqueSlug(title || "task", new Set(takenSlugs)));
+    setCommitted(path);
+
+    // Flip to the saved stage NOW, before the write — the optimistic file cache
+    // already backs it (see header comment). Mirror the transforming guard into
+    // its ref synchronously too, so a second ⌘⏎ landing before this render can't
+    // re-enter transform while the write is in flight. Measure the capture height
+    // first (FLIP first-rect), then flip the stage so the layout effect animates.
+    beginGrow();
+    transformingRef.current = true;
+    setTransforming(true);
+    setStage("saved");
+    window.setTimeout(() => setTransforming(false), TRANSFORM_MS);
+
+    try {
       await write(path, content);
-    } else {
-      path = taskBodyPath(uniqueSlug(title || "task", new Set(takenSlugs)));
-      setCommitted(path);
-      await write(path, content);
+    } catch (err) {
+      // The write never landed (offline, a rejected mutation): undo the
+      // optimistic transition and drop back to capture so the user can retry.
+      // The in-memory draft still holds the text — stash it to localStorage too
+      // in case they dismiss. Crucially `onCommitted` was NOT called, so App is
+      // still in create mode: it never bound to a phantom row, so there's no
+      // reconcile-close race to fight here.
+      console.error("Failed to materialize todo on ⌘⏎", err);
+      setCommitted(already ?? null);
+      transformingRef.current = false;
+      setTransforming(false);
+      setStage("capture");
+      saveCaptureDraft(projectId, body);
+      return;
     }
+
+    // The write landed. Prepend to the backlog and seed the auto-title pipeline.
     void prependBacklog(path);
     // Seed-then-upgrade auto-title: hand the daemon the seed so it can propose a
     // better one. EVERY capture with content enqueues now (the old empty-body
@@ -405,22 +441,14 @@ function TodoBody({
     // The capture succeeded — the recovery draft's job is done.
     clearCaptureDraft(projectId);
 
-    // Grow the card in place — measure the current height FIRST (FLIP first-rect),
-    // then flip the stage so the layout effect animates to the taller layout.
-    beginGrow();
     // Bind to the live query row now that the write has persisted. App flips its
     // union create→edit(path) KEEPING the same session, so this component is NOT
     // remounted — the grow animation and Lexical state survive — and `existing`
-    // arrives so the document model starts following the live row. Called only
-    // AFTER the awaited write succeeded (a throw above skips this, leaving the
-    // dialog in capture with the recovery draft intact). This is the moment the
-    // fork ends: from here the document has exactly one source of truth. NB: this
-    // batches with the setStage/setTransforming below (React 18), so the commit,
-    // the stage flip, and the incoming (no-op) row merge land in one re-render.
+    // arrives so the document model starts following the live row. This is the
+    // moment the fork ends: from here the document has exactly one source of
+    // truth. The incoming row's content equals what we just wrote, so the merge
+    // is a no-op that quietly rebases the dirty baseline (see TodoBody seed doc).
     onCommitted(path);
-    setTransforming(true);
-    setStage("saved");
-    window.setTimeout(() => setTransforming(false), TRANSFORM_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     draft,
