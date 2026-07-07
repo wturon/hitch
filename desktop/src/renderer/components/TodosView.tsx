@@ -396,12 +396,16 @@ function SortableTodoRow({
 // The quiet, borderless capture affordance pinned to the top of BACKLOG. Opens
 // the existing create dialog (the two-stage capture card is slice 4). The "C"
 // hint mirrors the global capture shortcut already wired in App.
-function AddTodoRow({ onAdd }: { onAdd: () => void }) {
+function AddTodoRow({ onAdd, nav }: { onAdd: () => void; nav?: RowNav }) {
   return (
     <button
       type="button"
+      {...nav?.itemProps}
       onClick={onAdd}
-      className="group flex h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left transition-colors hover:bg-muted/60"
+      className={cn(
+        "group flex h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none",
+        nav?.selected && "bg-muted",
+      )}
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
         <PlusIcon
@@ -542,30 +546,42 @@ export function TodosView({
     : groups.done.slice(0, DONE_PREVIEW);
   const hiddenDone = groups.done.length - doneVisible.length;
 
-  // The flat ↑↓ order = every VISIBLE row, top-to-bottom, matching render order
-  // (collapsed DONE rows are deliberately out — they aren't shown, so they
-  // aren't arrow-reachable). Paths are unique, so a path→index map drives each
-  // row's highlight without threading a running counter through the JSX.
+  // The flat ↑↓ order = every VISIBLE row, top-to-bottom, matching render order.
+  // The BACKLOG add affordance is a real navigable item between WORKING and the
+  // backlog rows; collapsed DONE rows are deliberately out because they are not
+  // shown. Paths are unique, so a path→index map drives each task row highlight
+  // without threading a running counter through the JSX.
   const scrollRef = useRef<HTMLDivElement>(null);
-  const navPaths = useMemo(
+  const navItems = useMemo(
     () =>
       [
-        ...groups.needsYou,
-        ...groups.working,
-        ...groups.backlog,
-        ...doneVisible,
-      ].map((t) => t.path),
+        ...groups.needsYou.map((todo) => ({ kind: "todo" as const, todo })),
+        ...groups.working.map((todo) => ({ kind: "todo" as const, todo })),
+        { kind: "add" as const },
+        ...groups.backlog.map((todo) => ({ kind: "todo" as const, todo })),
+        ...doneVisible.map((todo) => ({ kind: "todo" as const, todo })),
+      ],
     [groups.needsYou, groups.working, groups.backlog, doneVisible],
   );
   const navIndexByPath = useMemo(
-    () => new Map(navPaths.map((path, i) => [path, i])),
-    [navPaths],
+    () =>
+      new Map(
+        navItems.flatMap((item, i) =>
+          item.kind === "todo" ? ([[item.todo.path, i]] as const) : [],
+        ),
+      ),
+    [navItems],
   );
   const { selected, itemProps } = useListKeyboardNav({
-    count: navPaths.length,
+    count: navItems.length,
     active,
     containerRef: scrollRef,
-    onActivate: (i) => onOpenTodo(navPaths[i]),
+    onActivate: (i) => {
+      const item = navItems[i];
+      if (!item) return;
+      if (item.kind === "add") onAddTodo();
+      else onOpenTodo(item.todo.path);
+    },
   });
   // Per-row highlight wiring, or undefined for rows outside the nav list.
   const rowNav = (path: string): RowNav | undefined => {
@@ -573,6 +589,11 @@ export function TodosView({
     if (i === undefined) return undefined;
     return { selected: selected === i, itemProps: itemProps(i) };
   };
+  const addNavIndex = navItems.findIndex((item) => item.kind === "add");
+  const addNav: RowNav | undefined =
+    addNavIndex === -1
+      ? undefined
+      : { selected: selected === addNavIndex, itemProps: itemProps(addNavIndex) };
 
   const rowProps = {
     projectId,
@@ -642,7 +663,7 @@ export function TodosView({
             never vanishes (unlike the other groups). */}
         <section className="flex flex-col">
           <GroupHeader label="BACKLOG" />
-          <AddTodoRow onAdd={onAddTodo} />
+          <AddTodoRow onAdd={onAddTodo} nav={addNav} />
           <DndContext
             sensors={sensors}
             onDragEnd={onBacklogDragEnd}
