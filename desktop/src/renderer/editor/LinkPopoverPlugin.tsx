@@ -87,8 +87,10 @@ function prettyUrl(url: string): string {
 
 // The edit-state form. Its own component so the input's draft is local state and
 // it re-seeds (autofocus + select) only when it mounts for a given link — keyed by
-// nodeKey in the parent. This is the sole element allowed to take focus.
-function LinkEditForm({
+// nodeKey in the parent. This is the sole element allowed to take focus. Exported
+// so the floating format toolbar's "add link" mode reuses the identical input +
+// styling instead of hand-rolling a second one.
+export function LinkEditForm({
   initialUrl,
   onSave,
   onCancel,

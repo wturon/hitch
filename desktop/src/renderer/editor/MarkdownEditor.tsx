@@ -31,6 +31,7 @@ import { SlashMenuPlugin, type SkillMenuItem } from "./SlashMenuPlugin";
 import { PasteImagePlugin } from "./PasteImagePlugin";
 import { PasteLinkPlugin } from "./PasteLinkPlugin";
 import { LinkPopoverPlugin } from "./LinkPopoverPlugin";
+import { FloatingFormatToolbarPlugin } from "./FloatingFormatToolbarPlugin";
 import { ImageContextMenuPlugin } from "./ImageContextMenuPlugin";
 import { ImageHandlersContext } from "./nodes/ImageNode";
 
@@ -173,6 +174,9 @@ const EditorBody = forwardRef<
           open/copy/edit/unwrap. Portals to body, fixed-positioned from the link's
           rect so it stays aligned even inside a dialog. */}
       <LinkPopoverPlugin />
+      {/* Notion-style bubble menu: select text → floating bold/italic/strike/link
+          card above the selection. Reuses LinkPopover's floating machinery. */}
+      <FloatingFormatToolbarPlugin />
       {/* Right-click Copy/Delete on an image. Mounted always — inert without
           images; reads the preview handler from the context above. */}
       <ImageContextMenuPlugin />

@@ -25,6 +25,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  Menu,
   nativeImage,
   nativeTheme,
   shell,
@@ -2851,6 +2852,35 @@ async function createWindow(): Promise<void> {
     if (!isExternalSignInUrl(url)) return { action: "allow" };
     void shell.openExternal(url);
     return { action: "deny" };
+  });
+
+  // Spellcheck suggestions. Chromium already underlines misspellings (spellcheck
+  // is on by default) but never offers corrections without a menu to host them.
+  // On a right-click over a flagged word, pop the native list of suggestions —
+  // each replaces the word in place — plus an "Add to Dictionary" escape hatch.
+  // Right-clicks anywhere else fall through untouched (no misspelledWord → return),
+  // so we don't hijack the default context behavior elsewhere in the app.
+  mainWindow.webContents.on("context-menu", (_event, params) => {
+    const { misspelledWord, dictionarySuggestions } = params;
+    if (!misspelledWord) return;
+    const wc = mainWindow?.webContents;
+    if (!wc) return;
+    const template: Electron.MenuItemConstructorOptions[] =
+      dictionarySuggestions.length > 0
+        ? dictionarySuggestions.map((suggestion) => ({
+            label: suggestion,
+            click: () => wc.replaceMisspelling(suggestion),
+          }))
+        : [{ label: "No suggestions", enabled: false }];
+    template.push(
+      { type: "separator" },
+      {
+        label: "Add to Dictionary",
+        click: () =>
+          wc.session.addWordToSpellCheckerDictionary(misspelledWord),
+      },
+    );
+    Menu.buildFromTemplate(template).popup();
   });
 
   if (isDev) {

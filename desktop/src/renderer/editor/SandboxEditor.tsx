@@ -28,6 +28,7 @@ import { exportMarkdown, importMarkdown } from "./bridge";
 import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./MarkdownEditor";
 import { SlashMenuPlugin, type SkillMenuItem } from "./SlashMenuPlugin";
+import { FloatingFormatToolbarPlugin } from "./FloatingFormatToolbarPlugin";
 
 // Hardcoded skills so the `/` menu's Skills section is exercisable here without
 // Convex/the daemon (in the real app they come from useSkills). Deliberately
@@ -162,6 +163,9 @@ function VanillaSandbox() {
                 mounts, so it can be exercised here in the raw playground. Fed the
                 sample skills so the Skills section shows without Convex. */}
             <SlashMenuPlugin skills={SAMPLE_SKILLS} />
+            {/* Notion-style bubble menu — same plugin the production editor
+                mounts, exercised here in the raw playground. */}
+            <FloatingFormatToolbarPlugin />
             </div>
           </div>
           {/* Right column: EditorState inspector on top, live markdown below. */}
