@@ -140,9 +140,16 @@ const CODEX_REASONING: LaunchOption[] = [
   { id: "xhigh", label: "xHigh" },
 ];
 
+const CODEX_GPT_5_6_REASONING: LaunchOption[] = [
+  { id: "none", label: "None" },
+  ...CODEX_REASONING,
+  { id: "max", label: "Max" },
+];
+
 // Model ids are handed to the harness verbatim (e.g. `claude --model
 // claude-opus-4-8`). Codex mirrors the visible app-server `model/list` catalog
-// from codex-cli 0.137.0; hidden models are intentionally excluded.
+// plus current OpenAI model docs when the Codex catalog lags a same-day model
+// release; hidden models are intentionally excluded.
 export const MODELS_BY_HARNESS: Record<Harness, ModelOption[]> = {
   "claude-code": [
     { id: "claude-fable-5", label: "Fable 5" },
@@ -153,6 +160,24 @@ export const MODELS_BY_HARNESS: Record<Harness, ModelOption[]> = {
     { id: "claude-haiku-4-5", label: "Haiku 4.5" },
   ],
   codex: [
+    {
+      id: "gpt-5.6-sol",
+      label: "GPT-5.6 Sol",
+      defaultReasoning: "medium",
+      reasoning: CODEX_GPT_5_6_REASONING,
+    },
+    {
+      id: "gpt-5.6-terra",
+      label: "GPT-5.6 Terra",
+      defaultReasoning: "medium",
+      reasoning: CODEX_GPT_5_6_REASONING,
+    },
+    {
+      id: "gpt-5.6-luna",
+      label: "GPT-5.6 Luna",
+      defaultReasoning: "medium",
+      reasoning: CODEX_GPT_5_6_REASONING,
+    },
     { id: "gpt-5.5", label: "GPT-5.5", defaultReasoning: "medium" },
     { id: "gpt-5.4", label: "GPT-5.4", defaultReasoning: "medium" },
     {
@@ -165,7 +190,10 @@ export const MODELS_BY_HARNESS: Record<Harness, ModelOption[]> = {
       label: "GPT-5.3 Codex Spark",
       defaultReasoning: "high",
     },
-  ].map((model) => ({ ...model, reasoning: CODEX_REASONING })),
+  ].map((model) => ({
+    ...model,
+    reasoning: model.reasoning ?? CODEX_REASONING,
+  })),
 };
 
 // Reasoning/effort ladders. Claude maps to `claude --effort`; Codex maps to

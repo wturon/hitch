@@ -58,7 +58,7 @@ export function defaultAutomationContent(name: string, timezone = localTimezone(
     "schedule: 0 9 * * *",
     `timezone: ${timezone}`,
     "harness: codex",
-    "model: gpt-5.5",
+    "model: gpt-5.6-sol",
     "effort: medium",
     "---",
     "",
@@ -72,7 +72,7 @@ export function defaultAutomationDraft(name: string): AutomationDefinitionDraft 
     schedule: "0 9 * * *",
     timezone: localTimezone(),
     harness: "codex",
-    model: "gpt-5.5",
+    model: "gpt-5.6-sol",
     effort: "medium",
     prompt: "",
   };
