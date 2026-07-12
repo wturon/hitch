@@ -15,8 +15,6 @@ import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import {
   AlertCircleIcon,
-  ArchiveIcon,
-  ArchiveRestoreIcon,
   Code2Icon,
   ExternalLinkIcon,
   FolderSyncIcon,
@@ -30,7 +28,6 @@ import {
   SettingsIcon,
   SunIcon,
   SunMoonIcon,
-  Trash2Icon,
 } from "lucide-react";
 import { parseFrontmatter, setFrontmatterKeys } from "@/lib/frontmatter";
 import { sha256 } from "@/lib/hash";
@@ -38,7 +35,12 @@ import { parseProjectConfig, PROJECT_CONFIG_PATH } from "@/lib/projectConfig";
 import { taskBodyPath, taskSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { parseChatRef } from "@/lib/chat";
-import { NotesView, noteDocs, type NoteIntent } from "@/components/NotesView";
+import {
+  NotesView,
+  noteDocs,
+  type NoteDoc,
+  type NoteIntent,
+} from "@/components/NotesView";
 import { DebugView } from "@/components/DebugView";
 import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
@@ -68,6 +70,7 @@ import {
 import {
   ProjectDetailsDialog,
   type DetailsTab as ProjectDetailsTab,
+  type ProjectArchive,
 } from "@/components/ProjectDetailsDialog";
 import { AppSidebar, CreateProjectDialog } from "@/components/AppSidebar";
 import { ProjectConflictDialog } from "@/components/ProjectConflictDialog";
@@ -80,13 +83,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "@/components/ui/sheet";
 import { Toaster } from "@/components/ui/sonner";
 import { SpellcheckMenu } from "@/components/SpellcheckMenu";
 import { showUndoableToast, useUndoHotkey } from "@/lib/undoToast";
@@ -499,8 +495,9 @@ function ProjectWorkspace() {
   );
 }
 
-// An archived todo, the minimal shape the archived sheet renders and acts on.
-// `content` is the raw task.md so Unarchive can clear its `archived-at:`.
+// An archived todo, the minimal shape the settings dialog's Archive tab
+// renders and acts on. `content` is the raw task.md so Unarchive can clear its
+// `archived-at:`.
 interface ArchivedTodo {
   path: string; // tasks/<slug>/task.md
   slug: string;
@@ -539,147 +536,6 @@ function taskToastPayload(
       <HarnessIcon harness={context.chat.harness} className="size-4" />
     ) : undefined,
   };
-}
-
-// A single row in the archived sheet: the todo's title/path plus inline
-// unarchive and delete actions. Kept compact (one row per todo) since the sheet
-// is a management surface — there's no drag or open-on-click.
-function ArchivedRow({
-  todo,
-  onUnarchive,
-  onDelete,
-}: {
-  todo: ArchivedTodo;
-  onUnarchive: (todo: ArchivedTodo) => void;
-  onDelete: (todo: ArchivedTodo) => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 rounded-lg bg-card p-3 ring-1 ring-border">
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-card-foreground">
-          {todo.title}
-        </p>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {todo.path}
-        </p>
-      </div>
-      <Button variant="outline" size="sm" onClick={() => onUnarchive(todo)}>
-        <ArchiveRestoreIcon />
-        Unarchive
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="text-muted-foreground hover:text-destructive"
-        onClick={() => onDelete(todo)}
-      >
-        <Trash2Icon />
-        Delete
-      </Button>
-    </div>
-  );
-}
-
-// The side sheet listing every archived todo with per-row unarchive/delete and
-// a "Delete all" action in the header — the Todos view's archived surface.
-// "Delete all" arms a confirmation on first click (it's irreversible) and
-// confirms on the second; the armed state resets whenever the sheet closes.
-function ArchivedSheet({
-  open,
-  onOpenChange,
-  todos,
-  onUnarchive,
-  onDelete,
-  onDeleteAll,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  todos: ArchivedTodo[];
-  onUnarchive: (todo: ArchivedTodo) => void;
-  onDelete: (todo: ArchivedTodo) => void;
-  onDeleteAll: () => void;
-}) {
-  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
-
-  return (
-    <Sheet
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) setConfirmingDeleteAll(false);
-        onOpenChange(nextOpen);
-      }}
-    >
-      <ArchivedSheetContent
-        todos={todos}
-        confirmingDeleteAll={confirmingDeleteAll}
-        onUnarchive={onUnarchive}
-        onDelete={onDelete}
-        onDeleteAll={onDeleteAll}
-        onConfirmingDeleteAllChange={setConfirmingDeleteAll}
-      />
-    </Sheet>
-  );
-}
-
-function ArchivedSheetContent({
-  todos,
-  confirmingDeleteAll,
-  onUnarchive,
-  onDelete,
-  onDeleteAll,
-  onConfirmingDeleteAllChange,
-}: {
-  todos: ArchivedTodo[];
-  confirmingDeleteAll: boolean;
-  onUnarchive: (todo: ArchivedTodo) => void;
-  onDelete: (todo: ArchivedTodo) => void;
-  onDeleteAll: () => void;
-  onConfirmingDeleteAllChange: (confirming: boolean) => void;
-}) {
-  return (
-    <SheetContent className="gap-0">
-      <SheetHeader>
-        <SheetTitle>Archived</SheetTitle>
-        <SheetDescription>
-          {todos.length} archived todo{todos.length === 1 ? "" : "s"}
-        </SheetDescription>
-        {todos.length > 0 && (
-          <Button
-            variant={confirmingDeleteAll ? "destructive" : "outline"}
-            size="sm"
-            className="mt-2 w-fit"
-            onClick={() => {
-              if (confirmingDeleteAll) {
-                onDeleteAll();
-                onConfirmingDeleteAllChange(false);
-              } else {
-                onConfirmingDeleteAllChange(true);
-              }
-            }}
-          >
-            <Trash2Icon />
-            {confirmingDeleteAll
-              ? `Delete all ${todos.length}? Click to confirm`
-              : "Delete all"}
-          </Button>
-        )}
-      </SheetHeader>
-      <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
-        {todos.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nothing archived.</p>
-        ) : (
-          todos.map((todo) => (
-            <ArchivedRow
-              key={todo.path}
-              todo={todo}
-              onUnarchive={onUnarchive}
-              onDelete={onDelete}
-            />
-          ))
-        )}
-      </div>
-    </SheetContent>
-  );
 }
 
 function WorkspaceContent({
@@ -778,9 +634,6 @@ function WorkspaceContent({
       args.order,
     );
   });
-  const [showArchived, setShowArchived] = useState(false);
-  // The Notes view's Archived sheet, opened from the same top-right header slot.
-  const [showNotesArchived, setShowNotesArchived] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [globalSettingsTab, setGlobalSettingsTab] =
     useState<GlobalSettingsTab>("harnesses");
@@ -1102,8 +955,8 @@ function WorkspaceContent({
   );
   const takenSlugs = taskFiles.map((f) => taskSlug(f.path) as string);
 
-  // Archived todos surface in the Todos view's Archived sheet. Archived is the
-  // `archived-at:` timestamp now (Todos v1) — the board's `status: archived` is
+  // Archived todos surface in the settings dialog's Archive tab. Archived is
+  // the `archived-at:` timestamp now (Todos v1) — the board's `status: archived` is
   // gone. Unarchive clears the timestamp; Delete tombstones the folder.
   const archivedTodos: ArchivedTodo[] = taskFiles
     .map((f) => ({
@@ -1121,16 +974,9 @@ function WorkspaceContent({
       content: file.content,
     }));
 
-  // Archived count for the active view: todos on the Todos view, notes on Notes.
-  const archivedNoteCount = noteDocs(files).filter((d) => d.archived).length;
-  // The header's Archived control is Todos/Notes-specific — it reads 0 (and the
-  // button is disabled) on other views.
-  const archivedCount =
-    workspaceView === "todos"
-      ? archivedTodos.length
-      : workspaceView === "notes"
-        ? archivedNoteCount
-        : 0;
+  // Archived notes surface next to archived todos in the settings dialog's
+  // Archive tab.
+  const archivedNoteDocs = noteDocs(files).filter((d) => d.archived);
 
   // The command palette's task list = the derived todo groups (frontmatter-only
   // mode; the palette isn't perf-sensitive and needs no live chat index).
@@ -1384,6 +1230,89 @@ function WorkspaceContent({
     }
   }
 
+  // Unarchive a note: clear its `archived:` flag so it rejoins the Notes index.
+  async function unarchiveNote(doc: NoteDoc) {
+    const nextContent = setFrontmatterKeys(doc.content, {
+      archived: undefined,
+    });
+    await upsertFile({
+      projectId,
+      path: doc.path,
+      content: nextContent,
+      hash: await sha256(nextContent),
+      deleted: false,
+    });
+  }
+
+  // Delete an archived note from the Archive tab. Mirrors NotesView's
+  // deleteDocWithUndo: tombstone the attachment rows and the body, then offer
+  // an undo that re-writes the body and re-registers each attachment against
+  // its surviving server blob (GC is out of scope).
+  async function deleteNoteWithUndo(doc: NoteDoc) {
+    const prefix = `notes/${doc.slug}/attachments/`;
+    const revivable = (attachments ?? []).filter(
+      (row) => !row.deleted && row.path.startsWith(prefix),
+    );
+    await Promise.all(
+      revivable.map((row) => tombstoneAttachment({ projectId, path: row.path })),
+    );
+    await upsertFile({
+      projectId,
+      path: doc.path,
+      content: "",
+      hash: "",
+      deleted: true,
+    });
+    showUndoableToast({
+      message: "Note deleted",
+      undo: () =>
+        void (async () => {
+          await upsertFile({
+            projectId,
+            path: doc.path,
+            content: doc.content,
+            hash: await sha256(doc.content),
+            deleted: false,
+          });
+          await Promise.all(
+            revivable.map((row) =>
+              registerAttachment({
+                projectId,
+                path: row.path,
+                storageId: row.storageId,
+                hash: row.hash,
+                contentType: row.contentType,
+                size: row.size,
+              }),
+            ),
+          );
+        })().catch((err) =>
+          console.error("Failed to restore deleted note", err),
+        ),
+    });
+  }
+
+  // Everything the settings dialog's Archive tab renders: archived todos and
+  // notes as ready-made rows, each bound to the same unarchive/delete (+ undo)
+  // handlers the old side sheets used.
+  const projectArchive: ProjectArchive = {
+    todos: archivedTodos.map((todo) => ({
+      key: todo.slug,
+      title: todo.title,
+      detail: todo.path,
+      onUnarchive: () => void unarchiveTodo(todo),
+      onDelete: () => void deleteTodoWithUndo(todo.slug),
+    })),
+    notes: archivedNoteDocs.map((doc) => ({
+      key: doc.slug,
+      title: doc.title,
+      detail: doc.type,
+      onUnarchive: () => void unarchiveNote(doc),
+      onDelete: () => void deleteNoteWithUndo(doc),
+    })),
+    onDeleteAllTodos: () => void deleteAllArchived(),
+  };
+
   // Command palette (⌘K) data + actions. Active-project scoped: its task/note
   // lists are the live todos/notes; the project list drives the switcher.
   const paletteProjects = projects.map(({ project }) => ({
@@ -1552,7 +1481,13 @@ function WorkspaceContent({
       onOpenPalette={() => setShowPalette(true)}
     >
       <div className="flex min-h-0 flex-1 flex-col gap-6">
-        <header className="window-titlebar-row -mx-4 -mt-3 flex h-12 shrink-0 flex-nowrap items-center justify-between gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+        {/* Title | tabs | settings. The equal 1fr side columns keep the view
+            tabs centered on the window regardless of how long the project name
+            runs (it truncates before it can push them). */}
+        <header className="window-titlebar-row -mx-4 -mt-3 grid h-12 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+          <h1 className="min-w-0 truncate text-[13px] font-semibold text-foreground">
+            {currentProject.name}
+          </h1>
           <div className="flex shrink-0 items-center overflow-hidden rounded-lg border border-border">
             {WORKSPACE_VIEWS.map(({ view, title, Icon }, i) => (
               <button
@@ -1572,7 +1507,7 @@ function WorkspaceContent({
               </button>
             ))}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex items-center justify-end">
             <Button
               variant="outline"
               size="sm"
@@ -1580,24 +1515,6 @@ function WorkspaceContent({
             >
               <SettingsIcon />
               Project settings
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={archivedCount === 0}
-              onClick={() =>
-                workspaceView === "todos"
-                  ? setShowArchived(true)
-                  : setShowNotesArchived(true)
-              }
-            >
-              <ArchiveIcon />
-              Archived
-              {archivedCount > 0 && (
-                <span className="ml-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                  {archivedCount}
-                </span>
-              )}
             </Button>
           </div>
         </header>
@@ -1631,8 +1548,6 @@ function WorkspaceContent({
           <NotesView
             projectId={projectId}
             files={files}
-            showArchived={showNotesArchived}
-            onShowArchivedChange={setShowNotesArchived}
             onExit={() => setWorkspaceView("todos")}
             intent={noteIntent}
             onIntentHandled={() => setNoteIntent(null)}
@@ -1657,8 +1572,8 @@ function WorkspaceContent({
             projectId={projectId}
             files={files}
             // ↑↓/↵ list nav is live only when no todo dialog is over the list.
-            // (Other overlays — palette, archived sheet — are role="dialog" and
-            // the hook's own target guard defers to them.)
+            // (Other overlays — palette, settings dialogs — are role="dialog"
+            // and the hook's own target guard defers to them.)
             active={todoDialog.mode === "closed"}
             onOpenTodo={(path) => openTodo(path)}
             onAddTodo={() => openCapture()}
@@ -1672,15 +1587,6 @@ function WorkspaceContent({
             onDeleteTodo={(slug) => void deleteTodoWithUndo(slug)}
           />
         )}
-
-        <ArchivedSheet
-          open={showArchived}
-          onOpenChange={setShowArchived}
-          todos={archivedTodos}
-          onUnarchive={(todo) => void unarchiveTodo(todo)}
-          onDelete={(todo) => void deleteTodoWithUndo(todo.slug)}
-          onDeleteAll={() => void deleteAllArchived()}
-        />
 
         <GlobalSettingsDialog
           open={showGlobalSettings}
@@ -1697,6 +1603,7 @@ function WorkspaceContent({
           onOpenChange={setShowProjectDetails}
           onLocalConfigChange={onLocalConfigChange}
           initialTab={projectDetailsTab}
+          archive={projectArchive}
         />
 
         {/* ONE TodoDialog for the whole Todos tab (single-binding). It's a fresh

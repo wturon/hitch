@@ -13,6 +13,8 @@ import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import {
   AlertCircleIcon,
+  ArchiveIcon,
+  ArchiveRestoreIcon,
   CalendarIcon,
   CheckCircle2Icon,
   FolderOpenIcon,
@@ -45,17 +47,35 @@ type ProjectDetails = NonNullable<
   FunctionReturnType<typeof api.projects.details>
 >;
 
-export type DetailsTab = "general" | "local" | "members";
+export type DetailsTab = "general" | "local" | "members" | "archive";
 
 const TABS = [
   { id: "general", label: "General", icon: Settings2Icon },
   { id: "local", label: "Local setup", icon: FolderOpenIcon },
   { id: "members", label: "Members", icon: UsersIcon },
+  { id: "archive", label: "Archive", icon: ArchiveIcon },
 ] as const satisfies ReadonlyArray<{
   id: DetailsTab;
   label: string;
   icon: typeof Settings2Icon;
 }>;
+
+// A row in the Archive tab, already bound to its unarchive/delete actions —
+// the dialog stays dumb about how todos and notes persist; the workspace
+// (which owns the files subscription and undo toasts) supplies both.
+export interface ArchivedItem {
+  key: string;
+  title: string;
+  detail: string;
+  onUnarchive: () => void;
+  onDelete: () => void;
+}
+
+export interface ProjectArchive {
+  todos: ArchivedItem[];
+  notes: ArchivedItem[];
+  onDeleteAllTodos: () => void;
+}
 
 interface HitchBinding {
   projectId: Id<"projects">;
@@ -124,12 +144,14 @@ export function ProjectDetailsDialog({
   onOpenChange,
   onLocalConfigChange,
   initialTab = "general",
+  archive,
 }: {
   projectId: Id<"projects">;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onLocalConfigChange?: (config: LocalHitchConfig) => void;
   initialTab?: DetailsTab;
+  archive?: ProjectArchive;
 }) {
   const details = useQuery(api.projects.details, open ? { projectId } : "skip");
 
@@ -158,6 +180,7 @@ export function ProjectDetailsDialog({
             details={details}
             onLocalConfigChange={onLocalConfigChange}
             initialTab={initialTab}
+            archive={archive}
           />
         )}
       </DialogContent>
@@ -170,11 +193,13 @@ function ProjectDetailsForm({
   details,
   onLocalConfigChange,
   initialTab,
+  archive,
 }: {
   projectId: Id<"projects">;
   details: ProjectDetails;
   onLocalConfigChange?: (config: LocalHitchConfig) => void;
   initialTab: DetailsTab;
+  archive?: ProjectArchive;
 }) {
   const bridge =
     typeof window !== "undefined"
@@ -594,8 +619,101 @@ function ProjectDetailsForm({
               </div>
             </section>
           )}
+
+          {tab === "archive" && <ArchivePanel archive={archive} />}
         </div>
       </form>
+    </div>
+  );
+}
+
+// The Archive tab: archived todos and notes with per-row unarchive/delete,
+// plus a two-click "Delete all" for todos (it's irreversible beyond the undo
+// toast). Replaces the old header-triggered Archived side sheets. The armed
+// delete-all confirmation resets whenever the tab unmounts (tab switch or
+// dialog close).
+function ArchivePanel({ archive }: { archive?: ProjectArchive }) {
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
+  const todos = archive?.todos ?? [];
+  const notes = archive?.notes ?? [];
+
+  return (
+    <div className="flex flex-col gap-5">
+      <section className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-medium">
+            Todos ({todos.length})
+          </h3>
+          {todos.length > 0 && archive && (
+            <Button
+              type="button"
+              variant={confirmingDeleteAll ? "destructive" : "outline"}
+              size="sm"
+              onClick={() => {
+                if (confirmingDeleteAll) {
+                  archive.onDeleteAllTodos();
+                  setConfirmingDeleteAll(false);
+                } else {
+                  setConfirmingDeleteAll(true);
+                }
+              }}
+            >
+              <Trash2Icon />
+              {confirmingDeleteAll
+                ? `Delete all ${todos.length}? Click to confirm`
+                : "Delete all"}
+            </Button>
+          )}
+        </div>
+        <ArchivedList items={todos} />
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <h3 className="text-sm font-medium">Notes ({notes.length})</h3>
+        <ArchivedList items={notes} />
+      </section>
+    </div>
+  );
+}
+
+function ArchivedList({ items }: { items: ArchivedItem[] }) {
+  if (items.length === 0) {
+    return <p className="text-sm text-muted-foreground">Nothing archived.</p>;
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {items.map((item) => (
+        <div
+          key={item.key}
+          className="flex items-center gap-2 rounded-lg border bg-muted/20 p-3"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium">{item.title}</p>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {item.detail}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={item.onUnarchive}
+          >
+            <ArchiveRestoreIcon />
+            Unarchive
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground hover:text-destructive"
+            onClick={item.onDelete}
+          >
+            <Trash2Icon />
+            Delete
+          </Button>
+        </div>
+      ))}
     </div>
   );
 }

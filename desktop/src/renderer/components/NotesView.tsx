@@ -5,7 +5,6 @@ import { useMutation, useQuery } from "convex/react";
 import {
   AlignLeftIcon,
   ArchiveIcon,
-  ArchiveRestoreIcon,
   ChevronLeftIcon,
   CodeIcon,
   CopyIcon,
@@ -46,20 +45,14 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { showUndoableToast } from "@/lib/undoToast";
 
 // A note is a folder under notes/, its body in index.md. This is the in-memory
 // model the index renders, mirroring the board's Card. `content` is the raw
-// file text (frontmatter + body) the editor writes back verbatim.
-interface NoteDoc {
+// file text (frontmatter + body) the editor writes back verbatim. Exported so
+// the workspace can build the Project settings Archive tab's note rows.
+export interface NoteDoc {
   slug: string;
   title: string;
   type: string;
@@ -94,8 +87,8 @@ function docType(type: string | undefined): string {
 }
 
 // Build the doc list from the project's files: keep only canonical index.md
-// bodies, parse frontmatter, drop tombstones. Exported so the workspace header
-// can count archived notes for its top-right Archived control.
+// bodies, parse frontmatter, drop tombstones. Exported so the workspace can
+// list archived notes for the Project settings Archive tab.
 export function noteDocs(files: FileDoc[]): NoteDoc[] {
   return files.reduce<NoteDoc[]>((acc, f) => {
     if (f.deleted) return acc;
@@ -118,18 +111,12 @@ export function noteDocs(files: FileDoc[]): NoteDoc[] {
 export function NotesView({
   projectId,
   files,
-  showArchived,
-  onShowArchivedChange,
   onExit,
   intent,
   onIntentHandled,
 }: {
   projectId: Id<"projects">;
   files: FileDoc[];
-  // The Archived sheet is opened from the shared workspace header (top-right),
-  // so its open state is owned by the parent and threaded back in here.
-  showArchived: boolean;
-  onShowArchivedChange: (open: boolean) => void;
   // Esc on the index (with no query) leaves Notes for the Board — the parent owns
   // the Board/Notes tab.
   onExit: () => void;
@@ -191,7 +178,6 @@ export function NotesView({
   useEffect(() => () => flushRef.current(), []);
 
   const docs = useMemo(() => noteDocs(files), [files]);
-  const archivedDocs = useMemo(() => docs.filter((d) => d.archived), [docs]);
   // The index lists active notes most-recently-edited first (recency, no type
   // grouping). A freshly created/edited note carries an optimistic updatedAt of
   // MAX_SAFE_INTEGER, so it surfaces at the top immediately.
@@ -359,7 +345,7 @@ export function NotesView({
     }
   }
 
-  // The user-facing note delete (index row, editor ⋯ Delete, archived sheet):
+  // The user-facing note delete (index row, editor ⋯ Delete):
   // note delete today has no confirmation and cascades attachment tombstones, so
   // do-then-undo is the safety net. Snapshot the body + attachment rows before
   // tombstoning; undo re-writes the body and re-registers each attachment
@@ -454,15 +440,6 @@ export function NotesView({
           onClose={() => setSelectedSlug(null)}
         />
       )}
-
-      <NotesArchivedSheet
-        open={showArchived}
-        onOpenChange={onShowArchivedChange}
-        docs={archivedDocs}
-        pendingSlug={pendingSlug}
-        onUnarchive={(doc) => void setArchived(doc, false)}
-        onDelete={(doc) => void deleteDocWithUndo(doc.slug)}
-      />
     </div>
   );
 }
@@ -1381,66 +1358,3 @@ function TypePill({
   );
 }
 
-function NotesArchivedSheet({
-  open,
-  onOpenChange,
-  docs,
-  pendingSlug,
-  onUnarchive,
-  onDelete,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  docs: NoteDoc[];
-  pendingSlug: string | null;
-  onUnarchive: (doc: NoteDoc) => void;
-  onDelete: (doc: NoteDoc) => void;
-}) {
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="gap-0">
-        <SheetHeader>
-          <SheetTitle>Archived</SheetTitle>
-          <SheetDescription>
-            {docs.length} archived note{docs.length === 1 ? "" : "s"}
-          </SheetDescription>
-        </SheetHeader>
-        <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
-          {docs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nothing archived.</p>
-          ) : (
-            docs.map((doc) => (
-              <div
-                key={doc.slug}
-                className="flex items-center gap-2 rounded-md border border-border p-3"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm">{doc.title}</p>
-                  <p className="text-xs text-muted-foreground">{doc.type}</p>
-                </div>
-                <button
-                  type="button"
-                  aria-label="Unarchive"
-                  disabled={pendingSlug === doc.slug}
-                  onClick={() => onUnarchive(doc)}
-                  className="flex size-7 items-center justify-center rounded-lg border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-                >
-                  <ArchiveRestoreIcon className="size-4" />
-                </button>
-                <button
-                  type="button"
-                  aria-label="Delete"
-                  disabled={pendingSlug === doc.slug}
-                  onClick={() => onDelete(doc)}
-                  className="flex size-7 items-center justify-center rounded-lg border text-[#B42318] hover:bg-[#B42318]/10 disabled:opacity-50"
-                >
-                  <Trash2Icon className="size-4" />
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      </SheetContent>
-    </Sheet>
-  );
-}
