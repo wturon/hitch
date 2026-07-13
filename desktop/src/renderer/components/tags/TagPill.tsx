@@ -27,11 +27,12 @@ export function TagPill({
   );
 }
 
-// The right-aligned pill lane on a todo row: renders between the title and the
-// agent-chip slot so pills form a vertical column across rows (gap 4px, never
-// shrinks; the title truncates instead). Untagged rows render nothing — no
-// placeholder. More than 3 tags collapse to the first 3 plus a gray `+N` pill.
-// DONE rows dim the whole group to 55%.
+// The tag pills for a todo row: rendered on the row's meta line beneath the
+// title (left-aligned, ahead of any status text), so they no longer compete with
+// the title for the primary line. Gap 4px, never shrinks — the meta line's status
+// text truncates instead. Untagged rows render nothing — no placeholder. More
+// than 3 tags collapse to the first 3 plus a gray `+N` pill. DONE rows dim the
+// whole group to 55%.
 const MAX_PILLS = 3;
 
 // Pure split of a row's tags into the pills shown and the overflow count, so the

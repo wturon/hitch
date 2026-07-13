@@ -331,6 +331,9 @@ function TodoRow({
   const subtitle = twoLine
     ? `${todo.chatStatus === "needs-input" ? "Needs your input" : "Waiting for you"} · ${relativeTime(recency)}`
     : null;
+  // Tags now live on a meta line under the title (merged with any status text),
+  // so any row carrying either grows to the two-line height; a bare row stays 42px.
+  const hasMeta = subtitle !== null || todo.tags.length > 0;
 
   // The right-click menu's options, mirroring the TodoDialog ⋯ menu (SavedActions)
   // plus the row-native primaries (Open / Mark done). Detach only shows when
@@ -370,7 +373,7 @@ function TodoRow({
           }}
           className={cn(
             "group flex cursor-pointer items-center gap-3 rounded-lg px-2.5 transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none",
-            twoLine ? "min-h-[54px] py-1.5" : "h-[42px]",
+            hasMeta ? "min-h-[54px] py-1.5" : "h-[42px]",
             // Keyboard highlight. Hover sets the same selection (onMouseMove), so
             // mouse and keyboard converge on one highlighted row.
             nav?.selected && "bg-muted",
@@ -403,17 +406,29 @@ function TodoRow({
               </span>
               {generatingTitle && <TitleGenerationSpinner />}
             </div>
-            {subtitle && (
-              <span className="truncate text-[12px] leading-4 text-muted-foreground">
-                {subtitle}
-              </span>
+            {hasMeta && (
+              <div className="flex min-w-0 items-center gap-2">
+                <TagPillGroup
+                  tags={todo.tags}
+                  colorOf={tag.colorOf}
+                  dimmed={done}
+                />
+                {todo.tags.length > 0 && subtitle && (
+                  <span
+                    aria-hidden
+                    className="text-[12px] leading-4 text-muted-foreground/40"
+                  >
+                    ·
+                  </span>
+                )}
+                {subtitle && (
+                  <span className="truncate text-[12px] leading-4 text-muted-foreground">
+                    {subtitle}
+                  </span>
+                )}
+              </div>
             )}
           </div>
-          <TagPillGroup
-            tags={todo.tags}
-            colorOf={tag.colorOf}
-            dimmed={done}
-          />
           <RowChip todo={todo} projectId={projectId} ghost={done} />
         </div>
       </ContextMenuTrigger>
