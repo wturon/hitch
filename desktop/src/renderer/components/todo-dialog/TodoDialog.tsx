@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
+import { LoaderCircle } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 
@@ -269,6 +270,10 @@ function TodoBody({
   // the close-time save writes the user's/seed title back to disk — which the
   // daemon-side seed guard already tolerates.
   const titleClaimedRef = useRef(false);
+  // A reactive mirror of the claim (the ref above stays the sync source of truth
+  // for the claimedKeys callback). Focusing the title forfeits the auto-title, so
+  // the rename spinner must vanish the moment the user takes ownership.
+  const [titleClaimed, setTitleClaimed] = useState(false);
   // The document model. Two seeds, chosen once at mount (this component is keyed
   // by session, so mount == a fresh open):
   //   • create — no `existing`, so it restores the localStorage recovery draft
@@ -290,6 +295,25 @@ function TodoBody({
   const [stage, setStage] = useState<Stage>(existing ? "saved" : "capture");
   const [transforming, setTransforming] = useState(false);
   const [view, setView] = useState<View>(loadView);
+
+  // ─── Auto-title progress (the "renaming" spinner) ──────────────────────────
+  // transform() enqueues a generate-title command and stashes its id here; we
+  // watch that command doc so a subtle spinner can sit beside the seed title
+  // while the daemon proposes a better one, then vanish the instant it resolves.
+  // The seed title stays displayed the whole time — the spinner only annotates
+  // it, so this respects the seed-is-always-true rule (no promise-shaped title
+  // text that breaks when the daemon/CLI is down).
+  const [titleCommandId, setTitleCommandId] = useState<Id<"commands"> | null>(
+    null,
+  );
+  const titleCommand = useQuery(
+    api.commands.getCommand,
+    titleCommandId ? { id: titleCommandId, projectId } : "skip",
+  );
+  // Safety cap: an unclaimed command self-expires via the every-minute cron, but
+  // a claimed-then-crashed daemon would leave it "pending" forever. Never let the
+  // spinner outlive a generous ceiling (typical generation is ~4.5s).
+  const [titleGenTimedOut, setTitleGenTimedOut] = useState(false);
 
   // The committed file path once materialized (by ⌘⏎ or an early image paste),
   // or the existing todo's path from the start. Mirrored in a ref for async
@@ -342,6 +366,15 @@ function TodoBody({
   useEffect(() => {
     window.localStorage.setItem(VIEW_KEY, view);
   }, [view]);
+
+  // Bound the rename spinner so a claimed-then-crashed daemon can't spin it
+  // forever (see titleGenTimedOut). Resets whenever a new command is watched.
+  useEffect(() => {
+    if (!titleCommandId) return;
+    setTitleGenTimedOut(false);
+    const t = window.setTimeout(() => setTitleGenTimedOut(true), 30_000);
+    return () => window.clearTimeout(t);
+  }, [titleCommandId]);
 
   // A committed write that remembers what it wrote, so close can skip a no-op.
   const write = useCallback(
@@ -438,9 +471,14 @@ function TodoBody({
     // one-liner's words live there — rewriting the title never loses anything.
     // Fire-and-forget: a failed enqueue must never touch the save path.
     if (body.trim() !== "") {
-      void enqueueGenerateTitle({ projectId, path, title }).catch((err) =>
-        console.error("Failed to enqueue title generation", err),
-      );
+      // Watch the enqueued command so the header can show the rename spinner
+      // while it's in flight (see titleCommand). Fire-and-forget still: a failed
+      // enqueue just leaves the spinner off and never touches the save path.
+      void enqueueGenerateTitle({ projectId, path, title })
+        .then((id) => setTitleCommandId(id))
+        .catch((err) =>
+          console.error("Failed to enqueue title generation", err),
+        );
     }
     // The capture succeeded — the recovery draft's job is done.
     clearCaptureDraft(projectId);
@@ -694,6 +732,12 @@ function TodoBody({
   const footerReady = stage === "saved" && !transforming;
   const displayTitle = draft.frontmatter.title || "Untitled";
   const footerTitle = draft.frontmatter.title || slug || "Untitled";
+  // The rename spinner shows only while our generate-title command is genuinely
+  // in flight ("pending" also covers claimed-and-running), the user hasn't taken
+  // the title over (focus forfeits the auto-title), and we're under the safety
+  // cap. Any terminal status (done/error/expired) clears it.
+  const generatingTitle =
+    titleCommand?.status === "pending" && !titleClaimed && !titleGenTimedOut;
   const linkedWhen = relativeTime(existing?.updatedAt ?? Date.now());
 
   return (
@@ -721,8 +765,12 @@ function TodoBody({
                 value={draft.title}
                 onChange={(e) => draft.setTitle(e.target.value)}
                 // Focus claims the title for this session (see titleClaimedRef):
-                // from here on the daemon's generated title is never adopted.
-                onFocus={() => (titleClaimedRef.current = true)}
+                // from here on the daemon's generated title is never adopted, so
+                // the rename spinner also stands down (titleClaimed).
+                onFocus={() => {
+                  titleClaimedRef.current = true;
+                  setTitleClaimed(true);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -732,6 +780,17 @@ function TodoBody({
                 placeholder="Untitled"
                 spellCheck={false}
                 className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-[13px] font-medium leading-4 text-muted-foreground outline-none transition-colors hover:text-foreground focus:text-foreground placeholder:text-muted-foreground/40"
+              />
+            )}
+            {/* Auto-title in flight: a subtle spinner beside the seed title while
+                the daemon proposes a better one (only in the formatted view,
+                where the title is actually shown). It clears the moment the
+                command resolves, the user claims the title, or the safety cap
+                trips. See generatingTitle. */}
+            {view !== "raw" && generatingTitle && (
+              <LoaderCircle
+                aria-label="Generating title"
+                className="size-3 shrink-0 animate-spin text-muted-foreground/50"
               />
             )}
             <SavedActions
