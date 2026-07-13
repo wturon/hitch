@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { LoaderCircle } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 
@@ -35,6 +34,7 @@ import { SavedActions } from "./SavedActions";
 import { TodoDelegateFooter } from "./TodoDelegateFooter";
 import { TodoLinkedFooter, TodoRequestFooter } from "./TodoChatFooter";
 import { TodoEditorArea } from "./TodoEditorArea";
+import { TitleGenerationSpinner } from "../TitleGenerationSpinner";
 import {
   clearCaptureDraft,
   loadCaptureDraft,
@@ -760,38 +760,41 @@ function TodoBody({
             {view === "raw" ? (
               <div className="flex-1" />
             ) : (
-              <input
-                aria-label="Todo title"
-                value={draft.title}
-                onChange={(e) => draft.setTitle(e.target.value)}
-                // Focus claims the title for this session (see titleClaimedRef):
-                // from here on the daemon's generated title is never adopted, so
-                // the rename spinner also stands down (titleClaimed).
-                onFocus={() => {
-                  titleClaimedRef.current = true;
-                  setTitleClaimed(true);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    editorRef.current?.focusStart();
-                  }
-                }}
-                placeholder="Untitled"
-                spellCheck={false}
-                className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-[13px] font-medium leading-4 text-muted-foreground outline-none transition-colors hover:text-foreground focus:text-foreground placeholder:text-muted-foreground/40"
-              />
-            )}
-            {/* Auto-title in flight: a subtle spinner beside the seed title while
-                the daemon proposes a better one (only in the formatted view,
-                where the title is actually shown). It clears the moment the
-                command resolves, the user claims the title, or the safety cap
-                trips. See generatingTitle. */}
-            {view !== "raw" && generatingTitle && (
-              <LoaderCircle
-                aria-label="Generating title"
-                className="size-3 shrink-0 animate-spin text-muted-foreground/50"
-              />
+              // Title + its in-flight spinner share a flex-1 cell. The input is
+              // sized to its text (hitch-autosize / field-sizing, with size={1} so
+              // it doesn't reserve the default 20-char width) rather than stretched,
+              // so the spinner hugs the end of the title instead of being pushed out
+              // to the far right. min-w-0 + truncate let a long title ellipsize and
+              // yield room for the spinner.
+              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                <input
+                  aria-label="Todo title"
+                  value={draft.title}
+                  onChange={(e) => draft.setTitle(e.target.value)}
+                  // Focus claims the title for this session (see titleClaimedRef):
+                  // from here on the daemon's generated title is never adopted, so
+                  // the rename spinner also stands down (titleClaimed).
+                  onFocus={() => {
+                    titleClaimedRef.current = true;
+                    setTitleClaimed(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      editorRef.current?.focusStart();
+                    }
+                  }}
+                  placeholder="Untitled"
+                  spellCheck={false}
+                  size={1}
+                  className="hitch-autosize min-w-0 max-w-full truncate border-0 bg-transparent p-0 text-[13px] font-medium leading-4 text-muted-foreground outline-none transition-colors hover:text-foreground focus:text-foreground placeholder:text-muted-foreground/40"
+                />
+                {/* Auto-title in flight: a subtle spinner right next to the seed
+                    title while the daemon proposes a better one. Clears when the
+                    command resolves, the user claims the title, or the safety cap
+                    trips. See generatingTitle. */}
+                {generatingTitle && <TitleGenerationSpinner />}
+              </div>
             )}
             <SavedActions
               view={view}

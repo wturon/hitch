@@ -334,6 +334,34 @@ export const completeCommand = mutation({
   },
 });
 
+// The task paths that currently have an in-flight generate-title command, so a
+// board/list can show a subtle "auto-naming" spinner beside those titles. A
+// command counts as in-flight while it's pending (claimed-and-running included)
+// and unexpired — the happy path clears it in ~4.5s (status → done, which drops
+// it from this set), and the expiresAt filter here plus the every-minute cron
+// drop any abandoned one. Cheap: reuses the pending index and returns only paths.
+export const activeTitleGenerations = query({
+  args: { projectId: v.id("projects") },
+  handler: async (ctx, args) => {
+    const { project } = await requireProjectMemberById(ctx, args.projectId);
+    const now = Date.now();
+    const pending = await ctx.db
+      .query("commands")
+      .withIndex("by_project_status", (q) =>
+        q.eq("projectId", project._id).eq("status", "pending"),
+      )
+      .collect();
+    const paths = new Set<string>();
+    for (const cmd of pending) {
+      if (cmd.kind !== "generate-title") continue;
+      if (cmd.expiresAt !== undefined && cmd.expiresAt <= now) continue;
+      const path = cmd.linkedPath ?? cmd.path;
+      if (path) paths.add(path);
+    }
+    return [...paths];
+  },
+});
+
 // Fetch a single command for the user that enqueued it, so the browser can watch
 // how its launch resolved (done, or error with an errorCode to guide the user).
 // Returns null if it's gone or belongs to another project.
