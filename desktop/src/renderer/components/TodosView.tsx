@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  createContext,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -80,8 +82,14 @@ import { TagPillGroup } from "@/components/tags/TagPill";
 import { TagCombobox } from "@/components/tags/TagCombobox";
 import { TagFilterBar } from "@/components/tags/TagFilterBar";
 import { HarnessChip, RequestChip } from "@/components/HarnessChip";
+import { TitleGenerationSpinner } from "@/components/TitleGenerationSpinner";
 import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import { cn } from "@/lib/utils";
+
+// Task paths with an in-flight auto-title, provided by TodosView (one query) and
+// read by each row so it can show the rename spinner beside the title without a
+// per-row subscription. Empty default = no spinners (e.g. rows rendered outside).
+const TitlingPathsContext = createContext<ReadonlySet<string>>(new Set());
 
 // How many completed todos the collapsed DONE group previews before the
 // "Show N more completed" toggle. The artboard shows a small recent slice; the
@@ -328,6 +336,9 @@ function TodoRow({
   // plus the row-native primaries (Open / Mark done). Detach only shows when
   // there's a chat or request to strip; Delete needs a resolvable slug.
   const canDetach = todo.chat !== null || todo.request !== null;
+  // Auto-title in flight for this task → a subtle spinner beside its title, in
+  // sync with the dialog's (both read the same generate-title command state).
+  const generatingTitle = useContext(TitlingPathsContext).has(todo.path);
   const slug = taskSlug(todo.path);
   const copyPath = () =>
     void navigator.clipboard.writeText(todo.path).catch(() => {});
@@ -374,21 +385,24 @@ function TodoRow({
             onToggle={() => onToggleCompleted(todo, !done)}
           />
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span
-              className={cn(
-                "truncate text-[13.5px] leading-[18px]",
-                variant === "needs-you" && "font-medium text-foreground",
-                variant === "backlog" && "text-foreground",
-                variant === "working" &&
-                  (ghostTitle
-                    ? "text-muted-foreground/70"
-                    : "text-muted-foreground"),
-                done &&
-                  "text-neutral-400 line-through decoration-1 dark:text-neutral-500",
-              )}
-            >
-              {todo.title}
-            </span>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span
+                className={cn(
+                  "truncate text-[13.5px] leading-[18px]",
+                  variant === "needs-you" && "font-medium text-foreground",
+                  variant === "backlog" && "text-foreground",
+                  variant === "working" &&
+                    (ghostTitle
+                      ? "text-muted-foreground/70"
+                      : "text-muted-foreground"),
+                  done &&
+                    "text-neutral-400 line-through decoration-1 dark:text-neutral-500",
+                )}
+              >
+                {todo.title}
+              </span>
+              {generatingTitle && <TitleGenerationSpinner />}
+            </div>
             {subtitle && (
               <span className="truncate text-[12px] leading-4 text-muted-foreground">
                 {subtitle}
@@ -633,6 +647,15 @@ export function TodosView({
     () => (chatRows === undefined ? undefined : indexChats(chatRows)),
     [chatRows],
   );
+  // Tasks whose auto-title is in flight — one project-wide subscription, handed
+  // to the rows via context so each shows the rename spinner beside its title.
+  const titlingPathsList = useQuery(api.commands.activeTitleGenerations, {
+    projectId,
+  });
+  const titlingPaths = useMemo(
+    () => new Set(titlingPathsList ?? []),
+    [titlingPathsList],
+  );
   // The tag color registry (tasks/config.json) rides the same `files`
   // subscription as everything else — advisory, colors-only. A missing/blank
   // file parses to the empty registry; a tag not listed here renders gray.
@@ -840,7 +863,7 @@ export function TodosView({
     });
   }
 
-  return (
+  const content = (
     <div
       ref={scrollRef}
       className="flex min-h-0 flex-1 flex-col overflow-y-auto"
@@ -970,5 +993,10 @@ export function TodosView({
         )}
       </div>
     </div>
+  );
+  return (
+    <TitlingPathsContext.Provider value={titlingPaths}>
+      {content}
+    </TitlingPathsContext.Provider>
   );
 }
