@@ -17,6 +17,7 @@ export function TitleGenerationSpinner() {
     <Tooltip>
       <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
         <LoaderCircle
+          role="img"
           aria-label="Auto-generating title"
           className="size-3 animate-spin text-muted-foreground/50"
         />

@@ -338,8 +338,14 @@ export const completeCommand = mutation({
 // board/list can show a subtle "auto-naming" spinner beside those titles. A
 // command counts as in-flight while it's pending (claimed-and-running included)
 // and unexpired — the happy path clears it in ~4.5s (status → done, which drops
-// it from this set), and the expiresAt filter here plus the every-minute cron
-// drop any abandoned one. Cheap: reuses the pending index and returns only paths.
+// it from this set), and the every-minute cron expires any unclaimed straggler.
+// Bounds expiry at the index (by_project_status_expires + gt(expiresAt, now),
+// mirroring pendingCommands) so already-expired rows never reach us; returns only
+// paths. NOTE: a claimed-then-crashed command isn't rewritten by anything, so —
+// since a Convex query only re-runs when data it read changes, not on wall-clock
+// — that row's spinner can linger past the 5-min TTL until the project's next
+// command write re-evaluates this query. Rare, self-healing, and a subtle icon;
+// the dialog carries its own 30s client cap.
 export const activeTitleGenerations = query({
   args: { projectId: v.id("projects") },
   handler: async (ctx, args) => {
@@ -347,14 +353,16 @@ export const activeTitleGenerations = query({
     const now = Date.now();
     const pending = await ctx.db
       .query("commands")
-      .withIndex("by_project_status", (q) =>
-        q.eq("projectId", project._id).eq("status", "pending"),
+      .withIndex("by_project_status_expires", (q) =>
+        q
+          .eq("projectId", project._id)
+          .eq("status", "pending")
+          .gt("expiresAt", now),
       )
       .collect();
     const paths = new Set<string>();
     for (const cmd of pending) {
       if (cmd.kind !== "generate-title") continue;
-      if (cmd.expiresAt !== undefined && cmd.expiresAt <= now) continue;
       const path = cmd.linkedPath ?? cmd.path;
       if (path) paths.add(path);
     }
