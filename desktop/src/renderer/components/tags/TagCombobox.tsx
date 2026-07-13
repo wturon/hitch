@@ -69,8 +69,15 @@ export function TagCombobox({
   const q = query.trim().toLowerCase();
   const normalized = normalizeTag(query);
 
+  // Match on the raw lowercased query AND the normalized (kebab) query, so
+  // typing "needs design" still finds the existing `needs-design` id.
   const matches =
-    q === "" ? options : options.filter((o) => o.id.includes(q));
+    q === ""
+      ? options
+      : options.filter(
+          (o) =>
+            o.id.includes(q) || (normalized !== "" && o.id.includes(normalized)),
+        );
   const exactExists = options.some((o) => o.id === normalized);
   const showCreate =
     mode === "assign" && !!onCreate && normalized !== "" && !exactExists;
