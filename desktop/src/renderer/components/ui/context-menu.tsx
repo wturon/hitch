@@ -108,11 +108,78 @@ function ContextMenuSeparator({
   )
 }
 
+// Nested submenu. SubTrigger is a menu item that opens a child popup; SubContent
+// hosts that popup's arbitrary content (here, a searchable tag combobox). Kept
+// side="right" so it flies out beside the parent menu like a native submenu.
+function ContextMenuSub({ ...props }: ContextMenuPrimitive.SubmenuRoot.Props) {
+  return (
+    <ContextMenuPrimitive.SubmenuRoot data-slot="context-menu-sub" {...props} />
+  )
+}
+
+function ContextMenuSubTrigger({
+  className,
+  children,
+  ...props
+}: ContextMenuPrimitive.SubmenuTrigger.Props) {
+  return (
+    <ContextMenuPrimitive.SubmenuTrigger
+      data-slot="context-menu-sub-trigger"
+      className={cn(
+        "flex h-8 cursor-default select-none items-center gap-2 rounded-md px-2 text-sm outline-none transition-colors data-highlighted:bg-accent data-highlighted:text-accent-foreground data-popup-open:bg-accent data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </ContextMenuPrimitive.SubmenuTrigger>
+  )
+}
+
+function ContextMenuSubContent({
+  className,
+  children,
+  align = "start",
+  side = "right",
+  sideOffset = 2,
+  ...props
+}: ContextMenuPrimitive.Popup.Props & {
+  align?: ContextMenuPrimitive.Positioner.Props["align"]
+  side?: ContextMenuPrimitive.Positioner.Props["side"]
+  sideOffset?: ContextMenuPrimitive.Positioner.Props["sideOffset"]
+}) {
+  return (
+    <ContextMenuPortal>
+      <ContextMenuPrimitive.Positioner
+        className="z-50 outline-none"
+        data-slot="context-menu-sub-positioner"
+        align={align}
+        side={side}
+        sideOffset={sideOffset}
+      >
+        <ContextMenuPrimitive.Popup
+          data-slot="context-menu-sub-content"
+          className={cn(
+            "rounded-lg bg-popover p-1 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+            className,
+          )}
+          {...props}
+        >
+          {children}
+        </ContextMenuPrimitive.Popup>
+      </ContextMenuPrimitive.Positioner>
+    </ContextMenuPortal>
+  )
+}
+
 export {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuPortal,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 }

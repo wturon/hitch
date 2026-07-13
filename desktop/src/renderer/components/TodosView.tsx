@@ -1,6 +1,12 @@
 "use client";
 
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useMutation, useQuery } from "convex/react";
 import {
   DndContext,
@@ -23,29 +29,56 @@ import {
   CopyIcon,
   PlusIcon,
   SquareArrowOutUpRightIcon,
+  TagIcon,
   Trash2Icon,
   Unlink2Icon,
 } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
 import { clearChatFields, parseChatOpenState } from "@/lib/chat";
-import { parseFrontmatter } from "@/lib/frontmatter";
+import {
+  parseFrontmatter,
+  serializeTagsValue,
+  setFrontmatterKeys,
+} from "@/lib/frontmatter";
 import { taskSlug } from "@/lib/tasks";
+import type { TagColorName } from "@/lib/tagColors";
+import {
+  ensureRegistryTag,
+  parseTagRegistry,
+  registryColorMap,
+  serializeTagRegistry,
+  TAG_REGISTRY_PATH,
+  type TagRegistry,
+} from "@/lib/tagRegistry";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
+  allGroupTodos,
   deriveTodoGroups,
+  EMPTY_TAG_FILTER,
+  filterTodoGroups,
   indexChats,
+  isTagFilterActive,
   reorderBacklog,
+  tagFacetCounts,
   type FileRow,
+  type TagFilter,
   type Todo,
   type TodoGroups,
 } from "@/lib/todos";
+import { loadTagFilter, saveTagFilter } from "@/lib/tagFilterStorage";
+import { TagPillGroup } from "@/components/tags/TagPill";
+import { TagCombobox } from "@/components/tags/TagCombobox";
+import { TagFilterBar } from "@/components/tags/TagFilterBar";
 import { HarnessChip, RequestChip } from "@/components/HarnessChip";
 import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import { cn } from "@/lib/utils";
@@ -185,6 +218,60 @@ type RowNav = {
   };
 };
 
+// Tag wiring shared by every row: how to color a tag id (registry-driven, gray
+// fallback), the registry's known ids (the assign submenu's option list), and
+// the two write actions. Toggling assigns/unassigns the tag in the task's
+// frontmatter; creating also registers a color for a brand-new id.
+type RowTagProps = {
+  colorOf: (id: string) => TagColorName;
+  registryTagIds: string[];
+  onToggleTag: (todo: Todo, id: string) => void;
+  onCreateTag: (todo: Todo, id: string) => void;
+};
+
+// The row's right-click Tags ▸ submenu: a searchable combobox that toggles the
+// registry's tags on/off for this task and creates+assigns a new one when the
+// query matches nothing (board C). Options = registry tags ∪ the task's own tags
+// (so an agent-added, unregistered tag can still be toggled off here).
+function TagsSubmenu({
+  todo,
+  tag,
+}: {
+  todo: Todo;
+  tag: RowTagProps;
+}) {
+  const optionIds = useMemo(() => {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const id of [...tag.registryTagIds, ...todo.tags]) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+    return ids;
+  }, [tag.registryTagIds, todo.tags]);
+  const options = optionIds.map((id) => ({ id, color: tag.colorOf(id) }));
+  return (
+    <ContextMenuSub>
+      <ContextMenuSubTrigger>
+        <TagIcon />
+        Tags
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent className="p-0">
+        <TagCombobox
+          mode="assign"
+          options={options}
+          selected={new Set(todo.tags)}
+          onToggle={(id) => tag.onToggleTag(todo, id)}
+          onCreate={(id) => tag.onCreateTag(todo, id)}
+          placeholder="Search or create tag…"
+        />
+      </ContextMenuSubContent>
+    </ContextMenuSub>
+  );
+}
+
 function TodoRow({
   todo,
   variant,
@@ -194,6 +281,7 @@ function TodoRow({
   onArchiveTodo,
   onWriteTodo,
   onDeleteTodo,
+  tag,
   drag,
   nav,
 }: {
@@ -208,6 +296,8 @@ function TodoRow({
   // the TodoDialog's ⋯ menu uses, so a row's options match the open dialog's.
   onWriteTodo: (path: string, content: string) => void;
   onDeleteTodo: (slug: string) => void;
+  // Tag pills + the right-click Tags submenu (assignment).
+  tag: RowTagProps;
   // Present only for BACKLOG rows, which are drag-reorderable. Wires dnd-kit's
   // sortable node/transform onto the whole row (whole-row drag, like the board's
   // cards) while the checkbox / chip / row-click stay live — interactive
@@ -305,6 +395,11 @@ function TodoRow({
               </span>
             )}
           </div>
+          <TagPillGroup
+            tags={todo.tags}
+            colorOf={tag.colorOf}
+            dimmed={done}
+          />
           <RowChip todo={todo} projectId={projectId} ghost={done} />
         </div>
       </ContextMenuTrigger>
@@ -317,6 +412,8 @@ function TodoRow({
           {done ? <CircleIcon /> : <CircleCheckIcon />}
           {done ? "Mark not done" : "Mark done"}
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        <TagsSubmenu todo={todo} tag={tag} />
         <ContextMenuSeparator />
         <ContextMenuItem onClick={copyPath}>
           <CopyIcon />
@@ -354,6 +451,7 @@ function SortableTodoRow({
   onArchiveTodo,
   onWriteTodo,
   onDeleteTodo,
+  tag,
   nav,
 }: {
   todo: Todo;
@@ -363,6 +461,7 @@ function SortableTodoRow({
   onArchiveTodo: (todo: Todo) => void;
   onWriteTodo: (path: string, content: string) => void;
   onDeleteTodo: (slug: string) => void;
+  tag: RowTagProps;
   nav?: RowNav;
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
@@ -377,6 +476,7 @@ function SortableTodoRow({
       onArchiveTodo={onArchiveTodo}
       onWriteTodo={onWriteTodo}
       onDeleteTodo={onDeleteTodo}
+      tag={tag}
       nav={nav}
       drag={{
         setNodeRef,
@@ -533,14 +633,126 @@ export function TodosView({
     () => (chatRows === undefined ? undefined : indexChats(chatRows)),
     [chatRows],
   );
-  const groups: TodoGroups = deriveTodoGroups(files, order, chats);
+  // The tag color registry (tasks/config.json) rides the same `files`
+  // subscription as everything else — advisory, colors-only. A missing/blank
+  // file parses to the empty registry; a tag not listed here renders gray.
+  const registry: TagRegistry = useMemo(() => {
+    const file = files.find(
+      (f) => f.path === TAG_REGISTRY_PATH && !f.deleted,
+    );
+    return parseTagRegistry(file?.content);
+  }, [files]);
+  const colorMap = useMemo(() => registryColorMap(registry), [registry]);
+  const colorOf = (id: string): TagColorName => colorMap.get(id) ?? "gray";
+  const registryTagIds = useMemo(
+    () => registry.tags.map((t) => t.id),
+    [registry],
+  );
+
+  // View-local tag filter (AND semantics), persisted per project in
+  // localStorage. Reload it whenever the project changes so switching projects
+  // restores that project's own filter rather than leaking the previous one.
+  const [filter, setFilter] = useState<TagFilter>(() =>
+    loadTagFilter(projectId),
+  );
+  useEffect(() => {
+    setFilter(loadTagFilter(projectId));
+  }, [projectId]);
+  const updateFilter = (next: TagFilter) => {
+    setFilter(next);
+    saveTagFilter(projectId, next);
+  };
+  // Selecting a tag clears Untagged and vice versa (untagged ∧ tag is empty).
+  const toggleFilterTag = (id: string) => {
+    const has = filter.tags.includes(id);
+    updateFilter({
+      untagged: false,
+      tags: has ? filter.tags.filter((t) => t !== id) : [...filter.tags, id],
+    });
+  };
+  const toggleFilterUntagged = () => {
+    updateFilter({ tags: [], untagged: !filter.untagged });
+  };
+  const clearFilter = () => updateFilter(EMPTY_TAG_FILTER);
+  const filterActive = isTagFilterActive(filter);
+
+  // Assignment writes flow through the SAME optimistic file-upsert path as every
+  // other row edit (onWriteTodo), so the pill reflects instantly. Registry
+  // writes hit that path too (config.json is just another synced file). We read
+  // `todo.content` fresh from the live query each time — no local fork.
+  const toggleTag = (todo: Todo, id: string) => {
+    const has = todo.tags.includes(id);
+    const nextTags = has
+      ? todo.tags.filter((t) => t !== id)
+      : [...todo.tags, id];
+    onWriteTodo(
+      todo.path,
+      setFrontmatterKeys(todo.content, { tags: serializeTagsValue(nextTags) }),
+    );
+  };
+  const createTag = (todo: Todo, id: string) => {
+    if (!todo.tags.includes(id)) {
+      onWriteTodo(
+        todo.path,
+        setFrontmatterKeys(todo.content, {
+          tags: serializeTagsValue([...todo.tags, id]),
+        }),
+      );
+    }
+    // Register a rotation color for a brand-new id (no-op if already present).
+    const { registry: next, changed } = ensureRegistryTag(registry, id);
+    if (changed) {
+      onWriteTodo(TAG_REGISTRY_PATH, serializeTagRegistry(next));
+    }
+  };
+  const rowTag: RowTagProps = {
+    colorOf,
+    registryTagIds,
+    onToggleTag: toggleTag,
+    onCreateTag: createTag,
+  };
+
+  // Derive once (unfiltered) for the facet counts + the truly-empty check, then
+  // project through the active filter for what actually renders.
+  const allGroups: TodoGroups = deriveTodoGroups(files, order, chats);
+  const groups: TodoGroups = filterTodoGroups(allGroups, filter);
+
+  const universe = useMemo(() => allGroupTodos(allGroups), [allGroups]);
+  const facetCounts = useMemo(
+    () => tagFacetCounts(universe, filter),
+    [universe, filter],
+  );
+  // Filter options = registry tags ∪ any tag actually present on a task (so an
+  // agent-added, unregistered tag is still filterable), registry order first.
+  const filterOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const id of registryTagIds) {
+      if (!seen.has(id)) (seen.add(id), ids.push(id));
+    }
+    const extra: string[] = [];
+    for (const t of universe)
+      for (const id of t.tags)
+        if (!seen.has(id)) (seen.add(id), extra.push(id));
+    extra.sort();
+    return [...ids, ...extra].map((id) => ({ id, color: colorOf(id) }));
+  }, [registryTagIds, universe, colorMap]);
+  const hasAnyTags = filterOptions.length > 0;
 
   const isEmpty =
+    allGroups.needsYou.length +
+      allGroups.working.length +
+      allGroups.backlog.length +
+      allGroups.done.length ===
+    0;
+  // Filtered down to nothing (distinct from an empty project).
+  const noFilterMatches =
+    filterActive &&
     groups.needsYou.length +
       groups.working.length +
       groups.backlog.length +
       groups.done.length ===
-    0;
+      0;
 
   const doneVisible = showAllDone
     ? groups.done
@@ -558,11 +770,13 @@ export function TodosView({
       [
         ...groups.needsYou.map((todo) => ({ kind: "todo" as const, todo })),
         ...groups.working.map((todo) => ({ kind: "todo" as const, todo })),
-        { kind: "add" as const },
+        // The capture affordance is hidden while a filter is active, so it drops
+        // out of the ↑↓ order too.
+        ...(filterActive ? [] : [{ kind: "add" as const }]),
         ...groups.backlog.map((todo) => ({ kind: "todo" as const, todo })),
         ...doneVisible.map((todo) => ({ kind: "todo" as const, todo })),
       ],
-    [groups.needsYou, groups.working, groups.backlog, doneVisible],
+    [groups.needsYou, groups.working, groups.backlog, doneVisible, filterActive],
   );
   const navIndexByPath = useMemo(
     () =>
@@ -603,6 +817,7 @@ export function TodosView({
     onArchiveTodo,
     onWriteTodo,
     onDeleteTodo,
+    tag: rowTag,
   };
 
   // The sortable ids = the currently-shown backlog paths in rendered order
@@ -631,6 +846,18 @@ export function TodosView({
       className="flex min-h-0 flex-1 flex-col overflow-y-auto"
     >
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-6 pt-7 pb-16">
+        {(hasAnyTags || filterActive) && (
+          <TagFilterBar
+            options={filterOptions}
+            filter={filter}
+            counts={facetCounts}
+            colorOf={colorOf}
+            onToggleTag={toggleFilterTag}
+            onToggleUntagged={toggleFilterUntagged}
+            onClear={clearFilter}
+          />
+        )}
+
         {groups.needsYou.length > 0 && (
           <section className="flex flex-col">
             <GroupHeader label="NEEDS YOU" amber />
@@ -661,36 +888,60 @@ export function TodosView({
           </section>
         )}
 
-        {/* BACKLOG always shows — it hosts the capture affordance, so its header
-            never vanishes (unlike the other groups). */}
-        <section className="flex flex-col">
-          <GroupHeader label="BACKLOG" />
-          <AddTodoRow onAdd={onAddTodo} nav={addNav} />
-          <DndContext
-            sensors={sensors}
-            onDragEnd={onBacklogDragEnd}
-          >
-            <SortableContext
-              items={backlogPaths}
-              strategy={verticalListSortingStrategy}
-            >
+        {/* BACKLOG. Unfiltered it always shows — it hosts the capture
+            affordance, so its header never vanishes. While a filter is active
+            the capture row and drag-reorder are hidden (the visible order is a
+            filtered projection; writing backlogOrders from it would corrupt the
+            real order), and the whole section collapses when nothing matches. */}
+        {filterActive ? (
+          groups.backlog.length > 0 && (
+            <section className="flex flex-col">
+              <GroupHeader label="BACKLOG" />
               {groups.backlog.map((todo) => (
-                <SortableTodoRow
+                <TodoRow
                   key={todo.path}
                   todo={todo}
-                  projectId={projectId}
-                  onOpen={onOpenTodo}
-                  onToggleCompleted={onToggleCompleted}
-                  onArchiveTodo={onArchiveTodo}
-                  onWriteTodo={onWriteTodo}
-                  onDeleteTodo={onDeleteTodo}
+                  variant="backlog"
                   nav={rowNav(todo.path)}
+                  {...rowProps}
                 />
               ))}
-            </SortableContext>
-          </DndContext>
-          {isEmpty && <EmptyHint />}
-        </section>
+            </section>
+          )
+        ) : (
+          <section className="flex flex-col">
+            <GroupHeader label="BACKLOG" />
+            <AddTodoRow onAdd={onAddTodo} nav={addNav} />
+            <DndContext sensors={sensors} onDragEnd={onBacklogDragEnd}>
+              <SortableContext
+                items={backlogPaths}
+                strategy={verticalListSortingStrategy}
+              >
+                {groups.backlog.map((todo) => (
+                  <SortableTodoRow
+                    key={todo.path}
+                    todo={todo}
+                    projectId={projectId}
+                    onOpen={onOpenTodo}
+                    onToggleCompleted={onToggleCompleted}
+                    onArchiveTodo={onArchiveTodo}
+                    onWriteTodo={onWriteTodo}
+                    onDeleteTodo={onDeleteTodo}
+                    tag={rowTag}
+                    nav={rowNav(todo.path)}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+            {isEmpty && <EmptyHint />}
+          </section>
+        )}
+
+        {noFilterMatches && (
+          <p className="px-2.5 py-8 text-center text-[13px] text-muted-foreground">
+            No todos match this filter.
+          </p>
+        )}
 
         {groups.done.length > 0 && (
           <section className="flex flex-col">
