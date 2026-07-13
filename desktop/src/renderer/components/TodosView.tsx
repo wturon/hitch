@@ -628,7 +628,7 @@ export function TodosView({
   return (
     <div
       ref={scrollRef}
-      className="-mx-4 flex min-h-0 flex-1 flex-col overflow-y-auto sm:-mx-6 lg:-mx-8"
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto"
     >
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-6 pt-7 pb-16">
         {groups.needsYou.length > 0 && (

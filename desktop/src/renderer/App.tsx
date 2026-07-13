@@ -296,7 +296,10 @@ function AppShell({
         onSignOut={onSignOut}
         onOpenPalette={onOpenPalette}
       />
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col px-4 pt-3 pb-0 sm:px-6 sm:pt-3 sm:pb-0 lg:px-8 lg:pt-3 lg:pb-0">
+      {/* The layout wrapper adds no padding — each page owns its own gutters so
+          content (e.g. the Todos list) can run flush up to the header's grey
+          rule instead of being inset by a shared frame. */}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {children}
       </main>
       {/* Rendered last so its `no-drag` region is subtracted AFTER the sidebar
@@ -1480,11 +1483,13 @@ function WorkspaceContent({
       onSignOut={() => void signOut()}
       onOpenPalette={() => setShowPalette(true)}
     >
-      <div className="flex min-h-0 flex-1 flex-col gap-6">
+      <div className="flex min-h-0 flex-1 flex-col">
         {/* Title | tabs | settings. The equal 1fr side columns keep the view
             tabs centered on the window regardless of how long the project name
-            runs (it truncates before it can push them). */}
-        <header className="window-titlebar-row -mx-4 -mt-3 grid h-12 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 overflow-hidden border-b border-border bg-background px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+            runs (it truncates before it can push them). The header owns its own
+            horizontal padding; the wrapper adds none, so the grey rule spans the
+            full width and each page below runs flush up to it. */}
+        <header className="window-titlebar-row grid h-12 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 overflow-hidden border-b border-border bg-background px-4 sm:px-6 lg:px-8">
           <h1 className="min-w-0 truncate text-[13px] font-semibold text-foreground">
             {currentProject.name}
           </h1>
@@ -1520,7 +1525,7 @@ function WorkspaceContent({
         </header>
 
         {localConfigReady && !projectIsHitched && (
-          <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-amber-500/10 p-3 text-sm">
+          <section className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-amber-500/10 p-3 text-sm sm:mx-6 lg:mx-8">
             <div className="flex min-w-0 items-start gap-2">
               <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
               <div className="min-w-0">

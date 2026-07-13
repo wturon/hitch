@@ -173,7 +173,7 @@ export function DebugView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col px-4 pt-3 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border pb-3">
         <div className="flex items-center gap-3">

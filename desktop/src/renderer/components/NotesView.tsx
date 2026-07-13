@@ -404,7 +404,7 @@ export function NotesView({
   }, [intent]);
 
   return (
-    <div className="-mx-4 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8">
+    <div className="flex min-h-0 flex-1 flex-col">
       {/* The index stays mounted while a note is open (just hidden) so its search
           query, keyboard selection, and scroll position are exactly restored when
           you Esc back. */}
