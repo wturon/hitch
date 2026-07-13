@@ -92,3 +92,45 @@ export function setFrontmatterKeys(
 
   return `---${eol}${lines.join(eol)}${eol}---${eol}${body}`;
 }
+
+// --- Tags value helpers -----------------------------------------------------
+//
+// A task's tags live in the frontmatter as a flat, comma-delimited scalar —
+// `tags: easy, bug` — deliberately NOT a YAML list, so the minimal reader above
+// keeps working and files stay grep-friendly for agents editing `tags:` in
+// place. These three helpers own the split/normalize/join so the shape is
+// defined once.
+
+// Normalize one tag token to its canonical id: lowercase kebab. Non-alphanumeric
+// runs collapse to a single hyphen; leading/trailing hyphens are stripped
+// (mirrors slugify, kept local so this low-level module stays dependency-free).
+// Returns "" for a token with no slug-able characters, so callers can drop it.
+export function normalizeTag(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// Parse a `tags:` frontmatter value into a normalized, de-duplicated id list
+// (order preserved). Absent/empty → []. Untagged = absence of the key.
+export function parseTagsValue(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const id = normalizeTag(part);
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+// Serialize an id list back to the scalar value, normalizing + de-duping. Empty
+// → "" so `setFrontmatterKeys` drops the `tags:` line entirely (untagged = no
+// key, never `tags:` with an empty value).
+export function serializeTagsValue(tags: string[]): string {
+  return parseTagsValue(tags.join(",")).join(", ");
+}

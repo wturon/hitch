@@ -28,7 +28,7 @@ import {
   parseDelegationRequest,
 } from "./chatModel";
 import type { Frontmatter } from "./frontmatter";
-import { parseFrontmatter } from "./frontmatter";
+import { parseFrontmatter, parseTagsValue } from "./frontmatter";
 import { taskSlug } from "./tasks";
 
 export type TodoGroup = "needs-you" | "working" | "backlog" | "done";
@@ -91,6 +91,7 @@ export interface Todo {
   completedAt: number | null;
   archivedAt: number | null;
   group: TodoGroup;
+  tags: string[]; // parsed from frontmatter `tags:` (normalized, deduped)
   updatedAt: number; // files row updatedAt
 }
 
@@ -252,6 +253,7 @@ export function deriveTodoGroups(
       completedAt: parseTimestamp(frontmatter["completed-at"]),
       archivedAt: parseTimestamp(frontmatter["archived-at"]),
       group,
+      tags: parseTagsValue(frontmatter.tags),
       updatedAt: f.updatedAt,
     });
   }
@@ -378,4 +380,85 @@ export function taskCountedGroup(
     chatStatus,
   });
   return group === "working" || group === "needs-you" ? group : null;
+}
+
+// --- Tag filtering (view-local, AND semantics) ------------------------------
+//
+// The filter is applied AFTER derivation, over the already-grouped rows, so the
+// grouping/sorting stays a pure function of files + order + chats and the filter
+// is a cheap projection on top (persisted per project in localStorage, never in
+// Convex or files). AND semantics: a row matches only if it carries EVERY
+// selected tag. `untagged` is exclusive — it matches rows with zero tags and can
+// never co-exist with tag selections (untagged ∧ tag is always empty).
+
+export interface TagFilter {
+  tags: string[]; // AND-selected tag ids
+  untagged: boolean; // exclusive with `tags`
+}
+
+export const EMPTY_TAG_FILTER: TagFilter = { tags: [], untagged: false };
+
+export function isTagFilterActive(f: TagFilter): boolean {
+  return f.untagged || f.tags.length > 0;
+}
+
+export function todoMatchesTagFilter(todo: Todo, f: TagFilter): boolean {
+  if (f.untagged) return todo.tags.length === 0;
+  if (f.tags.length === 0) return true;
+  return f.tags.every((t) => todo.tags.includes(t));
+}
+
+// Project the grouped rows through the active filter. Inactive filter → the
+// groups pass through unchanged (same object). Non-matching rows drop out, which
+// naturally empties groups the view then hides entirely; `archivedCount` is
+// untouched (the sidebar/archived count ignores the filter).
+export function filterTodoGroups(groups: TodoGroups, f: TagFilter): TodoGroups {
+  if (!isTagFilterActive(f)) return groups;
+  const keep = (list: Todo[]) =>
+    list.filter((t) => todoMatchesTagFilter(t, f));
+  return {
+    needsYou: keep(groups.needsYou),
+    working: keep(groups.working),
+    backlog: keep(groups.backlog),
+    done: keep(groups.done),
+    archivedCount: groups.archivedCount,
+  };
+}
+
+// The flat, non-archived universe the filter and facet counts operate over.
+export function allGroupTodos(groups: TodoGroups): Todo[] {
+  return [
+    ...groups.needsYou,
+    ...groups.working,
+    ...groups.backlog,
+    ...groups.done,
+  ];
+}
+
+// Facet counts for the filter popover. For each tag: how many tasks WOULD match
+// if that tag were added to the current selection (checked tags show the current
+// match count, since re-adding an already-selected tag is a no-op). `untagged`
+// is the count of tasks with zero tags (what selecting Untagged would show,
+// since it clears all tag selections). A registry tag absent from `todos` isn't
+// in `byTag` — callers default it to 0 (adding an unused tag to an AND filter
+// yields nothing). When the filter is currently on Untagged, counts are computed
+// against a cleared base so the tag rows preview "switch to this tag".
+export function tagFacetCounts(
+  todos: Todo[],
+  f: TagFilter,
+): { byTag: Map<string, number>; untagged: number } {
+  const base: TagFilter = f.untagged ? EMPTY_TAG_FILTER : f;
+  const byTag = new Map<string, number>();
+  const universe = new Set<string>();
+  for (const t of todos) for (const tag of t.tags) universe.add(tag);
+  for (const tag of universe) {
+    const probe: TagFilter = base.tags.includes(tag)
+      ? base
+      : { tags: [...base.tags, tag], untagged: false };
+    byTag.set(tag, todos.filter((t) => todoMatchesTagFilter(t, probe)).length);
+  }
+  return {
+    byTag,
+    untagged: todos.filter((t) => t.tags.length === 0).length,
+  };
 }
