@@ -81,6 +81,40 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Tag palette (light register). The only color in the app — user-assigned tag
+     tints (DESIGN.md: color is information). Muted, low-chroma so the nine hues
+     read as one system. Each hue has a pill background (bg), a readable label
+     (text), and a swatch dot. Named in src/renderer/lib/tagColors.ts, which maps
+     each name to these vars; the .dark block below carries the dark register so
+     pills flip with the theme automatically. */
+  --tag-gray-bg: #f1f1f0;
+  --tag-gray-text: #6b6b69;
+  --tag-gray-dot: #d6d6d4;
+  --tag-brown-bg: #f1ebe4;
+  --tag-brown-text: #7a5c42;
+  --tag-brown-dot: #dccbb8;
+  --tag-orange-bg: #f7ede1;
+  --tag-orange-text: #9a6b35;
+  --tag-orange-dot: #e7cfae;
+  --tag-yellow-bg: #f6f1de;
+  --tag-yellow-text: #82702b;
+  --tag-yellow-dot: #e3d8a6;
+  --tag-green-bg: #eaf2ea;
+  --tag-green-text: #47704b;
+  --tag-green-dot: #bfd8c0;
+  --tag-blue-bg: #e8f0f6;
+  --tag-blue-text: #43678b;
+  --tag-blue-dot: #b9cedf;
+  --tag-purple-bg: #efedf8;
+  --tag-purple-text: #6a62a8;
+  --tag-purple-dot: #ccc7e8;
+  --tag-pink-bg: #f8eaf0;
+  --tag-pink-text: #9b4a72;
+  --tag-pink-dot: #e7c2d5;
+  --tag-red-bg: #f7e9e7;
+  --tag-red-text: #a05248;
+  --tag-red-dot: #e4beb8;
 }
 
 .dark {
@@ -115,6 +149,38 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Tag palette (dark register). The same nine hues re-derived for a dark
+     surface: a deep, low-chroma tinted background, a light readable label, and a
+     mid-tone dot — kept muted so the set still reads as one system (see the
+     light register in :root above). */
+  --tag-gray-bg: #2a2a29;
+  --tag-gray-text: #b2b2af;
+  --tag-gray-dot: #4c4c4a;
+  --tag-brown-bg: #322a22;
+  --tag-brown-text: #c8a886;
+  --tag-brown-dot: #574636;
+  --tag-orange-bg: #372e1e;
+  --tag-orange-text: #d6a566;
+  --tag-orange-dot: #674f2c;
+  --tag-yellow-bg: #33301c;
+  --tag-yellow-text: #d3c074;
+  --tag-yellow-dot: #5e5430;
+  --tag-green-bg: #263021;
+  --tag-green-text: #9cc49f;
+  --tag-green-dot: #46603e;
+  --tag-blue-bg: #21303b;
+  --tag-blue-text: #88b2d4;
+  --tag-blue-dot: #3d596f;
+  --tag-purple-bg: #2b293a;
+  --tag-purple-text: #aba3d6;
+  --tag-purple-dot: #4c4672;
+  --tag-pink-bg: #36252d;
+  --tag-pink-text: #d69cb6;
+  --tag-pink-dot: #684154;
+  --tag-red-bg: #362524;
+  --tag-red-text: #d69188;
+  --tag-red-dot: #663f39;
 }
 
 /* shadcn drives dark mode off a `.dark` class on <html>. The theme module

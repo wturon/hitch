@@ -166,13 +166,13 @@ export function HarnessChip({
 
   if (pending) {
     return (
-      <div className="relative flex h-7 justify-end">
+      <div className="relative flex h-7 w-7 shrink-0 items-center justify-end">
         <Tooltip>
           <TooltipTrigger
             render={
               <span
                 tabIndex={0}
-                className="relative inline-flex items-center rounded-full p-[3px] opacity-70"
+                className="absolute right-0 inline-flex items-center rounded-full p-[3px] opacity-70"
               />
             }
             aria-label="Why Codex cannot open yet"
@@ -195,7 +195,11 @@ export function HarnessChip({
   }
 
   return (
-    <div className="relative flex h-7 justify-end">
+    // Fixed to the collapsed 28px footprint; the button is absolutely anchored to
+    // the right edge so its hover/focus expansion OVERLAYS leftward instead of
+    // widening the row and shoving the tag lane ~100px (the scanning-instability
+    // the critique flagged). The row stays still while you aim at it.
+    <div className="relative flex h-7 w-7 shrink-0 items-center justify-end">
       <button
         type="button"
         onClick={(e) => {
@@ -204,7 +208,7 @@ export function HarnessChip({
         }}
         disabled={opening}
         aria-label={`Open chat in ${harnessLabel(chat.harness)} — ${stateWord(state)}`}
-        className="relative inline-flex items-center rounded-full p-[3px] outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-70"
+        className="absolute right-0 inline-flex items-center rounded-full p-[3px] outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-70"
       >
         <ChipRing state={state} />
         <ChipBody
@@ -247,14 +251,14 @@ export function RequestChip({ request }: { request: DelegationRequest }) {
     : `Summoning ${harnessLabel(request.harness)}… waiting for it to pick up the task.`;
 
   return (
-    <div className="relative flex h-7 justify-end">
+    <div className="relative flex h-7 w-7 shrink-0 items-center justify-end">
       <Tooltip>
         <TooltipTrigger
           render={
             <span
               tabIndex={0}
               className={cn(
-                "relative inline-flex items-center rounded-full p-[3px]",
+                "absolute right-0 inline-flex items-center rounded-full p-[3px]",
                 !failed && "opacity-70",
               )}
             />

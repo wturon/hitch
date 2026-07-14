@@ -33,3 +33,8 @@ npm-debug.log*
 
 # e2e screenshot output (never commit)
 desktop/e2e/shots/
+
+# impeccable (design skill) — local/ephemeral state (docs + design.json ARE tracked)
+.impeccable/config.local.json
+.impeccable/critique/
+**/.impeccable/live/

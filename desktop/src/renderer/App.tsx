@@ -56,6 +56,11 @@ import {
 } from "@/components/todo-dialog/dialogState";
 import { deriveTodoGroups, prependBacklogPath, type Todo } from "@/lib/todos";
 import {
+  parseTagRegistry,
+  TAG_REGISTRY_PATH,
+  type TagRegistry,
+} from "@/lib/tagRegistry";
+import {
   CommandPalette,
   WORKSPACE_VIEWS,
   type PaletteAction,
@@ -958,6 +963,13 @@ function WorkspaceContent({
   );
   const takenSlugs = taskFiles.map((f) => taskSlug(f.path) as string);
 
+  // The tag color registry (tasks/config.json), for the dialog's tag lane. Rides
+  // the same `files` subscription; a missing/blank file parses to the empty
+  // registry. TodosView parses its own copy for the rows — advisory, colors-only.
+  const tagRegistry: TagRegistry = parseTagRegistry(
+    files.find((f) => f.path === TAG_REGISTRY_PATH && !f.deleted)?.content,
+  );
+
   // Archived todos surface in the settings dialog's Archive tab. Archived is
   // the `archived-at:` timestamp now (Todos v1) — the board's `status: archived` is
   // gone. Unarchive clears the timestamp; Delete tombstones the folder.
@@ -1005,7 +1017,13 @@ function WorkspaceContent({
   // order (dedup) so it lands above existing items rather than in the absentee
   // block. An agent writing `completed-at` itself is honored the same way
   // (Decision 7).
-  async function setTodoCompleted(todo: Todo, completed: boolean) {
+  async function setTodoCompleted(
+    // The fields the check/uncheck needs — a full row from the list, or a
+    // synthesized shape from the dialog (which has path/content/chat/title but
+    // not the whole derived Todo). Structural, so a Todo satisfies it directly.
+    todo: Pick<Todo, "path" | "content" | "chat" | "title">,
+    completed: boolean,
+  ) {
     const nextContent = setFrontmatterKeys(todo.content, {
       "completed-at": completed ? new Date().toISOString() : undefined,
     });
@@ -1072,6 +1090,27 @@ function WorkspaceContent({
         undo: () => void setTodoCompleted(todo, false),
       });
     }
+  }
+
+  // The dialog's "Mark done" toggle. It holds path + live content but not a
+  // derived Todo, so synthesize the shape setTodoCompleted needs (chat/title
+  // parsed from the content) and route through the same handler — the row and
+  // the dialog then share one code path, one undo toast, one chat-close.
+  async function toggleTodoCompletedByPath(
+    path: string,
+    content: string,
+    completed: boolean,
+  ) {
+    const { frontmatter } = parseFrontmatter(content);
+    await setTodoCompleted(
+      {
+        path,
+        content,
+        chat: parseChatRef(frontmatter),
+        title: frontmatter.title?.trim() || taskSlug(path) || "task",
+      },
+      completed,
+    );
   }
 
   async function archiveTodoContentWithUndo(
@@ -1628,6 +1667,10 @@ function WorkspaceContent({
           onClose={closeTodoDialog}
           onCommitted={commitTodoDialog}
           onWrite={materializeDraftFile}
+          onToggleCompleted={(path, content, completed) =>
+            void toggleTodoCompletedByPath(path, content, completed)
+          }
+          registry={tagRegistry}
           onDeleteTodo={deleteTodo}
           onUserDeleteTodo={(slug) => void deleteTodoWithUndo(slug)}
           onUserArchiveTodo={(path, content) =>

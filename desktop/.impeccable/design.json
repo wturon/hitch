@@ -1,0 +1,280 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-13",
+  "title": "Design System: Hitch Desktop",
+  "extensions": {
+    "colorMeta": {
+      "ink": {
+        "role": "primary",
+        "displayName": "Ink",
+        "canonical": "oklch(0.145 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.97 0 0)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "oklch(1 0 0)",
+        "tonalRamp": [
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.97 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "muted-ink": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "oklch(0.556 0 0)",
+        "tonalRamp": [
+          "oklch(0.371 0 0)",
+          "oklch(0.439 0 0)",
+          "oklch(0.5 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.62 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.8 0 0)",
+          "oklch(0.87 0 0)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Line",
+        "canonical": "oklch(0.922 0 0)",
+        "tonalRamp": [
+          "oklch(0.708 0 0)",
+          "oklch(0.78 0 0)",
+          "oklch(0.84 0 0)",
+          "oklch(0.88 0 0)",
+          "oklch(0.922 0 0)",
+          "oklch(0.95 0 0)",
+          "oklch(0.97 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "destructive": {
+        "role": "tertiary",
+        "displayName": "Alert Red",
+        "canonical": "oklch(0.577 0.245 27.325)",
+        "tonalRamp": [
+          "oklch(0.35 0.13 27)",
+          "oklch(0.43 0.17 27)",
+          "oklch(0.5 0.21 27)",
+          "oklch(0.577 0.245 27.325)",
+          "oklch(0.66 0.2 25)",
+          "oklch(0.74 0.15 24)",
+          "oklch(0.85 0.09 23)",
+          "oklch(0.94 0.04 22)"
+        ]
+      },
+      "tag-blue": {
+        "role": "tertiary",
+        "displayName": "Tag Blue",
+        "canonical": "#E8F0F6",
+        "tonalRamp": [
+          "#2E4C68",
+          "#385A7A",
+          "#43678B",
+          "#5A7FA1",
+          "#7E9DB9",
+          "#A7C0D5",
+          "#CBDDE9",
+          "#E8F0F6"
+        ]
+      },
+      "tag-green": {
+        "role": "tertiary",
+        "displayName": "Tag Green",
+        "canonical": "#EAF2EA",
+        "tonalRamp": [
+          "#335136",
+          "#3D5F41",
+          "#47704B",
+          "#5E8862",
+          "#7FA383",
+          "#A6C1A9",
+          "#C9DBCB",
+          "#EAF2EA"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The task-dialog document title and editor h1 — the largest type in the app, a working title, not a hero."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Editor prose and notes at 14.5px/25px; UI chrome runs one notch tighter at 14px. Prose caps at 65–75ch."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Tag pills and the smallest metadata at 11px/500. Never uppercased-and-tracked as an eyebrow."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Code fences and inline code chips only; the one place a second family appears."
+      }
+    },
+    "shadows": [
+      {
+        "name": "floating-surface",
+        "value": "0 4px 12px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.06)",
+        "purpose": "The only shadow vocabulary — lifts popovers, menus, dialogs, tooltips, and toasts off the content behind them. In-flow surfaces stay flat."
+      }
+    ],
+    "motion": [
+      {
+        "name": "state-transition",
+        "value": "150ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Default ease-out for hover/focus/active and small state changes. Users are in flow — no choreography."
+      },
+      {
+        "name": "press",
+        "value": "translateY(1px)",
+        "purpose": "Tactile 1px push-down on :active for buttons."
+      },
+      {
+        "name": "spinner",
+        "value": "hitch-spin 0.9s linear infinite",
+        "purpose": "The harness working ring; freezes to a calm even ring under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "md",
+        "value": "768px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one true high-emphasis action — solid near-black fill, never a brand hue.",
+      "html": "<button class=\"ds-btn-primary\">Delegate task</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; height: 32px; padding: 0 10px; border: none; border-radius: 10px; background: oklch(0.205 0 0); color: oklch(1 0 0); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: background 150ms cubic-bezier(0.16,1,0.3,1), transform 150ms cubic-bezier(0.16,1,0.3,1); } .ds-btn-primary:hover { background: color-mix(in oklch, oklch(0.205 0 0), transparent 20%); } .ds-btn-primary:active { transform: translateY(1px); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.708 0 0 / 0.5); }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Medium-emphasis action on the Paper surface with a hairline border.",
+      "html": "<button class=\"ds-btn-outline\">Cancel</button>",
+      "css": ".ds-btn-outline { display: inline-flex; align-items: center; justify-content: center; height: 32px; padding: 0 10px; border: 1px solid oklch(0.922 0 0); border-radius: 10px; background: oklch(1 0 0); color: oklch(0.145 0 0); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: background 150ms cubic-bezier(0.16,1,0.3,1); } .ds-btn-outline:hover { background: oklch(0.97 0 0); } .ds-btn-outline:active { transform: translateY(1px); } .ds-btn-outline:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.708 0 0 / 0.5); }"
+    },
+    {
+      "name": "Ghost Icon Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Low-emphasis, icon-only action; transparent at rest, muted fill on hover.",
+      "html": "<button class=\"ds-btn-ghost\" aria-label=\"Add\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"><path d=\"M12 5v14M5 12h14\"/></svg></button>",
+      "css": ".ds-btn-ghost { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: none; border-radius: 10px; background: transparent; color: oklch(0.145 0 0); cursor: pointer; transition: background 150ms cubic-bezier(0.16,1,0.3,1); } .ds-btn-ghost:hover { background: oklch(0.97 0 0); } .ds-btn-ghost:active { transform: translateY(1px); } .ds-btn-ghost:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.708 0 0 / 0.5); }"
+    },
+    {
+      "name": "Tag Pill",
+      "kind": "chip",
+      "refersTo": "tag-pill",
+      "description": "The one place color lives — a muted, low-chroma tint with darker same-hue text. No border.",
+      "html": "<span class=\"ds-tag-pill\">design</span>",
+      "css": ".ds-tag-pill { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 5px; background: #E8F0F6; color: #43678B; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 11px; font-weight: 500; line-height: 14px; }"
+    },
+    {
+      "name": "Search Input",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Paper surface, hairline border, focus shifts the border to the ring with a soft halo — no glow, no color.",
+      "html": "<input class=\"ds-input-search\" type=\"text\" placeholder=\"Search…\" />",
+      "css": ".ds-input-search { height: 32px; padding: 0 10px; border: 1px solid oklch(0.922 0 0); border-radius: 8px; background: oklch(1 0 0); color: oklch(0.145 0 0); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 14px; outline: none; transition: border-color 150ms, box-shadow 150ms; } .ds-input-search::placeholder { color: oklch(0.556 0 0); } .ds-input-search:focus-visible { border-color: oklch(0.708 0 0); box-shadow: 0 0 0 3px oklch(0.708 0 0 / 0.5); }"
+    },
+    {
+      "name": "Harness Spinner",
+      "kind": "custom",
+      "refersTo": "spinner",
+      "description": "The signature working ring — a faint track with one brighter arc that traces any rounded shape; a masked conic gradient so it follows border-radius at any width.",
+      "html": "<span class=\"ds-spinner\" role=\"img\" aria-label=\"Working\"></span>",
+      "css": "@property --ds-spin { syntax: '<angle>'; inherits: false; initial-value: 0deg; } @keyframes ds-spin { to { --ds-spin: 360deg; } } .ds-spinner { display: inline-block; box-sizing: border-box; width: 28px; height: 28px; border-radius: 9999px; padding: 1.5px; background: conic-gradient(from var(--ds-spin), oklch(0.556 0 0) 0deg 25%, color-mix(in oklab, oklch(0.556 0 0) 16%, transparent) 25% 100%); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: ds-spin 0.9s linear infinite; } @media (prefers-reduced-motion: reduce) { .ds-spinner { animation: none; background: color-mix(in oklab, oklch(0.556 0 0) 35%, transparent); } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Clean Desk",
+    "overview": "Obvious, calm, inviting — like sitting down at an extremely clean desk. Nothing is on the surface that doesn't need to be there, so the one thing that matters right now is the only thing that stands out. Hitch works on deeply technical material but never lets that weight reach the user; it stays quiet so intent can flow. The system is monochrome by doctrine: the entire chrome is a single zero-chroma neutral ramp in OKLCH, light and dark. Color is not decoration — it is information, spent in exactly one place: the muted tag tints a user assigns to their own work. Warmth is carried by voice, timing, and empty space, never by color.",
+    "keyCharacteristics": [
+      "Monochrome chrome; color reserved for user-assigned tags only.",
+      "Native, quiet, keyboard-first; standard affordances tuned precisely.",
+      "Hairline borders and tonal layering instead of shadows and cards.",
+      "Warmth from copy, spacing, and unhurried motion — not from color.",
+      "Dense where the work is dense, spacious where it should breathe."
+    ],
+    "rules": [
+      {
+        "name": "The Monochrome Chrome Rule",
+        "body": "Every pixel of app chrome is drawn from the zero-chroma neutral ramp. If a chrome element carries a hue, it is a bug — with exactly three sanctioned exceptions, each carrying information, never decoration: a user-assigned tag tint (on pills and swatches), Sanction Amber (the \"needs your attention\" state, in its three named spots), and the destructive red (danger). Any other hue in chrome is drift.",
+        "section": "colors"
+      },
+      {
+        "name": "The Color-Is-Information Rule",
+        "body": "Color is spent to help a user categorize their own work or to flag one of two system states (needs-attention amber, danger red) — never to decorate ours. There is no accent-per-feature and no status rainbow: a colored section header is forbidden except the single amber NEEDS YOU eyebrow, whose amber is the state, not a section theme.",
+        "section": "colors"
+      },
+      {
+        "name": "The One-Family Rule",
+        "body": "A single sans carries everything; a second family only ever appears as monospace for literal code.",
+        "section": "typography"
+      },
+      {
+        "name": "The Working-Title Rule",
+        "body": "The biggest type in the product is a 26px document title. No hero type, no clamp above ~26px — this is a tool, not a landing page.",
+        "section": "typography"
+      },
+      {
+        "name": "The Eyebrow Exception",
+        "section": "typography",
+        "body": "Uppercased-and-tracked labels are banned everywhere except the todo list's four attention-group headers (NEEDS YOU / WORKING / BACKLOG / DONE): 11px/500, uppercase, 0.05em tracking. They earn it because the groups are the product's core IA; the neutral headers use Muted Ink (oklch(0.556)), clearing 4.5:1 on Paper. No other eyebrow is sanctioned."
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "Surfaces are flat at rest. A shadow is a response to leaving the plane (a menu, a dialog), never decoration on an in-flow element.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Hairline Rule",
+        "body": "Separation is a 1px Line border or a tonal step, nothing heavier. Borders are full and even — never a thick colored side-stripe.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep all chrome monochrome — draw every UI surface from the zero-chroma neutral ramp, light and dark.",
+      "Do reserve color for user-assigned tags, using the muted low-chroma tint palette; keep any new tint in that same register.",
+      "Do spend Sanction Amber (amber-500 / amber-700) only on the needs-attention state, in its three named spots (NEEDS YOU header, chip needs-input dot, sidebar badge) — it is a system color, never decoration.",
+      "Do build depth from tonal steps and 1px Line hairlines; keep surfaces flat at rest.",
+      "Do use one sans family for everything on a tight fixed px scale; monospace only for literal code.",
+      "Do verify body text clears 4.5:1 — Muted Ink is the floor for secondary text and placeholder, not a lighter gray.",
+      "Do keep motion in the 150–250ms range, easing out, with a prefers-reduced-motion alternative.",
+      "Do exhaust inline and progressive affordances before reaching for a modal."
+    ],
+    "donts": [
+      "Don't build a busy SaaS dashboard — no gradient headers, colored stat cards, a badge for every state, or an accent color per feature.",
+      "Don't ship the AI-product cliché — no purple/violet gradients, sparkle icons, or glowing magic borders. Retire the inherited dark --sidebar-primary violet.",
+      "Don't become Jira — no configuration mazes, workflow ceremony, or process-heavy chrome between the developer and the work.",
+      "Don't let a screen become dense or effortful; treat that feeling as the signal something is wrong.",
+      "Don't use a thick colored side-stripe (border-left/border-right > 1px) on rows, cards, or callouts.",
+      "Don't use gradient text (background-clip: text) or glassmorphism as decoration.",
+      "Don't introduce a display or serif face, fluid clamp headings, or type larger than the 26px working title.",
+      "Don't give in-flow surfaces a resting drop shadow; shadows belong only to elements that leave the plane."
+    ]
+  }
+}
