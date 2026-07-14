@@ -16,7 +16,11 @@ import {
   type Harness,
 } from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
-import { setFrontmatterKeys } from "@/lib/frontmatter";
+import {
+  parseTagsValue,
+  serializeTagsValue,
+  setFrontmatterKeys,
+} from "@/lib/frontmatter";
 import {
   deriveTitleFromBody,
   taskBodyPath,
@@ -24,10 +28,22 @@ import {
   uniqueSlug,
 } from "@/lib/tasks";
 import { prependBacklogPath } from "@/lib/todos";
+import type { TagColorName } from "@/lib/tagColors";
+import {
+  ensureRegistryTag,
+  registryColorMap,
+  serializeTagRegistry,
+  TAG_REGISTRY_PATH,
+  type TagRegistry,
+} from "@/lib/tagRegistry";
 import { useTaskDraft } from "@/hooks/useTaskDraft";
 import { useAttachments } from "@/hooks/useAttachments";
 import { useSkills } from "@/hooks/useSkills";
 import type { MarkdownEditorHandle } from "@/editor";
+import { TagPill } from "@/components/tags/TagPill";
+import { TagCombobox } from "@/components/tags/TagCombobox";
+import { Menu, MenuContent, MenuTrigger } from "@/components/ui/menu";
+import { PlusIcon } from "lucide-react";
 
 import { CaptureFooter } from "./CaptureFooter";
 import { SavedActions } from "./SavedActions";
@@ -143,6 +159,12 @@ export interface TodoDialogProps {
   // Optimistic upsert by path+content — used for the materialize on ⌘⏎, the
   // early materialize on image paste, and body autosave on close.
   onWrite: (path: string, content: string) => Promise<void>;
+  // Toggle the todo's `completed-at` (the ⋯ "Mark done"). Routed to App so the
+  // check shares the row's undo toast + chat-close safety.
+  onToggleCompleted: (path: string, content: string, completed: boolean) => void;
+  // The tag color registry (tasks/config.json), so the dialog header can render
+  // the todo's pills and drive the assign/create combobox — parity with rows.
+  registry: TagRegistry;
   // Silent cascade-delete of a task folder (attachments + task.md tombstone).
   // Used only for the discard-cleanup of a pasted-early draft (Decision 3) — an
   // intentional throwaway, so no undo toast.
@@ -213,6 +235,8 @@ export function TodoDialog(props: TodoDialogProps) {
               onClose={props.onClose}
               onCommitted={props.onCommitted}
               onWrite={props.onWrite}
+              onToggleCompleted={props.onToggleCompleted}
+              registry={props.registry}
               onDeleteTodo={props.onDeleteTodo}
               onUserDeleteTodo={props.onUserDeleteTodo}
               onUserArchiveTodo={props.onUserArchiveTodo}
@@ -238,6 +262,8 @@ interface TodoBodyProps {
   onClose: () => void;
   onCommitted: (path: string) => void;
   onWrite: (path: string, content: string) => Promise<void>;
+  onToggleCompleted: (path: string, content: string, completed: boolean) => void;
+  registry: TagRegistry;
   onDeleteTodo: (slug: string) => Promise<void>;
   onUserDeleteTodo: (slug: string) => void;
   onUserArchiveTodo: (path: string, content: string) => void;
@@ -253,6 +279,8 @@ function TodoBody({
   onClose,
   onCommitted,
   onWrite,
+  onToggleCompleted,
+  registry,
   onDeleteTodo,
   onUserDeleteTodo,
   onUserArchiveTodo,
@@ -740,6 +768,53 @@ function TodoBody({
     titleCommand?.status === "pending" && !titleClaimed && !titleGenTimedOut;
   const linkedWhen = relativeTime(existing?.updatedAt ?? Date.now());
 
+  // ─── Tags (dialog ⇄ row parity) ────────────────────────────────────────────
+  // The document view now shows and edits the task's tags, closing the gap the
+  // critique flagged (rows assign tags; the dialog pretended they didn't exist).
+  // Same wiring as the row's Tags submenu: pills tinted from the registry, and a
+  // combobox that toggles registry tags / creates+registers a new one. Writes go
+  // through the same optimistic file-upsert as every other edit — the task file
+  // for the assignment, config.json for a brand-new color.
+  const tagColorMap = registryColorMap(registry);
+  const tagColorOf = (id: string): TagColorName => tagColorMap.get(id) ?? "gray";
+  const currentTags = parseTagsValue(draft.frontmatter.tags);
+  const tagOptions = (() => {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const id of [...registry.tags.map((t) => t.id), ...currentTags]) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+    return ids.map((id) => ({ id, color: tagColorOf(id) }));
+  })();
+  const writeTags = (nextTags: string[]) => {
+    const path = committedRef.current;
+    if (!path) return;
+    const next = draft.setFrontmatter({ tags: serializeTagsValue(nextTags) });
+    void write(path, next).catch((err) =>
+      console.error("Failed to write task tags", err),
+    );
+  };
+  const toggleTag = (id: string) => {
+    writeTags(
+      currentTags.includes(id)
+        ? currentTags.filter((t) => t !== id)
+        : [...currentTags, id],
+    );
+  };
+  const createTag = (id: string) => {
+    if (!currentTags.includes(id)) writeTags([...currentTags, id]);
+    // Register a rotation color for the brand-new id (no-op if already present).
+    const { registry: nextReg, changed } = ensureRegistryTag(registry, id);
+    if (changed) {
+      void onWrite(TAG_REGISTRY_PATH, serializeTagRegistry(nextReg)).catch(
+        (err) => console.error("Failed to register tag color", err),
+      );
+    }
+  };
+
   return (
     <div ref={rootRef}>
       <div
@@ -799,6 +874,11 @@ function TodoBody({
             <SavedActions
               view={view}
               onToggleView={() => setView(view === "raw" ? "formatted" : "raw")}
+              completed={completed}
+              onToggleCompleted={() => {
+                const path = committedRef.current;
+                if (path) onToggleCompleted(path, draft.getLatestRaw(), !completed);
+              }}
               onCopyPath={copyPath}
               // Detach shows only when there's a chat or a request to detach.
               onDetach={
@@ -810,6 +890,42 @@ function TodoBody({
               onDelete={del}
               onClose={() => dismiss("close-press")}
             />
+          </div>
+        )}
+
+        {/* Tag lane — the document's tags, shown/edited here so the dialog and
+            the row agree on what the task is. Formatted view only: in raw view
+            the tags live in the visible frontmatter text (editing both would be
+            two truths), so the lane yields just as the title input does. */}
+        {stage === "saved" && view === "formatted" && (
+          <div className="flex flex-wrap items-center gap-1 pt-1.5 pr-2.5 pl-5">
+            {currentTags.map((id) => (
+              <TagPill key={id} label={id} color={tagColorOf(id)} />
+            ))}
+            <Menu>
+              <MenuTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label="Edit tags"
+                    className="inline-flex items-center gap-1 rounded-[5px] px-[7px] py-[2px] text-[11px] font-medium leading-[14px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  />
+                }
+              >
+                <PlusIcon className="size-3" />
+                {currentTags.length === 0 && "Add tag"}
+              </MenuTrigger>
+              <MenuContent align="start" className="p-0">
+                <TagCombobox
+                  mode="assign"
+                  options={tagOptions}
+                  selected={new Set(currentTags)}
+                  onToggle={toggleTag}
+                  onCreate={createTag}
+                  placeholder="Search or create tag…"
+                />
+              </MenuContent>
+            </Menu>
           </div>
         )}
 

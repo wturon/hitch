@@ -3,6 +3,8 @@
 import {
   AlignLeftIcon,
   ArchiveIcon,
+  CircleCheckIcon,
+  CircleIcon,
   CodeIcon,
   CopyIcon,
   EllipsisIcon,
@@ -24,6 +26,8 @@ import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 export function SavedActions({
   view,
   onToggleView,
+  completed,
+  onToggleCompleted,
   onCopyPath,
   onDetach,
   onArchive,
@@ -32,6 +36,11 @@ export function SavedActions({
 }: {
   view: "raw" | "formatted";
   onToggleView: () => void;
+  // Done state + toggle, mirroring the row context menu's Mark done so a task can
+  // be completed from the dialog too (parity gap the critique flagged). Routes
+  // through the same handler as the row, so the undo/chat-close toast follows.
+  completed: boolean;
+  onToggleCompleted: () => void;
   onCopyPath: () => void;
   onDetach?: () => void;
   onArchive: () => void;
@@ -53,6 +62,11 @@ export function SavedActions({
           <EllipsisIcon className="size-4" />
         </MenuTrigger>
         <MenuContent align="end">
+          <MenuItem onClick={onToggleCompleted}>
+            {completed ? <CircleIcon /> : <CircleCheckIcon />}
+            {completed ? "Mark not done" : "Mark done"}
+          </MenuItem>
+          <div className="my-1 h-px bg-border" />
           <MenuItem onClick={onToggleView}>
             {view === "raw" ? <AlignLeftIcon /> : <CodeIcon />}
             {view === "raw" ? "Formatted view" : "Raw markdown"}

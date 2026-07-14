@@ -113,6 +113,28 @@ function relativeTime(ts: number): string {
   });
 }
 
+// Hold a group's row order steady while its membership is unchanged. NEEDS YOU
+// sorts by chat recency, which ticks live — so without this, rows visibly swap
+// order while the user is aiming at one (the scanning-instability the critique
+// flagged). Here the order is only re-derived when a row actually joins or
+// leaves the group; a recency tick among the same members never reorders them.
+// A join/leave IS a real change, so it re-adopts the incoming (freshly-sorted)
+// order. Keyed by path; returns the same objects, just held in a stable order.
+function useStableOrder<T extends { path: string }>(items: T[]): T[] {
+  const prevOrderRef = useRef<string[]>([]);
+  return useMemo(() => {
+    const byPath = new Map(items.map((i) => [i.path, i]));
+    const prev = prevOrderRef.current;
+    const sameSet =
+      prev.length === items.length && prev.every((p) => byPath.has(p));
+    const order = sameSet
+      ? prev.map((p) => byPath.get(p) as T)
+      : items;
+    prevOrderRef.current = order.map((i) => i.path);
+    return order;
+  }, [items]);
+}
+
 // The one color moment in the app: NEEDS YOU wears an amber small-caps header;
 // every other group header is quiet neutral. The trailing hairline picks up the
 // same tone.
@@ -121,10 +143,11 @@ function GroupHeader({ label, amber }: { label: string; amber?: boolean }) {
     <div className="flex items-center gap-2.5 px-2.5 py-1.5">
       <span
         className={cn(
+          // Muted-ink, not neutral-400: at 11px the lighter gray measured only
+          // 2.58:1 on Paper (below DESIGN.md's 4.5:1 floor). muted-foreground is
+          // the sanctioned secondary-text value and clears it in both themes.
           "text-[11px] font-medium uppercase leading-[14px] tracking-[0.05em]",
-          amber
-            ? "text-amber-700 dark:text-amber-500/90"
-            : "text-neutral-400 dark:text-neutral-500",
+          amber ? "text-amber-700 dark:text-amber-500/90" : "text-muted-foreground",
         )}
       >
         {label}
@@ -219,9 +242,13 @@ type RowVariant = "needs-you" | "working" | "backlog" | "done";
 // (e.g. collapsed DONE overflow) — it stays clickable, just not arrow-reachable.
 type RowNav = {
   selected: boolean;
+  // itemProps carries `aria-current` (valid on any role), NOT the shared hook's
+  // `aria-selected` — that attribute is only valid on a role that belongs to a
+  // composite widget (option/tab/row), and these rows are role="button". The
+  // hook's `aria-selected` is stripped in `rowNav()` below and re-expressed here.
   itemProps: {
     "data-idx": number;
-    "aria-selected": boolean;
+    "aria-current": boolean;
     onMouseMove: () => void;
   };
 };
@@ -332,6 +359,31 @@ function TodoRow({
     ? `${todo.chatStatus === "needs-input" ? "Needs your input" : "Waiting for you"} · ${relativeTime(recency)}`
     : null;
 
+  // The row's accessible name. `todo.title` alone (the old aria-label) masked
+  // everything else a sighted user reads at a glance — the attention group, the
+  // agent's state, and the tags. Compose all three so a screen reader announces
+  // the same row identity. The checkbox and chip keep their own labels for the
+  // actions they own.
+  const statusPhrase =
+    variant === "needs-you"
+      ? todo.chatStatus === "needs-input"
+        ? "needs your input"
+        : "waiting for you"
+      : variant === "working"
+        ? todo.request !== null
+          ? "starting"
+          : "working"
+        : variant === "done"
+          ? "done"
+          : null;
+  const accessibleName = [
+    todo.title,
+    statusPhrase,
+    todo.tags.length > 0 ? `tagged ${todo.tags.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
   // The right-click menu's options, mirroring the TodoDialog ⋯ menu (SavedActions)
   // plus the row-native primaries (Open / Mark done). Detach only shows when
   // there's a chat or request to strip; Delete needs a resolvable slug.
@@ -359,7 +411,7 @@ function TodoRow({
           {...nav?.itemProps}
           role="button"
           tabIndex={0}
-          aria-label={todo.title}
+          aria-label={accessibleName}
           onClick={() => onOpen(todo.path)}
           onKeyDown={(e) => {
             if (e.key !== "Enter" && e.key !== " ") return;
@@ -369,7 +421,7 @@ function TodoRow({
             onOpen(todo.path);
           }}
           className={cn(
-            "group flex cursor-pointer items-center gap-3 rounded-lg px-2.5 transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none",
+            "group flex cursor-pointer items-center gap-3 rounded-lg px-2.5 transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
             twoLine ? "min-h-[54px] py-1.5" : "h-[42px]",
             // Keyboard highlight. Hover sets the same selection (onMouseMove), so
             // mouse and keyboard converge on one highlighted row.
@@ -516,7 +568,7 @@ function AddTodoRow({ onAdd, nav }: { onAdd: () => void; nav?: RowNav }) {
       {...nav?.itemProps}
       onClick={onAdd}
       className={cn(
-        "group flex h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none",
+        "group flex h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
         nav?.selected && "bg-muted",
       )}
     >
@@ -739,6 +791,9 @@ export function TodosView({
   // project through the active filter for what actually renders.
   const allGroups: TodoGroups = deriveTodoGroups(files, order, chats);
   const groups: TodoGroups = filterTodoGroups(allGroups, filter);
+  // NEEDS YOU order held steady across live recency ticks (see useStableOrder) —
+  // only a row joining or leaving the group re-sorts it.
+  const needsYou = useStableOrder(groups.needsYou);
 
   const universe = useMemo(() => allGroupTodos(allGroups), [allGroups]);
   const facetCounts = useMemo(
@@ -791,7 +846,7 @@ export function TodosView({
   const navItems = useMemo(
     () =>
       [
-        ...groups.needsYou.map((todo) => ({ kind: "todo" as const, todo })),
+        ...needsYou.map((todo) => ({ kind: "todo" as const, todo })),
         ...groups.working.map((todo) => ({ kind: "todo" as const, todo })),
         // The capture affordance is hidden while a filter is active, so it drops
         // out of the ↑↓ order too.
@@ -799,7 +854,7 @@ export function TodosView({
         ...groups.backlog.map((todo) => ({ kind: "todo" as const, todo })),
         ...doneVisible.map((todo) => ({ kind: "todo" as const, todo })),
       ],
-    [groups.needsYou, groups.working, groups.backlog, doneVisible, filterActive],
+    [needsYou, groups.working, groups.backlog, doneVisible, filterActive],
   );
   const navIndexByPath = useMemo(
     () =>
@@ -820,34 +875,55 @@ export function TodosView({
       if (item.kind === "add") onAddTodo();
       else onOpenTodo(item.todo.path);
     },
-    // Backspace/Delete removes the highlighted task — the keyboard twin of the
-    // right-click Delete, sharing its handler and undo toast (no confirmation;
-    // undo is the safety net, and repeated presses bulk-delete serially since
-    // the highlight inherits the next row). Bare keys only: a modifier chord
-    // is someone else's shortcut. The add-row is not deletable.
+    // Keyboard actions on the highlighted row. Bare keys only — a modifier chord
+    // is someone else's shortcut — and the add-row is inert (it's not a task).
+    //   • Backspace/Delete removes the row (the keyboard twin of the right-click
+    //     Delete, sharing its handler + undo toast; no confirmation, undo is the
+    //     safety net, and repeated presses bulk-delete serially since the
+    //     highlight inherits the next row).
+    //   • `e` toggles done — a task couldn't be completed by keyboard anywhere
+    //     before (PRODUCT.md: "complete keyboard operability"). It routes through
+    //     the SAME onToggleCompleted as the checkbox, so the done-check's undo
+    //     toast + chat-close safety come along for free.
     onKeyDown: (e, ctx) => {
-      if (e.key !== "Backspace" && e.key !== "Delete") return false;
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return false;
       const item = ctx.selected >= 0 ? navItems[ctx.selected] : undefined;
       if (!item || item.kind !== "todo") return false;
-      const slug = taskSlug(item.todo.path);
-      if (!slug) return false;
-      e.preventDefault();
-      onDeleteTodo(slug);
-      return true;
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const slug = taskSlug(item.todo.path);
+        if (!slug) return false;
+        e.preventDefault();
+        onDeleteTodo(slug);
+        return true;
+      }
+      if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        onToggleCompleted(item.todo, item.todo.group !== "done");
+        return true;
+      }
+      return false;
     },
   });
+  // Swap the shared hook's `aria-selected` (invalid on role="button") for
+  // `aria-current`, keeping data-idx + hover-to-highlight intact.
+  const toRowItemProps = (i: number): RowNav["itemProps"] => {
+    const { "aria-selected": _drop, ...rest } = itemProps(i);
+    return { ...rest, "aria-current": i === selected };
+  };
   // Per-row highlight wiring, or undefined for rows outside the nav list.
   const rowNav = (path: string): RowNav | undefined => {
     const i = navIndexByPath.get(path);
     if (i === undefined) return undefined;
-    return { selected: selected === i, itemProps: itemProps(i) };
+    return { selected: selected === i, itemProps: toRowItemProps(i) };
   };
   const addNavIndex = navItems.findIndex((item) => item.kind === "add");
   const addNav: RowNav | undefined =
     addNavIndex === -1
       ? undefined
-      : { selected: selected === addNavIndex, itemProps: itemProps(addNavIndex) };
+      : {
+          selected: selected === addNavIndex,
+          itemProps: toRowItemProps(addNavIndex),
+        };
 
   const rowProps = {
     projectId,
@@ -897,10 +973,10 @@ export function TodosView({
           />
         )}
 
-        {groups.needsYou.length > 0 && (
+        {needsYou.length > 0 && (
           <section className="flex flex-col">
             <GroupHeader label="NEEDS YOU" amber />
-            {groups.needsYou.map((todo) => (
+            {needsYou.map((todo) => (
               <TodoRow
                 key={todo.path}
                 todo={todo}
