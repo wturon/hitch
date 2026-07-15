@@ -842,7 +842,7 @@ export function TodosView({
       ),
     [navItems],
   );
-  const { selected, itemProps } = useListKeyboardNav({
+  const { selected, setSelected, itemProps } = useListKeyboardNav({
     count: navItems.length,
     active,
     containerRef: scrollRef,
@@ -854,6 +854,13 @@ export function TodosView({
     },
     // Keyboard actions on the highlighted row. Bare keys only — a modifier chord
     // is someone else's shortcut — and the add-row is inert (it's not a task).
+    //   • ↑/↓ move the highlight AND carry DOM focus with it, so the highlighted
+    //     row (bg-muted) and the focus ring are always the same row. Hover, Tab
+    //     and arrows then all converge on ONE selection (with the focusin sync
+    //     below) instead of a separate "focused" vs "highlighted" row.
+    //   • ←/→ traverse the highlighted row's own controls (row body → done → open
+    //     chat) — the keyboard twin of Tab, kept inside the row so horizontal nav
+    //     never wanders off to another row.
     //   • Backspace/Delete removes the row (the keyboard twin of the right-click
     //     Delete, sharing its handler + undo toast; no confirmation, undo is the
     //     safety net, and repeated presses bulk-delete serially since the
@@ -864,6 +871,50 @@ export function TodosView({
     //     toast + chat-close safety come along for free.
     onKeyDown: (e, ctx) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return false;
+
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        if (ctx.selected < 0) return false;
+        const row = scrollRef.current?.querySelector<HTMLElement>(
+          `[data-idx="${ctx.selected}"]`,
+        );
+        if (!row) return false;
+        // The row body itself (cell 0) plus its focusable controls, in DOM order:
+        // checkbox, then the harness chip's open-chat button/trigger.
+        const cells = [
+          row,
+          ...row.querySelectorAll<HTMLElement>(
+            'button, [tabindex]:not([tabindex="-1"])',
+          ),
+        ];
+        const at = cells.indexOf(document.activeElement as HTMLElement);
+        e.preventDefault(); // claim it so focus can never escape the row sideways
+        // Focus not yet inside the row (e.g. arrived by hover) → step onto the row
+        // body first; otherwise move one cell, clamping at the ends.
+        (at < 0
+          ? cells[0]
+          : cells[at + (e.key === "ArrowRight" ? 1 : -1)]
+        )?.focus();
+        return true;
+      }
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const n = navItems.length;
+        if (!n) return true;
+        const down = e.key === "ArrowDown";
+        const next =
+          ctx.selected < 0
+            ? down
+              ? 0
+              : n - 1
+            : Math.max(0, Math.min(n - 1, ctx.selected + (down ? 1 : -1)));
+        ctx.setSelected(next);
+        scrollRef.current
+          ?.querySelector<HTMLElement>(`[data-idx="${next}"]`)
+          ?.focus();
+        return true;
+      }
+
       const item = ctx.selected >= 0 ? navItems[ctx.selected] : undefined;
       if (!item || item.kind !== "todo") return false;
       if (e.key === "Backspace" || e.key === "Delete") {
@@ -881,6 +932,26 @@ export function TodosView({
       return false;
     },
   });
+  // Keep the highlight locked to wherever DOM focus actually is. Tab, a click and
+  // the ↑↓ focus-move above all land focus inside a row; this adopts that row as
+  // the selection, so there's never a separate "focused" row and "highlighted"
+  // row (the split flagged in review). Hover still highlights via
+  // itemProps.onMouseMove; this covers every focus-driven path.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !active) return;
+    const onFocusIn = (e: FocusEvent) => {
+      const row = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+        "[data-idx]",
+      );
+      if (!row) return;
+      const i = Number(row.dataset.idx);
+      if (Number.isInteger(i)) setSelected(i);
+    };
+    el.addEventListener("focusin", onFocusIn);
+    return () => el.removeEventListener("focusin", onFocusIn);
+  }, [active, setSelected]);
+
   // Swap the shared hook's `aria-selected` (invalid on role="button") for
   // `aria-current`, keeping data-idx + hover-to-highlight intact.
   const toRowItemProps = (i: number): RowNav["itemProps"] => {
