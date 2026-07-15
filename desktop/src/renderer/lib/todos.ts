@@ -41,6 +41,11 @@ export interface FileRow {
   content: string;
   deleted?: boolean;
   updatedAt: number;
+  // Convex stamps `_creationTime` on every document and `listFiles` returns rows
+  // verbatim (.collect()), so it's already on the client — we just type it here.
+  // It's the task's fixed birth time, used as the stable attention-group sort key
+  // (see byCreatedDesc). Optional so plain FileRow fixtures/tests can omit it.
+  _creationTime?: number;
 }
 
 // The minimal shape the derivation needs from a live `chats` row — a structural
@@ -93,6 +98,7 @@ export interface Todo {
   group: TodoGroup;
   tags: string[]; // parsed from frontmatter `tags:` (normalized, deduped)
   updatedAt: number; // files row updatedAt
+  createdAt: number; // files row _creationTime (fixed); stable sort key
 }
 
 export interface TodoGroups {
@@ -197,9 +203,17 @@ function needsYouBlockedFirst(t: Todo): number {
   return t.chatStatus === "needs-input" || t.request?.state === "failed" ? 0 : 1;
 }
 
-// Chat recency when a live row resolved, the file's own recency otherwise.
-const recency = (t: Todo) => t.chatRecency ?? t.updatedAt;
-const byRecencyDesc = (a: Todo, b: Todo) => recency(b) - recency(a);
+// The stable ordering key for the two chat-driven attention groups (NEEDS YOU,
+// WORKING). We deliberately do NOT sort by live chat recency here: that value
+// ticks on every chat event, so rows reordered under the cursor while you aimed
+// at one (the scanning-instability the critique flagged). Creation time is fixed
+// for a task's lifetime, so the order is deterministic and never jumps — no
+// frozen-order wrapper needed. Newest first; path breaks ties for a total order.
+// (chatRecency still drives the NEEDS YOU "last activity" subtitle, just not the
+// sort.)
+const byCreatedDesc = (a: Todo, b: Todo) =>
+  b.createdAt - a.createdAt ||
+  (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
 // order = the per-project ordered task-path list (backlog manual order). May be
 // stale (paths for deleted/completed/relinked tasks) or partial (agent-created
@@ -255,6 +269,7 @@ export function deriveTodoGroups(
       group,
       tags: parseTagsValue(frontmatter.tags),
       updatedAt: f.updatedAt,
+      createdAt: f._creationTime ?? f.updatedAt,
     });
   }
 
@@ -263,10 +278,10 @@ export function deriveTodoGroups(
     .sort(
       (a, b) =>
         needsYouBlockedFirst(a) - needsYouBlockedFirst(b) ||
-        byRecencyDesc(a, b),
+        byCreatedDesc(a, b),
     );
 
-  const working = todos.filter((t) => t.group === "working").sort(byRecencyDesc);
+  const working = todos.filter((t) => t.group === "working").sort(byCreatedDesc);
 
   const done = todos
     .filter((t) => t.group === "done")

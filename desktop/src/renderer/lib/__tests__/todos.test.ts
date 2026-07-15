@@ -438,29 +438,34 @@ describe("deriveTodoGroups — live chat index (resolveChatState seam)", () => {
     expect(paths(g.needsYou)).toEqual(["tasks/a/task.md"]);
   });
 
-  it("chat recency from rows drives needs-you/working sorts, overriding file updatedAt order", () => {
+  it("attention groups sort by stable created-at, NOT live chat recency", () => {
+    // Live chat recency (max lastEventAt/updatedAt on the row) would put b before
+    // a and d before c. The sort must IGNORE that ticking value and use the fixed
+    // creation time — here the fixtures' updatedAt, since createdAt falls back to
+    // updatedAt when _creationTime is absent — so the order is deterministic and
+    // never jumps when a chat emits an event.
     const chats = indexChats([
       chatRow("w1", "working", { lastEventAt: 100, updatedAt: 50 }),
-      chatRow("w2", "working", { lastEventAt: 20, updatedAt: 900 }), // max = 900
+      chatRow("w2", "working", { lastEventAt: 20, updatedAt: 900 }), // recency 900
       chatRow("n1", "waiting", { lastEventAt: 10, updatedAt: 10 }),
-      chatRow("n2", "waiting", { lastEventAt: 700, updatedAt: 5 }), // max = 700
+      chatRow("n2", "waiting", { lastEventAt: 700, updatedAt: 5 }), // recency 700
     ]);
     const files = [
-      // File recency says a > b, row recency says b (900) > a (100).
       task("a", { "chat-harness": "claude-code", "chat-id": "w1" }, { updatedAt: 500 }),
       task("b", { "chat-harness": "claude-code", "chat-id": "w2" }, { updatedAt: 400 }),
-      // Same inversion in needs-you: file says c > d, rows say d (700) > c (10).
       task("c", { "chat-harness": "claude-code", "chat-id": "n1" }, { updatedAt: 300 }),
       task("d", { "chat-harness": "claude-code", "chat-id": "n2" }, { updatedAt: 200 }),
     ];
     const g = deriveTodoGroups(files, [], chats);
-    expect(paths(g.working)).toEqual(["tasks/b/task.md", "tasks/a/task.md"]);
-    expect(paths(g.needsYou)).toEqual(["tasks/d/task.md", "tasks/c/task.md"]);
+    // Newest created-at first (a>b, c>d), regardless of b/d's higher recency.
+    expect(paths(g.working)).toEqual(["tasks/a/task.md", "tasks/b/task.md"]);
+    expect(paths(g.needsYou)).toEqual(["tasks/c/task.md", "tasks/d/task.md"]);
   });
 
-  it("unresolved rows fall back to file updatedAt for recency, mixed with resolved ones", () => {
-    // Both land in needs-you: one via a resolved waiting row (recency 100),
-    // one via a missing row (status unknown; recency = file updatedAt 500).
+  it("a resolved waiting row and a missing (dead) chat both land in needs-you", () => {
+    // One task binds a live waiting row; the other's chat id has no row (a dead
+    // chat, status unknown → not-working). Both are NEEDS YOU; order follows the
+    // stable created-at key (updatedAt fallback here): a (999) before b (500).
     const chats = indexChats([
       chatRow("n1", "waiting", { lastEventAt: 100, updatedAt: 100 }),
     ]);
@@ -469,7 +474,7 @@ describe("deriveTodoGroups — live chat index (resolveChatState seam)", () => {
       task("b", { "chat-harness": "claude-code", "chat-id": "gone" }, { updatedAt: 500 }),
     ];
     const g = deriveTodoGroups(files, [], chats);
-    expect(paths(g.needsYou)).toEqual(["tasks/b/task.md", "tasks/a/task.md"]);
+    expect(paths(g.needsYou)).toEqual(["tasks/a/task.md", "tasks/b/task.md"]);
   });
 
   it("omitting the index keeps today's frontmatter-only behavior", () => {

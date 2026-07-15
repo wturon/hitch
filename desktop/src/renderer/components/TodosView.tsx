@@ -116,28 +116,6 @@ function relativeTime(ts: number): string {
   });
 }
 
-// Hold a group's row order steady while its membership is unchanged. NEEDS YOU
-// sorts by chat recency, which ticks live — so without this, rows visibly swap
-// order while the user is aiming at one (the scanning-instability the critique
-// flagged). Here the order is only re-derived when a row actually joins or
-// leaves the group; a recency tick among the same members never reorders them.
-// A join/leave IS a real change, so it re-adopts the incoming (freshly-sorted)
-// order. Keyed by path; returns the same objects, just held in a stable order.
-function useStableOrder<T extends { path: string }>(items: T[]): T[] {
-  const prevOrderRef = useRef<string[]>([]);
-  return useMemo(() => {
-    const byPath = new Map(items.map((i) => [i.path, i]));
-    const prev = prevOrderRef.current;
-    const sameSet =
-      prev.length === items.length && prev.every((p) => byPath.has(p));
-    const order = sameSet
-      ? prev.map((p) => byPath.get(p) as T)
-      : items;
-    prevOrderRef.current = order.map((i) => i.path);
-    return order;
-  }, [items]);
-}
-
 // The one color moment in the app: NEEDS YOU wears an amber small-caps header;
 // every other group header is quiet neutral. The trailing hairline picks up the
 // same tone.
@@ -768,9 +746,9 @@ export function TodosView({
   // project through the active filter for what actually renders.
   const allGroups: TodoGroups = deriveTodoGroups(files, order, chats);
   const groups: TodoGroups = filterTodoGroups(allGroups, filter);
-  // NEEDS YOU order held steady across live recency ticks (see useStableOrder) —
-  // only a row joining or leaving the group re-sorts it.
-  const needsYou = useStableOrder(groups.needsYou);
+  // NEEDS YOU is ordered by the derivation itself (blocked first, then a stable
+  // creation-time sort — see byCreatedDesc), so it doesn't reorder on live chat
+  // ticks and needs no order-freezing wrapper. Render groups.needsYou directly.
 
   const universe = useMemo(() => allGroupTodos(allGroups), [allGroups]);
   const facetCounts = useMemo(
@@ -823,7 +801,7 @@ export function TodosView({
   const navItems = useMemo(
     () =>
       [
-        ...needsYou.map((todo) => ({ kind: "todo" as const, todo })),
+        ...groups.needsYou.map((todo) => ({ kind: "todo" as const, todo })),
         ...groups.working.map((todo) => ({ kind: "todo" as const, todo })),
         // The capture affordance is hidden while a filter is active, so it drops
         // out of the ↑↓ order too.
@@ -831,7 +809,7 @@ export function TodosView({
         ...groups.backlog.map((todo) => ({ kind: "todo" as const, todo })),
         ...doneVisible.map((todo) => ({ kind: "todo" as const, todo })),
       ],
-    [needsYou, groups.working, groups.backlog, doneVisible, filterActive],
+    [groups.needsYou, groups.working, groups.backlog, doneVisible, filterActive],
   );
   const navIndexByPath = useMemo(
     () =>
@@ -1021,10 +999,10 @@ export function TodosView({
           />
         )}
 
-        {needsYou.length > 0 && (
+        {groups.needsYou.length > 0 && (
           <section className="flex flex-col">
             <GroupHeader label="NEEDS YOU" amber />
-            {needsYou.map((todo) => (
+            {groups.needsYou.map((todo) => (
               <TodoRow
                 key={todo.path}
                 todo={todo}
