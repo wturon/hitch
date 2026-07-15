@@ -820,6 +820,22 @@ export function TodosView({
       if (item.kind === "add") onAddTodo();
       else onOpenTodo(item.todo.path);
     },
+    // Backspace/Delete removes the highlighted task — the keyboard twin of the
+    // right-click Delete, sharing its handler and undo toast (no confirmation;
+    // undo is the safety net, and repeated presses bulk-delete serially since
+    // the highlight inherits the next row). Bare keys only: a modifier chord
+    // is someone else's shortcut. The add-row is not deletable.
+    onKeyDown: (e, ctx) => {
+      if (e.key !== "Backspace" && e.key !== "Delete") return false;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return false;
+      const item = ctx.selected >= 0 ? navItems[ctx.selected] : undefined;
+      if (!item || item.kind !== "todo") return false;
+      const slug = taskSlug(item.todo.path);
+      if (!slug) return false;
+      e.preventDefault();
+      onDeleteTodo(slug);
+      return true;
+    },
   });
   // Per-row highlight wiring, or undefined for rows outside the nav list.
   const rowNav = (path: string): RowNav | undefined => {
