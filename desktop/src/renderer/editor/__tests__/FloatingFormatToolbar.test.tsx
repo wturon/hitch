@@ -151,7 +151,7 @@ describe("save-snippet mode", () => {
   // toolbar button, and hand back the name input.
   async function openSnippetForm(editor: LexicalEditor) {
     await selectFirstParagraph(editor);
-    await press("Save snippet");
+    await press("Save as snippet");
     const input = nameInput();
     expect(input).not.toBeNull();
     return input!;
@@ -162,7 +162,7 @@ describe("save-snippet mode", () => {
     await selectFirstParagraph(getEditor());
 
     expect(toolbar()).not.toBeNull();
-    expect(button("Save snippet")).toBeNull();
+    expect(button("Save as snippet")).toBeNull();
   });
 
   it("shows the button when onSaveSnippet is provided", async () => {
@@ -175,7 +175,7 @@ describe("save-snippet mode", () => {
     );
     await selectFirstParagraph(getEditor());
 
-    expect(button("Save snippet")).not.toBeNull();
+    expect(button("Save as snippet")).not.toBeNull();
   });
 
   it("saves the selected text under the typed name and flashes Saved", async () => {

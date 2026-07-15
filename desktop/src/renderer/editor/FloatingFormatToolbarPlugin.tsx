@@ -461,11 +461,13 @@ export function FloatingFormatToolbarPlugin({
           <>
             <span className="mx-0.5 my-1 w-px self-stretch bg-border" />
             <FormatButton
-              label="Save snippet"
+              label="Save as snippet"
               active={false}
               onClick={enterSnippetEdit}
+              showLabel
             >
               <TextQuoteIcon className="size-4" aria-hidden />
+              <span>Save as snippet</span>
             </FormatButton>
           </>
         )}
@@ -586,11 +588,13 @@ function FormatButton({
   label,
   active,
   onClick,
+  showLabel = false,
   children,
 }: {
   label: string;
   active: boolean;
   onClick: () => void;
+  showLabel?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -602,7 +606,8 @@ function FormatButton({
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       className={cn(
-        "inline-flex size-7 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "inline-flex h-7 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        showLabel ? "gap-1.5 px-2 text-xs" : "w-7",
         active
           ? "bg-accent text-foreground"
           : "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:text-foreground",
