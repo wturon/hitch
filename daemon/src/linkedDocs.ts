@@ -1,7 +1,7 @@
 // Single source of truth for the doc kinds whose chat link the daemon stamps
-// and keeps projected/healed on disk: a task's `task.md` and a note's
-// `index.md`. Automations link a path too but aren't surfaced as editable docs,
-// so they're intentionally excluded.
+// and keeps projected/healed on disk: a task's `task.md`. Automations link a
+// path too but aren't surfaced as editable docs, so they're intentionally
+// excluded.
 //
 // This list drives four spots that must stay in lockstep — the projection SQL
 // (`linked_type IN …`), the canonical-path regex, the reconcile walk, and the
@@ -9,14 +9,13 @@
 // follow from this one change instead of drifting apart.
 export const LINKED_DOC_KINDS = [
   { type: "task", dir: "tasks", file: "task.md" },
-  { type: "note", dir: "notes", file: "index.md" },
 ] as const;
 
 export type LinkedDocKind = (typeof LINKED_DOC_KINDS)[number];
 export type LinkedDocType = LinkedDocKind["type"];
 
-// `linkedType` values that map to a stampable doc body (task | note). A type
-// guard so the daemon's bind path narrows `linkedType` alongside it.
+// `linkedType` values that map to a stampable doc body (task). A type guard so
+// the daemon's bind path narrows `linkedType` alongside it.
 export function isLinkedDocType(
   linkedType: string | undefined,
 ): linkedType is LinkedDocType {
@@ -29,8 +28,8 @@ export const LINKED_DOC_TYPES_SQL = LINKED_DOC_KINDS.map(
   (kind) => `'${kind.type}'`,
 ).join(", ");
 
-// True for a canonical doc-body path: `tasks/<slug>/task.md` or
-// `notes/<slug>/index.md`. Used to gate frontmatter projection.
+// True for a canonical doc-body path: `tasks/<slug>/task.md`. Used to gate
+// frontmatter projection.
 const LINKED_DOC_PATTERNS = LINKED_DOC_KINDS.map(
   (kind) => new RegExp(`^${kind.dir}/[^/]+/${kind.file.replace(/\./g, "\\.")}$`),
 );

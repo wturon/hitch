@@ -173,7 +173,7 @@ export default defineSchema({
   // ~/.claude/skills/<name>/SKILL.md). The filesystem is the source of truth;
   // the daemon scans skill directories on startup + on an interval and replaces
   // this table's rows for its (projectId, host). The editor's slash menu reads
-  // it so users can autocomplete `/skill-name` into task/note bodies. One row
+  // it so users can autocomplete `/skill-name` into task bodies. One row
   // per (project, host, skill-name); a skill installed for multiple harnesses is
   // ONE row with several `installs`. Global skills get a row in every hitched
   // project on that host.
@@ -216,7 +216,7 @@ export default defineSchema({
     sessionId: v.optional(v.string()), // the chat to resume; unset for start-chat
     path: v.optional(v.string()), // start-chat: the task's rel path (dedup)
     linkedType: v.optional(
-      v.union(v.literal("task"), v.literal("note"), v.literal("automation")),
+      v.union(v.literal("task"), v.literal("automation")),
     ),
     linkedPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()), // start-chat: seed prompt for the new session
@@ -266,7 +266,7 @@ export default defineSchema({
       ),
     ),
     linkedType: v.optional(
-      v.union(v.literal("task"), v.literal("note"), v.literal("automation")),
+      v.union(v.literal("task"), v.literal("automation")),
     ),
     linkedPath: v.optional(v.string()),
     resumeKind: v.union(v.literal("open-chat-command"), v.literal("external")),

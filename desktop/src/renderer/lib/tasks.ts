@@ -59,7 +59,7 @@ export function deriveTitleFromBody(body: string, maxWords = 6): string {
 
 // A slug for `title` that doesn't collide with `taken`, appending -2, -3, …
 // Falls back to `fallback` ("task" by default) when the title has no slug-able
-// characters — notes pass "note" so an untitled note reads sensibly.
+// characters.
 export function uniqueSlug(
   title: string,
   taken: Set<string>,

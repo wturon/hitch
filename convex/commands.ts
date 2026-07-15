@@ -85,7 +85,7 @@ export const enqueueCommand = mutation({
     sessionId: v.optional(v.string()),
     path: v.optional(v.string()),
     linkedType: v.optional(
-      v.union(v.literal("task"), v.literal("note"), v.literal("automation")),
+      v.union(v.literal("task"), v.literal("automation")),
     ),
     linkedPath: v.optional(v.string()),
     initialPrompt: v.optional(v.string()),

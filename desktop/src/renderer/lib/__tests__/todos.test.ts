@@ -354,8 +354,8 @@ describe("deriveTodoGroups — exclusions", () => {
   });
 
   it("non-task files (not tasks/<slug>/task.md) are excluded", () => {
-    const notes: FileRow = {
-      path: "notes/idea/index.md",
+    const nonTaskDoc: FileRow = {
+      path: "journal/idea/index.md",
       content: "---\ntitle: Idea\n---\nbody",
       updatedAt: 1,
     };
@@ -370,7 +370,10 @@ describe("deriveTodoGroups — exclusions", () => {
       updatedAt: 1,
     };
     const realTask = task("a", {});
-    const g = deriveTodoGroups([notes, attachment, projectConfig, realTask], []);
+    const g = deriveTodoGroups(
+      [nonTaskDoc, attachment, projectConfig, realTask],
+      [],
+    );
     expect(paths(g.backlog)).toEqual(["tasks/a/task.md"]);
     expect(g.archivedCount).toBe(0);
   });

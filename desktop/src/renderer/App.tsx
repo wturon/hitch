@@ -35,12 +35,6 @@ import { parseProjectConfig, PROJECT_CONFIG_PATH } from "@/lib/projectConfig";
 import { taskBodyPath, taskSlug } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 import { parseChatRef } from "@/lib/chat";
-import {
-  NotesView,
-  noteDocs,
-  type NoteDoc,
-  type NoteIntent,
-} from "@/components/NotesView";
 import { DebugView } from "@/components/DebugView";
 import { SandboxEditor } from "@/editor";
 import { AutomationsView } from "@/components/AutomationsView";
@@ -678,13 +672,11 @@ function WorkspaceContent({
   const commitTodoDialog = useCallback((path: string) => {
     setTodoDialog((prev) => commitState(prev, path));
   }, []);
-  // The active per-project view (Todos / Notes / …).
+  // The active per-project view (Todos / …).
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("todos");
-  // The global command palette (⌘K) and its one-shot request to NotesView to
-  // open/create a note. A palette-driven "New project" reuses the sidebar's
-  // CreateProjectDialog, pre-filled with the typed query.
+  // The global command palette (⌘K). A palette-driven "New project" reuses the
+  // sidebar's CreateProjectDialog, pre-filled with the typed query.
   const [showPalette, setShowPalette] = useState(false);
-  const [noteIntent, setNoteIntent] = useState<NoteIntent | null>(null);
   const [automationIntent, setAutomationIntent] = useState<string | null>(null);
   const [createProjectName, setCreateProjectName] = useState<string | null>(
     null,
@@ -845,7 +837,7 @@ function WorkspaceContent({
   // something else or the palette shouldn't appear: the MDX editor
   // (contenteditable — it owns ⌘K for inserting links) or while another dialog/
   // menu is up (incl. the task dialog). Plain text fields are NOT suppressed —
-  // the Notes view keeps its search input focused, and ⌘K must still open there.
+  // ⌘K must still open the palette from a focused search input.
   // Base UI restores focus to the previously-focused element on close.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -876,9 +868,8 @@ function WorkspaceContent({
   // Ctrl+Tab / Ctrl+Shift+Tab cycles forward/back with wraparound. Ctrl+Tab
   // stays on Ctrl across platforms (⌘Tab is the OS app switcher). Both are
   // chrome-level like ⌘\ and fire even while typing — modifier chords never
-  // produce text, and leaving Notes mid-edit unmounts NotesView, whose unmount
-  // flush saves the open draft — so we only bail when a dialog/menu overlay
-  // (palette, task dialog, context menu) owns the keyboard.
+  // produce text — so we only bail when a dialog/menu overlay (palette, task
+  // dialog, context menu) owns the keyboard.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const overlayUp = !!document.querySelector(
@@ -988,10 +979,6 @@ function WorkspaceContent({
       title: frontmatter.title || slug,
       content: file.content,
     }));
-
-  // Archived notes surface next to archived todos in the settings dialog's
-  // Archive tab.
-  const archivedNoteDocs = noteDocs(files).filter((d) => d.archived);
 
   // The command palette's task list = the derived todo groups (frontmatter-only
   // mode; the palette isn't perf-sensitive and needs no live chat index).
@@ -1272,71 +1259,9 @@ function WorkspaceContent({
     }
   }
 
-  // Unarchive a note: clear its `archived:` flag so it rejoins the Notes index.
-  async function unarchiveNote(doc: NoteDoc) {
-    const nextContent = setFrontmatterKeys(doc.content, {
-      archived: undefined,
-    });
-    await upsertFile({
-      projectId,
-      path: doc.path,
-      content: nextContent,
-      hash: await sha256(nextContent),
-      deleted: false,
-    });
-  }
-
-  // Delete an archived note from the Archive tab. Mirrors NotesView's
-  // deleteDocWithUndo: tombstone the attachment rows and the body, then offer
-  // an undo that re-writes the body and re-registers each attachment against
-  // its surviving server blob (GC is out of scope).
-  async function deleteNoteWithUndo(doc: NoteDoc) {
-    const prefix = `notes/${doc.slug}/attachments/`;
-    const revivable = (attachments ?? []).filter(
-      (row) => !row.deleted && row.path.startsWith(prefix),
-    );
-    await Promise.all(
-      revivable.map((row) => tombstoneAttachment({ projectId, path: row.path })),
-    );
-    await upsertFile({
-      projectId,
-      path: doc.path,
-      content: "",
-      hash: "",
-      deleted: true,
-    });
-    showUndoableToast({
-      message: "Note deleted",
-      undo: () =>
-        void (async () => {
-          await upsertFile({
-            projectId,
-            path: doc.path,
-            content: doc.content,
-            hash: await sha256(doc.content),
-            deleted: false,
-          });
-          await Promise.all(
-            revivable.map((row) =>
-              registerAttachment({
-                projectId,
-                path: row.path,
-                storageId: row.storageId,
-                hash: row.hash,
-                contentType: row.contentType,
-                size: row.size,
-              }),
-            ),
-          );
-        })().catch((err) =>
-          console.error("Failed to restore deleted note", err),
-        ),
-    });
-  }
-
-  // Everything the settings dialog's Archive tab renders: archived todos and
-  // notes as ready-made rows, each bound to the same unarchive/delete (+ undo)
-  // handlers the old side sheets used.
+  // Everything the settings dialog's Archive tab renders: archived todos as
+  // ready-made rows, each bound to the same unarchive/delete (+ undo) handlers
+  // the old side sheets used.
   const projectArchive: ProjectArchive = {
     todos: archivedTodos.map((todo) => ({
       key: todo.slug,
@@ -1345,18 +1270,11 @@ function WorkspaceContent({
       onUnarchive: () => void unarchiveTodo(todo),
       onDelete: () => void deleteTodoWithUndo(todo.slug),
     })),
-    notes: archivedNoteDocs.map((doc) => ({
-      key: doc.slug,
-      title: doc.title,
-      detail: doc.type,
-      onUnarchive: () => void unarchiveNote(doc),
-      onDelete: () => void deleteNoteWithUndo(doc),
-    })),
     onDeleteAllTodos: () => void deleteAllArchived(),
   };
 
-  // Command palette (⌘K) data + actions. Active-project scoped: its task/note
-  // lists are the live todos/notes; the project list drives the switcher.
+  // Command palette (⌘K) data + actions. Active-project scoped: its task list
+  // is the live todos; the project list drives the switcher.
   const paletteProjects = projects.map(({ project }) => ({
     id: project._id,
     name: project.name,
@@ -1377,9 +1295,6 @@ function WorkspaceContent({
     title: todo.title,
     meta: PALETTE_GROUP_LABEL[todo.group],
   }));
-  const paletteNotes = noteDocs(files)
-    .filter((doc) => !doc.archived)
-    .map((doc) => ({ slug: doc.slug, title: doc.title, meta: doc.type }));
   const keepAwakeAvailable = keepAwake !== null && Boolean(keepAwakeBridge());
   const paletteActions: PaletteAction[] = [
     {
@@ -1493,16 +1408,6 @@ function WorkspaceContent({
     setWorkspaceView("todos");
     openCapture();
   }
-  // Open / create a note: hand the request to NotesView (which owns the editor +
-  // draft-flush lifecycle) after switching to the Notes view.
-  function paletteOpenNote(slug: string) {
-    setWorkspaceView("notes");
-    setNoteIntent({ type: "open", slug });
-  }
-  function paletteCreateNote(title: string) {
-    setWorkspaceView("notes");
-    setNoteIntent({ type: "create", title });
-  }
 
   return (
     <AppShell
@@ -1532,25 +1437,32 @@ function WorkspaceContent({
           <h1 className="min-w-0 truncate text-[13px] font-semibold text-foreground">
             {currentProject.name}
           </h1>
-          <div className="flex shrink-0 items-center overflow-hidden rounded-lg border border-border">
-            {WORKSPACE_VIEWS.map(({ view, title, Icon }, i) => (
-              <button
-                key={view}
-                type="button"
-                onClick={() => setWorkspaceView(view)}
-                className={cn(
-                  "flex items-center gap-1.5 px-2.5 py-1 text-[13px] font-medium transition-colors",
-                  i > 0 && "border-l border-border",
-                  workspaceView === view
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <Icon className="size-3.5" />
-                {title}
-              </button>
-            ))}
-          </div>
+          {/* With a single user-visible view (Todos) the switcher would be a
+              lone always-active pill, so it stays hidden until a second view
+              joins WORKSPACE_VIEWS — the center grid column just sits empty. */}
+          {WORKSPACE_VIEWS.length > 1 ? (
+            <div className="flex shrink-0 items-center overflow-hidden rounded-lg border border-border">
+              {WORKSPACE_VIEWS.map(({ view, title, Icon }, i) => (
+                <button
+                  key={view}
+                  type="button"
+                  onClick={() => setWorkspaceView(view)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2.5 py-1 text-[13px] font-medium transition-colors",
+                    i > 0 && "border-l border-border",
+                    workspaceView === view
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Icon className="size-3.5" />
+                  {title}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div />
+          )}
           <div className="flex items-center justify-end">
             <Button
               variant="outline"
@@ -1588,15 +1500,7 @@ function WorkspaceContent({
           </section>
         )}
 
-        {workspaceView === "notes" ? (
-          <NotesView
-            projectId={projectId}
-            files={files}
-            onExit={() => setWorkspaceView("todos")}
-            intent={noteIntent}
-            onIntentHandled={() => setNoteIntent(null)}
-          />
-        ) : workspaceView === "automations" ? (
+        {workspaceView === "automations" ? (
           <AutomationsView
             projectId={projectId}
             files={files}
@@ -1692,14 +1596,11 @@ function WorkspaceContent({
           activeProjectName={currentProject.name}
           currentView={workspaceView}
           tasks={paletteTasks}
-          notes={paletteNotes}
           actions={paletteActions}
           onSelectProject={onSelectProject}
           onSelectView={setWorkspaceView}
           onOpenTask={paletteOpenTask}
           onCreateTask={paletteCreateTask}
-          onOpenNote={paletteOpenNote}
-          onCreateNote={paletteCreateNote}
           onCreateProject={(name) => setCreateProjectName(name)}
         />
 

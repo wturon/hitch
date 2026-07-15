@@ -189,7 +189,7 @@ assert.equal(
 assert.throws(() => nextRunAfter("99 * * * *", "UTC", baseTime), /out of range/);
 assert.equal(
   projectAutomationDefinition({
-    path: "notes/not-automation/index.md",
+    path: "tasks/not-automation/task.md",
     content: "",
     deleted: false,
   }),

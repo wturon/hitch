@@ -49,9 +49,9 @@ export interface FileRow {
 }
 
 // The minimal shape the derivation needs from a live `chats` row — a structural
-// subset of both the raw Convex row and lib/chats.ts's ChatRowViewModel (which
-// this module can't import without dragging in the generated Convex api).
-// `status` is the stored union (which includes "idle"); it's normalized on read.
+// subset of the raw Convex row (which this module can't import without dragging
+// in the generated Convex api). `status` is the stored union (which includes
+// "idle"); it's normalized on read.
 export interface LiveChatRow {
   harness: Harness;
   chatId?: string;
@@ -164,7 +164,7 @@ function resolveChatState(
     // The stored union includes "idle"; normalizeChatStatus maps it (and any
     // other alias) into the client ChatStatus — idle reads as not-working.
     chatStatus: normalizeChatStatus(row.status),
-    // Mirrors lib/chats.ts chatSortTime: the freshest of event vs row write.
+    // The freshest of event vs row write.
     chatRecency: Math.max(row.lastEventAt, row.updatedAt),
   };
 }

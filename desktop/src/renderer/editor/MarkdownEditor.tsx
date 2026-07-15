@@ -1,7 +1,7 @@
 // The production body editor for Text Editor 2.0 — a Hitch-owned rich-text
 // surface built directly on Lexical, replacing the MDXEditor wrapper. It carries
 // the SAME name and public shape as that wrapper (`MarkdownEditor` +
-// `MarkdownEditorHandle`) on purpose: flipping a surface (NotesView, TaskDialog)
+// `MarkdownEditorHandle`) on purpose: flipping a surface (e.g. TaskDialog)
 // from the old editor to this one is a one-line import change, no prop churn.
 //
 // The controlled value/onChange contract lives in ControlledMarkdownPlugin (its
@@ -56,7 +56,7 @@ export interface MarkdownEditorProps {
   placeholder?: string;
   className?: string;
   // Image support. EXACT same names/signatures as the old MDXEditor wrapper so a
-  // surface (NotesView, TaskDialog) can flip editors with a one-line import
+  // surface (e.g. TaskDialog) can flip editors with a one-line import
   // change. When `imageUploadHandler` is set, an all-image clipboard paste
   // uploads + inserts inline (PasteImagePlugin); the returned string is written
   // as the markdown `src`. `imagePreviewHandler` resolves that stored `src` to a
@@ -65,7 +65,7 @@ export interface MarkdownEditorProps {
   imageUploadHandler?: (file: File) => Promise<string>;
   imagePreviewHandler?: (src: string) => Promise<string>;
   // Agent skills to offer in the `/` menu's Skills section. Fetched by the app
-  // surface (TaskDialog/NotesView via useSkills) and passed down so the editor
+  // surface (TaskDialog via useSkills) and passed down so the editor
   // stays Convex-free. Omitted / empty → no Skills section, zero behavior change.
   skills?: ReadonlyArray<SkillMenuItem>;
   // The user's snippets to offer in the `/` menu's Snippets section (above

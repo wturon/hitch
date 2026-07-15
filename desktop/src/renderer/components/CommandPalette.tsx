@@ -6,7 +6,6 @@ import {
   BookIcon,
   Columns2Icon,
   CornerDownLeftIcon,
-  FileTextIcon,
   HashIcon,
   ListTodoIcon,
   PlusIcon,
@@ -22,7 +21,7 @@ import {
 } from "@/components/ui/command";
 
 // The palette is active-project scoped: it searches the active project's tasks
-// and notes and switches between projects. Cross-project search is out of scope.
+// and switches between projects. Cross-project search is out of scope.
 export interface PaletteProject {
   id: Id<"projects">;
   name: string;
@@ -31,11 +30,6 @@ export interface PaletteTask {
   path: string; // tasks/<slug>/task.md — the todo's selection key
   title: string;
   meta: string; // group name, shown as the mono tag
-}
-export interface PaletteNote {
-  slug: string;
-  title: string;
-  meta: string; // freeform note type, shown as the mono tag
 }
 export interface PaletteAction {
   id: string;
@@ -50,24 +44,20 @@ export interface PaletteAction {
 // "debug" and "editor-sandbox" are intentionally NOT in WORKSPACE_VIEWS below —
 // they're internal surfaces (the account menu / a ⌘K action), not per-project
 // tabs, so they stay out of the header pills, ⌘-number jumps, and Ctrl+Tab cycle.
-export type WorkspaceView =
-  | "todos"
-  | "notes"
-  | "automations"
-  | "debug"
-  | "editor-sandbox";
+export type WorkspaceView = "todos" | "automations" | "debug" | "editor-sandbox";
 
 // The per-project views, in tab order — the single source of truth shared by the
 // header pills, the ⌘-number jump shortcuts, and the Ctrl+Tab cycle (all in
 // App.tsx). Adding a view here lights it up everywhere. Title is what the palette
-// query matches against ("todos" / "notes" / "automations").
+// query matches against ("todos" / "automations"). While Todos is the only entry
+// the header switcher and the palette's Views group stay hidden entirely — a
+// second entry brings them both back.
 export const WORKSPACE_VIEWS: {
   view: WorkspaceView;
   title: string;
   Icon: typeof BookIcon;
 }[] = [
   { view: "todos", title: "Todos", Icon: ListTodoIcon },
-  { view: "notes", title: "Notes", Icon: BookIcon },
   // Automations is hidden for the release — it stays a valid WorkspaceView (the
   // view, component, and App routing are intact) but is omitted here so it drops
   // out of the header pills, ⌘-number jumps, Ctrl+Tab cycle, and ⌘K palette.
@@ -166,14 +156,11 @@ export function CommandPalette({
   activeProjectName,
   currentView,
   tasks,
-  notes,
   actions,
   onSelectProject,
   onSelectView,
   onOpenTask,
   onCreateTask,
-  onOpenNote,
-  onCreateNote,
   onCreateProject,
 }: {
   open: boolean;
@@ -183,14 +170,11 @@ export function CommandPalette({
   activeProjectName: string;
   currentView: WorkspaceView;
   tasks: PaletteTask[];
-  notes: PaletteNote[];
   actions: PaletteAction[];
   onSelectProject: (id: Id<"projects">) => void;
   onSelectView: (view: WorkspaceView) => void;
   onOpenTask: (path: string) => void;
   onCreateTask: (title: string) => void;
-  onOpenNote: (slug: string) => void;
-  onCreateNote: (title: string) => void;
   onCreateProject: (name: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -203,9 +187,10 @@ export function CommandPalette({
 
   const trimmed = query.trim();
   const rankedTasks = useMemo(() => rankByTitle(tasks, query), [tasks, query]);
-  const rankedNotes = useMemo(() => rankByTitle(notes, query), [notes, query]);
+  // With a single per-project view there's nothing to switch between, so the
+  // Views group vanishes from the palette (matching the hidden header switcher).
   const rankedViews = useMemo(
-    () => rankByTitle(WORKSPACE_VIEWS, query),
+    () => (WORKSPACE_VIEWS.length > 1 ? rankByTitle(WORKSPACE_VIEWS, query) : []),
     [query],
   );
   const rankedActions = useMemo(
@@ -224,7 +209,6 @@ export function CommandPalette({
   const noMatches =
     trimmed !== "" &&
     rankedTasks.length === 0 &&
-    rankedNotes.length === 0 &&
     rankedViews.length === 0 &&
     rankedActions.length === 0 &&
     rankedProjects.length === 0;
@@ -290,7 +274,7 @@ export function CommandPalette({
         <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-[#141418]/30 duration-100 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
         <DialogPrimitive.Popup
           // Upper third, fixed 640px, soft shadow + hairline border — overlays
-          // any view (distinct from the full-pane Notes search).
+          // any view.
           className="fixed top-[14vh] left-1/2 z-50 w-[640px] max-w-[calc(100%-2rem)] -translate-x-1/2 overflow-hidden rounded-2xl bg-popover text-popover-foreground shadow-2xl ring-1 ring-border outline-none duration-100 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
         >
           <DialogPrimitive.Title className="sr-only">
@@ -303,7 +287,7 @@ export function CommandPalette({
               autoFocus
               value={query}
               onValueChange={setQuery}
-              placeholder="Search tasks, notes, projects, settings, or actions…"
+              placeholder="Search tasks, projects, settings, or actions…"
             />
             <CommandList>
               {trimmed === "" ? (
@@ -311,9 +295,11 @@ export function CommandPalette({
                   <CommandGroup heading="Jump to">
                     {projectRows(projects)}
                   </CommandGroup>
-                  <CommandGroup heading="Views">
-                    {viewRows(WORKSPACE_VIEWS)}
-                  </CommandGroup>
+                  {WORKSPACE_VIEWS.length > 1 && (
+                    <CommandGroup heading="Views">
+                      {viewRows(WORKSPACE_VIEWS)}
+                    </CommandGroup>
+                  )}
                   {actions.length > 0 && (
                     <CommandGroup heading="Actions">
                       {actionRows(actions)}
@@ -325,12 +311,6 @@ export function CommandPalette({
                       label="New task"
                       query=""
                       onRun={() => run(() => onCreateTask(""))}
-                    />
-                    <CreateRow
-                      value="create-note"
-                      label="New note"
-                      query=""
-                      onRun={() => run(() => onCreateNote(""))}
                     />
                     <CreateRow
                       value="create-project"
@@ -347,12 +327,6 @@ export function CommandPalette({
                     label="New task"
                     query={trimmed}
                     onRun={() => run(() => onCreateTask(trimmed))}
-                  />
-                  <CreateRow
-                    value="create-note"
-                    label="New note"
-                    query={trimmed}
-                    onRun={() => run(() => onCreateNote(trimmed))}
                   />
                   <CreateRow
                     value="create-project"
@@ -394,23 +368,6 @@ export function CommandPalette({
                           </RowIcon>
                           <span className="truncate">{t.title}</span>
                           {t.meta && <CommandMeta>{t.meta}</CommandMeta>}
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  )}
-                  {rankedNotes.length > 0 && (
-                    <CommandGroup heading="Notes">
-                      {rankedNotes.map((n) => (
-                        <CommandItem
-                          key={n.slug}
-                          value={`note:${n.slug}`}
-                          onSelect={() => run(() => onOpenNote(n.slug))}
-                        >
-                          <RowIcon>
-                            <FileTextIcon className="size-4" />
-                          </RowIcon>
-                          <span className="truncate">{n.title}</span>
-                          {n.meta && <CommandMeta>{n.meta}</CommandMeta>}
                         </CommandItem>
                       ))}
                     </CommandGroup>

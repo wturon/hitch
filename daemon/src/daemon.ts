@@ -148,7 +148,7 @@ interface CommandDoc {
   automationRunId?: string;
   sessionId?: string;
   path?: string;
-  linkedType?: "task" | "note" | "automation";
+  linkedType?: "task" | "automation";
   linkedPath?: string;
   initialPrompt?: string;
   title?: string;
@@ -323,7 +323,7 @@ export function loadHitchConfig(path: string, cwd = process.cwd()): RuntimeConfi
 const hashOf = (content: string): string =>
   createHash("sha256").update(content).digest("hex");
 
-// The fire-and-forget "summoning" flag the server stamps on a task/note when a
+// The fire-and-forget "summoning" flag the server stamps on a task when a
 // delegation is requested (see convex requestDelegation + lib/chat.ts). The
 // daemon owns its teardown: it clears these when a real chat binds (the chat-*
 // fields take over) and flips them to `failed` when a launch can't be
@@ -355,22 +355,22 @@ function delegationFailureReason(result: string, errorCode?: string): string {
   return msg.length > 80 ? `${msg.slice(0, 79)}…` : msg;
 }
 
-// Files under a task's or note's attachments/ folder are image blobs, NOT UTF-8
-// text. They sync via the attachments table (download-only), so the text watcher
+// Files under a task's attachments/ folder are image blobs, NOT UTF-8 text.
+// They sync via the attachments table (download-only), so the text watcher
 // must never read/push them — doing so would shove corrupted binary into the
 // `files` table and pollute the cards query. Matches both a file and the dir
-// itself, under either primitive's folder.
-const ATTACHMENT_RE = /^(?:tasks|notes)\/[^/]+\/attachments(\/|$)/;
+// itself.
+const ATTACHMENT_RE = /^tasks\/[^/]+\/attachments(\/|$)/;
 // A single attachment file's path, used to scope empty-folder pruning.
-const ATTACHMENT_FILE_RE = /^(?:tasks|notes)\/[^/]+\/attachments\/[^/]+$/;
+const ATTACHMENT_FILE_RE = /^tasks\/[^/]+\/attachments\/[^/]+$/;
 
 // The canonical body file of each primitive that owns a per-slug folder: a
-// task's task.md, a note's index.md, an automation's index.md. When one of
-// these is deleted its folder is now empty, so we try to prune the dir behind
-// it. Keep automations here so deleting a routine cleans up
-// `automations/<slug>/` instead of leaving an empty husk on disk.
+// task's task.md, an automation's index.md. When one of these is deleted its
+// folder is now empty, so we try to prune the dir behind it. Keep automations
+// here so deleting a routine cleans up `automations/<slug>/` instead of
+// leaving an empty husk on disk.
 const PRUNABLE_BODY_RE =
-  /^(?:tasks\/[^/]+\/task\.md|notes\/[^/]+\/index\.md|automations\/[^/]+\/index\.md)$/;
+  /^(?:tasks\/[^/]+\/task\.md|automations\/[^/]+\/index\.md)$/;
 
 export function isPrunableBodyPath(relPath: string): boolean {
   return PRUNABLE_BODY_RE.test(relPath);
@@ -1131,8 +1131,7 @@ async function startHitchBinding({
 
   // The task doc a start-chat command targets, or null if it isn't a
   // task-linked start-chat. Only tasks carry the card-visible `chat-request`
-  // flag today (notes are handled by their own dock), so the flag lifecycle is
-  // scoped to them.
+  // flag, so the flag lifecycle is scoped to them.
   function taskDocForCommand(cmd: CommandDoc): string | null {
     if (cmd.kind !== "start-chat") return null;
     const linkedType = cmd.linkedType ?? (cmd.path ? "task" : undefined);
@@ -1278,9 +1277,9 @@ async function startHitchBinding({
     await pruneEmptyTaskDir(loc.rel, absPath);
   }
 
-  // Remove the now-empty folder left behind when a task's task.md, a note's
-  // index.md, or an automation's index.md is deleted. rmdir fails on a non-empty
-  // dir — that's the signal to stop, not an error.
+  // Remove the now-empty folder left behind when a task's task.md or an
+  // automation's index.md is deleted. rmdir fails on a non-empty dir — that's
+  // the signal to stop, not an error.
   async function pruneEmptyTaskDir(relPath: string, absPath: string): Promise<void> {
     if (!isPrunableBodyPath(relPath)) return;
 
@@ -1468,9 +1467,9 @@ async function startHitchBinding({
   // hook/app-server driven; polling durable turn history can see the previous
   // completed turn during a live resumed turn, so don't reconcile Codex here.
   async function reconcileChatStatus(): Promise<void> {
-    // Every linked doc kind (tasks/task.md, notes/index.md) stamps a chat-status,
-    // so a dead cmux Claude process on any must be reconciled or it hangs in
-    // "working". Walk each kind's dir from the shared LINKED_DOC_KINDS list.
+    // Every linked doc kind (tasks/task.md) stamps a chat-status, so a dead
+    // cmux Claude process on any must be reconciled or it hangs in "working".
+    // Walk each kind's dir from the shared LINKED_DOC_KINDS list.
     for (const kind of LINKED_DOC_KINDS) {
       await reconcileChatStatusInDir(kind.dir, kind.file);
     }
@@ -1786,10 +1785,10 @@ async function startHitchBinding({
         if (linkedPath === undefined && !cmd.launchId) {
           throw new Error("start-chat requires linkedPath or launchId");
         }
-        // Tasks AND notes carry their on-disk location in linkedPath and want
-        // their linked file (task.md / index.md) stamped with chat metadata on
-        // bind — and projected / pid-healed below. Automations link a path too
-        // but aren't editable docs, so they keep the old "not stamped" behavior.
+        // Tasks carry their on-disk location in linkedPath and want their
+        // linked file (task.md) stamped with chat metadata on bind — and
+        // projected / pid-healed below. Automations link a path too but
+        // aren't editable docs, so they keep the old "not stamped" behavior.
         const stampsLinkedFile =
           linkedPath !== undefined && isLinkedDocType(linkedType);
         const launchKey = linkedPath ?? cmd.launchId ?? cmd._id;

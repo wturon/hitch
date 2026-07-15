@@ -148,7 +148,7 @@ export function FloatingFormatToolbarPlugin({
   onSaveSnippet,
 }: {
   // Persist the selected text as a named snippet. Supplied by the app surface
-  // (NotesView/TodoDialog wrap the Convex mutation) so the editor stays
+  // (TodoDialog wraps the Convex mutation) so the editor stays
   // Convex-free; when absent the Save-snippet button doesn't render at all.
   // Resolves on success; rejects with an Error whose `.message` is user-facing.
   onSaveSnippet?: (name: string, body: string) => Promise<void>;
@@ -283,7 +283,7 @@ export function FloatingFormatToolbarPlugin({
   }, [format, reposition]);
 
   // Escape closes the toolbar and consumes the event so the editor's own Escape
-  // (blur) and window-level handlers (NotesView exits the note) don't also fire.
+  // (blur) and window-level handlers don't also fire.
   // In edit/snippet mode focus is in the input, whose own handler cancels back to
   // toolbar, so this doesn't run there.
   useEffect(() => {
