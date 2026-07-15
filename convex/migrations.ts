@@ -90,3 +90,40 @@ export const retireNoteLinks = internalMutation({
     };
   },
 });
+
+// Inventory of note-shaped rows the file-move migration must retire: live
+// (non-deleted) `files` bodies still under notes/, and attachment rows keyed
+// under a notes/ folder. Both are path-shaped only — no union dependence — so
+// this stays runnable after "note" leaves the linkedType validators.
+export const listNoteFiles = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const files = (await ctx.db.query("files").collect())
+      .filter((f) => !f.deleted && f.path.startsWith("notes/"))
+      .map((f) => ({ _id: f._id, projectId: f.projectId, path: f.path }));
+    const attachments = (await ctx.db.query("attachments").collect())
+      .filter((a) => !a.deleted && a.path.startsWith("notes/"))
+      .map((a) => ({ _id: a._id, projectId: a.projectId, path: a.path }));
+    return { files, attachments };
+  },
+});
+
+// Attachment rows are path-keyed and the daemon's download sync trusts that
+// path, so rows must follow their note's folder into tasks/. Patch in place —
+// same row, same storageId — mirroring NotesView's rename cascade, which the
+// deletion PR removes. Idempotent: a second run finds no notes/ rows.
+export const rekeyNoteAttachments = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const rows = (await ctx.db.query("attachments").collect()).filter(
+      (a) => !a.deleted && a.path.startsWith("notes/"),
+    );
+    const patched = [];
+    for (const row of rows) {
+      const after = row.path.replace(/^notes\//, "tasks/");
+      await ctx.db.patch(row._id, { path: after });
+      patched.push({ _id: row._id, before: row.path, after });
+    }
+    return { attachmentsPatched: patched.length, patched };
+  },
+});
