@@ -127,3 +127,31 @@ export const rekeyNoteAttachments = internalMutation({
     return { attachmentsPatched: patched.length, patched };
   },
 });
+
+// Tombstone every live notes/ body row, matching the daemon's pushDelete shape
+// (content/hash cleared, deleted true). For deployments whose daemon hasn't
+// watched the file moves happen — without this, that daemon's down-sync would
+// re-materialize notes/ folders on disk from these stale rows the next time it
+// runs, and a second daemon on the same machine would push them back as live.
+// Disk is the store of record; the moved bodies live under tasks/ already.
+export const tombstoneNoteFiles = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const rows = (await ctx.db.query("files").collect()).filter(
+      (f) => !f.deleted && f.path.startsWith("notes/"),
+    );
+    const updatedAt = Date.now();
+    for (const row of rows) {
+      await ctx.db.patch(row._id, {
+        content: "",
+        hash: "",
+        deleted: true,
+        updatedAt,
+      });
+    }
+    return {
+      filesTombstoned: rows.length,
+      paths: rows.map((r) => ({ projectId: r.projectId, path: r.path })),
+    };
+  },
+});
