@@ -24,6 +24,8 @@ import {
   $createParagraphNode,
   $createTextNode,
   $getRoot,
+  $getSelection,
+  $isRangeSelection,
   type LexicalEditor,
 } from "lexical";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -36,12 +38,16 @@ import {
   SlashMenuList,
   applySkillInsert,
   applySlashCommand,
+  applySnippetInsert,
   buildSlashMenuSections,
   filterSkills,
   filterSlashCommands,
+  filterSnippets,
   slashTriggerMatch,
+  snippetBodyPreview,
   type SkillMenuItem,
   type SlashCommandSpec,
+  type SnippetMenuItem,
 } from "../SlashMenuPlugin";
 
 // ---------------------------------------------------------------------------
@@ -313,15 +319,62 @@ describe("filterSkills", () => {
   });
 });
 
+// Snippet fixtures for the filter/section/render/insert tests below.
+// Deliberately mixed bodies: multi-block, inline-formatted single paragraph,
+// and a plain one-liner.
+const SNIPPETS: SnippetMenuItem[] = [
+  { name: "code-header", body: "Copyright Hitch, all rights reserved" },
+  { name: "daily-plan", body: "# Plan\n\n- one\n- two\n" },
+  { name: "greeting", body: "Hey **team** hello" },
+];
+
+describe("filterSnippets", () => {
+  const names = (snippets: SnippetMenuItem[]) => snippets.map((s) => s.name);
+
+  it("returns the full set for an empty or whitespace query", () => {
+    expect(filterSnippets("", SNIPPETS)).toHaveLength(SNIPPETS.length);
+    expect(filterSnippets("   ", SNIPPETS)).toHaveLength(SNIPPETS.length);
+  });
+
+  it("matches on name substring, case-insensitively", () => {
+    expect(names(filterSnippets("plan", SNIPPETS))).toEqual(["daily-plan"]);
+    expect(names(filterSnippets("GREET", SNIPPETS))).toEqual(["greeting"]);
+  });
+
+  it("returns [] on zero matches", () => {
+    expect(filterSnippets("zzz", SNIPPETS)).toEqual([]);
+  });
+});
+
+describe("snippetBodyPreview", () => {
+  it("returns only the first line of a multi-line body", () => {
+    expect(snippetBodyPreview("# Plan\n\n- one\n- two\n")).toBe("# Plan");
+  });
+
+  it("collapses runs of whitespace to single spaces", () => {
+    expect(snippetBodyPreview("a\t b   c")).toBe("a b c");
+  });
+
+  it("skips leading blank lines to the first line with content", () => {
+    expect(snippetBodyPreview("\n\n  real line\nmore")).toBe("real line");
+  });
+});
+
 describe("buildSlashMenuSections", () => {
-  it("omits the skills section entirely when no skills are supplied", () => {
-    const { commandOptions, skillOptions } = buildSlashMenuSections("", []);
+  it("omits the skills and snippets sections entirely when none are supplied", () => {
+    const { commandOptions, skillOptions, snippetOptions } =
+      buildSlashMenuSections("", [], []);
     expect(commandOptions).toHaveLength(SLASH_COMMANDS.length);
     expect(skillOptions).toEqual([]);
+    expect(snippetOptions).toEqual([]);
   });
 
   it("surfaces matching skills alongside the block commands", () => {
-    const { commandOptions, skillOptions } = buildSlashMenuSections("", SKILLS);
+    const { commandOptions, skillOptions } = buildSlashMenuSections(
+      "",
+      SKILLS,
+      [],
+    );
     expect(commandOptions).toHaveLength(SLASH_COMMANDS.length);
     expect(skillOptions.map((o) => o.skill.name)).toEqual([
       "be-concise",
@@ -330,14 +383,23 @@ describe("buildSlashMenuSections", () => {
     ]);
   });
 
-  it("filters both sections by the same query", () => {
-    // "code" matches the "Code block" command AND the code-review skill.
-    const { commandOptions, skillOptions } = buildSlashMenuSections(
-      "code",
-      SKILLS,
-    );
+  it("surfaces matching snippets alongside the other sections", () => {
+    const { snippetOptions } = buildSlashMenuSections("", SKILLS, SNIPPETS);
+    expect(snippetOptions.map((o) => o.snippet.name)).toEqual([
+      "code-header",
+      "daily-plan",
+      "greeting",
+    ]);
+  });
+
+  it("filters all three sections by the same query", () => {
+    // "code" matches the "Code block" command, the code-review skill, AND the
+    // code-header snippet.
+    const { commandOptions, skillOptions, snippetOptions } =
+      buildSlashMenuSections("code", SKILLS, SNIPPETS);
     expect(commandOptions.map((o) => o.spec.title)).toEqual(["Code block"]);
     expect(skillOptions.map((o) => o.skill.name)).toEqual(["code-review"]);
+    expect(snippetOptions.map((o) => o.snippet.name)).toEqual(["code-header"]);
   });
 });
 
@@ -390,6 +452,124 @@ describe("skill insert action", () => {
   });
 });
 
+// The snippet insert action: choosing a snippet replaces the `/query` with the
+// snippet's whole markdown BODY — no `/name` reference left behind. Mirrors
+// insertSkillOnBlock (optionally with text after the token, to exercise the
+// mid-paragraph cases) but drives `applySnippetInsert`, and also reads back the
+// post-insert caret so the tests can pin where the selection lands.
+function insertSnippetOnBlock(
+  snippet: SnippetMenuItem,
+  {
+    leading,
+    trailing,
+    query,
+  }: { leading?: string; trailing?: string; query: string },
+): {
+  text: string;
+  markdown: string;
+  caret: { text: string; offset: number } | null;
+} {
+  const editor = newEditor();
+  editor.update(
+    () => {
+      const root = $getRoot();
+      root.clear();
+      const paragraph = $createParagraphNode();
+      if (leading) paragraph.append($createTextNode(leading));
+      const queryNode = $createTextNode(query);
+      paragraph.append(queryNode);
+      if (trailing) paragraph.append($createTextNode(trailing));
+      root.append(paragraph);
+      queryNode.selectEnd();
+      applySnippetInsert(editor, snippet, queryNode);
+    },
+    { discrete: true },
+  );
+  return editor.getEditorState().read(() => {
+    const selection = $getSelection();
+    const caret =
+      $isRangeSelection(selection) && selection.isCollapsed()
+        ? {
+            text: selection.anchor.getNode().getTextContent(),
+            offset: selection.anchor.offset,
+          }
+        : null;
+    return {
+      text: $getRoot().getTextContent(),
+      markdown: exportMarkdown(),
+      caret,
+    };
+  });
+}
+
+describe("snippet insert action", () => {
+  it("single-paragraph body flows INLINE in place of the /query", () => {
+    const { text, markdown } = insertSnippetOnBlock(
+      { name: "greeting", body: "Hey **team** hello" },
+      { leading: "note ", query: "/gr" },
+    );
+    // One paragraph, snippet content verbatim where the token was — inline
+    // formatting survives and no block split happened.
+    expect(text).toBe("note Hey team hello");
+    expect(markdown).toBe("note Hey **team** hello\n");
+  });
+
+  it("single-paragraph body keeps trailing text in the same paragraph", () => {
+    const { text, markdown } = insertSnippetOnBlock(
+      { name: "x", body: "abc" },
+      { leading: "before ", trailing: " after", query: "/x" },
+    );
+    expect(text).toBe("before abc after");
+    expect(markdown).toBe("before abc after\n");
+  });
+
+  it("lands the caret immediately after the inserted inline content", () => {
+    const { caret } = insertSnippetOnBlock(
+      { name: "x", body: "abc" },
+      { leading: "before ", trailing: " after", query: "/x" },
+    );
+    // Collapsed, and the text up to the caret ends with the inserted body —
+    // robust to Lexical merging the inserted node with its text siblings.
+    expect(caret).not.toBeNull();
+    expect(caret!.text.slice(0, caret!.offset)).toMatch(/abc$/);
+  });
+
+  it("multi-block body typed in an empty paragraph leaves no stray paragraph", () => {
+    const { markdown } = insertSnippetOnBlock(
+      { name: "daily-plan", body: "# Plan\n\n- one\n- two\n" },
+      { query: "/daily" },
+    );
+    // Exactly the body: the paragraph that held only the `/query` is gone.
+    expect(markdown).toBe("# Plan\n\n- one\n- two\n");
+  });
+
+  it("multi-block body splits the paragraph around the token (paste semantics)", () => {
+    const { markdown } = insertSnippetOnBlock(
+      { name: "two", body: "first\n\nsecond" },
+      { leading: "start ", trailing: " end", query: "/two" },
+    );
+    // First block merges into the text before the token; the text after the
+    // token merges into the last block.
+    expect(markdown).toBe("start first\n\nsecond end\n");
+  });
+
+  it("multi-block body at the end of a paragraph merges its first block in", () => {
+    const { markdown } = insertSnippetOnBlock(
+      { name: "two", body: "first\n\nsecond" },
+      { leading: "start ", query: "/two" },
+    );
+    expect(markdown).toBe("start first\n\nsecond\n");
+  });
+
+  it("empty body (defensive — bodies are validated non-empty) just removes the token", () => {
+    const { text } = insertSnippetOnBlock(
+      { name: "empty", body: "   " },
+      { leading: "keep ", query: "/e" },
+    );
+    expect(text).toBe("keep ");
+  });
+});
+
 // The rendered section — one jsdom render asserting the "Skills" header, a row,
 // and the monochrome harness badges appear with skill options, and that no header
 // shows without them (the compat default). Keyboard/selection itself belongs to
@@ -398,12 +578,14 @@ describe("SlashMenuList skills section", () => {
   // Unmount between renders — these tests share a jsdom document.
   afterEach(cleanup);
 
-  function renderList(skills: SkillMenuItem[]) {
-    const { commandOptions, skillOptions } = buildSlashMenuSections("", skills);
+  function renderList(skills: SkillMenuItem[], snippets: SnippetMenuItem[] = []) {
+    const { commandOptions, skillOptions, snippetOptions } =
+      buildSlashMenuSections("", skills, snippets);
     render(
       <SlashMenuList
         commandOptions={commandOptions}
         skillOptions={skillOptions}
+        snippetOptions={snippetOptions}
         selectedIndex={0}
         selectOption={() => {}}
         setHighlightedIndex={() => {}}
@@ -450,11 +632,13 @@ describe("SlashMenuList skills section", () => {
   // block commands). These two tests pin that offset from the render side:
   // keyboard/mouse highlight (`aria-selected`) must agree with the new order.
   it("selectedIndex 0 highlights the first SKILL, not the first block command", () => {
-    const { commandOptions, skillOptions } = buildSlashMenuSections("", SKILLS);
+    const { commandOptions, skillOptions, snippetOptions } =
+      buildSlashMenuSections("", SKILLS, []);
     render(
       <SlashMenuList
         commandOptions={commandOptions}
         skillOptions={skillOptions}
+        snippetOptions={snippetOptions}
         selectedIndex={0}
         selectOption={() => {}}
         setHighlightedIndex={() => {}}
@@ -475,11 +659,13 @@ describe("SlashMenuList skills section", () => {
   });
 
   it("selectedIndex === skillOptions.length highlights the first block command", () => {
-    const { commandOptions, skillOptions } = buildSlashMenuSections("", SKILLS);
+    const { commandOptions, skillOptions, snippetOptions } =
+      buildSlashMenuSections("", SKILLS, []);
     render(
       <SlashMenuList
         commandOptions={commandOptions}
         skillOptions={skillOptions}
+        snippetOptions={snippetOptions}
         selectedIndex={skillOptions.length}
         selectOption={() => {}}
         setHighlightedIndex={() => {}}
@@ -519,5 +705,111 @@ describe("SlashMenuList skills section", () => {
     // The row <button> itself lays out horizontally (not `flex-col`) for block
     // commands — only the skill rows stack.
     expect(title.closest("button")?.className).not.toContain("flex-col");
+  });
+});
+
+// The snippets section's paint — same scope as the skills-section tests above:
+// header presence/absence, section order, the dimmed one-line body preview, and
+// the flat-list index offsets now that snippets sit at the very front.
+describe("SlashMenuList snippets section", () => {
+  afterEach(cleanup);
+
+  // Same shape as the skills section's helper (scoped there), plus snippets.
+  function renderList(skills: SkillMenuItem[], snippets: SnippetMenuItem[] = []) {
+    const { commandOptions, skillOptions, snippetOptions } =
+      buildSlashMenuSections("", skills, snippets);
+    render(
+      <SlashMenuList
+        commandOptions={commandOptions}
+        skillOptions={skillOptions}
+        snippetOptions={snippetOptions}
+        selectedIndex={0}
+        selectOption={() => {}}
+        setHighlightedIndex={() => {}}
+      />,
+    );
+  }
+
+  it("renders the Snippets header, rows, and the one-line body preview", () => {
+    renderList(SKILLS, SNIPPETS);
+    expect(screen.getByText("Snippets")).toBeTruthy();
+    expect(screen.getByText("daily-plan")).toBeTruthy();
+    // The preview is the body's first line, whitespace-collapsed.
+    expect(screen.getByText("# Plan")).toBeTruthy();
+    expect(screen.getByText("Hey **team** hello")).toBeTruthy();
+  });
+
+  it("shows no Snippets section when there are no snippets", () => {
+    renderList(SKILLS);
+    expect(screen.queryByText("Snippets")).toBeNull();
+    // The other sections still render as before.
+    expect(screen.getByText("Skills")).toBeTruthy();
+    expect(screen.getByText("Heading 1")).toBeTruthy();
+  });
+
+  it("renders the Snippets section before the Skills section", () => {
+    renderList(SKILLS, SNIPPETS);
+    const snippetsHeader = screen.getByText("Snippets");
+    const skillsHeader = screen.getByText("Skills");
+    expect(
+      snippetsHeader.compareDocumentPosition(skillsHeader) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("selectedIndex 0 highlights the first SNIPPET, not the first skill", () => {
+    renderList(SKILLS, SNIPPETS);
+    expect(
+      screen
+        .getByText("code-header")
+        .closest('[role="option"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByText("/be-concise")
+        .closest('[role="option"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("false");
+  });
+
+  it("offsets skills and block commands past the snippets in the flat list", () => {
+    const { commandOptions, skillOptions, snippetOptions } =
+      buildSlashMenuSections("", SKILLS, SNIPPETS);
+    // First skill sits right after the snippets...
+    render(
+      <SlashMenuList
+        commandOptions={commandOptions}
+        skillOptions={skillOptions}
+        snippetOptions={snippetOptions}
+        selectedIndex={snippetOptions.length}
+        selectOption={() => {}}
+        setHighlightedIndex={() => {}}
+      />,
+    );
+    expect(
+      screen
+        .getByText("/be-concise")
+        .closest('[role="option"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+    cleanup();
+    // ...and the first block command right after the snippets AND skills.
+    render(
+      <SlashMenuList
+        commandOptions={commandOptions}
+        skillOptions={skillOptions}
+        snippetOptions={snippetOptions}
+        selectedIndex={snippetOptions.length + skillOptions.length}
+        selectOption={() => {}}
+        setHighlightedIndex={() => {}}
+      />,
+    );
+    expect(
+      screen
+        .getByText("Heading 1")
+        .closest('[role="option"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
   });
 });

@@ -29,6 +29,7 @@ import { useFrontmatterDocument } from "@/hooks/useFrontmatterDocument";
 import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import { useAttachments } from "@/hooks/useAttachments";
 import { useSkills } from "@/hooks/useSkills";
+import { useSnippets } from "@/hooks/useSnippets";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import { NoteChatDock } from "@/components/NoteChatDock";
 import { Button } from "@/components/ui/button";
@@ -837,6 +838,13 @@ function NoteEditor({
   const attachments = useAttachments({ projectId, slug, base: "notes" });
   // Installed skills for the `/` menu's Skills section (see useSkills).
   const skills = useSkills(projectId);
+  // The user's snippets for the `/` menu's Snippets section, mapped down to
+  // the editor's Convex-free `SnippetMenuItem` shape ({ name, body }).
+  const snippetRows = useSnippets();
+  const snippets = useMemo(
+    () => snippetRows.map(({ name, body }) => ({ name, body })),
+    [snippetRows],
+  );
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
   const editorRef = useRef<MarkdownEditorHandle>(null);
@@ -1245,6 +1253,7 @@ function NoteEditor({
                   attachments.enabled ? attachments.imagePreviewHandler : undefined
                 }
                 skills={skills}
+                snippets={snippets}
               />
             </>
           ) : (

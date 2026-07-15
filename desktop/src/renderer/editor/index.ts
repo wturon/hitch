@@ -5,8 +5,9 @@
 export { SandboxEditor } from "./SandboxEditor";
 export { MarkdownEditor } from "./MarkdownEditor";
 export type { MarkdownEditorHandle, MarkdownEditorProps } from "./MarkdownEditor";
-// The shape a surface (via useSkills) feeds into `MarkdownEditor`'s `skills` prop.
-export type { SkillMenuItem } from "./SlashMenuPlugin";
+// The shapes a surface feeds into `MarkdownEditor`'s `skills` (via useSkills)
+// and `snippets` (via useSnippets) props.
+export type { SkillMenuItem, SnippetMenuItem } from "./SlashMenuPlugin";
 export {
   importMarkdown,
   exportMarkdown,

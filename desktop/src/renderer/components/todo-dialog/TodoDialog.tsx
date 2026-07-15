@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { api } from "@convex/_generated/api";
@@ -32,6 +32,7 @@ import { TAG_REGISTRY_PATH, type TagRegistry } from "@/lib/tagRegistry";
 import { useTaskDraft } from "@/hooks/useTaskDraft";
 import { useAttachments } from "@/hooks/useAttachments";
 import { useSkills } from "@/hooks/useSkills";
+import { useSnippets } from "@/hooks/useSnippets";
 import type { MarkdownEditorHandle } from "@/editor";
 import { DialogTagLane } from "./DialogTagLane";
 
@@ -368,6 +369,13 @@ function TodoBody({
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
   const skills = useSkills(projectId);
+  // The user's snippets for the `/` menu's Snippets section, mapped down to
+  // the editor's Convex-free `SnippetMenuItem` shape ({ name, body }).
+  const snippetRows = useSnippets();
+  const snippets = useMemo(
+    () => snippetRows.map(({ name, body }) => ({ name, body })),
+    [snippetRows],
+  );
 
   const editorRef = useRef<MarkdownEditorHandle>(null);
   const rawRef = useRef<HTMLTextAreaElement>(null);
@@ -879,6 +887,7 @@ function TodoBody({
           rawRef={rawRef}
           attachments={attachments}
           skills={skills}
+          snippets={snippets}
         />
 
         {/* Footer — capture coaching strip, or the saved-stage band chosen by

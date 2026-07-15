@@ -27,7 +27,11 @@ import { cn } from "@/lib/utils";
 import { importMarkdown } from "./bridge";
 import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { ControlledMarkdownPlugin } from "./ControlledMarkdownPlugin";
-import { SlashMenuPlugin, type SkillMenuItem } from "./SlashMenuPlugin";
+import {
+  SlashMenuPlugin,
+  type SkillMenuItem,
+  type SnippetMenuItem,
+} from "./SlashMenuPlugin";
 import { PasteImagePlugin } from "./PasteImagePlugin";
 import { PasteLinkPlugin } from "./PasteLinkPlugin";
 import { LinkPopoverPlugin } from "./LinkPopoverPlugin";
@@ -64,6 +68,10 @@ export interface MarkdownEditorProps {
   // surface (TaskDialog/NotesView via useSkills) and passed down so the editor
   // stays Convex-free. Omitted / empty → no Skills section, zero behavior change.
   skills?: ReadonlyArray<SkillMenuItem>;
+  // The user's snippets to offer in the `/` menu's Snippets section (above
+  // Skills). Same contract as `skills`: fetched by the app surface (via
+  // useSnippets) and passed down; omitted / empty → no Snippets section.
+  snippets?: ReadonlyArray<SnippetMenuItem>;
 }
 
 // The composed editor body. Rendered inside the LexicalComposer so its plugins
@@ -77,6 +85,7 @@ const EditorBody = forwardRef<
     imageUploadHandler?: (file: File) => Promise<string>;
     imagePreviewHandler?: (src: string) => Promise<string>;
     skills?: ReadonlyArray<SkillMenuItem>;
+    snippets?: ReadonlyArray<SnippetMenuItem>;
   }
 >(function EditorBody(
   {
@@ -86,6 +95,7 @@ const EditorBody = forwardRef<
     imageUploadHandler,
     imagePreviewHandler,
     skills,
+    snippets,
   },
   ref,
 ) {
@@ -157,10 +167,11 @@ const EditorBody = forwardRef<
       <TabIndentationPlugin />
       {/* Wires the INSERT_HORIZONTAL_RULE command for `---`. */}
       <HorizontalRulePlugin />
-      {/* `/` block picker — headings, lists, quote, divider, plus a Skills
-          section fed by the `skills` prop. Rides the typeahead menu plugin;
-          renders its dropdown into a caret-anchored portal. */}
-      <SlashMenuPlugin skills={skills} />
+      {/* `/` block picker — headings, lists, quote, divider, plus Snippets and
+          Skills sections fed by the `snippets`/`skills` props. Rides the
+          typeahead menu plugin; renders its dropdown into a caret-anchored
+          portal. */}
+      <SlashMenuPlugin skills={skills} snippets={snippets} />
       {/* Turns `# `, `- `, `> `, `**bold**`, `[text](url)` etc. into real nodes
           as you type, using our code-free transformer set. */}
       <MarkdownShortcutPlugin transformers={MARKDOWN_TRANSFORMERS} />
@@ -198,6 +209,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       imageUploadHandler,
       imagePreviewHandler,
       skills,
+      snippets,
     },
     ref,
   ) {
@@ -234,6 +246,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
             imageUploadHandler={imageUploadHandler}
             imagePreviewHandler={imagePreviewHandler}
             skills={skills}
+            snippets={snippets}
           />
         </LexicalComposer>
       </div>

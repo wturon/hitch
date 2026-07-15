@@ -20,6 +20,7 @@ import {
   SparklesIcon,
   SunIcon,
   SunMoonIcon,
+  TextQuoteIcon,
   Trash2Icon,
   WrenchIcon,
 } from "lucide-react";
@@ -43,6 +44,7 @@ import {
 } from "@/lib/chat";
 import { DeviceTokensPanel } from "@/components/DeviceTokens";
 import { HarnessIcon } from "@/components/HarnessIcon";
+import { SnippetsPanel } from "@/components/SnippetsPanel";
 import { StartingPromptsPanel } from "@/components/StartingPromptsPanel";
 import {
   LocalSyncPanel,
@@ -103,6 +105,7 @@ export type GlobalSettingsTab =
   | "integrations"
   | "appearance"
   | "starting-prompts"
+  | "snippets"
   | "local-sync"
   | "device-tokens"
   | "updates";
@@ -112,6 +115,7 @@ const TABS = [
   { id: "integrations", label: "Integrations", icon: WrenchIcon },
   { id: "appearance", label: "Appearance", icon: SunMoonIcon },
   { id: "starting-prompts", label: "Starting prompts", icon: MessageSquareIcon },
+  { id: "snippets", label: "Snippets", icon: TextQuoteIcon },
   { id: "local-sync", label: "Local sync logs", icon: FolderSyncIcon },
   { id: "device-tokens", label: "Device tokens", icon: KeyRoundIcon },
   { id: "updates", label: "App updates", icon: RotateCwIcon },
@@ -361,6 +365,8 @@ export function GlobalSettingsDialog({
             {tab === "appearance" && <AppearanceSection />}
 
             {tab === "starting-prompts" && <StartingPromptsPanel />}
+
+            {tab === "snippets" && <SnippetsPanel />}
 
             {tab === "local-sync" && (
               <div className="flex flex-col gap-3">
