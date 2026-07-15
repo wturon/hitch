@@ -2,10 +2,10 @@
 // surface supplies an `imageUploadHandler`; without one the plugin registers
 // nothing (plain text/markdown paste is left entirely to RichTextPlugin).
 //
-// The interesting seam is who owns an all-image paste. The host surface
-// (NotesView) captures file pastes at the pane level, but deliberately steps
-// aside for all-image pastes while in formatted mode (see NotesView.tsx ~1023) —
-// the editor is expected to own that case. So we register `PASTE_COMMAND` at
+// The interesting seam is who owns an all-image paste. A host surface may
+// capture file pastes at the pane level, but is expected to step aside for
+// all-image pastes while in formatted mode — the editor owns that case. So we
+// register `PASTE_COMMAND` at
 // HIGH priority to win over RichTextPlugin's default paste, claim the event when
 // every clipboard file is an image, and upload + insert. Any other paste (text,
 // mixed files, a paste with no files) returns false and flows through untouched.

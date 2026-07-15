@@ -77,7 +77,7 @@ export interface LocalChatInput {
   cwd: string;
   host: string;
   environment: string | null;
-  linkedType: "task" | "note" | "automation" | null;
+  linkedType: "task" | "automation" | null;
   linkedPath: string | null;
   resumeKind: "open-chat-command" | "external";
   resumePayload?: Record<string, unknown>;
@@ -545,7 +545,7 @@ export class ChatLifecycleStore {
       .map((row) => this.localChatFromRow(row));
   }
 
-  // Chats linked to an editable doc (a task's task.md or a note's index.md),
+  // Chats linked to an editable doc (a task's task.md),
   // whose frontmatter the daemon keeps stamped/projected. The accepted kinds
   // come from LINKED_DOC_KINDS so this stays in lockstep with the bind/reconcile
   // paths; automations link a path too but aren't projected, so they're excluded.
@@ -1342,7 +1342,6 @@ export class ChatLifecycleStore {
       optionalString(event.metadata.environment) ?? existing?.environment ?? null;
     const linkedType =
       event.metadata.linkedType === "task" ||
-      event.metadata.linkedType === "note" ||
       event.metadata.linkedType === "automation"
         ? event.metadata.linkedType
         : linkSource?.linkedType ?? null;
@@ -1515,10 +1514,13 @@ export class ChatLifecycleStore {
       cwd: String(value.cwd),
       host: String(value.host),
       environment: value.environment === null ? null : String(value.environment),
+      // Coerce instead of casting: a pre-migration local row may still carry a
+      // retired value (e.g. "note"), which must read as unlinked rather than
+      // leak into the tightened Convex validator on the next sync.
       linkedType:
-        value.linked_type === null
-          ? null
-          : (String(value.linked_type) as "task" | "note" | "automation"),
+        value.linked_type === "task" || value.linked_type === "automation"
+          ? value.linked_type
+          : null,
       linkedPath: value.linked_path === null ? null : String(value.linked_path),
       resumeKind: String(value.resume_kind) as "open-chat-command" | "external",
       resumePayload: jsonObject(String(value.resume_payload_json)),

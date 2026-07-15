@@ -37,10 +37,11 @@ function doc(opts: {
 const fm = (content: string) => parseFrontmatter(content).frontmatter;
 const bodyOf = (content: string) => splitFrontmatter(content).body;
 
-// The key sets the real callers declare: useTaskDraft and NotesView's NoteEditor.
-// Tasks own title + tags (the dialog's tag lane edits tags in place).
+// The key set the real caller (useTaskDraft) declares: tasks own title + tags
+// (the dialog's tag lane edits tags in place). TWO_KEYS exercises the generic
+// multi-key ownership contract with a second declared key.
 const TASK_KEYS = ["title", "tags"] as const;
-const NOTE_KEYS = ["title", "type"] as const;
+const TWO_KEYS = ["title", "type"] as const;
 
 describe("mergeFrontmatterUpdate (tasks: title user-owned)", () => {
   it("adopts external title + body + machine key when the user edited nothing", () => {
@@ -186,7 +187,7 @@ describe("mergeFrontmatterUpdate (tasks: title user-owned)", () => {
   it("treats an UNDECLARED key as machine-owned even when locally edited", () => {
     // A task declares only `title`, so a local `type` edit (impossible through
     // the task UI, but the contract must hold) is NOT protected — external wins.
-    const synced = doc({ title: "Seed", type: "note", body: "hi" });
+    const synced = doc({ title: "Seed", type: "draft", body: "hi" });
     const local = doc({ title: "Seed", type: "user-set", body: "hi" });
     const external = doc({ title: "Seed", type: "machine-set", body: "hi" });
     const merged = mergeFrontmatterUpdate({
@@ -199,19 +200,19 @@ describe("mergeFrontmatterUpdate (tasks: title user-owned)", () => {
   });
 });
 
-describe("mergeFrontmatterUpdate (notes: title + type user-owned)", () => {
+describe("mergeFrontmatterUpdate (title + type user-owned)", () => {
   it("keeps a dirty type edit while an external machine-key stamp adopts (reviewer's scenario)", () => {
-    // The user flips the note's type pill while the doc is dirty; an external
-    // writer (e.g. the daemon binding a chat) stamps machine frontmatter. The
-    // user's type must survive AND the machine key must ride through.
-    const synced = doc({ title: "Note", type: "note", body: "hi" });
-    const local = doc({ title: "Note", type: "decision", body: "hi" });
-    const external = doc({ title: "Note", type: "note", chatId: "bound", body: "hi" });
+    // The user flips the doc's type while it is dirty; an external writer
+    // (e.g. the daemon binding a chat) stamps machine frontmatter. The user's
+    // type must survive AND the machine key must ride through.
+    const synced = doc({ title: "Doc", type: "draft", body: "hi" });
+    const local = doc({ title: "Doc", type: "decision", body: "hi" });
+    const external = doc({ title: "Doc", type: "draft", chatId: "bound", body: "hi" });
     const merged = mergeFrontmatterUpdate({
       local,
       synced,
       external,
-      userOwnedKeys: NOTE_KEYS,
+      userOwnedKeys: TWO_KEYS,
     });
     expect(fm(merged).type).toBe("decision"); // user's type edit survives
     expect(fm(merged)["chat-id"]).toBe("bound"); // machine key adopts
@@ -219,14 +220,14 @@ describe("mergeFrontmatterUpdate (notes: title + type user-owned)", () => {
   });
 
   it("adopts an external type change when the user left type untouched (the inverse)", () => {
-    const synced = doc({ title: "Note", type: "note", body: "hi" });
-    const local = doc({ title: "Note", type: "note", body: "my edit" });
-    const external = doc({ title: "Note", type: "decision", chatId: "b", body: "hi" });
+    const synced = doc({ title: "Doc", type: "draft", body: "hi" });
+    const local = doc({ title: "Doc", type: "draft", body: "my edit" });
+    const external = doc({ title: "Doc", type: "decision", chatId: "b", body: "hi" });
     const merged = mergeFrontmatterUpdate({
       local,
       synced,
       external,
-      userOwnedKeys: NOTE_KEYS,
+      userOwnedKeys: TWO_KEYS,
     });
     expect(fm(merged).type).toBe("decision"); // untouched → external wins
     expect(bodyOf(merged)).toBe("my edit"); // body edit survives
@@ -236,16 +237,16 @@ describe("mergeFrontmatterUpdate (notes: title + type user-owned)", () => {
   it("keeps independent title and type edits separately", () => {
     // Title edited, type untouched: local title + external type, and vice versa
     // never bleed into each other.
-    const synced = doc({ title: "Note", type: "note", body: "hi" });
-    const local = doc({ title: "My note", type: "note", body: "hi" });
-    const external = doc({ title: "Note", type: "decision", body: "hi" });
+    const synced = doc({ title: "Doc", type: "draft", body: "hi" });
+    const local = doc({ title: "My doc", type: "draft", body: "hi" });
+    const external = doc({ title: "Doc", type: "decision", body: "hi" });
     const merged = mergeFrontmatterUpdate({
       local,
       synced,
       external,
-      userOwnedKeys: NOTE_KEYS,
+      userOwnedKeys: TWO_KEYS,
     });
-    expect(fm(merged).title).toBe("My note");
+    expect(fm(merged).title).toBe("My doc");
     expect(fm(merged).type).toBe("decision");
   });
 });
@@ -311,20 +312,20 @@ describe("useFrontmatterDocument adoption", () => {
     expect(result.current.dirty).toBe(true); // close-time save restores the seed on disk
   });
 
-  it("keeps a note's dirty type edit through an external machine-key stamp", () => {
-    // Hook-level regression for the reviewer's scenario, with NotesView's keys.
+  it("keeps a dirty type edit through an external machine-key stamp", () => {
+    // Hook-level regression for the reviewer's scenario, with two declared keys.
     const { result, rerender } = renderHook(
       ({ content }) =>
         useFrontmatterDocument(content, { userOwnedKeys: ["title", "type"] }),
       {
         initialProps: {
-          content: doc({ title: "Note", type: "note", body: "hi" }),
+          content: doc({ title: "Doc", type: "draft", body: "hi" }),
         },
       },
     );
     act(() => result.current.setFrontmatter({ type: "decision" }));
     rerender({
-      content: doc({ title: "Note", type: "note", chatId: "bound", body: "hi" }),
+      content: doc({ title: "Doc", type: "draft", chatId: "bound", body: "hi" }),
     });
     expect(result.current.frontmatter.type).toBe("decision"); // edit survives
     expect(result.current.frontmatter["chat-id"]).toBe("bound"); // machine key adopts

@@ -296,9 +296,9 @@ describe("Escape", () => {
   });
 
   it("stops the Escape that closed the popover from reaching window listeners", async () => {
-    // NotesView exits the note on a window-level Escape keydown. The Esc that
-    // dismisses the popover is spent — it must not ALSO exit the note. A second
-    // Esc (popover closed) must still bubble through.
+    // Host surfaces may act on a window-level Escape keydown. The Esc that
+    // dismisses the popover is spent — it must not ALSO reach the window. A
+    // second Esc (popover closed) must still bubble through.
     render(
       <MarkdownEditor value={"go [site](https://example.com) here\n"} onChange={() => {}} />,
     );

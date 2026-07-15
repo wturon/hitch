@@ -216,8 +216,8 @@ export function LinkPopoverPlugin() {
         const current = stateRef.current;
         if (!current || current.mode === "edit") return false;
         // Returning true only halts Lexical's lower-priority handlers; the DOM
-        // event would still bubble to window-level Escape listeners (NotesView
-        // exits the note on Esc). This Esc was spent on the popover.
+        // event would still bubble to window-level Escape listeners. This Esc
+        // was spent on the popover.
         event.stopPropagation();
         close();
         return true;

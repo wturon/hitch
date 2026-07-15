@@ -34,7 +34,6 @@ const environmentValidator = v.union(
 );
 const linkedTypeValidator = v.union(
   v.literal("task"),
-  v.literal("note"),
   v.literal("automation"),
 );
 const resumeKindValidator = v.union(
@@ -237,12 +236,11 @@ async function projectChats(
     .collect();
 }
 
-// The single chat linked to a given doc (a note's index.md or a task's task.md),
-// or null. Backed by the `by_link` index so the note foot can ask exactly "does
-// this doc own a chat?" without scraping a recency-truncated home list — the
-// answer must hold for an idle chat that fell off the recent window, or the
-// one-chat-per-note invariant breaks. Returns the newest active (non-deleted,
-// non-archived) match.
+// The single chat linked to a given doc (a task's task.md), or null. Backed by
+// the `by_link` index so a caller can ask exactly "does this doc own a chat?"
+// without scraping a recency-truncated home list — the answer must hold for an
+// idle chat that fell off the recent window, or the one-chat-per-doc invariant
+// breaks. Returns the newest active (non-deleted, non-archived) match.
 export const getChatByLink = query({
   args: {
     projectId: v.id("projects"),
@@ -352,7 +350,7 @@ export const startChat = mutation({
   },
 });
 
-// Fire-and-forget delegation from a task/note. Atomically (a) stamps the linked
+// Fire-and-forget delegation from a task. Atomically (a) stamps the linked
 // doc's frontmatter with the `chat-request` summoning flag — the client passes
 // the already-stamped content + hash, mirroring the upsertFile contract — and
 // (b) enqueues the start-chat command. No chats row: the daemon creates one when
@@ -592,7 +590,7 @@ export const upsertReducedState = mutation({
     let existing = byChat ?? byLaunch;
     if (byChat && byLaunch && byChat._id !== byLaunch._id) {
       // A bind unified two rows that were created separately: the pending
-      // launch-scoped doc (carries the task/note link) and an id-scoped doc
+      // launch-scoped doc (carries the task link) and an id-scoped doc
       // (e.g. one the chat-state observer discovered before the bind reduced).
       // Coalesce instead of throwing — keep the doc that holds the link (default
       // the launch doc, which also owns any automation linkage) and delete the

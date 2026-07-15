@@ -61,8 +61,8 @@ const TABS = [
 }>;
 
 // A row in the Archive tab, already bound to its unarchive/delete actions —
-// the dialog stays dumb about how todos and notes persist; the workspace
-// (which owns the files subscription and undo toasts) supplies both.
+// the dialog stays dumb about how todos persist; the workspace (which owns
+// the files subscription and undo toasts) supplies them.
 export interface ArchivedItem {
   key: string;
   title: string;
@@ -73,7 +73,6 @@ export interface ArchivedItem {
 
 export interface ProjectArchive {
   todos: ArchivedItem[];
-  notes: ArchivedItem[];
   onDeleteAllTodos: () => void;
 }
 
@@ -627,15 +626,13 @@ function ProjectDetailsForm({
   );
 }
 
-// The Archive tab: archived todos and notes with per-row unarchive/delete,
-// plus a two-click "Delete all" for todos (it's irreversible beyond the undo
-// toast). Replaces the old header-triggered Archived side sheets. The armed
-// delete-all confirmation resets whenever the tab unmounts (tab switch or
-// dialog close).
+// The Archive tab: archived todos with per-row unarchive/delete, plus a
+// two-click "Delete all" (it's irreversible beyond the undo toast). Replaces
+// the old header-triggered Archived side sheets. The armed delete-all
+// confirmation resets whenever the tab unmounts (tab switch or dialog close).
 function ArchivePanel({ archive }: { archive?: ProjectArchive }) {
   const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
   const todos = archive?.todos ?? [];
-  const notes = archive?.notes ?? [];
 
   return (
     <div className="flex flex-col gap-5">
@@ -666,11 +663,6 @@ function ArchivePanel({ archive }: { archive?: ProjectArchive }) {
           )}
         </div>
         <ArchivedList items={todos} />
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <h3 className="text-sm font-medium">Notes ({notes.length})</h3>
-        <ArchivedList items={notes} />
       </section>
     </div>
   );

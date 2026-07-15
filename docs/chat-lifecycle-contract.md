@@ -316,7 +316,7 @@ chats: defineTable({
       v.literal("t3code"),
     ),
   ),
-  linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
+  linkedType: v.optional(v.literal("task")),
   linkedPath: v.optional(v.string()),
   resumeKind: v.union(
     v.literal("open-chat-command"),
@@ -366,7 +366,7 @@ Input:
   host?: string;
   model?: string;
   effort?: string;
-  linkedType?: "task" | "note";
+  linkedType?: "task";
   linkedPath?: string;
 }
 ```
@@ -387,7 +387,7 @@ Extend `commands` with:
 
 ```ts
 launchId: v.optional(v.string()),
-linkedType: v.optional(v.union(v.literal("task"), v.literal("note"))),
+linkedType: v.optional(v.literal("task")),
 linkedPath: v.optional(v.string()),
 ```
 
@@ -408,7 +408,7 @@ Daemon command payload sent to launchers:
   initialPrompt: string;
   model?: string;
   effort?: string;
-  linkedType?: "task" | "note";
+  linkedType?: "task";
   linkedPath?: string;
 }
 ```

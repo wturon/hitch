@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 
 // Raycast-style keyboard navigation for a flat, top-to-bottom list: ↑↓ move a
-// highlight, ↵ activates the highlighted row. Extracted from the Notes index so
-// the Todos list (and any future list) share ONE source of truth for the fiddly
+// highlight, ↵ activates the highlighted row. Shared so the Todos list (and any
+// future list) keep ONE source of truth for the fiddly
 // parts that otherwise drift between copies — the -1 "nothing highlighted yet"
 // sentinel, clamp-in-range, scroll-into-view, the dialog/form-control bailout,
 // and the window-level listener that makes the keys work "from anywhere" (not
