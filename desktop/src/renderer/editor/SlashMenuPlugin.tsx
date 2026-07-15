@@ -3,8 +3,11 @@
 // without the user reaching for markdown syntax. Above the block commands it also
 // offers a "Skills" section (the agent skills installed on the machine, fed in as
 // a prop) so users can autocomplete a `/skill-name` mention into the text as
-// PLAIN TEXT — no custom node, no serialization change. Skills render first
-// because they're used more often than the block transforms.
+// PLAIN TEXT — no custom node, no serialization change — and, above that, a
+// "Snippets" section (the user's saved snippets, also fed in as a prop) whose
+// selection REPLACES the `/query` with the snippet's whole markdown body.
+// Snippets and skills render before the block commands because they're used
+// more often than the block transforms.
 //
 // Behavior is NOT ours: it rides `LexicalTypeaheadMenuPlugin`, which owns the
 // trigger detection, the query string, keyboard nav (↑/↓ wrap, Enter/Tab select,
@@ -45,6 +48,7 @@ import {
   $createParagraphNode,
   $createTextNode,
   $getSelection,
+  $insertNodes,
   $isParagraphNode,
   $isRangeSelection,
   type ElementNode,
@@ -64,6 +68,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { $importMarkdownFragment } from "./bridge";
 import {
   $createCodeBlockNode,
   focusCodeBlockOnMount,
@@ -92,6 +97,16 @@ export interface SkillMenuItem {
   name: string;
   description?: string;
   harnesses: ReadonlyArray<string>;
+}
+
+// One saved snippet offered in the menu. Shaped by the app layer
+// (hooks/useSnippets.ts) and passed into `MarkdownEditor` as a prop — same
+// Convex-free contract as `SkillMenuItem`. `body` is the snippet's full
+// markdown, inserted verbatim in place of the `/query` when chosen (see
+// `runSnippetInsert` — unlike a skill, no `/name` reference is left behind).
+export interface SnippetMenuItem {
+  name: string;
+  body: string;
 }
 
 // Retarget the block(s) touched by the current selection to a fresh element of
@@ -227,6 +242,26 @@ export function filterSkills(
   return skills.filter((s) => s.name.toLowerCase().includes(q));
 }
 
+// Pure query → visible-snippets filter (exported for unit tests). Identical
+// matching semantics to `filterSkills`: case-insensitive substring against the
+// name only, empty query shows all, zero matches returns `[]`.
+export function filterSnippets(
+  query: string,
+  snippets: ReadonlyArray<SnippetMenuItem>,
+): SnippetMenuItem[] {
+  const q = query.trim().toLowerCase();
+  if (q === "") return [...snippets];
+  return snippets.filter((s) => s.name.toLowerCase().includes(q));
+}
+
+// One-line body preview for a snippet row (exported for unit tests): the first
+// non-blank line with its whitespace collapsed, single-line truncated by the
+// row's CSS — the snippet-section counterpart of a skill's description.
+export function snippetBodyPreview(body: string): string {
+  const firstLine = body.trimStart().split("\n", 1)[0] ?? "";
+  return firstLine.replace(/\s+/g, " ").trim();
+}
+
 // The core of choosing a command: remove the `/query` text node the typeahead
 // split off, then run the action. MUST be called inside an active `editor.update`
 // — the typeahead opens one before invoking `onSelectOption`, and reusing it (not
@@ -284,6 +319,55 @@ export function applySkillInsert(
   editor.update(() => runSkillInsert(editor, skill, nodeToRemove));
 }
 
+// Choosing a snippet: unlike a skill (which leaves a plain-text `/name`
+// reference), this REPLACES the `/query` with the snippet's whole markdown
+// body, parsed through the bridge's fragment importer:
+//   - a single-paragraph body flows INLINE into the current paragraph (its
+//     children stand in for the token — no block split, no extra characters),
+//   - a multi-block body is inserted as blocks at the token's position, and
+//     `RangeSelection.insertNodes` owns the split: it divides the current
+//     paragraph at the caret, merges mergeable edges (paste semantics), and
+//     removes the current block when the token was its only content — so no
+//     stray empty paragraph survives where the `/` was typed.
+// Either way `insertNodes` parks the caret at the end of the inserted content.
+// Same in-place-update contract as `runSlashCommand`; the fragment importer
+// also requires an active update and its nodes are attached in the same one.
+function runSnippetInsert(
+  editor: LexicalEditor,
+  snippet: SnippetMenuItem,
+  nodeToRemove: TextNode | null,
+): void {
+  const fragment = $importMarkdownFragment(snippet.body);
+  // A single-paragraph body inserts its INLINE children; anything else inserts
+  // the top-level blocks themselves.
+  const only = fragment.length === 1 ? fragment[0] : null;
+  const nodes =
+    only !== null && $isParagraphNode(only) ? only.getChildren() : fragment;
+  if (nodes.length === 0) {
+    // Bodies are validated non-empty, so this is defensive-only: still remove
+    // the token so no half-typed `/query` is left behind.
+    nodeToRemove?.remove();
+    return;
+  }
+  if (nodeToRemove) {
+    // Park the selection over the whole token: `insertNodes` removes a
+    // non-collapsed selection's text first, so this deletes the `/query` and
+    // targets the insertion at where it stood, in one motion.
+    nodeToRemove.select(0, nodeToRemove.getTextContentSize());
+  }
+  $insertNodes(nodes);
+}
+
+// Test-only convenience: `runSnippetInsert` wrapped in its own update,
+// mirroring `applySkillInsert`.
+export function applySnippetInsert(
+  editor: LexicalEditor,
+  snippet: SnippetMenuItem,
+  nodeToRemove: TextNode | null,
+): void {
+  editor.update(() => runSnippetInsert(editor, snippet, nodeToRemove));
+}
+
 // The typeahead `MenuOption` (its key + ref bookkeeping) paired with our command
 // spec. A fresh set is minted per query so the plugin re-indexes highlight state.
 class SlashMenuOption extends MenuOption {
@@ -301,21 +385,37 @@ class SkillMenuOption extends MenuOption {
   }
 }
 
-// Both sections share the typeahead's single option array (keyboard nav flows
-// across them as one list); the split into command/skill options is only a
-// rendering concern. Built pure so unit tests can assert section membership
-// without a DOM: no skills → empty `skillOptions` → the plugin renders no Skills
-// section (zero behavior change from before this feature).
+// The snippet-section twin. Same namespacing rationale as `SkillMenuOption`.
+class SnippetMenuOption extends MenuOption {
+  constructor(readonly snippet: SnippetMenuItem) {
+    super(`snippet:${snippet.name}`);
+  }
+}
+
+// All sections share the typeahead's single option array (keyboard nav flows
+// across them as one list); the split into snippet/skill/command options is
+// only a rendering concern. Built pure so unit tests can assert section
+// membership without a DOM: an empty snippets/skills list → empty options →
+// the plugin renders no section for it (zero behavior change from before each
+// feature).
 export function buildSlashMenuSections(
   query: string,
   skills: ReadonlyArray<SkillMenuItem>,
-): { commandOptions: SlashMenuOption[]; skillOptions: SkillMenuOption[] } {
+  snippets: ReadonlyArray<SnippetMenuItem>,
+): {
+  commandOptions: SlashMenuOption[];
+  skillOptions: SkillMenuOption[];
+  snippetOptions: SnippetMenuOption[];
+} {
   return {
     commandOptions: filterSlashCommands(query).map(
       (spec) => new SlashMenuOption(spec),
     ),
     skillOptions: filterSkills(query, skills).map(
       (skill) => new SkillMenuOption(skill),
+    ),
+    snippetOptions: filterSnippets(query, snippets).map(
+      (snippet) => new SnippetMenuOption(snippet),
     ),
   };
 }
@@ -333,15 +433,16 @@ function harnessBadgeLabel(harness: string): string {
 }
 
 // The union the typeahead nav treats as one flat list; rendering splits it back
-// into its two sections.
-type SlashOption = SlashMenuOption | SkillMenuOption;
+// into its three sections.
+type SlashOption = SlashMenuOption | SkillMenuOption | SnippetMenuOption;
 
-// One clickable row, shared by both sections. `globalIndex` is the option's
-// position in the typeahead's flat list (skills first, then block commands), so
-// keyboard highlight and mouse highlight agree across the section boundary.
-// `stacked` switches the row from the block commands' single line (icon + title,
-// centered) to the skill rows' two lines (name+badges, then description) — see
-// `SlashMenuList` for what each section passes as `children`.
+// One clickable row, shared by all sections. `globalIndex` is the option's
+// position in the typeahead's flat list (snippets, then skills, then block
+// commands), so keyboard highlight and mouse highlight agree across the section
+// boundaries. `stacked` switches the row from the block commands' single line
+// (icon + title, centered) to the snippet/skill rows' two lines (name, then
+// preview/description) — see `SlashMenuList` for what each section passes as
+// `children`.
 function SlashMenuRow({
   globalIndex,
   selectedIndex,
@@ -392,18 +493,20 @@ function SlashMenuRow({
 // The dropdown itself — shadcn popover skin over the app's semantic tokens (so it
 // reads correctly in light and dark without hardcoded colors), NOT a shadcn/Radix
 // component: the typeahead plugin owns focus and keyboard, this only paints rows.
-// The "Skills" section (name + dimmed description + monochrome harness badges)
-// renders FIRST when there are matching skills; block commands render below —
-// skills are used more often than the block transforms.
+// The "Snippets" section (name + dimmed one-line body preview) renders FIRST,
+// then "Skills" (name + dimmed description + monochrome harness badges), then
+// the block commands — matching the flat option order the keyboard navigates.
 export function SlashMenuList({
   commandOptions,
   skillOptions,
+  snippetOptions,
   selectedIndex,
   selectOption,
   setHighlightedIndex,
 }: {
   commandOptions: SlashMenuOption[];
   skillOptions: SkillMenuOption[];
+  snippetOptions: SnippetMenuOption[];
   selectedIndex: number | null;
   selectOption: (option: SlashOption) => void;
   setHighlightedIndex: (index: number) => void;
@@ -418,13 +521,59 @@ export function SlashMenuList({
     // `w-max` makes the box content-sized (shrink/grow-to-fit), and `min-w`/
     // `max-w` then clamp that to the [300, 400] range a long skill name needs.
     <div className="max-h-[min(320px,60vh)] w-max min-w-[300px] max-w-[400px] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md">
+      {snippetOptions.length > 0 && (
+        <>
+          <div className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Snippets
+          </div>
+          {snippetOptions.map((option, i) => {
+            // Snippets occupy the very front of the flat typeahead list.
+            const globalIndex = i;
+            const active = globalIndex === selectedIndex;
+            const { name, body } = option.snippet;
+            const preview = snippetBodyPreview(body);
+            return (
+              <SlashMenuRow
+                key={option.key}
+                globalIndex={globalIndex}
+                selectedIndex={selectedIndex}
+                setRefElement={(el) => option.setRefElement(el)}
+                selectOption={() => selectOption(option)}
+                setHighlightedIndex={setHighlightedIndex}
+                stacked
+              >
+                {/* Line 1: the snippet name — same type treatment as a skill
+                    name, minus the leading `/` (choosing one inserts the BODY,
+                    not a `/name` reference). */}
+                <span className="block w-full min-w-0 truncate">{name}</span>
+                {/* Line 2: the dimmed one-line body preview, ellipsized — the
+                    same slot a skill row gives its description. */}
+                {preview ? (
+                  <span
+                    className={cn(
+                      "block w-full truncate text-[12px]",
+                      active
+                        ? "text-accent-foreground/80"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {preview}
+                  </span>
+                ) : null}
+              </SlashMenuRow>
+            );
+          })}
+        </>
+      )}
+
       {skillOptions.length > 0 && (
         <>
           <div className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Skills
           </div>
           {skillOptions.map((option, i) => {
-            const globalIndex = i;
+            // Offset by the snippets ahead of this section in the flat list.
+            const globalIndex = snippetOptions.length + i;
             const active = globalIndex === selectedIndex;
             const { name, description, harnesses } = option.skill;
             return (
@@ -474,11 +623,11 @@ export function SlashMenuList({
       )}
 
       {commandOptions.map((option, j) => {
-        // Offset by `skillOptions.length`: skills occupy the front of the flat
-        // typeahead list now, so a block command's global index (used for
-        // keyboard/mouse highlight, see `SlashMenuRow`) starts counting after
-        // them, not from 0.
-        const globalIndex = skillOptions.length + j;
+        // Offset by both leading sections: snippets then skills occupy the
+        // front of the flat typeahead list, so a block command's global index
+        // (used for keyboard/mouse highlight, see `SlashMenuRow`) starts
+        // counting after them, not from 0.
+        const globalIndex = snippetOptions.length + skillOptions.length + j;
         const Icon = option.spec.icon;
         const active = globalIndex === selectedIndex;
         return (
@@ -546,10 +695,14 @@ export function slashTriggerMatch(
 
 export function SlashMenuPlugin({
   skills = EMPTY_SKILLS,
+  snippets = EMPTY_SNIPPETS,
 }: {
   // The installed skills to offer above the block commands. Omitted / empty →
   // no Skills section, identical behavior to before this feature.
   skills?: ReadonlyArray<SkillMenuItem>;
+  // The user's snippets to offer above the skills. Same contract: omitted /
+  // empty → no Snippets section, zero behavior change.
+  snippets?: ReadonlyArray<SnippetMenuItem>;
 }) {
   const [editor] = useLexicalComposerContext();
   // The live query (text after `/`); `null` when the menu is closed.
@@ -565,19 +718,25 @@ export function SlashMenuPlugin({
   // of re-wrapped in a `useCallback`.
   const triggerFn = slashTriggerMatch;
 
-  // Two sections, one flat option list for the typeahead. Skills come FIRST,
-  // ahead of the block commands, so keyboard nav (↑/↓/Enter, which the plugin
-  // drives off this array's order) reads skills-then-block-commands, matching
-  // the render order. Behavior note: with skills present, a bare `/` + Enter
-  // now selects the first SKILL (previously Heading 1) — intended, since
-  // skills are used more often than the block transforms.
-  const { commandOptions, skillOptions, options } = useMemo(() => {
-    const sections = buildSlashMenuSections(query ?? "", skills);
-    return {
-      ...sections,
-      options: [...sections.skillOptions, ...sections.commandOptions],
-    };
-  }, [query, skills]);
+  // Three sections, one flat option list for the typeahead. Snippets come
+  // FIRST, then skills, then the block commands, so keyboard nav (↑/↓/Enter,
+  // which the plugin drives off this array's order) reads
+  // snippets-then-skills-then-block-commands, matching the render order.
+  // Behavior note: with snippets present, a bare `/` + Enter now selects the
+  // first SNIPPET (previously the first skill) — intended, same "used more
+  // often" rationale that put skills ahead of the block transforms.
+  const { commandOptions, skillOptions, snippetOptions, options } =
+    useMemo(() => {
+      const sections = buildSlashMenuSections(query ?? "", skills, snippets);
+      return {
+        ...sections,
+        options: [
+          ...sections.snippetOptions,
+          ...sections.skillOptions,
+          ...sections.commandOptions,
+        ],
+      };
+    }, [query, skills, snippets]);
 
   const onSelectOption = useCallback(
     (
@@ -589,7 +748,9 @@ export function SlashMenuPlugin({
       // callback (right after splitting off `nodeToRemove`) — mutate directly.
       // Nesting another `editor.update` here would queue it behind this one and
       // strand the split query node (see runSlashCommand's contract).
-      if (option instanceof SkillMenuOption) {
+      if (option instanceof SnippetMenuOption) {
+        runSnippetInsert(editor, option.snippet, nodeToRemove);
+      } else if (option instanceof SkillMenuOption) {
         runSkillInsert(editor, option.skill, nodeToRemove);
       } else {
         runSlashCommand(editor, option.spec, nodeToRemove);
@@ -630,6 +791,7 @@ export function SlashMenuPlugin({
               <SlashMenuList
                 commandOptions={commandOptions}
                 skillOptions={skillOptions}
+                snippetOptions={snippetOptions}
                 selectedIndex={selectedIndex}
                 selectOption={selectOptionAndCleanUp}
                 setHighlightedIndex={setHighlightedIndex}
@@ -641,6 +803,7 @@ export function SlashMenuPlugin({
   );
 }
 
-// Stable identity for the default so `SlashMenuPlugin`'s `skills` memo doesn't
-// re-run every render when a parent omits the prop.
+// Stable identities for the defaults so `SlashMenuPlugin`'s sections memo
+// doesn't re-run every render when a parent omits the props.
 const EMPTY_SKILLS: ReadonlyArray<SkillMenuItem> = [];
+const EMPTY_SNIPPETS: ReadonlyArray<SnippetMenuItem> = [];

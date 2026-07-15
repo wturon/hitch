@@ -408,8 +408,10 @@ function canRoundTripCode(node: Code, markdown: string): boolean {
 }
 
 /**
- * Parse `markdown` and rebuild the current editor's content from it. Must run
- * inside `editor.update()` — it touches `$getRoot()`.
+ * Parse `markdown` and append the resulting nodes to `parent`. The shared core
+ * of `importMarkdown` (parent = the cleared root) and `$importMarkdownFragment`
+ * (parent = a detached scratch container). Must run inside `editor.update()` —
+ * it creates nodes.
  *
  * Every top-level flow node is either visited (when `canImport` says the whole
  * subtree is representable) or preserved verbatim in an `UnknownBlockNode`
@@ -419,13 +421,11 @@ function canRoundTripCode(node: Code, markdown: string): boolean {
  * dropped or lossily re-rendered; `UnsupportedMarkdownError` is unreachable
  * here for any parseable markdown.
  */
-export function importMarkdown(markdown: string): void {
+export function $importMarkdownInto(markdown: string, parent: ElementNode): void {
   const tree = fromMarkdown(markdown, {
     extensions: SYNTAX_EXTENSIONS,
     mdastExtensions: MDAST_FROM_EXTENSIONS,
   }) as Root;
-  const root = $getRoot();
-  root.clear();
   for (const child of tree.children) {
     // Top-level fenced code: importable as an editable CodeBlockNode only when it
     // survives the byte-exact gate; exotic fences fall through to the verbatim
@@ -433,11 +433,11 @@ export function importMarkdown(markdown: string): void {
     // deliberately NOT in `canImport`'s accepted set (a nested fence keeps its
     // whole block opaque, as before).
     if (child.type === "code" && canRoundTripCode(child, markdown)) {
-      visit(child, root, 0);
+      visit(child, parent, 0);
       continue;
     }
     if (canImport(child)) {
-      visit(child, root, 0);
+      visit(child, parent, 0);
       continue;
     }
     // Fall back: slice the ORIGINAL markdown by this node's source offsets and
@@ -448,6 +448,17 @@ export function importMarkdown(markdown: string): void {
     if (start === undefined || end === undefined) {
       throw new UnsupportedMarkdownError(`${child.type} (no source position)`);
     }
-    root.append($createUnknownBlockNode(markdown.slice(start, end)));
+    parent.append($createUnknownBlockNode(markdown.slice(start, end)));
   }
+}
+
+/**
+ * Parse `markdown` and rebuild the current editor's content from it. Must run
+ * inside `editor.update()` — it touches `$getRoot()`. See `$importMarkdownInto`
+ * for the per-node import/fallback contract.
+ */
+export function importMarkdown(markdown: string): void {
+  const root = $getRoot();
+  root.clear();
+  $importMarkdownInto(markdown, root);
 }

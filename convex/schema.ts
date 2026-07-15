@@ -40,6 +40,19 @@ export default defineSchema({
     .index("by_user_device", ["userId", "deviceId"])
     .index("by_token_hash", ["tokenHash"]),
 
+  // User-scoped reusable text blocks, global across projects (v1). `name` is
+  // stored as typed; per-user uniqueness is enforced case-insensitively in
+  // convex/snippets.ts, so by_user_name only serves exact-match lookups.
+  snippets: defineTable({
+    userId: v.id("users"),
+    name: v.string(),
+    body: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_name", ["userId", "name"]),
+
   // One row per file in a project's .hitch/ folder.
   // Unique key is (projectId, path), where path is relative to .hitch/.
   files: defineTable({

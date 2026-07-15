@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import {
   AlignLeftIcon,
@@ -23,12 +23,14 @@ import {
   setFrontmatterKeys,
   splitFrontmatter,
 } from "@/lib/frontmatter";
+import { mutationErrorMessage } from "@/lib/convexError";
 import { noteBodyPath, noteSlug } from "@/lib/notes";
 import { uniqueSlug } from "@/lib/tasks";
 import { useFrontmatterDocument } from "@/hooks/useFrontmatterDocument";
 import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import { useAttachments } from "@/hooks/useAttachments";
 import { useSkills } from "@/hooks/useSkills";
+import { useSnippets } from "@/hooks/useSnippets";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import { NoteChatDock } from "@/components/NoteChatDock";
 import { Button } from "@/components/ui/button";
@@ -837,6 +839,28 @@ function NoteEditor({
   const attachments = useAttachments({ projectId, slug, base: "notes" });
   // Installed skills for the `/` menu's Skills section (see useSkills).
   const skills = useSkills(projectId);
+  // The user's snippets for the `/` menu's Snippets section, mapped down to
+  // the editor's Convex-free `SnippetMenuItem` shape ({ name, body }).
+  const snippetRows = useSnippets();
+  const snippets = useMemo(
+    () => snippetRows.map(({ name, body }) => ({ name, body })),
+    [snippetRows],
+  );
+  // The floating toolbar's "Save snippet" action. The editor is Convex-free, so
+  // the mutation is wrapped here; errors are re-thrown with the clean
+  // user-facing message (mutationErrorMessage strips Convex transport noise)
+  // for the toolbar to render inline.
+  const createSnippet = useMutation(api.snippets.create);
+  const saveSnippet = useCallback(
+    async (name: string, body: string) => {
+      try {
+        await createSnippet({ name, body });
+      } catch (err) {
+        throw new Error(mutationErrorMessage(err));
+      }
+    },
+    [createSnippet],
+  );
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
   const editorRef = useRef<MarkdownEditorHandle>(null);
@@ -1245,6 +1269,8 @@ function NoteEditor({
                   attachments.enabled ? attachments.imagePreviewHandler : undefined
                 }
                 skills={skills}
+                snippets={snippets}
+                onSaveSnippet={saveSnippet}
               />
             </>
           ) : (

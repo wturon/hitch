@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { api } from "@convex/_generated/api";
@@ -16,6 +16,7 @@ import {
   type Harness,
 } from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
+import { mutationErrorMessage } from "@/lib/convexError";
 import {
   parseTagsValue,
   serializeTagsValue,
@@ -32,6 +33,7 @@ import { TAG_REGISTRY_PATH, type TagRegistry } from "@/lib/tagRegistry";
 import { useTaskDraft } from "@/hooks/useTaskDraft";
 import { useAttachments } from "@/hooks/useAttachments";
 import { useSkills } from "@/hooks/useSkills";
+import { useSnippets } from "@/hooks/useSnippets";
 import type { MarkdownEditorHandle } from "@/editor";
 import { DialogTagLane } from "./DialogTagLane";
 
@@ -368,6 +370,28 @@ function TodoBody({
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
   const skills = useSkills(projectId);
+  // The user's snippets for the `/` menu's Snippets section, mapped down to
+  // the editor's Convex-free `SnippetMenuItem` shape ({ name, body }).
+  const snippetRows = useSnippets();
+  const snippets = useMemo(
+    () => snippetRows.map(({ name, body }) => ({ name, body })),
+    [snippetRows],
+  );
+  // The floating toolbar's "Save snippet" action. The editor is Convex-free, so
+  // the mutation is wrapped here; errors are re-thrown with the clean
+  // user-facing message (mutationErrorMessage strips Convex transport noise)
+  // for the toolbar to render inline.
+  const createSnippet = useMutation(api.snippets.create);
+  const saveSnippet = useCallback(
+    async (name: string, body: string) => {
+      try {
+        await createSnippet({ name, body });
+      } catch (err) {
+        throw new Error(mutationErrorMessage(err));
+      }
+    },
+    [createSnippet],
+  );
 
   const editorRef = useRef<MarkdownEditorHandle>(null);
   const rawRef = useRef<HTMLTextAreaElement>(null);
@@ -879,6 +903,8 @@ function TodoBody({
           rawRef={rawRef}
           attachments={attachments}
           skills={skills}
+          snippets={snippets}
+          onSaveSnippet={saveSnippet}
         />
 
         {/* Footer — capture coaching strip, or the saved-stage band chosen by

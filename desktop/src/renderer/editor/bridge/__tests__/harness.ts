@@ -9,6 +9,7 @@ import { HorizontalRuleNode } from "@lexical/react/LexicalHorizontalRuleNode";
 import { $getRoot, type LexicalNode } from "lexical";
 
 import { importMarkdown } from "../importMarkdown";
+import { $importMarkdownFragment } from "../importMarkdownFragment";
 import { exportMarkdown } from "../exportMarkdown";
 import { UnknownBlockNode } from "../../nodes/UnknownBlockNode";
 import { ImageNode } from "../../nodes/ImageNode";
@@ -27,7 +28,7 @@ const NODES = [
   CodeBlockNode,
 ];
 
-function newEditor(onError: (error: Error) => void) {
+export function newEditor(onError: (error: Error) => void) {
   return createHeadlessEditor({
     namespace: "hitch-bridge-test",
     nodes: NODES,
@@ -94,6 +95,39 @@ export function importedNodeTypes(markdown: string): string[] {
       .forEach(walk);
   });
   return types;
+}
+
+/**
+ * Import `markdown` as a FRAGMENT (via `$importMarkdownFragment`), append the
+ * returned nodes to the root of a fresh editor — standing in for the caret
+ * insertion the snippet feature performs — and report both the top-level node
+ * types the fragment produced and the markdown the resulting document exports
+ * to. Import happens in a single `editor.update()`, matching the fragment's
+ * contract that its nodes must be attached before the update reconciles.
+ */
+export function insertFragment(markdown: string): {
+  topLevelTypes: string[];
+  exported: string;
+} {
+  const editor = newEditor((error) => {
+    throw error;
+  });
+  const topLevelTypes: string[] = [];
+  editor.update(
+    () => {
+      const nodes = $importMarkdownFragment(markdown);
+      for (const node of nodes) {
+        topLevelTypes.push(node.getType());
+        $getRoot().append(node);
+      }
+    },
+    { discrete: true },
+  );
+  let exported = "";
+  editor.getEditorState().read(() => {
+    exported = exportMarkdown();
+  });
+  return { topLevelTypes, exported };
 }
 
 /**

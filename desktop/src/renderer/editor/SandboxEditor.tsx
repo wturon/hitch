@@ -27,7 +27,11 @@ import type { EditorState } from "lexical";
 import { exportMarkdown, importMarkdown } from "./bridge";
 import { EDITOR_NODES, MARKDOWN_TRANSFORMERS } from "./config";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./MarkdownEditor";
-import { SlashMenuPlugin, type SkillMenuItem } from "./SlashMenuPlugin";
+import {
+  SlashMenuPlugin,
+  type SkillMenuItem,
+  type SnippetMenuItem,
+} from "./SlashMenuPlugin";
 import { FloatingFormatToolbarPlugin } from "./FloatingFormatToolbarPlugin";
 
 // Hardcoded skills so the `/` menu's Skills section is exercisable here without
@@ -50,6 +54,20 @@ const SAMPLE_SKILLS: SkillMenuItem[] = [
     harnesses: ["codex"],
   },
   { name: "scratch", harnesses: ["claude-code"] },
+];
+
+// Hardcoded snippets, same rationale as SAMPLE_SKILLS (in the real app they
+// come from useSnippets). Deliberately mixed: a single-paragraph body (inserts
+// inline) and a multi-block body (inserts as blocks, splitting the paragraph).
+const SAMPLE_SNIPPETS: SnippetMenuItem[] = [
+  {
+    name: "sign-off",
+    body: "Thanks for taking a look — ping me if anything is unclear.",
+  },
+  {
+    name: "review-checklist",
+    body: "## Review checklist\n\n- correctness\n- naming\n- tests\n",
+  },
 ];
 
 const initialConfig = {
@@ -162,7 +180,7 @@ function VanillaSandbox() {
             {/* `/` block picker — the same slash menu the production editor
                 mounts, so it can be exercised here in the raw playground. Fed the
                 sample skills so the Skills section shows without Convex. */}
-            <SlashMenuPlugin skills={SAMPLE_SKILLS} />
+            <SlashMenuPlugin skills={SAMPLE_SKILLS} snippets={SAMPLE_SNIPPETS} />
             {/* Notion-style bubble menu — same plugin the production editor
                 mounts, exercised here in the raw playground. */}
             <FloatingFormatToolbarPlugin />
@@ -464,6 +482,7 @@ Paste an image from your clipboard to upload + insert it inline.
             imageUploadHandler={imageUploadHandler}
             imagePreviewHandler={imagePreviewHandler}
             skills={SAMPLE_SKILLS}
+            snippets={SAMPLE_SNIPPETS}
           />
         </div>
       </div>

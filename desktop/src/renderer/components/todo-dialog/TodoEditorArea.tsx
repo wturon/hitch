@@ -6,6 +6,7 @@ import {
   MarkdownEditor,
   type MarkdownEditorHandle,
   type SkillMenuItem,
+  type SnippetMenuItem,
 } from "@/editor";
 
 // The dialog's document area across BOTH stages. One MarkdownEditor instance
@@ -23,6 +24,8 @@ export function TodoEditorArea({
   rawRef,
   attachments,
   skills,
+  snippets,
+  onSaveSnippet,
 }: {
   stage: "capture" | "saved";
   view: "raw" | "formatted";
@@ -31,6 +34,8 @@ export function TodoEditorArea({
   rawRef: React.RefObject<HTMLTextAreaElement | null>;
   attachments: ReturnType<typeof useAttachments>;
   skills: ReadonlyArray<SkillMenuItem>;
+  snippets: ReadonlyArray<SnippetMenuItem>;
+  onSaveSnippet: (name: string, body: string) => Promise<void>;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -76,6 +81,8 @@ export function TodoEditorArea({
                   : undefined
               }
               skills={skills}
+              snippets={snippets}
+              onSaveSnippet={onSaveSnippet}
             />
           </div>
         </div>
