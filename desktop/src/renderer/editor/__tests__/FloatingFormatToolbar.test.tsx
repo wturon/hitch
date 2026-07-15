@@ -7,7 +7,7 @@
 // selection rect, so the card renders hidden (no coordinates); we assert on
 // presence and on the markdown the buttons produce, not on pixel positions.
 import { render, act, cleanup, fireEvent } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   $getRoot,
   $isElementNode,
@@ -140,5 +140,91 @@ describe("add-link mode", () => {
 
     expect(readMarkdown(editor)).toBe("[Hello world](https://example.com)");
     expect(toolbar()).toBeNull();
+  });
+});
+
+describe("save-snippet mode", () => {
+  const nameInput = () =>
+    document.querySelector<HTMLInputElement>('input[aria-label="Snippet name"]');
+
+  // Open the form over a full first-paragraph selection: select, press the
+  // toolbar button, and hand back the name input.
+  async function openSnippetForm(editor: LexicalEditor) {
+    await selectFirstParagraph(editor);
+    await press("Save snippet");
+    const input = nameInput();
+    expect(input).not.toBeNull();
+    return input!;
+  }
+
+  it("hides the button when no onSaveSnippet is provided", async () => {
+    render(<MarkdownEditor value="Hello world" onChange={() => {}} />);
+    await selectFirstParagraph(getEditor());
+
+    expect(toolbar()).not.toBeNull();
+    expect(button("Save snippet")).toBeNull();
+  });
+
+  it("shows the button when onSaveSnippet is provided", async () => {
+    render(
+      <MarkdownEditor
+        value="Hello world"
+        onChange={() => {}}
+        onSaveSnippet={async () => {}}
+      />,
+    );
+    await selectFirstParagraph(getEditor());
+
+    expect(button("Save snippet")).not.toBeNull();
+  });
+
+  it("saves the selected text under the typed name and flashes Saved", async () => {
+    const onSaveSnippet = vi.fn().mockResolvedValue(undefined);
+    render(
+      <MarkdownEditor
+        value="Hello world"
+        onChange={() => {}}
+        onSaveSnippet={onSaveSnippet}
+      />,
+    );
+    const input = await openSnippetForm(getEditor());
+
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "Greeting" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    await act(async () => {});
+
+    expect(onSaveSnippet).toHaveBeenCalledTimes(1);
+    expect(onSaveSnippet).toHaveBeenCalledWith("Greeting", "Hello world");
+    // Success swaps the form for the brief confirmation flash.
+    expect(nameInput()).toBeNull();
+    expect(document.querySelector('[role="status"]')?.textContent).toBe("Saved");
+  });
+
+  it("renders the rejection message inline and keeps the input editable", async () => {
+    const onSaveSnippet = vi
+      .fn()
+      .mockRejectedValue(new Error('A snippet named "Greeting" already exists'));
+    render(
+      <MarkdownEditor
+        value="Hello world"
+        onChange={() => {}}
+        onSaveSnippet={onSaveSnippet}
+      />,
+    );
+    const input = await openSnippetForm(getEditor());
+
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "Greeting" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    await act(async () => {});
+
+    const form = document.querySelector('[aria-label="Save snippet"]');
+    expect(form?.textContent).toContain(
+      'A snippet named "Greeting" already exists',
+    );
+    expect(nameInput()!.disabled).toBe(false);
   });
 });

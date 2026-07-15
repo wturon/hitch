@@ -72,6 +72,12 @@ export interface MarkdownEditorProps {
   // Skills). Same contract as `skills`: fetched by the app surface (via
   // useSnippets) and passed down; omitted / empty → no Snippets section.
   snippets?: ReadonlyArray<SnippetMenuItem>;
+  // Persist selected text as a named snippet, from the floating selection
+  // toolbar's "Save snippet" action. Supplied by the app surface (which wraps
+  // the Convex mutation) so the editor stays Convex-free. Resolves on success;
+  // rejects with an Error whose `.message` is user-facing. Omitted → the
+  // toolbar doesn't offer the action at all.
+  onSaveSnippet?: (name: string, body: string) => Promise<void>;
 }
 
 // The composed editor body. Rendered inside the LexicalComposer so its plugins
@@ -86,6 +92,7 @@ const EditorBody = forwardRef<
     imagePreviewHandler?: (src: string) => Promise<string>;
     skills?: ReadonlyArray<SkillMenuItem>;
     snippets?: ReadonlyArray<SnippetMenuItem>;
+    onSaveSnippet?: (name: string, body: string) => Promise<void>;
   }
 >(function EditorBody(
   {
@@ -96,6 +103,7 @@ const EditorBody = forwardRef<
     imagePreviewHandler,
     skills,
     snippets,
+    onSaveSnippet,
   },
   ref,
 ) {
@@ -186,8 +194,9 @@ const EditorBody = forwardRef<
           rect so it stays aligned even inside a dialog. */}
       <LinkPopoverPlugin />
       {/* Notion-style bubble menu: select text → floating bold/italic/strike/link
-          card above the selection. Reuses LinkPopover's floating machinery. */}
-      <FloatingFormatToolbarPlugin />
+          card above the selection, plus Save snippet when the surface supplies a
+          persistence callback. Reuses LinkPopover's floating machinery. */}
+      <FloatingFormatToolbarPlugin onSaveSnippet={onSaveSnippet} />
       {/* Right-click Copy/Delete on an image. Mounted always — inert without
           images; reads the preview handler from the context above. */}
       <ImageContextMenuPlugin />
@@ -210,6 +219,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       imagePreviewHandler,
       skills,
       snippets,
+      onSaveSnippet,
     },
     ref,
   ) {
@@ -247,6 +257,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
             imagePreviewHandler={imagePreviewHandler}
             skills={skills}
             snippets={snippets}
+            onSaveSnippet={onSaveSnippet}
           />
         </LexicalComposer>
       </div>

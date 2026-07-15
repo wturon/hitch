@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import {
   AlignLeftIcon,
@@ -23,6 +23,7 @@ import {
   setFrontmatterKeys,
   splitFrontmatter,
 } from "@/lib/frontmatter";
+import { mutationErrorMessage } from "@/lib/convexError";
 import { noteBodyPath, noteSlug } from "@/lib/notes";
 import { uniqueSlug } from "@/lib/tasks";
 import { useFrontmatterDocument } from "@/hooks/useFrontmatterDocument";
@@ -845,6 +846,21 @@ function NoteEditor({
     () => snippetRows.map(({ name, body }) => ({ name, body })),
     [snippetRows],
   );
+  // The floating toolbar's "Save snippet" action. The editor is Convex-free, so
+  // the mutation is wrapped here; errors are re-thrown with the clean
+  // user-facing message (mutationErrorMessage strips Convex transport noise)
+  // for the toolbar to render inline.
+  const createSnippet = useMutation(api.snippets.create);
+  const saveSnippet = useCallback(
+    async (name: string, body: string) => {
+      try {
+        await createSnippet({ name, body });
+      } catch (err) {
+        throw new Error(mutationErrorMessage(err));
+      }
+    },
+    [createSnippet],
+  );
   const [view, setView] = useState<View>(loadView);
   const [saving, setSaving] = useState(false);
   const editorRef = useRef<MarkdownEditorHandle>(null);
@@ -1254,6 +1270,7 @@ function NoteEditor({
                 }
                 skills={skills}
                 snippets={snippets}
+                onSaveSnippet={saveSnippet}
               />
             </>
           ) : (

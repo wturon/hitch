@@ -25,6 +25,7 @@ export function TodoEditorArea({
   attachments,
   skills,
   snippets,
+  onSaveSnippet,
 }: {
   stage: "capture" | "saved";
   view: "raw" | "formatted";
@@ -34,6 +35,7 @@ export function TodoEditorArea({
   attachments: ReturnType<typeof useAttachments>;
   skills: ReadonlyArray<SkillMenuItem>;
   snippets: ReadonlyArray<SnippetMenuItem>;
+  onSaveSnippet: (name: string, body: string) => Promise<void>;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -80,6 +82,7 @@ export function TodoEditorArea({
               }
               skills={skills}
               snippets={snippets}
+              onSaveSnippet={onSaveSnippet}
             />
           </div>
         </div>

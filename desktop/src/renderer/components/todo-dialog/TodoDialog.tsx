@@ -16,6 +16,7 @@ import {
   type Harness,
 } from "@/lib/chat";
 import { sha256 } from "@/lib/hash";
+import { mutationErrorMessage } from "@/lib/convexError";
 import {
   parseTagsValue,
   serializeTagsValue,
@@ -375,6 +376,21 @@ function TodoBody({
   const snippets = useMemo(
     () => snippetRows.map(({ name, body }) => ({ name, body })),
     [snippetRows],
+  );
+  // The floating toolbar's "Save snippet" action. The editor is Convex-free, so
+  // the mutation is wrapped here; errors are re-thrown with the clean
+  // user-facing message (mutationErrorMessage strips Convex transport noise)
+  // for the toolbar to render inline.
+  const createSnippet = useMutation(api.snippets.create);
+  const saveSnippet = useCallback(
+    async (name: string, body: string) => {
+      try {
+        await createSnippet({ name, body });
+      } catch (err) {
+        throw new Error(mutationErrorMessage(err));
+      }
+    },
+    [createSnippet],
   );
 
   const editorRef = useRef<MarkdownEditorHandle>(null);
@@ -888,6 +904,7 @@ function TodoBody({
           attachments={attachments}
           skills={skills}
           snippets={snippets}
+          onSaveSnippet={saveSnippet}
         />
 
         {/* Footer — capture coaching strip, or the saved-stage band chosen by

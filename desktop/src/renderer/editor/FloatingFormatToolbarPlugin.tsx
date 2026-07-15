@@ -1,6 +1,7 @@
 // Selection-driven floating format toolbar for the Hitch editor — the "Notion
 // bubble menu". Select a run of text and a compact card floats above it: bold,
-// italic, strikethrough, and add-link. It's the inline-formatting counterpart to
+// italic, strikethrough, add-link, and (when the surface supplies a persistence
+// callback) save-snippet. It's the inline-formatting counterpart to
 // LinkPopoverPlugin, and it deliberately reuses that plugin's hard-won floating
 // machinery:
 //
@@ -44,7 +45,14 @@ import {
 } from "lexical";
 import { $isLinkNode, $toggleLink } from "@lexical/link";
 import { $findMatchingParent } from "@lexical/utils";
-import { BoldIcon, ItalicIcon, LinkIcon, StrikethroughIcon } from "lucide-react";
+import {
+  BoldIcon,
+  CheckIcon,
+  ItalicIcon,
+  LinkIcon,
+  StrikethroughIcon,
+  TextQuoteIcon,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { LinkEditForm } from "./LinkPopoverPlugin";
@@ -136,13 +144,25 @@ function readSelectionRect(): DOMRect | null {
   return rect;
 }
 
-export function FloatingFormatToolbarPlugin() {
+export function FloatingFormatToolbarPlugin({
+  onSaveSnippet,
+}: {
+  // Persist the selected text as a named snippet. Supplied by the app surface
+  // (NotesView/TodoDialog wrap the Convex mutation) so the editor stays
+  // Convex-free; when absent the Save-snippet button doesn't render at all.
+  // Resolves on success; rejects with an Error whose `.message` is user-facing.
+  onSaveSnippet?: (name: string, body: string) => Promise<void>;
+} = {}) {
   const [editor] = useLexicalComposerContext();
   const [format, setFormat] = useState<FormatState | null>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  // "edit" swaps the button row for the URL input (add-link mode).
-  const [mode, setMode] = useState<"toolbar" | "edit">("toolbar");
+  // "edit" swaps the button row for the URL input (add-link mode); "snippet" for
+  // the snippet-name input; "saved" is the brief confirmation flash after a
+  // snippet save before the toolbar returns to rest.
+  const [mode, setMode] = useState<"toolbar" | "edit" | "snippet" | "saved">(
+    "toolbar",
+  );
   const cardRef = useRef<HTMLDivElement>(null);
 
   // Yield to the spellcheck context menu: right-clicking a misspelled word both
@@ -154,8 +174,13 @@ export function FloatingFormatToolbarPlugin() {
     spellcheckMenuStore.isOpen,
   );
 
-  // The selection to re-target when the URL input commits (see FrozenRange).
+  // The selection to re-target when the URL / snippet-name input commits (see
+  // FrozenRange).
   const frozenRef = useRef<FrozenRange | null>(null);
+  // The selected plain text captured when snippet mode opens — the body the
+  // snippet will save. Read once at entry because the live selection is gone
+  // the moment the name input takes focus.
+  const snippetBodyRef = useRef("");
   // True while the user is dragging out a selection — suppress the toolbar until
   // they let go, so it doesn't chase the growing selection.
   const selectingRef = useRef(false);
@@ -173,9 +198,10 @@ export function FloatingFormatToolbarPlugin() {
 
   // Re-read format + rect from the current selection and show/hide accordingly.
   // Kept as one callback so both the update listener and pointerup drive the same
-  // path. Never runs while in edit mode (the selection is intentionally frozen).
+  // path. Never runs outside toolbar mode (the selection is intentionally frozen
+  // while an input has focus, and the saved flash must not be torn down early).
   const syncFromSelection = useCallback(() => {
-    if (modeRef.current === "edit") return;
+    if (modeRef.current !== "toolbar") return;
     if (selectingRef.current) return;
     editor.getEditorState().read(() => {
       const next = $readFormatState();
@@ -258,13 +284,13 @@ export function FloatingFormatToolbarPlugin() {
 
   // Escape closes the toolbar and consumes the event so the editor's own Escape
   // (blur) and window-level handlers (NotesView exits the note) don't also fire.
-  // In edit mode focus is in the input, whose own handler cancels back to toolbar,
-  // so this doesn't run there.
+  // In edit/snippet mode focus is in the input, whose own handler cancels back to
+  // toolbar, so this doesn't run there.
   useEffect(() => {
     return editor.registerCommand(
       KEY_ESCAPE_COMMAND,
       (event) => {
-        if (!format || modeRef.current === "edit") return false;
+        if (!format || modeRef.current !== "toolbar") return false;
         event.stopPropagation();
         close();
         return true;
@@ -336,6 +362,51 @@ export function FloatingFormatToolbarPlugin() {
     editor.focus();
   }, [editor]);
 
+  // Enter save-snippet mode: capture the selected plain text (the snippet body)
+  // and freeze the range — same reasoning as add-link, the name input is about
+  // to steal focus. Leading/trailing whitespace is trimmed (a drag easily grabs
+  // a stray newline); interior text is saved exactly as selected.
+  const enterSnippetEdit = useCallback(() => {
+    editor.getEditorState().read(() => {
+      const selection = $getSelection();
+      frozenRef.current = selection ? freeze(selection) : null;
+      snippetBodyRef.current = selection
+        ? selection.getTextContent().trim()
+        : "";
+    });
+    setMode("snippet");
+  }, [editor]);
+
+  // Persist through the surface's callback. Thrown errors propagate back to the
+  // form (which renders `.message` inline); success flips to the "saved" flash.
+  const saveSnippet = useCallback(
+    async (name: string) => {
+      if (!onSaveSnippet) return;
+      await onSaveSnippet(name, snippetBodyRef.current);
+      setMode("saved");
+    },
+    [onSaveSnippet],
+  );
+
+  // Return to the resting toolbar, thaw the frozen range so the highlight comes
+  // back, and hand focus to the editor.
+  const cancelSnippet = useCallback(() => {
+    const frozen = frozenRef.current;
+    setMode("toolbar");
+    if (frozen) {
+      editor.update(() => $thaw(frozen));
+    }
+    editor.focus();
+  }, [editor]);
+
+  // The "saved" flash lingers ~1s, then restores the selection and returns the
+  // card to the resting toolbar (same thaw-and-focus path as cancel).
+  useEffect(() => {
+    if (mode !== "saved") return;
+    const timer = window.setTimeout(cancelSnippet, 1000);
+    return () => window.clearTimeout(timer);
+  }, [mode, cancelSnippet]);
+
   if (!format || spellcheckOpen) return null;
 
   const card =
@@ -345,6 +416,16 @@ export function FloatingFormatToolbarPlugin() {
         onSave={saveLink}
         onCancel={cancelLink}
       />
+    ) : mode === "snippet" ? (
+      <SnippetNameForm onSave={saveSnippet} onCancel={cancelSnippet} />
+    ) : mode === "saved" ? (
+      <div
+        role="status"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-popover px-3 py-2 text-xs text-muted-foreground shadow-md"
+      >
+        <CheckIcon className="size-3.5" aria-hidden />
+        Saved
+      </div>
     ) : (
       <div
         role="toolbar"
@@ -376,6 +457,18 @@ export function FloatingFormatToolbarPlugin() {
         <FormatButton label="Add link" active={format.isLink} onClick={enterLinkEdit}>
           <LinkIcon className="size-4" aria-hidden />
         </FormatButton>
+        {onSaveSnippet && (
+          <>
+            <span className="mx-0.5 my-1 w-px self-stretch bg-border" />
+            <FormatButton
+              label="Save snippet"
+              active={false}
+              onClick={enterSnippetEdit}
+            >
+              <TextQuoteIcon className="size-4" aria-hidden />
+            </FormatButton>
+          </>
+        )}
       </div>
     );
 
@@ -392,6 +485,97 @@ export function FloatingFormatToolbarPlugin() {
       {card}
     </div>,
     document.body,
+  );
+}
+
+// The save-snippet form — the snippet-mode counterpart to LinkEditForm, and
+// deliberately the same layout/interaction: the input is the sole element that
+// takes focus, Enter saves, Escape cancels back to the resting toolbar, the Save
+// button preventDefaults its mousedown so the frozen editor selection survives.
+// It owns the async lifecycle: disabled while the save is in flight, and a
+// rejected save renders the error's user-facing `.message` inline (the input
+// stays editable so the user can rename and retry).
+function SnippetNameForm({
+  onSave,
+  onCancel,
+}: {
+  onSave: (name: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed || saving) return;
+    setSaving(true);
+    setError(null);
+    onSave(trimmed).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : String(err));
+      setSaving(false);
+    });
+    // On success the parent flips to the "saved" flash and this form unmounts —
+    // no state to reset here.
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Save snippet"
+      className="inline-flex flex-col gap-1 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-md"
+    >
+      <div className="flex items-center gap-1.5">
+        <div className="flex flex-col gap-1">
+          <span className="pl-0.5 font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground">
+            Save snippet
+          </span>
+          <input
+            ref={inputRef}
+            type="text"
+            spellCheck={false}
+            aria-label="Snippet name"
+            placeholder="Snippet name"
+            value={name}
+            disabled={saving}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                submit();
+              } else if (e.key === "Escape") {
+                // Keep the editor from also handling Escape (blur) and return
+                // to the resting toolbar rather than closing outright.
+                e.preventDefault();
+                e.stopPropagation();
+                onCancel();
+              }
+            }}
+            className="h-[30px] w-[220px] max-w-[60vw] rounded-md border border-input bg-background px-2.5 text-[12.5px] text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-60"
+          />
+        </div>
+        <button
+          type="button"
+          // Keep the input focused / editor selection intact on click.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={submit}
+          disabled={saving}
+          className="h-[30px] self-end rounded-md bg-primary px-3.5 text-[12.5px] font-medium text-primary-foreground outline-none hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {error && (
+        <p className="max-w-[280px] pl-0.5 text-[11px] leading-snug text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 
