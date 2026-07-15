@@ -3,5 +3,6 @@
 // anywhere under `bridge/`); the editor folder re-exports this from its own
 // `index.ts`, the only public entry.
 export { importMarkdown } from "./importMarkdown";
+export { $importMarkdownFragment } from "./importMarkdownFragment";
 export { exportMarkdown } from "./exportMarkdown";
 export { UnsupportedMarkdownError } from "./errors";

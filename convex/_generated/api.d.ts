@@ -24,6 +24,7 @@ import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as projects from "../projects.js";
 import type * as skills from "../skills.js";
+import type * as snippets from "../snippets.js";
 import type * as status from "../status.js";
 import type * as users from "../users.js";
 
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   projects: typeof projects;
   skills: typeof skills;
+  snippets: typeof snippets;
   status: typeof status;
   users: typeof users;
 }>;
