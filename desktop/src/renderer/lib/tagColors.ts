@@ -1,12 +1,18 @@
 // The named tag palette (Notion-style). The registry (`tasks/config.json`) only
 // ever stores a color *name*, never a hex — so this map is the single source of
-// truth for what each name renders as, and the one place to extend when the app
-// grows a dark theme (add a `dark` register beside `light`).
+// truth for what each name renders as.
 //
-// Each name resolves to a light-mode tint triple:
+// Each name resolves to a tint triple:
 //   - bg   → the pill background
 //   - text → the pill label (and the pill's readable foreground)
 //   - dot  → the swatch dot shown in the filter popover / assign submenu
+//
+// The actual color *values* live as CSS custom properties in styles.css, split
+// into a light register (:root) and a dark register (.dark). This map points at
+// those vars, so a tag pill (which paints them via inline `style`) flips with
+// the theme automatically — no theme prop, no re-render. To retune a hue or
+// extend either register, edit the `--tag-*` vars in styles.css; to add a hue,
+// add it here and in both CSS registers.
 //
 // green/red/orange/purple/blue/gray are the values used in the Paper design
 // (Todos 2.0, board D option 1); brown/yellow/pink are derived in the same
@@ -32,17 +38,26 @@ export interface TagTint {
   dot: string;
 }
 
+// A `var(--tag-<name>-<slot>)` reference for every named hue. The values (light
+// and dark) are defined in styles.css; see the header note above.
+function tintVars(name: TagColorName): TagTint {
+  return {
+    bg: `var(--tag-${name}-bg)`,
+    text: `var(--tag-${name}-text)`,
+    dot: `var(--tag-${name}-dot)`,
+  };
+}
+
 export const TAG_COLORS: Record<TagColorName, TagTint> = {
-  green: { bg: "#EAF2EA", text: "#47704B", dot: "#BFD8C0" },
-  red: { bg: "#F7E9E7", text: "#A05248", dot: "#E4BEB8" },
-  orange: { bg: "#F7EDE1", text: "#9A6B35", dot: "#E7CFAE" },
-  purple: { bg: "#EFEDF8", text: "#6A62A8", dot: "#CCC7E8" },
-  blue: { bg: "#E8F0F6", text: "#43678B", dot: "#B9CEDF" },
-  gray: { bg: "#F1F1F0", text: "#6B6B69", dot: "#D6D6D4" },
-  // Derived in the same register (muted, low chroma):
-  brown: { bg: "#F1EBE4", text: "#7A5C42", dot: "#DCCBB8" },
-  yellow: { bg: "#F6F1DE", text: "#82702B", dot: "#E3D8A6" },
-  pink: { bg: "#F8EAF0", text: "#9B4A72", dot: "#E7C2D5" },
+  gray: tintVars("gray"),
+  brown: tintVars("brown"),
+  orange: tintVars("orange"),
+  yellow: tintVars("yellow"),
+  green: tintVars("green"),
+  blue: tintVars("blue"),
+  purple: tintVars("purple"),
+  pink: tintVars("pink"),
+  red: tintVars("red"),
 };
 
 // The unknown/unregistered fallback. A tag present on a task but missing from

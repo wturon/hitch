@@ -195,6 +195,12 @@ export function HarnessChip({
   }
 
   return (
+    // The chip expands inline on hover/focus (its body animates max-width), so it
+    // grows the row rightward rather than overlaying the tags to its left. The
+    // overlay approach clipped the tag pills under the opaque pill; per review we
+    // keep tags readable and accept the small hover-time shift. What actually
+    // stops rows swapping under the cursor is the pinned NEEDS YOU order
+    // (useStableOrder), not this footprint.
     <div className="relative flex h-7 justify-end">
       <button
         type="button"
