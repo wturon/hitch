@@ -46,11 +46,14 @@ export function useTaskDraft(
   content: string,
   options?: TaskDraftOptions,
 ): TaskDraft {
-  // Tasks let the user edit exactly one frontmatter key — the title. Every other
-  // key (chat-*, completed-at, …) is machine-owned, so an external write into a
-  // dirty editor always refreshes them (see mergeFrontmatterUpdate).
+  // The frontmatter keys the user edits directly: the title and the tag set (the
+  // dialog's tag lane assigns tags in place). Both must be user-owned so a racing
+  // machine write — a chat binding, a status projection, an agent completion —
+  // merges per field instead of rolling back an in-flight tag/title edit (see
+  // mergeFrontmatterUpdate). Every other key (chat-*, completed-at, …) is
+  // machine-owned and always adopts the external value.
   const doc = useFrontmatterDocument(content, {
-    userOwnedKeys: ["title"],
+    userOwnedKeys: ["title", "tags"],
     claimedKeys: options?.claimedKeys,
   });
 

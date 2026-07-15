@@ -23,12 +23,14 @@ function doc(opts: {
   title?: string;
   type?: string;
   chatId?: string;
+  tags?: string;
   body?: string;
 }): string {
   const lines: string[] = [];
   if (opts.title !== undefined) lines.push(`title: ${opts.title}`);
   if (opts.type !== undefined) lines.push(`type: ${opts.type}`);
   if (opts.chatId !== undefined) lines.push(`chat-id: ${opts.chatId}`);
+  if (opts.tags !== undefined) lines.push(`tags: ${opts.tags}`);
   return `---\n${lines.join("\n")}\n---\n${opts.body ?? ""}`;
 }
 
@@ -36,7 +38,8 @@ const fm = (content: string) => parseFrontmatter(content).frontmatter;
 const bodyOf = (content: string) => splitFrontmatter(content).body;
 
 // The key sets the real callers declare: useTaskDraft and NotesView's NoteEditor.
-const TASK_KEYS = ["title"] as const;
+// Tasks own title + tags (the dialog's tag lane edits tags in place).
+const TASK_KEYS = ["title", "tags"] as const;
 const NOTE_KEYS = ["title", "type"] as const;
 
 describe("mergeFrontmatterUpdate (tasks: title user-owned)", () => {
@@ -99,6 +102,37 @@ describe("mergeFrontmatterUpdate (tasks: title user-owned)", () => {
     expect(fm(merged).title).toBe("My title");
     expect(bodyOf(merged)).toBe("my body");
     expect(fm(merged)["chat-id"]).toBe("b"); // machine key always adopts external
+  });
+
+  it("keeps a locally-edited tag set while an external machine key rides through", () => {
+    // The dialog's tag lane just added `urgent` locally; before that write echoes
+    // back, the daemon binds a chat (a machine-key update). The tag edit is
+    // in-flight and must survive the merge, while chat-id still adopts external.
+    const synced = doc({ title: "T", tags: "[design]", body: "hi" });
+    const local = doc({ title: "T", tags: "[design, urgent]", body: "hi" });
+    const external = doc({ title: "T", tags: "[design]", chatId: "bound", body: "hi" });
+    const merged = mergeFrontmatterUpdate({
+      local,
+      synced,
+      external,
+      userOwnedKeys: TASK_KEYS,
+    });
+    expect(fm(merged).tags).toBe("[design, urgent]"); // local tag edit survives
+    expect(fm(merged)["chat-id"]).toBe("bound"); // machine key still adopts external
+  });
+
+  it("adopts an external tag change when the user hasn't touched tags", () => {
+    // An agent edits the task's tags on disk while the clean dialog is open — no
+    // local tag edit, so the external set is adopted wholesale (no stale fork).
+    const synced = doc({ title: "T", tags: "[design]", body: "hi" });
+    const external = doc({ title: "T", tags: "[design, shipped]", body: "hi" });
+    const merged = mergeFrontmatterUpdate({
+      local: synced,
+      synced,
+      external,
+      userOwnedKeys: TASK_KEYS,
+    });
+    expect(fm(merged).tags).toBe("[design, shipped]");
   });
 
   it("takes a machine key even when the user is mid-edit (closes the clobber hole)", () => {

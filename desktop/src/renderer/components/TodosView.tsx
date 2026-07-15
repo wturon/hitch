@@ -46,13 +46,16 @@ import {
 import { taskSlug } from "@/lib/tasks";
 import type { TagColorName } from "@/lib/tagColors";
 import {
-  ensureRegistryTag,
   parseTagRegistry,
-  registryColorMap,
-  serializeTagRegistry,
   TAG_REGISTRY_PATH,
   type TagRegistry,
 } from "@/lib/tagRegistry";
+import {
+  buildAssignOptions,
+  newTagRegistryContent,
+  nextTagsAfterToggle,
+  useTaskTagAssignment,
+} from "@/lib/tagAssignment";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -275,18 +278,7 @@ function TagsSubmenu({
   todo: Todo;
   tag: RowTagProps;
 }) {
-  const optionIds = useMemo(() => {
-    const seen = new Set<string>();
-    const ids: string[] = [];
-    for (const id of [...tag.registryTagIds, ...todo.tags]) {
-      if (!seen.has(id)) {
-        seen.add(id);
-        ids.push(id);
-      }
-    }
-    return ids;
-  }, [tag.registryTagIds, todo.tags]);
-  const options = optionIds.map((id) => ({ id, color: tag.colorOf(id) }));
+  const options = buildAssignOptions(tag.registryTagIds, todo.tags, tag.colorOf);
   return (
     <ContextMenuSub>
       <ContextMenuSubTrigger>
@@ -717,12 +709,9 @@ export function TodosView({
     );
     return parseTagRegistry(file?.content);
   }, [files]);
-  const colorMap = useMemo(() => registryColorMap(registry), [registry]);
-  const colorOf = (id: string): TagColorName => colorMap.get(id) ?? "gray";
-  const registryTagIds = useMemo(
-    () => registry.tags.map((t) => t.id),
-    [registry],
-  );
+  // Registry-derived reads (color resolver + the registry's tag ids), shared with
+  // the task dialog via useTaskTagAssignment so the two surfaces never drift.
+  const { colorOf, registryTagIds } = useTaskTagAssignment(registry);
 
   // View-local tag filter (AND semantics), persisted per project in
   // localStorage. Reload it whenever the project changes so switching projects
@@ -755,30 +744,18 @@ export function TodosView({
   // other row edit (onWriteTodo), so the pill reflects instantly. Registry
   // writes hit that path too (config.json is just another synced file). We read
   // `todo.content` fresh from the live query each time — no local fork.
-  const toggleTag = (todo: Todo, id: string) => {
-    const has = todo.tags.includes(id);
-    const nextTags = has
-      ? todo.tags.filter((t) => t !== id)
-      : [...todo.tags, id];
+  const writeTags = (todo: Todo, nextTags: string[]) =>
     onWriteTodo(
       todo.path,
       setFrontmatterKeys(todo.content, { tags: serializeTagsValue(nextTags) }),
     );
-  };
+  const toggleTag = (todo: Todo, id: string) =>
+    writeTags(todo, nextTagsAfterToggle(todo.tags, id));
   const createTag = (todo: Todo, id: string) => {
-    if (!todo.tags.includes(id)) {
-      onWriteTodo(
-        todo.path,
-        setFrontmatterKeys(todo.content, {
-          tags: serializeTagsValue([...todo.tags, id]),
-        }),
-      );
-    }
+    if (!todo.tags.includes(id)) writeTags(todo, [...todo.tags, id]);
     // Register a rotation color for a brand-new id (no-op if already present).
-    const { registry: next, changed } = ensureRegistryTag(registry, id);
-    if (changed) {
-      onWriteTodo(TAG_REGISTRY_PATH, serializeTagRegistry(next));
-    }
+    const content = newTagRegistryContent(registry, id);
+    if (content) onWriteTodo(TAG_REGISTRY_PATH, content);
   };
   const rowTag: RowTagProps = {
     colorOf,
@@ -814,7 +791,7 @@ export function TodosView({
         if (!seen.has(id)) (seen.add(id), extra.push(id));
     extra.sort();
     return [...ids, ...extra].map((id) => ({ id, color: colorOf(id) }));
-  }, [registryTagIds, universe, colorMap]);
+  }, [registryTagIds, universe, colorOf]);
   const hasAnyTags = filterOptions.length > 0;
 
   const isEmpty =
