@@ -37,3 +37,19 @@ the test instance just logs a benign "port in use" and skips sign-in.
 These are **one-off checks, not a maintained suite** — write a throwaway script,
 run it, read the screenshots in `/tmp/hitch-e2e/`, delete it. Confine any edits
 to a scratch task you create and delete.
+
+### Driving V2 (server mode)
+
+Setting `HITCH_SERVER_URL` at launch flips the app into the V2 shell (Hono
+server instead of Convex) — the harness passes it through unchanged. Bring up
+the compose stack first, then point a check at it:
+
+```sh
+docker compose up -d --build   # repo root; server on :3010
+HITCH_SERVER_URL=http://localhost:3010 node desktop/e2e/check-v2-todos-read.mjs
+docker compose down -v         # wipe when done (including data)
+```
+
+V2 checks sign **up** against the fresh stack, so the seeded dev secrets don't
+matter (V1's daemon still stays idle). The `desktop/e2e/check-v2-*.mjs` scripts
+are the working examples.

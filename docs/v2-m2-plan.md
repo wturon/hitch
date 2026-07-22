@@ -99,6 +99,6 @@
 
 ## Progress
 
-- [ ] Step 0 (server gaps)
-- [ ] PR 1 foundation · [ ] PR 2 read path · [ ] PR 3 dialog · [ ] PR 4 mutations ·
-  [ ] PR 5 tags · [ ] PR 6 attachments · [ ] PR 7 polish
+- [x] Step 0 (server gaps)
+- [x] PR 1 foundation · [x] PR 2 read path · [x] PR 3 dialog · [x] PR 4 mutations ·
+  [x] PR 5 tags · [x] PR 6 attachments · [x] PR 7 polish

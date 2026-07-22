@@ -71,6 +71,16 @@ export function initHitchServer(deps: HitchServerDeps): void {
   let reconnectTimer: NodeJS.Timeout | null = null;
   let attempt = 0;
   let wsEnabled = false;
+  let wsConnected = false;
+
+  // Connectivity truth for the renderer's unreachable banner: broadcast on
+  // every transition, and answerable on demand (a reloaded renderer asks via
+  // get-ws-status rather than waiting for the next transition).
+  const setWsConnected = (value: boolean) => {
+    if (wsConnected === value) return;
+    wsConnected = value;
+    deps.getWindow()?.webContents.send("hitch-server:ws-status", value);
+  };
 
   const scheduleReconnect = () => {
     if (!wsEnabled || reconnectTimer) return;
@@ -99,6 +109,7 @@ export function initHitchServer(deps: HitchServerDeps): void {
     socket = ws;
     ws.onopen = () => {
       attempt = 0;
+      setWsConnected(true);
       deps.getWindow()?.webContents.send("hitch-server:ws-open");
     };
     ws.onmessage = (event) => {
@@ -113,7 +124,10 @@ export function initHitchServer(deps: HitchServerDeps): void {
     // 'error' is always followed by 'close'; reconnect once, from onclose.
     ws.onerror = () => {};
     ws.onclose = () => {
-      if (socket === ws) socket = null;
+      if (socket === ws) {
+        socket = null;
+        setWsConnected(false);
+      }
       scheduleReconnect();
     };
   };
@@ -133,6 +147,7 @@ export function initHitchServer(deps: HitchServerDeps): void {
     }
     const ws = socket;
     socket = null;
+    setWsConnected(false);
     try {
       ws?.close();
     } catch {
@@ -242,6 +257,7 @@ export function initHitchServer(deps: HitchServerDeps): void {
 
   ipcMain.handle("hitch-server:get-config", () => config);
   ipcMain.handle("hitch-server:get-api-key", () => activeCredentials()?.apiKey ?? null);
+  ipcMain.handle("hitch-server:get-ws-status", () => wsConnected);
   ipcMain.handle(
     "hitch-server:sign-in",
     (_event, input: { email: string; password: string }) =>
