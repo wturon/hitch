@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, PlusIcon } from "lucide-react";
 
 import { TagPillGroup } from "@/components/tags/TagPill";
 import { toTagColor, type TagColorName } from "@/lib/tagColors";
@@ -20,7 +20,9 @@ import { deriveTaskGroups } from "./todoGroups";
 // slim sibling carrying the same classes; TagPillGroup IS the V1 component,
 // imported — pills must render identically across the two shells.
 
-async function fetchTasks(client: HitchClient, projectId: string) {
+// Exported so the shell's task-dialog query (AppV2) shares this EXACT queryFn
+// under the same key — one cache entry, one live truth for both surfaces.
+export async function fetchTasks(client: HitchClient, projectId: string) {
   const response = await client.tasks.$get({ query: { project_id: projectId } });
   if (!response.ok) throw new Error(`Failed to list tasks (${response.status})`);
   return await response.json();
@@ -122,6 +124,33 @@ function TaskRow({
   );
 }
 
+// The quiet, borderless capture affordance pinned to the top of BACKLOG —
+// V1's AddTodoRow chrome without its keyboard-nav freight (RowNav is PR 4).
+// The `C` hint mirrors the global capture shortcut wired in AppV2.
+function AddTaskRow({ onAdd }: { onAdd: () => void }) {
+  return (
+    <button
+      type="button"
+      data-testid="v2-add-task"
+      onClick={onAdd}
+      className="group flex h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+    >
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        <PlusIcon
+          className="size-3 text-neutral-400 dark:text-neutral-500"
+          strokeWidth={2}
+        />
+      </span>
+      <span className="flex-1 text-[13.5px] leading-[18px] text-neutral-400 dark:text-neutral-500">
+        Add a todo…
+      </span>
+      <kbd className="font-mono text-[10.5px] text-neutral-300 dark:text-neutral-600">
+        C
+      </kbd>
+    </button>
+  );
+}
+
 // V1's empty-project illustration, copied (it isn't exported from TodosView).
 function EmptyHint() {
   return (
@@ -159,11 +188,14 @@ export function TodosViewV2({
   client,
   projectId,
   onOpenTask,
+  onAddTask,
 }: {
   client: HitchClient;
   projectId: string;
-  /** PR 3 seam: the task dialog claims this. Until then the caller no-ops. */
+  /** Open a task in the dialog (the PR 2 seam, claimed by PR 3). */
   onOpenTask: (taskId: string) => void;
+  /** Open the capture card (the add-row affordance; `C` lives in AppV2). */
+  onAddTask: () => void;
 }) {
   const [showAllDone, setShowAllDone] = useState(false);
 
@@ -252,10 +284,11 @@ export function TodosViewV2({
           </section>
         )}
 
-        {/* BACKLOG always shows its header (it will host the capture affordance
-            in PR 3), mirroring V1. */}
+        {/* BACKLOG always shows its header + the capture add-row, mirroring
+            V1 (the add-row renders in the empty state too). */}
         <section className="flex flex-col" data-testid="v2-backlog">
           <GroupHeader label="BACKLOG" />
+          <AddTaskRow onAdd={onAddTask} />
           {groups.backlog.map((task) => (
             <TaskRow
               key={task.id}
