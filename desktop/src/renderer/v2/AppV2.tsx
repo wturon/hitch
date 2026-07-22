@@ -40,6 +40,7 @@ import {
 } from "./taskDialogState";
 import { deriveTaskGroups } from "./todoGroups";
 import { fetchTasks, TodosViewV2 } from "./TodosViewV2";
+import { useTagMutations } from "./useTagMutations";
 import { useTaskMutations } from "./useTaskMutations";
 
 // The V2 shell (M2 PR 2): sidebar + header + TodosViewV2, mirroring V1's
@@ -475,6 +476,10 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
   // list rows, the keyboard shortcuts and the dialog ⋯ menu share the same
   // optimistic cache and the same pending-delete window.
   const taskMutations = useTaskMutations(client, selectedProject?.id ?? null);
+  // The tag data layer (PR 5): same one-instance rule — the row's Tags ▸
+  // submenu, the filter bar and the dialog's tag lane all read/write through
+  // these handlers (and the one optimistic tagIds cache).
+  const tagActions = useTagMutations(client, selectedProject?.id ?? null);
 
   const dialogTasks = useQuery({
     queryKey: ["tasks", { projectId: selectedProject?.id }],
@@ -512,6 +517,19 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
         onToggleCompleted: () =>
           taskMutations.toggleDone(dialogRow, dialogRow.status !== "done"),
         onDelete: () => taskMutations.deleteTaskWithUndo(dialogRow),
+      }
+    : undefined;
+  // The dialog's tag lane (PR 5), bound to the live row through the SAME
+  // useTagMutations handlers the row submenu uses — the lane's pills are the
+  // live row's tagIds resolved to names, so an optimistic link/unlink shows
+  // in the dialog and the list in the same render.
+  const dialogTags = dialogRow
+    ? {
+        names: tagActions.namesOf(dialogRow),
+        colorOf: tagActions.colorOf,
+        options: tagActions.options,
+        onToggle: (name: string) => tagActions.toggleTag(dialogRow, name),
+        onCreate: (name: string) => tagActions.createTag(dialogRow, name),
       }
     : undefined;
 
@@ -620,6 +638,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
               // list (V1's `active` contract).
               active={taskDialog.mode === "closed"}
               pendingDeleteIds={taskMutations.pendingDeleteIds}
+              tag={tagActions}
               onOpenTask={openTask}
               onAddTask={openCapture}
               onToggleDone={taskMutations.toggleDone}
@@ -644,6 +663,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
           row={dialogRow}
           backlog={dialogBacklog}
           actions={dialogActions}
+          tags={dialogTags}
           onClose={closeTaskDialog}
           onCommitted={commitTaskDialog}
         />

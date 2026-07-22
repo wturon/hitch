@@ -19,23 +19,38 @@ import {
   CircleIcon,
   PlusIcon,
   SquareArrowOutUpRightIcon,
+  TagIcon,
   Trash2Icon,
 } from "lucide-react";
 
+import { TagCombobox } from "@/components/tags/TagCombobox";
+import { TagFilterBar } from "@/components/tags/TagFilterBar";
 import { TagPillGroup } from "@/components/tags/TagPill";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
-import { toTagColor, type TagColorName } from "@/lib/tagColors";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import { reorderSortOrder } from "./listMutations";
+import {
+  filterTaskGroups,
+  isTagFilterActive,
+  loadTagFilter,
+  saveTagFilter,
+  tagFacetCounts,
+  EMPTY_TAG_FILTER,
+  type TagFilter,
+} from "./tagFilter";
 import { deriveTaskGroups } from "./todoGroups";
+import type { TagActions } from "./useTagMutations";
 
 // The V2 Todos surface (M2 PR 2 read path + PR 4 list mutations): the selected
 // project's tasks from the Hono server, grouped by attention exactly like V1's
@@ -47,7 +62,14 @@ import { deriveTaskGroups } from "./todoGroups";
 //   • whole-row drag reorder within BACKLOG (dnd-kit, single-row sortOrder
 //     PATCH computed between the drop's neighbors);
 //   • right-click context menu (V1's structure minus the V1-only entries —
-//     tags land in PR 5; copy-path/detach/archive have no V2 counterpart);
+//     copy-path/detach/archive have no V2 counterpart) with V1's Tags ▸
+//     assign submenu (PR 5), routed through the shell's single
+//     useTagMutations instance;
+//   • V1's tag filter bar (PR 5): AND-semantics multi-tag filter + exclusive
+//     Untagged, facet counts, persisted per project in localStorage
+//     (tagFilter.ts). While a filter is active the capture add-row and drag
+//     reorder are hidden, exactly like V1 (the visible order is a filtered
+//     projection);
 //   • V1's keyboard nav: ↑↓ move the highlight (hover arms it too — mouse and
 //     keyboard share ONE selection), ↵ opens, ←→ walk the row's controls,
 //     `e` toggles done, Backspace/Delete deletes the highlighted row (the
@@ -68,12 +90,6 @@ import { deriveTaskGroups } from "./todoGroups";
 export async function fetchTasks(client: HitchClient, projectId: string) {
   const response = await client.tasks.$get({ query: { project_id: projectId } });
   if (!response.ok) throw new Error(`Failed to list tasks (${response.status})`);
-  return await response.json();
-}
-
-async function fetchTags(client: HitchClient) {
-  const response = await client.tags.$get();
-  if (!response.ok) throw new Error(`Failed to list tags (${response.status})`);
   return await response.json();
 }
 
@@ -156,20 +172,45 @@ type RowActions = {
   onDelete: (task: TaskItem) => void;
 };
 
+// The row's right-click Tags ▸ submenu (V1's TagsSubmenu, sibling'd — it isn't
+// exported and is welded to the frontmatter Todo): a searchable combobox that
+// toggles the server's tags on/off for this task and creates+assigns a new
+// one when the query matches nothing. TagCombobox and the submenu kit ARE the
+// V1 modules, imported.
+function TagsSubmenu({ task, tag }: { task: TaskItem; tag: TagActions }) {
+  return (
+    <ContextMenuSub>
+      <ContextMenuSubTrigger>
+        <TagIcon />
+        Tags
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent className="p-0">
+        <TagCombobox
+          mode="assign"
+          options={tag.options}
+          selected={new Set(tag.namesOf(task))}
+          onToggle={(name) => tag.toggleTag(task, name)}
+          onCreate={(name) => tag.createTag(task, name)}
+          placeholder="Search or create tag…"
+        />
+      </ContextMenuSubContent>
+    </ContextMenuSub>
+  );
+}
+
 function TaskRow({
   task,
   done,
-  tagNames,
-  colorOf,
+  tag,
   actions,
   drag,
   nav,
 }: {
   task: TaskItem;
   done: boolean;
-  /** Resolved tag labels for the pill lane (tagIds → names, unknown ids dropped). */
-  tagNames: string[];
-  colorOf: (name: string) => TagColorName;
+  // Tag pills + the right-click Tags ▸ submenu, threaded from the shell's
+  // single useTagMutations instance (same handlers as the dialog's tag lane).
+  tag: TagActions;
   actions: RowActions;
   // Present only for BACKLOG rows, which are drag-reorderable — dnd-kit's
   // sortable node/transform on the whole row (V1's whole-row drag). The
@@ -231,12 +272,12 @@ function TaskRow({
           >
             {task.title}
           </span>
-          <TagPillGroup tags={tagNames} colorOf={colorOf} dimmed={done} />
+          <TagPillGroup tags={tag.namesOf(task)} colorOf={tag.colorOf} dimmed={done} />
         </div>
       </ContextMenuTrigger>
-      {/* V1's row menu minus its V1-only entries: Tags ▸ lands in PR 5;
-          Copy task path / Detach chat / Archive have no V2 counterpart
-          (tasks aren't files; chats are M4; V2 has no archived state). */}
+      {/* V1's row menu minus its V1-only entries: Copy task path / Detach
+          chat / Archive have no V2 counterpart (tasks aren't files; chats are
+          M4; V2 has no archived state). */}
       <ContextMenuContent>
         <ContextMenuItem onClick={() => actions.onOpen(task.id)}>
           <SquareArrowOutUpRightIcon />
@@ -246,6 +287,8 @@ function TaskRow({
           {done ? <CircleIcon /> : <CircleCheckIcon />}
           {done ? "Mark not done" : "Mark done"}
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        <TagsSubmenu task={task} tag={tag} />
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onClick={() => actions.onDelete(task)}>
           <Trash2Icon />
@@ -261,14 +304,12 @@ function TaskRow({
 // task id (its sortable id).
 function SortableTaskRow({
   task,
-  tagNames,
-  colorOf,
+  tag,
   actions,
   nav,
 }: {
   task: TaskItem;
-  tagNames: string[];
-  colorOf: (name: string) => TagColorName;
+  tag: TagActions;
   actions: RowActions;
   nav?: RowNav;
 }) {
@@ -278,8 +319,7 @@ function SortableTaskRow({
     <TaskRow
       task={task}
       done={false}
-      tagNames={tagNames}
-      colorOf={colorOf}
+      tag={tag}
       actions={actions}
       nav={nav}
       drag={{
@@ -366,6 +406,7 @@ export function TodosViewV2({
   projectId,
   active,
   pendingDeleteIds,
+  tag,
   onOpenTask,
   onAddTask,
   onToggleDone,
@@ -374,6 +415,9 @@ export function TodosViewV2({
 }: {
   client: HitchClient;
   projectId: string;
+  // The tag data layer (useTagMutations) — ONE instance in the shell, shared
+  // with the dialog's tag lane so both surfaces write through one code path.
+  tag: TagActions;
   // Whether this surface is live for keyboard nav — false while the task
   // dialog is up, so ↑↓/↵/Backspace don't fire underneath it (V1's `active`).
   active: boolean;
@@ -389,13 +433,12 @@ export function TodosViewV2({
 }) {
   const [showAllDone, setShowAllDone] = useState(false);
 
-  // Keys are ["tasks", …] / ["tags"] so the coarse per-table WS invalidation
-  // (realtime.ts) hits them by prefix.
+  // The key is ["tasks", …] so the coarse per-table WS invalidation
+  // (realtime.ts) hits it by prefix (["tags"] lives in useTagMutations).
   const tasks = useQuery({
     queryKey: ["tasks", { projectId }],
     queryFn: () => fetchTasks(client, projectId),
   });
-  const tags = useQuery({ queryKey: ["tags"], queryFn: () => fetchTags(client) });
 
   // Rows in the delete window disappear NOW (the optimistic half of
   // delete-with-undo); an undo just stops hiding them.
@@ -403,25 +446,46 @@ export function TodosViewV2({
     () => (tasks.data ?? []).filter((task) => !pendingDeleteIds.has(task.id)),
     [tasks.data, pendingDeleteIds],
   );
-  const groups = useMemo(() => deriveTaskGroups(visibleTasks), [visibleTasks]);
 
-  // tagIds → pill labels + colors. The registry of record is GET /tags; a task
-  // link whose tag row hasn't loaded (or was deleted) renders no pill — never a
-  // raw uuid. Colors resolve through V1's named palette (unknown names → gray).
-  const tagById = useMemo(
-    () => new Map((tags.data ?? []).map((tag) => [tag.id, tag])),
-    [tags.data],
-  );
-  const colorByName = useMemo(
-    () => new Map((tags.data ?? []).map((tag) => [tag.name, toTagColor(tag.color)])),
-    [tags.data],
-  );
-  const tagNamesOf = (task: TaskItem) =>
-    task.tagIds.flatMap((id) => {
-      const tag = tagById.get(id);
-      return tag ? [tag.name] : [];
+  // View-local tag filter (AND semantics), persisted per project in
+  // localStorage (V1's exact pattern). Reload it whenever the project changes
+  // so switching projects restores that project's own filter rather than
+  // leaking the previous one.
+  const [filter, setFilter] = useState<TagFilter>(() => loadTagFilter(projectId));
+  useEffect(() => {
+    setFilter(loadTagFilter(projectId));
+  }, [projectId]);
+  const updateFilter = (next: TagFilter) => {
+    setFilter(next);
+    saveTagFilter(projectId, next);
+  };
+  // Selecting a tag clears Untagged and vice versa (untagged ∧ tag is empty).
+  const toggleFilterTag = (name: string) => {
+    const has = filter.tags.includes(name);
+    updateFilter({
+      untagged: false,
+      tags: has ? filter.tags.filter((t) => t !== name) : [...filter.tags, name],
     });
-  const colorOf = (name: string) => colorByName.get(name) ?? toTagColor(undefined);
+  };
+  const toggleFilterUntagged = () => {
+    updateFilter({ tags: [], untagged: !filter.untagged });
+  };
+  const clearFilter = () => updateFilter(EMPTY_TAG_FILTER);
+  const filterActive = isTagFilterActive(filter);
+
+  // Derive once (unfiltered) for the facet counts + the truly-empty check,
+  // then project through the active filter for what actually renders (V1's
+  // exact split).
+  const allGroups = useMemo(() => deriveTaskGroups(visibleTasks), [visibleTasks]);
+  const groups = useMemo(
+    () => filterTaskGroups(allGroups, filter, tag.namesOf),
+    [allGroups, filter, tag.namesOf],
+  );
+  const facetCounts = useMemo(
+    () => tagFacetCounts(visibleTasks.map(tag.namesOf), filter),
+    [visibleTasks, filter, tag.namesOf],
+  );
+  const hasAnyTags = tag.options.length > 0;
 
   // A small activation distance keeps a plain click (open the task / toggle
   // the checkbox) from being read as a drag — matching V1's sortable lists.
@@ -452,11 +516,13 @@ export function TodosViewV2({
       [
         ...groups.needsYou.map((task) => ({ kind: "task" as const, task })),
         ...groups.working.map((task) => ({ kind: "task" as const, task })),
-        { kind: "add" as const },
+        // The capture affordance is hidden while a filter is active (V1), so
+        // it drops out of the ↑↓ order too.
+        ...(filterActive ? [] : [{ kind: "add" as const }]),
         ...groups.backlog.map((task) => ({ kind: "task" as const, task })),
         ...doneVisible.map((task) => ({ kind: "task" as const, task })),
       ],
-    [groups.needsYou, groups.working, groups.backlog, doneVisible],
+    [groups.needsYou, groups.working, groups.backlog, doneVisible, filterActive],
   );
   const navIndexById = useMemo(
     () =>
@@ -603,8 +669,19 @@ export function TodosViewV2({
   }
 
   const isEmpty =
-    groups.needsYou.length + groups.working.length + groups.backlog.length + groups.done.length ===
+    allGroups.needsYou.length +
+      allGroups.working.length +
+      allGroups.backlog.length +
+      allGroups.done.length ===
     0;
+  // Filtered down to nothing (distinct from an empty project).
+  const noFilterMatches =
+    filterActive &&
+    groups.needsYou.length +
+      groups.working.length +
+      groups.backlog.length +
+      groups.done.length ===
+      0;
   const hiddenDone = groups.done.length - doneVisible.length;
 
   const actions: RowActions = {
@@ -620,6 +697,18 @@ export function TodosViewV2({
       data-testid="v2-todos"
     >
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-6 pt-7 pb-16">
+        {(hasAnyTags || filterActive) && (
+          <TagFilterBar
+            options={tag.options}
+            filter={filter}
+            counts={facetCounts}
+            colorOf={tag.colorOf}
+            onToggleTag={toggleFilterTag}
+            onToggleUntagged={toggleFilterUntagged}
+            onClear={clearFilter}
+          />
+        )}
+
         {/* Scaffolding groups: always empty until M4, so these never render —
             kept so the M4 diff is "fill the arrays", not "rebuild the view". */}
         {groups.needsYou.length > 0 && (
@@ -630,8 +719,7 @@ export function TodosViewV2({
                 key={task.id}
                 task={task}
                 done={false}
-                tagNames={tagNamesOf(task)}
-                colorOf={colorOf}
+                tag={tag}
                 actions={actions}
                 nav={rowNav(task.id)}
               />
@@ -646,8 +734,7 @@ export function TodosViewV2({
                 key={task.id}
                 task={task}
                 done={false}
-                tagNames={tagNamesOf(task)}
-                colorOf={colorOf}
+                tag={tag}
                 actions={actions}
                 nav={rowNav(task.id)}
               />
@@ -655,27 +742,53 @@ export function TodosViewV2({
           </section>
         )}
 
-        {/* BACKLOG always shows its header + the capture add-row, mirroring
-            V1 (the add-row renders in the empty state too). */}
-        <section className="flex flex-col" data-testid="v2-backlog">
-          <GroupHeader label="BACKLOG" />
-          <AddTaskRow onAdd={onAddTask} nav={addNav} />
-          <DndContext sensors={sensors} onDragEnd={onBacklogDragEnd}>
-            <SortableContext items={backlogIds} strategy={verticalListSortingStrategy}>
+        {/* BACKLOG. Unfiltered it always shows — it hosts the capture add-row,
+            so its header never vanishes (mirroring V1, empty state included).
+            While a filter is active the capture row and drag-reorder are
+            hidden (V1: the visible order is a filtered projection) and the
+            whole section collapses when nothing matches. */}
+        {filterActive ? (
+          groups.backlog.length > 0 && (
+            <section className="flex flex-col" data-testid="v2-backlog">
+              <GroupHeader label="BACKLOG" />
               {groups.backlog.map((task) => (
-                <SortableTaskRow
+                <TaskRow
                   key={task.id}
                   task={task}
-                  tagNames={tagNamesOf(task)}
-                  colorOf={colorOf}
+                  done={false}
+                  tag={tag}
                   actions={actions}
                   nav={rowNav(task.id)}
                 />
               ))}
-            </SortableContext>
-          </DndContext>
-          {isEmpty && <EmptyHint />}
-        </section>
+            </section>
+          )
+        ) : (
+          <section className="flex flex-col" data-testid="v2-backlog">
+            <GroupHeader label="BACKLOG" />
+            <AddTaskRow onAdd={onAddTask} nav={addNav} />
+            <DndContext sensors={sensors} onDragEnd={onBacklogDragEnd}>
+              <SortableContext items={backlogIds} strategy={verticalListSortingStrategy}>
+                {groups.backlog.map((task) => (
+                  <SortableTaskRow
+                    key={task.id}
+                    task={task}
+                    tag={tag}
+                    actions={actions}
+                    nav={rowNav(task.id)}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+            {isEmpty && <EmptyHint />}
+          </section>
+        )}
+
+        {noFilterMatches && (
+          <p className="px-2.5 py-8 text-center text-[13px] text-muted-foreground">
+            No todos match this filter.
+          </p>
+        )}
 
         {groups.done.length > 0 && (
           <section className="flex flex-col" data-testid="v2-done">
@@ -685,8 +798,7 @@ export function TodosViewV2({
                 key={task.id}
                 task={task}
                 done
-                tagNames={tagNamesOf(task)}
-                colorOf={colorOf}
+                tag={tag}
                 actions={actions}
                 nav={rowNav(task.id)}
               />
