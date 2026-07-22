@@ -15,6 +15,7 @@ import { useGrowAnimation } from "@/components/todo-dialog/useGrowAnimation";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import type { HitchClient } from "@/lib/server/client";
 import { normalizeCaptureBody, captureSeedTitle, captureSortOrder } from "./capture";
+import { DialogTagLaneV2, type DialogTagLaneV2Props } from "./DialogTagLaneV2";
 import {
   clearCaptureDraft,
   loadCaptureDraft,
@@ -45,10 +46,10 @@ import { useTaskDocument, type TaskDocumentFields } from "./useTaskDocument";
 // Deliberately absent vs V1 (M4-or-later): the delegation footer band, the
 // raw view, the auto-title spinner, skills/snippets in the `/` menu. The ⋯
 // menu (PR 4) carries mark done + delete, threaded from the shell's
-// useTaskMutations (see TaskDialogActions). Seams for the next PRs: the tag
-// lane slots between the header row and the editor (PR 5); the
-// editor's imageUploadHandler/imagePreviewHandler props take attachments
-// (PR 6).
+// useTaskMutations (see TaskDialogActions); the tag lane (PR 5) sits between
+// the header row and the editor, threaded from useTagMutations. Seam for the
+// next PR: the editor's imageUploadHandler/imagePreviewHandler props take
+// attachments (PR 6).
 type Stage = "capture" | "saved";
 
 // How long ⌘⏎ is swallowed after the capture→saved transform kicks off, so a
@@ -88,6 +89,11 @@ export interface TaskDialogV2Props {
   // The ⋯ menu's actions (PR 4), resolved by the shell against the live row;
   // undefined until the task exists on the server (fresh capture pre-⌘⏎).
   actions?: TaskDialogActions;
+  // The tag lane (PR 5), fully bound by the shell against the live row
+  // through the workspace's single useTagMutations instance — same handlers
+  // as the row's Tags ▸ submenu. Undefined until the task exists (a fresh
+  // capture has nothing to link tags to).
+  tags?: DialogTagLaneV2Props;
   // Close the dialog (the shell resets the union to closed).
   onClose: () => void;
   // Called after a capture's ⌘⏎ POST SUCCEEDS, handing the shell the new task
@@ -145,6 +151,7 @@ export function TaskDialogV2(props: TaskDialogV2Props) {
               existing={existing}
               backlog={props.backlog}
               actions={state.mode === "edit" ? props.actions : undefined}
+              tags={state.mode === "edit" ? props.tags : undefined}
               onClose={props.onClose}
               onCommitted={props.onCommitted}
               registerDismiss={(fn) => (dismissRef.current = fn)}
@@ -166,6 +173,7 @@ interface TaskBodyV2Props {
   existing?: TaskDialogRow;
   backlog: ReadonlyArray<{ sortOrder: string }>;
   actions?: TaskDialogActions;
+  tags?: DialogTagLaneV2Props;
   onClose: () => void;
   onCommitted: (taskId: string) => void;
   registerDismiss: (fn: (reason: string) => void) => void;
@@ -177,6 +185,7 @@ function TaskBodyV2({
   existing,
   backlog,
   actions,
+  tags,
   onClose,
   onCommitted,
   registerDismiss,
@@ -443,8 +452,11 @@ function TaskBodyV2({
           </div>
         )}
 
-        {/* PR 5 seam: the tag lane (DialogTagLane's V2 sibling) slots here,
-            between the header row and the editor — same spot as V1. */}
+        {/* Tag lane — the document's tags, shown/edited here so the dialog
+            and the row agree on what the task is (V1's DialogTagLane spot,
+            between the header row and the editor). Saved stage only; a fresh
+            capture has no server row to link tags to yet. */}
+        {stage === "saved" && tags && <DialogTagLaneV2 {...tags} />}
 
         {/* The document area. One MarkdownEditor instance serves both stages —
             it must never remount on the stage flip (focus, caret, and undo
