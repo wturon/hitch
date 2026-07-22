@@ -1,0 +1,16 @@
+# Build context allowlist for server/Dockerfile (context = repo root).
+# Everything is excluded, then only what the Dockerfile COPYs is let back in.
+*
+!package.json
+!package-lock.json
+!server/
+!shared/
+!daemon/package.json
+!desktop/package.json
+
+# Re-exclude local build/install output inside the allowed workspaces.
+server/node_modules
+server/dist
+server/.env
+shared/node_modules
+shared/dist

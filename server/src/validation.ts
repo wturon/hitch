@@ -112,6 +112,34 @@ export const commentCreate = z.strictObject({
 
 export const commentUpdate = z.strictObject({ body: z.string() });
 
+// --- attachments -------------------------------------------------------------
+
+// Exactly one of task_id/comment_id, mirroring the create rule below.
+export const attachmentListQuery = z
+  .object({
+    task_id: z.uuid().optional(),
+    comment_id: z.uuid().optional(),
+  })
+  .refine((q) => (q.task_id === undefined) !== (q.comment_id === undefined), {
+    message: "exactly one of task_id/comment_id is required",
+  });
+
+// Mirrors the DB CHECK (attachments_exactly_one_parent): exactly one of
+// taskId/commentId. size/sha256 are the CLIENT'S declaration — the real size
+// is verified against S3 at finalize-time.
+export const attachmentCreate = z
+  .strictObject({
+    taskId: z.uuid().optional(),
+    commentId: z.uuid().optional(),
+    filename: z.string().min(1),
+    mime: z.string().min(1),
+    size: z.number().int().positive(),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/i),
+  })
+  .refine((b) => (b.taskId === undefined) !== (b.commentId === undefined), {
+    message: "exactly one of taskId/commentId is required",
+  });
+
 // --- assignments (client-facing) --------------------------------------------
 
 export const assignmentListQuery = z.object({

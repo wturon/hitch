@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { createAuth } from "./auth.js";
 import type { AppEnv, AuthGateway, Db } from "./context.js";
 import { assignmentRoutes } from "./routes/assignments.js";
+import { attachmentRoutes } from "./routes/attachments.js";
 import { commentRoutes } from "./routes/comments.js";
 import { daemonRoutes } from "./routes/daemon.js";
 import { machineRoutes } from "./routes/machines.js";
@@ -10,12 +11,14 @@ import { projectRoutes } from "./routes/projects.js";
 import { sectionRoutes } from "./routes/sections.js";
 import { tagRoutes } from "./routes/tags.js";
 import { taskRoutes } from "./routes/tasks.js";
+import { createStorage, storageConfigFromEnv } from "./storage.js";
+import type { Storage } from "./storage.js";
 
 // Routes are chained so the full route tree is captured in `AppType` —
-// shared/ feeds this to hono's `hc<AppType>()` typed client. The db is
-// injected here (instead of imported by the routers) so tests can point the
-// app at a throwaway database.
-export function createApp(db: Db) {
+// shared/ feeds this to hono's `hc<AppType>()` typed client. The db and
+// blob storage are injected here (instead of imported by the routers) so
+// tests can point the app at a throwaway database + Garage container.
+export function createApp(db: Db, storage: Storage = createStorage(storageConfigFromEnv())) {
   // Structural cast: better-auth's getSession takes a superset of the
   // AuthGateway input and returns a superset of its output, but its generic
   // signature isn't directly assignable — see AuthGateway in context.ts.
@@ -24,6 +27,7 @@ export function createApp(db: Db) {
     .use(async (c, next) => {
       c.set("db", db);
       c.set("auth", auth);
+      c.set("storage", storage);
       await next();
     })
     .get("/health", (c) => c.json({ ok: true }))
@@ -35,6 +39,7 @@ export function createApp(db: Db) {
     .route("/tasks", taskRoutes)
     .route("/tags", tagRoutes)
     .route("/comments", commentRoutes)
+    .route("/attachments", attachmentRoutes)
     .route("/machines", machineRoutes)
     .route("/assignments", assignmentRoutes)
     .route("/daemon", daemonRoutes);
