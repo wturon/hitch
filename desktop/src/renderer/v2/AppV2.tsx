@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generateKeyBetween } from "fractional-indexing";
 import {
@@ -20,7 +27,17 @@ import {
 import { useHitchServer } from "@/lib/server/HitchServerProvider";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
-import { TodosViewV2 } from "./TodosViewV2";
+import { TaskDialogV2 } from "./TaskDialogV2";
+import {
+  captureState,
+  closedTaskDialog,
+  commitTaskState,
+  editTaskState,
+  reconcileTaskDialog,
+  type TaskDialogState,
+} from "./taskDialogState";
+import { deriveTaskGroups } from "./todoGroups";
+import { fetchTasks, TodosViewV2 } from "./TodosViewV2";
 
 // The V2 shell (M2 PR 2): sidebar + header + TodosViewV2, mirroring V1's
 // chrome so switching modes feels like the same app — same rail classes, same
@@ -427,6 +444,74 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
   const selectedProject =
     orderedProjects.find((p) => p.id === selectedProjectId) ?? null;
 
+  // --- Task dialog (M2 PR 3) ------------------------------------------------
+  // ONE TaskDialogV2, driven by the discriminated union — V1's single-binding
+  // pattern (see taskDialogState). The dialog's live row + backlog head come
+  // from the SAME query key TodosViewV2 uses (["tasks", { projectId }]), so
+  // the two surfaces share one cache entry — the live query stays the only
+  // truth for a persisted task.
+  const [taskDialog, setTaskDialog] = useState<TaskDialogState>(closedTaskDialog);
+  // Monotonic session token minted on every FRESH open (add-row / `C` / row
+  // click). It's the dialog body's React key; a capture→edit commit keeps the
+  // same token, so that transition does not remount (see taskDialogState).
+  const sessionRef = useRef(0);
+  const openCapture = useCallback(() => {
+    setTaskDialog(captureState(++sessionRef.current));
+  }, []);
+  const openTask = useCallback((taskId: string) => {
+    setTaskDialog(editTaskState(++sessionRef.current, taskId));
+  }, []);
+  const closeTaskDialog = useCallback(() => setTaskDialog(closedTaskDialog), []);
+  // A capture's ⌘⏎ POST persisted the task; bind the dialog to the live row,
+  // keeping its session (no remount).
+  const commitTaskDialog = useCallback((taskId: string) => {
+    setTaskDialog((prev) => commitTaskState(prev, taskId));
+  }, []);
+
+  const dialogTasks = useQuery({
+    queryKey: ["tasks", { projectId: selectedProject?.id }],
+    queryFn: () => fetchTasks(client, selectedProject!.id),
+    enabled: selectedProject !== null,
+  });
+  const dialogRow =
+    taskDialog.mode === "edit"
+      ? dialogTasks.data?.find((task) => task.id === taskDialog.taskId)
+      : undefined;
+  const dialogBacklog = useMemo(
+    () => deriveTaskGroups(dialogTasks.data ?? []).backlog,
+    [dialogTasks.data],
+  );
+  // Close-on-vanish: once tasks have loaded, if the edited row is gone
+  // (deleted from another client) drop the dialog AND reset the union.
+  useEffect(() => {
+    setTaskDialog((prev) =>
+      reconcileTaskDialog(prev, dialogRow !== undefined, dialogTasks.data !== undefined),
+    );
+  }, [dialogRow, dialogTasks.data]);
+
+  // `C` captures a task from anywhere within a project (V1 Decision 10, same
+  // shortcut): opens the capture card into the project's backlog. Ignored
+  // while typing in a field, with the dialog already open, or when chorded
+  // with a modifier (so ⌘C still copies).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "c" && e.key !== "C") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (taskDialog.mode !== "closed" || !selectedProject) return;
+      const el = e.target as HTMLElement | null;
+      if (
+        el &&
+        (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
+      ) {
+        return;
+      }
+      e.preventDefault();
+      openCapture();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [taskDialog.mode, selectedProject, openCapture]);
+
   // --- New project (the one write this PR keeps) ----------------------------
   const createProject = useMutation({
     mutationFn: async (projectName: string) => {
@@ -501,8 +586,8 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
             <TodosViewV2
               client={client}
               projectId={selectedProject.id}
-              // PR 3 claims this seam with the task dialog.
-              onOpenTask={(taskId) => console.debug("open task (PR 3)", taskId)}
+              onOpenTask={openTask}
+              onAddTask={openCapture}
             />
           ) : (
             <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -511,6 +596,20 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
           )}
         </div>
       </main>
+      {/* The single task-dialog mount (PR 3). Gated on a selected project —
+          capture needs a projectId to create into, and the union can only be
+          opened from inside a project. */}
+      {selectedProject && (
+        <TaskDialogV2
+          state={taskDialog}
+          client={client}
+          projectId={selectedProject.id}
+          row={dialogRow}
+          backlog={dialogBacklog}
+          onClose={closeTaskDialog}
+          onCommitted={commitTaskDialog}
+        />
+      )}
       {/* Rendered last so its no-drag region is subtracted after the sidebar
           and titlebar drag regions are unioned (Electron resolves overlapping
           app-regions in DOM order — see V1's App shell). */}
