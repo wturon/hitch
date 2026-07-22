@@ -42,6 +42,17 @@ export function createApp(db: Db) {
 
 export type AppType = ReturnType<typeof createApp>;
 
+// WS wire-protocol types for consumers (shared/ re-exports these). The /ws
+// endpoint itself is mounted by attachWebSocket in ws.ts, outside AppType.
+export type {
+  WsClientEventMessage,
+  WsClientMessage,
+  WsEventMessage,
+  WsHelloMessage,
+  WsInvalidateMessage,
+  WsServerMessage,
+} from "./ws.js";
+
 // Row types for consumers (shared/ re-exports these).
 export type {
   Assignment,

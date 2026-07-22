@@ -23,6 +23,18 @@ export type {
   TaskTag,
 } from "@hitch/server";
 
+// WS wire protocol for the /ws endpoint (invalidation broadcast + ephemeral
+// event relay). Connect with `new WebSocket(baseUrl.replace(/^http/, "ws") +
+// "/ws")`, authed by the same cookie / x-api-key headers as HTTP.
+export type {
+  WsClientEventMessage,
+  WsClientMessage,
+  WsEventMessage,
+  WsHelloMessage,
+  WsInvalidateMessage,
+  WsServerMessage,
+} from "@hitch/server";
+
 // Explicit alias so the declaration emit doesn't have to name hono internals.
 export type HitchClient = ReturnType<typeof hc<AppType>>;
 
