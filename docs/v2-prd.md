@@ -137,7 +137,10 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   presigned PUTs; relative refs in bodies), ⌘K palette + connection banner. Six V2 e2e suites
   green; V1 e2e baseline identical to main throughout. REMAINING: Will dogfoods V2 against
   Railway (needs M1 step 8).
-- [ ] **M3 — CLI:** `hitch` bin end-to-end with a real agent chat.
+- [x] **M3 — CLI** (DONE 2026-07-22, PR #101): cli/ workspace, self-teaching help/errors,
+  --json everywhere, unique-prefix ids, verbatim bodies. Acceptance: cold `claude -p` runs drove
+  it end-to-end with zero stumbles, no skill file. No `attention` command yet (assignments empty
+  until M4). No CLI sign-up (accounts come from the desktop; login error says so).
 - [ ] **M4 — Daemon reconciler:** desired/observed loop, spawn-on-assign, machine registration +
   heartbeat, chat-state relay, focus relay handling. Remove file sync + Convex push from daemon.
   Assign UX decided here (D5 — rip from existing dialog/snippets surfaces).
