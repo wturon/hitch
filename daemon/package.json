@@ -39,6 +39,7 @@
     "smoke:task-migration": "tsx scripts/task-migration-smoke.ts",
     "smoke:v2-config": "tsx scripts/v2-config-smoke.ts",
     "smoke:v2-ws-backoff": "tsx scripts/v2-ws-backoff-smoke.ts",
+    "smoke:v2-chat-sync": "tsx scripts/v2-chat-sync-smoke.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

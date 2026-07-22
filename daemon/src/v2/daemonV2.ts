@@ -16,7 +16,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
+import { openChatLifecycleStore } from "../chatLifecycleStore.js";
+import { ChatStateObserver } from "../observer/index.js";
+import { ChatSync } from "./chatSync.js";
 import { resolveServerConfig } from "./config.js";
+import { ProjectsProvider } from "./projects.js";
 import { createServerClient } from "./serverClient.js";
 import { startServerWs, type ServerWsClient } from "./ws.js";
 
@@ -45,6 +49,12 @@ const defaultLogger: HitchDaemonV2Logger = {
 // 30s heartbeat by default (PRD reconcile cadence). Overridable so the
 // integration test can watch last_seen_at advance without waiting.
 const DEFAULT_HEARTBEAT_MS = 30_000;
+
+// Chat-relay cadence: drain the reducer and push server-dirty chats to the
+// server. Mirrors daemon.ts's 2s chat reduce/sync poll. The observer drives its
+// own adaptive cadence (fast while a chat is active); this poll is the sink's
+// floor for carrying its output to the server.
+const RELAY_POLL_MS = 2_000;
 
 function loadEnvFiles(cwd: string, envFiles: string[], env: NodeJS.ProcessEnv): void {
   for (const file of envFiles) {
@@ -147,12 +157,68 @@ export async function startHitchDaemonV2(
     logger.info(`[hitch] focus event received: ${JSON.stringify(message.payload ?? null)}`);
   });
 
+  // --- Chat-state relay (PR 2) ----------------------------------------------
+  // Mirrors daemon.ts: a machine-wide chat-state observer writes discovered
+  // chat state into the shared store's shadow columns, a reduce loop folds any
+  // lifecycle events (e.g. the observer's dead-process heal), and the V2 sink
+  // pushes server-dirty chats to the Hono server. The store is the SAME sqlite
+  // file V1 uses — the server_synced_at cursor (Decision 7) keeps the two sinks
+  // from contending.
+  const store = openChatLifecycleStore({ env });
+
+  // The observer maps a chat's cwd → project via the server's repo_path-bearing
+  // projects. Fetch once up front so the initial reconcile has a project map,
+  // then refresh whenever the server broadcasts a `projects` change.
+  const projects = new ProjectsProvider({ client, logger });
+  await projects.refresh();
+  ws.onInvalidate("projects", () => void projects.refresh());
+
+  const observer = new ChatStateObserver({
+    store,
+    projects: projects.list,
+    host: name,
+    logger,
+  });
+  observer.start();
+
+  const chatSync = new ChatSync({ store, client, machineId, logger });
+
+  let relaying = false;
+  async function relayTick(): Promise<void> {
+    if (relaying) return;
+    relaying = true;
+    try {
+      // Drain the reducer (events → local_chats) before syncing, so a healed
+      // chat's session.ended is reflected in the row we push.
+      for (;;) {
+        const result = store.reduceLifecycleEvents();
+        if (result.eventsReduced < 100) break;
+      }
+      const synced = await chatSync.sync();
+      if (synced.created > 0 || synced.updated > 0 || synced.failed > 0) {
+        logger.info(
+          `[hitch] chat relay: ${synced.created} created, ${synced.updated} updated, ${synced.failed} failed`,
+        );
+      }
+    } catch (error) {
+      logger.error?.(`[hitch] chat relay tick failed: ${String(error)}`);
+    } finally {
+      relaying = false;
+    }
+  }
+  void relayTick();
+  const relayTimer = setInterval(() => void relayTick(), RELAY_POLL_MS);
+  relayTimer.unref?.();
+
   let stopped = false;
   async function stop(): Promise<void> {
     if (stopped) return;
     stopped = true;
     clearInterval(heartbeat);
+    clearInterval(relayTimer);
     ws.stop();
+    await observer.stop();
+    store.close();
   }
 
   return { machineId, stop };

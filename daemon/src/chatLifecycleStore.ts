@@ -117,6 +117,14 @@ export interface ObservedShadow {
 
 export interface LocalChatRow extends Required<LocalChatInput>, ObservedShadow {
   resumePayload: Record<string, unknown>;
+  // V2 server-sink bookkeeping (Decision 7). Independent of the Convex
+  // `dirty`/`lastSyncedAt`/`convexId` flags so a V2 daemon syncing to the Hono
+  // server never clears the V1 daemon's Convex-dirty flag (and vice versa).
+  // `serverSyncedAt` records the `updatedAt` value last pushed to the server;
+  // a row is "server-dirty" when its `updatedAt` has since advanced past it.
+  // `serverChatId` is the server `chats.id` this local row maps to.
+  serverSyncedAt: number | null;
+  serverChatId: string | null;
 }
 
 // Per-chat tail bookkeeping for the observer's incremental log reads. Keyed by
@@ -665,6 +673,44 @@ export class ChatLifecycleStore {
       .run(options.syncedAt ?? Date.now(), options.convexId ?? null, localKey);
   }
 
+  // --- V2 server sink (Decision 7) -------------------------------------------
+  // Rows whose local state has advanced past what was last pushed to the Hono
+  // server. Deliberately parallel to `listDirtyChats` but keyed off the
+  // independent `server_synced_at` cursor: a row is server-dirty when it was
+  // never synced (NULL) or its `updated_at` moved since the last push. This
+  // NEVER reads or writes the Convex `dirty` flag, so the two sinks don't
+  // contend.
+  listServerDirtyChats(limit = 100): LocalChatRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM local_chats
+         WHERE server_synced_at IS NULL OR server_synced_at < updated_at
+         ORDER BY updated_at ASC
+         LIMIT ?`,
+      )
+      .all(limit)
+      .map((row) => this.localChatFromRow(row));
+  }
+
+  // Record that this row was pushed to the server up to `syncedAt` (pass the
+  // row's `updatedAt` at read time so a concurrent update during the network
+  // round-trip re-dirties correctly rather than being lost). `serverChatId`
+  // persists the local↔server id mapping; COALESCE keeps a prior mapping when
+  // omitted. Touches only the server_* columns — the Convex flags are untouched.
+  markChatServerSynced(
+    localKey: string,
+    options: { serverChatId?: string | null; syncedAt?: number } = {},
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE local_chats
+         SET server_synced_at = ?,
+             server_chat_id = COALESCE(?, server_chat_id)
+         WHERE local_key = ?`,
+      )
+      .run(options.syncedAt ?? Date.now(), options.serverChatId ?? null, localKey);
+  }
+
   cleanupReducedEvents(
     options: { now?: number; retentionMs?: number } = {},
   ): number {
@@ -925,6 +971,15 @@ export class ChatLifecycleStore {
         "observer_created",
         "observer_created INTEGER NOT NULL DEFAULT 0",
       );
+
+      // V2 server-sink bookkeeping (Decision 7). Added idempotently outside the
+      // schema_version gate, exactly like the observer columns: these carry a
+      // second, independent sync cursor so a V2 daemon (Hono server) and a V1
+      // daemon (Convex) can share this store without starving each other's
+      // dirty flags. Default NULL so existing rows read as never-server-synced
+      // and the reducer's upsert (which never names them) is untouched.
+      this.addColumnIfMissing("local_chats", "server_synced_at", "server_synced_at INTEGER");
+      this.addColumnIfMissing("local_chats", "server_chat_id", "server_chat_id TEXT");
 
       // Reducer quarantine bookkeeping. Added idempotently outside the
       // schema_version gate (same reasoning as the observer columns): a single
@@ -1562,6 +1617,12 @@ export class ChatLifecycleStore {
           ? null
           : jsonObject(String(value.observed_evidence_json)),
       observerCreated: bool(value.observer_created),
+      serverSyncedAt:
+        value.server_synced_at == null
+          ? null
+          : numberFromSqlite(value.server_synced_at),
+      serverChatId:
+        value.server_chat_id == null ? null : String(value.server_chat_id),
     };
   }
 }
