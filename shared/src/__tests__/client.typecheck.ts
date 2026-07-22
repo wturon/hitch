@@ -12,7 +12,7 @@ type Serialized<T> = {
 };
 
 const client = createHitchClient("http://127.0.0.1:3010", {
-  headers: { "x-hitch-user-id": "compile-time-only" },
+  headers: { "x-api-key": "compile-time-only" },
 });
 
 export async function typechecks(): Promise<void> {

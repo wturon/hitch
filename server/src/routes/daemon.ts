@@ -16,11 +16,11 @@ import {
 } from "../validation.js";
 import { notFound, ownedAssignment, ownedChat, ownedMachine, ownedProject } from "./helpers.js";
 
-// Daemon-facing routes (mounted at /daemon). Same placeholder auth as the
-// client routes for now — step 4 gives the daemon an api-key identity, but
-// the ownership rule is already enforced here: chats are daemon-created
-// (single-creator-per-table), and the assignment PATCH below is the exact
-// mirror image of the client one (observations only, never intent).
+// Daemon-facing routes (mounted at /daemon). The daemon authenticates with an
+// api key (x-api-key → requireAuth, see auth.ts), and the ownership rule is
+// enforced here: chats are daemon-created (single-creator-per-table), and the
+// assignment PATCH below is the exact mirror image of the client one
+// (observations only, never intent).
 export const daemonRoutes = new Hono<AppEnv>()
   .use(requireAuth)
   // Register/upsert-by-name: the daemon calls this on startup; a machine name

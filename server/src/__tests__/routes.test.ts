@@ -31,18 +31,42 @@ const MIGRATIONS_FOLDER = fileURLToPath(new URL("../../drizzle", import.meta.url
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+process.env.BETTER_AUTH_SECRET ??= "hitch-test-secret-do-not-use-in-prod";
+
 const USER_A = "user-a";
 const USER_B = "user-b";
 
 describeDb("HTTP routes (postgres:16 in Docker)", () => {
   let pool: pg.Pool;
   let app: ReturnType<typeof createApp>;
+  // Session cookie per test user, captured at sign-up (better-auth
+  // auto-signs-in on sign-up). Real auth flows are exercised in auth.test.ts;
+  // here the cookie is just the ticket into the routes under test.
+  const cookies: Record<string, string> = {};
 
-  const api = (userId: string, method: string, path: string, body?: unknown) =>
+  const signUp = async (key: string) => {
+    const res = await app.request("/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: key,
+        email: `${key}@test.local`,
+        password: `password-for-${key}`,
+      }),
+    });
+    if (res.status !== 200) {
+      throw new Error(`sign-up for ${key} failed: ${res.status} ${await res.text()}`);
+    }
+    const setCookie = res.headers.get("set-cookie");
+    if (!setCookie) throw new Error(`sign-up for ${key} returned no session cookie`);
+    cookies[key] = setCookie.split(";")[0];
+  };
+
+  const api = (userKey: string, method: string, path: string, body?: unknown) =>
     app.request(path, {
       method,
       headers: {
-        "x-hitch-user-id": userId,
+        cookie: cookies[userKey],
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -117,6 +141,8 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
     const db = drizzle(pool, { schema });
     await migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     app = createApp(db);
+    await signUp(USER_A);
+    await signUp(USER_B);
   }, 120_000);
 
   afterAll(async () => {
