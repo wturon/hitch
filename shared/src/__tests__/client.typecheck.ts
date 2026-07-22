@@ -3,7 +3,7 @@
 // `typecheck` script sees it) — every assignment below is a type assertion.
 
 import { createHitchClient } from "../index.js";
-import type { Assignment, Comment, Machine, Project, Task } from "../index.js";
+import type { Assignment, Attachment, Comment, Machine, Project, Task } from "../index.js";
 
 // JSON serialization turns Date fields into ISO strings; everything else
 // crosses the wire unchanged.
@@ -69,6 +69,30 @@ export async function typechecks(): Promise<void> {
   if (daemonPatch.status === 200) {
     const assignment: Serialized<Assignment> = await daemonPatch.json();
     void assignment;
+  }
+
+  // Attachments: create returns the row + a presigned PUT url; download
+  // returns a JSON {url} (presigned GET), not a redirect.
+  const attachmentRes = await client.attachments.$post({
+    json: {
+      taskId: "id",
+      filename: "diagram.png",
+      mime: "image/png",
+      size: 1234,
+      sha256: "0".repeat(64),
+    },
+  });
+  if (attachmentRes.status === 201) {
+    const { attachment, uploadUrl } = await attachmentRes.json();
+    const created: Serialized<Attachment> = attachment;
+    const url: string = uploadUrl;
+    void [created, url];
+  }
+  const downloadRes = await client.attachments[":id"].download.$get({ param: { id: "id" } });
+  if (downloadRes.status === 200) {
+    const { url } = await downloadRes.json();
+    const download: string = url;
+    void download;
   }
 
   // Machines + comments round out the tree.

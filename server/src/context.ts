@@ -1,6 +1,7 @@
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import type * as schema from "./db/schema.js";
+import type { Storage } from "./storage.js";
 
 export type Db = NodePgDatabase<typeof schema>;
 
@@ -15,12 +16,13 @@ export type AuthGateway = {
   };
 };
 
-// Hono env shared by every router: `db` and `auth` are injected once in
-// createApp, `userId` is set by the auth middleware (see auth.ts).
+// Hono env shared by every router: `db`, `auth`, and `storage` are injected
+// once in createApp, `userId` is set by the auth middleware (see auth.ts).
 export type AppEnv = {
   Variables: {
     db: Db;
     auth: AuthGateway;
+    storage: Storage;
     userId: string;
   };
 };

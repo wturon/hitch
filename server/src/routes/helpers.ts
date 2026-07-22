@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "../context.js";
 import {
   assignments,
+  attachments,
   chats,
   comments,
   machines,
@@ -62,6 +63,18 @@ export async function ownedComment(db: Db, userId: string, id: string) {
     .innerJoin(projects, eq(tasks.projectId, projects.id))
     .where(and(eq(comments.id, id), eq(projects.userId, userId)));
   return row?.comment;
+}
+
+export async function ownedAttachment(db: Db, userId: string, id: string) {
+  // Two queries instead of one: the exactly-one-parent CHECK means ownership
+  // flows through EITHER the task chain or the comment chain, and a dual
+  // left-join query buys nothing but noise here.
+  const [row] = await db.select().from(attachments).where(eq(attachments.id, id));
+  if (!row) return undefined;
+  const parent = row.taskId
+    ? await ownedTask(db, userId, row.taskId)
+    : await ownedComment(db, userId, row.commentId as string);
+  return parent ? row : undefined;
 }
 
 export async function ownedMachine(db: Db, userId: string, id: string) {

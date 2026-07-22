@@ -1,0 +1,104 @@
+# Hitch V2 self-host stack: server (Hono) + db (postgres:16) + storage (Garage,
+# S3-compatible blobs). Bring it up with:
+#
+#   docker compose up -d --build
+#
+# then hit http://localhost:3010/health. First boot runs the drizzle
+# migrations (MIGRATE_ON_BOOT=1 in the server image) and the storage-init
+# sidecar lays out Garage + creates the bucket/key; both are idempotent.
+#
+# Secrets: every credential below has a DEV-ONLY default so the stack works
+# out of the box. For anything internet-facing, override them via a repo-root
+# .env file (compose reads it automatically) — at minimum BETTER_AUTH_SECRET,
+# S3_SECRET_ACCESS_KEY, GARAGE_RPC_SECRET, and GARAGE_ADMIN_TOKEN.
+#
+# Wipe everything (including data!): docker compose down -v
+
+services:
+  server:
+    build:
+      # Repo root context — the workspace install needs the root lockfile.
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "3010:3010"
+    environment:
+      # DATABASE_URL is the only DB coupling the server has (PRD).
+      DATABASE_URL: postgres://postgres:hitch@db:5432/hitch
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-hitch-selfhost-dev-secret-change-me}
+      # Public base URL of the server as clients see it (auth cookies/redirects).
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3010}
+      # S3 endpoint the SERVER talks to (inside the compose network) ...
+      S3_ENDPOINT: http://storage:3900
+      # ... and the endpoint baked into presigned URLs, which must be
+      # reachable by CLIENTS (host machine) — port 3900 is published below.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:3900}
+      S3_REGION: garage
+      S3_BUCKET: hitch
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-GKa1b2c3d4e5f60718293a4b5c}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-7d4f9a2b1c8e5f30d6a4b2c19e7f5d3a8b6c4e2f0a9d7b5c3e1f8a6d4b2c0e9f}
+      S3_FORCE_PATH_STYLE: "true"
+      # Attachment size cap in bytes, enforced at finalize-time (100MB).
+      S3_MAX_UPLOAD_BYTES: "104857600"
+    depends_on:
+      db:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: hitch
+      POSTGRES_DB: hitch
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Not published to the host on purpose — only the server talks to it.
+    # (Add `ports: ["5432:5432"]` temporarily if you need psql from the host.)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hitch"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # Garage: single-node S3-compatible blob store (MinIO is unmaintained; see
+  # PRD "Blobs"). Config is mounted read-only; secrets come in via env.
+  storage:
+    image: dxflrs/garage:v1.0.1
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-3e1f4dbc7b9a5f20c8d4e6a1b3f5d7092468ace013579bdf2468ace013579bdf}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-hitch-garage-admin-token-change-me}
+    volumes:
+      - ./docker/garage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    ports:
+      # S3 API — published because presigned upload/download URLs point here.
+      - "3900:3900"
+      # Admin API (3903) stays compose-internal: only storage-init uses it.
+    restart: unless-stopped
+
+  # One-shot sidecar: waits for Garage, then applies the single-node layout
+  # and creates the bucket + access key via the admin API. Idempotent — reruns
+  # on every `up`, exits 0 when everything already exists. The Garage image
+  # has no shell, so this runs from a curl image instead of an entrypoint.
+  storage-init:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["/bin/sh", "/init.sh"]
+    volumes:
+      - ./docker/garage/init.sh:/init.sh:ro
+    environment:
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-hitch-garage-admin-token-change-me}
+      S3_BUCKET: hitch
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-GKa1b2c3d4e5f60718293a4b5c}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-7d4f9a2b1c8e5f30d6a4b2c19e7f5d3a8b6c4e2f0a9d7b5c3e1f8a6d4b2c0e9f}
+    depends_on:
+      - storage
+    restart: "no"
+
+volumes:
+  db-data:
+  garage-meta:
+  garage-data:
