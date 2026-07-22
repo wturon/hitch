@@ -40,6 +40,11 @@ import {
   modify as modifyJsonc,
   parse as parseJsonc,
 } from "jsonc-parser";
+import {
+  getHitchServerConfig,
+  initHitchServer,
+  type HitchServerCredentials,
+} from "./hitchServer.js";
 
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
 type ProjectId = string;
@@ -144,6 +149,8 @@ interface LocalSecrets {
   deviceId?: string;
   deviceToken?: string;
   authStorage?: Record<string, string>;
+  // V2 (HITCH_SERVER_URL mode) credentials — owned by hitchServer.ts.
+  hitchServer?: HitchServerCredentials;
 }
 
 interface RunnerMessage {
@@ -953,10 +960,25 @@ function readLocalSecrets(): LocalSecrets {
         typeof entry[0] === "string" && typeof entry[1] === "string",
     ),
   );
+  const rawHitchServer = isRecord(raw.hitchServer) ? raw.hitchServer : null;
+  const hitchServer =
+    rawHitchServer &&
+    typeof rawHitchServer.serverUrl === "string" &&
+    typeof rawHitchServer.apiKey === "string"
+      ? {
+          serverUrl: rawHitchServer.serverUrl,
+          apiKey: rawHitchServer.apiKey,
+          apiKeyId:
+            typeof rawHitchServer.apiKeyId === "string"
+              ? rawHitchServer.apiKeyId
+              : undefined,
+        }
+      : undefined;
   return {
     deviceId: typeof raw.deviceId === "string" ? raw.deviceId : undefined,
     deviceToken: typeof raw.deviceToken === "string" ? raw.deviceToken : undefined,
     authStorage,
+    hitchServer,
   };
 }
 
@@ -3050,6 +3072,16 @@ ipcMain.handle("updater:install", () => {
   autoUpdater.quitAndInstall(false, true);
 });
 
+// V2 (HITCH_SERVER_URL mode): auth + WS against the Hono server. No-ops as a
+// data path when the env var is absent — V1 stays the default.
+initHitchServer({
+  getStoredCredentials: () => readLocalSecrets().hitchServer ?? null,
+  setStoredCredentials: (creds) =>
+    writeLocalSecrets({ ...readLocalSecrets(), hitchServer: creds ?? undefined }),
+  getWindow: () => mainWindow,
+  log: (stream, message) => addLog(stream, message),
+});
+
 app.whenReady().then(async () => {
   // Packaged macOS builds get the dock icon from the bundled .icns; set it
   // explicitly in dev so the H shows up instead of the generic Electron icon.
@@ -3061,7 +3093,8 @@ app.whenReady().then(async () => {
   }
 
   await createWindow();
-  startAuthLoopback();
+  // V2 mode never shows the V1 sign-in, so the OAuth loopback isn't needed.
+  if (!getHitchServerConfig()) startAuthLoopback();
   if (readKeepAwakeEnabled()) startKeepAwake(false);
   // Move any legacy config.toml Codex hooks to hooks.json before the daemon can
   // launch Codex, so there's a single hook representation (avoids Codex's

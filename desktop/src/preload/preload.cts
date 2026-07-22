@@ -280,6 +280,31 @@ interface SpellcheckMenuPayload {
   y: number;
 }
 
+// --- V2 server bridge (window.hitchServer) ---
+// Present in every build; getConfig() returns null unless the main process was
+// launched with HITCH_SERVER_URL, which is what flips the renderer into V2.
+export interface HitchServerConfig {
+  serverUrl: string;
+}
+
+export type HitchServerAuthResult = { ok: true } | { ok: false; error: string };
+
+export interface HitchServerApi {
+  getConfig: () => Promise<HitchServerConfig | null>;
+  getApiKey: () => Promise<string | null>;
+  signIn: (input: { email: string; password: string }) => Promise<HitchServerAuthResult>;
+  signUp: (input: {
+    email: string;
+    password: string;
+    name: string;
+  }) => Promise<HitchServerAuthResult>;
+  signOut: () => Promise<void>;
+  // Parsed server WS frames, forwarded verbatim by the main-held socket. The
+  // renderer narrows them against @hitch/shared's WsServerMessage.
+  onWsMessage: (callback: (message: unknown) => void) => () => void;
+  onWsOpen: (callback: () => void) => () => void;
+}
+
 const api: HitchDaemonApi = {
   getState: () => ipcRenderer.invoke("daemon:get-state"),
   start: () => ipcRenderer.invoke("daemon:start"),
@@ -389,3 +414,27 @@ const api: HitchDaemonApi = {
 };
 
 contextBridge.exposeInMainWorld("hitchDaemon", api);
+
+const serverApi: HitchServerApi = {
+  getConfig: () => ipcRenderer.invoke("hitch-server:get-config"),
+  getApiKey: () => ipcRenderer.invoke("hitch-server:get-api-key"),
+  signIn: (input) => ipcRenderer.invoke("hitch-server:sign-in", input),
+  signUp: (input) => ipcRenderer.invoke("hitch-server:sign-up", input),
+  signOut: () => ipcRenderer.invoke("hitch-server:sign-out"),
+  onWsMessage: (callback) => {
+    const listener = (_event: IpcRendererEvent, message: unknown) => {
+      callback(message);
+    };
+    ipcRenderer.on("hitch-server:ws-message", listener);
+    return () => ipcRenderer.removeListener("hitch-server:ws-message", listener);
+  },
+  onWsOpen: (callback) => {
+    const listener = () => {
+      callback();
+    };
+    ipcRenderer.on("hitch-server:ws-open", listener);
+    return () => ipcRenderer.removeListener("hitch-server:ws-open", listener);
+  },
+};
+
+contextBridge.exposeInMainWorld("hitchServer", serverApi);
