@@ -9,6 +9,7 @@
 #   3. import the server's S3 key (409 = already imported)
 #   4. create the bucket           (409 = already created)
 #   5. grant the key read/write/owner on the bucket (idempotent)
+#   6. permissive CORS on the bucket (PutBucketCors overwrites — idempotent)
 #
 # Env (wired in docker-compose.yml): GARAGE_ADMIN_TOKEN, S3_ACCESS_KEY_ID,
 # S3_SECRET_ACCESS_KEY, S3_BUCKET, and optionally GARAGE_ADMIN_URL.
@@ -58,5 +59,21 @@ bucket_id=$(curl -sf -H "$auth" "$ADMIN_URL/v1/bucket?globalAlias=$S3_BUCKET" \
   | sed -n 's/.*"id": *"\([0-9a-f]*\)".*/\1/p' | head -n1)
 curl -sf -H "$auth" -X POST "$ADMIN_URL/v1/bucket/allow" \
   -d "{\"bucketId\":\"$bucket_id\",\"accessKeyId\":\"$S3_ACCESS_KEY_ID\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":true}}" >/dev/null
+
+# --- cors --------------------------------------------------------------------
+# Permissive CORS so the renderer can hit presigned PUT/GET URLs straight from
+# the browser context — dev origin http://127.0.0.1:5173 and the packaged
+# app's file:// null origin, hence "*" (fine: presigned URLs carry their own
+# auth, no cookies involved). The admin API has no CORS endpoint, so this goes
+# through the S3 API's PutBucketCors, signed with curl's built-in sigv4
+# ("garage" = s3_region in garage.toml). Runs after step 5 — the key needs its
+# owner grant to write bucket config.
+S3_URL="${GARAGE_S3_URL:-http://storage:3900}"
+curl -sf --aws-sigv4 "aws:amz:garage:s3" \
+  --user "$S3_ACCESS_KEY_ID:$S3_SECRET_ACCESS_KEY" \
+  -X PUT "$S3_URL/$S3_BUCKET?cors" -H "Content-Type: application/xml" \
+  -d '<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader></CORSRule></CORSConfiguration>' \
+  >/dev/null
+echo "[garage-init] permissive CORS applied to $S3_BUCKET"
 
 echo "[garage-init] done — bucket $S3_BUCKET ready for $S3_ACCESS_KEY_ID"

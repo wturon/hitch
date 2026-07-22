@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 
 import { createAuth } from "./auth.js";
 import type { AppEnv, AuthGateway, Db } from "./context.js";
@@ -24,6 +25,12 @@ export function createApp(db: Db, storage: Storage = createStorage(storageConfig
   // signature isn't directly assignable — see AuthGateway in context.ts.
   const auth = createAuth(db) as unknown as AuthGateway;
   return new Hono<AppEnv>()
+    // Wildcard CORS is legal here because auth rides in a header (x-api-key),
+    // never cookies/credentials — so no credentialed-CORS restrictions apply.
+    // Mounted first so it covers every route, /api/auth/* included. Callers:
+    // renderer dev server (http://127.0.0.1:5173) and the packaged app's
+    // file:// null origin, both of which only "*" satisfies.
+    .use(cors({ origin: "*", allowHeaders: ["Content-Type", "x-api-key"] }))
     .use(async (c, next) => {
       c.set("db", db);
       c.set("auth", auth);

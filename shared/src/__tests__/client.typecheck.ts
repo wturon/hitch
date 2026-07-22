@@ -27,7 +27,9 @@ export async function typechecks(): Promise<void> {
     const status: Task["status"] = task.status;
     const body: Task["body"] = task.body;
     const completedAt: string | null = task.completedAt;
-    void [id, status, body, completedAt];
+    // Task responses embed their task_tags links (step 0 of M2).
+    const tagIds: string[] = rows[0].tagIds;
+    void [id, status, body, completedAt, tagIds];
   }
 
   // Create with typed body.
