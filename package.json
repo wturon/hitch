@@ -10,6 +10,7 @@
     "npm": ">=11"
   },
   "workspaces": [
+    "cli",
     "daemon",
     "desktop",
     "server",
