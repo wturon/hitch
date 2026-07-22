@@ -128,8 +128,15 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
      CLI, set BETTER_AUTH_SECRET/URL + S3_* env, deploy from server/Dockerfile, run a smoke curl)
   All local verification done: 50 server tests (Docker-backed postgres+Garage), composed-stack
   curl transcript (sign-up→task→upload→download), WS invalidate + relay observed by test clients.
-- [ ] **M2 — Desktop on server:** TanStack Query + WS invalidation replaces Convex queries; editor
-  binds to server task bodies; attachments UI via presigned URLs. Verify via desktop/e2e harness.
+- [x] **M2 — Desktop on server** (DONE 2026-07-22, PRs #93–#100; plan + per-PR detail in
+  docs/v2-m2-plan.md): parallel V2 shell behind runtime mode switch (`HITCH_SERVER_URL`), V1
+  byte-untouched and still the default. Auth in main process (api-key in renderer, no cookies),
+  main-held native WS → IPC → TanStack invalidation. Full task surface: read path + Inbox,
+  capture/edit dialog (editor unchanged, echo suppression), mutations (deferred-DELETE undo),
+  tags (names-as-client-identity → V1 components imported unchanged), attachments (renderer-direct
+  presigned PUTs; relative refs in bodies), ⌘K palette + connection banner. Six V2 e2e suites
+  green; V1 e2e baseline identical to main throughout. REMAINING: Will dogfoods V2 against
+  Railway (needs M1 step 8).
 - [ ] **M3 — CLI:** `hitch` bin end-to-end with a real agent chat.
 - [ ] **M4 — Daemon reconciler:** desired/observed loop, spawn-on-assign, machine registration +
   heartbeat, chat-state relay, focus relay handling. Remove file sync + Convex push from daemon.
