@@ -22,6 +22,8 @@ import {
   saveCaptureDraft,
 } from "./captureDraft";
 import { type TaskDialogState } from "./taskDialogState";
+import { useAttachmentsV2 } from "./useAttachmentsV2";
+import { useCaptureAttachmentsV2 } from "./useCaptureAttachmentsV2";
 import { useTaskDocument, type TaskDocumentFields } from "./useTaskDocument";
 
 // The V2 task dialog (M2 PR 3): capture + edit over server task rows, porting
@@ -47,9 +49,11 @@ import { useTaskDocument, type TaskDocumentFields } from "./useTaskDocument";
 // raw view, the auto-title spinner, skills/snippets in the `/` menu. The ⋯
 // menu (PR 4) carries mark done + delete, threaded from the shell's
 // useTaskMutations (see TaskDialogActions); the tag lane (PR 5) sits between
-// the header row and the editor, threaded from useTagMutations. Seam for the
-// next PR: the editor's imageUploadHandler/imagePreviewHandler props take
-// attachments (PR 6).
+// the header row and the editor, threaded from useTagMutations. Attachments
+// (PR 6) ride the editor's imageUploadHandler/imagePreviewHandler seams plus
+// dialog-level paste/drop listeners (useCaptureAttachmentsV2) — a file ingress
+// in the capture stage materializes the task row early (V1 Decision 3), and
+// the capture-stage dismiss deletes that provisional row again.
 type Stage = "capture" | "saved";
 
 // How long ⌘⏎ is swallowed after the capture→saved transform kicks off, so a
@@ -200,12 +204,22 @@ function TaskBodyV2({
   const transformingRef = useRef(false);
   const backlogRef = useRef(backlog);
   backlogRef.current = backlog;
-  // The committed task id (from ⌘⏎, or the existing row from the start),
-  // mirrored in a ref for the async persist/transform handlers.
+  // The committed task id (from ⌘⏎, a file-ingress early materialization, or
+  // the existing row from the start). State so the attachments hook re-binds
+  // when it appears (V1's committedPath pattern); the ref feeds the async
+  // persist/transform/dismiss handlers.
+  const [committedId, setCommittedId] = useState<string | null>(
+    existing?.id ?? null,
+  );
   const taskIdRef = useRef<string | null>(existing?.id ?? null);
+  const setCommitted = useCallback((id: string | null) => {
+    taskIdRef.current = id;
+    setCommittedId(id);
+  }, []);
 
   const editorRef = useRef<MarkdownEditorHandle>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // PATCH the dirty fields to the server — last-write-wins, body VERBATIM
   // (routes/tasks.ts passes it through untouched). The tasks invalidation
@@ -251,6 +265,14 @@ function TaskBodyV2({
   const docRef = useRef(doc);
   docRef.current = doc;
 
+  // The attachments data layer (PR 6): bound to the committed task id, so it
+  // sits inert through an attachment-free capture and comes alive the moment
+  // the row exists (edit mode, a committed capture, or an early
+  // materialization). Ref-mirrored for the dialog-level listeners.
+  const attachments = useAttachmentsV2(client, committedId);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
   // The capture→saved grow (FLIP on the card's height; V1's hook, imported).
   const beginGrow = useGrowAnimation(cardRef, stage);
 
@@ -260,16 +282,22 @@ function TaskBodyV2({
   // bind (onCommitted) and the recovery-draft cleanup wait for it, so a failed
   // POST rolls the card back to capture with the text intact.
   //
+  // Idempotent against the file-ingress case (V1's pasted-early): when a
+  // paste/drop already materialized the row, ⌘⏎ PATCHes title/body over the
+  // provisional values instead of POSTing a second task; the sortOrder from
+  // the materialization stands.
+  //
   // Invariant: capture text is sacred. The captured text becomes the body
   // VERBATIM (only CRLFs normalized); the title is a non-destructive seed from
   // the body's first words. Nothing is ever moved out of the body.
   const transform = useCallback(async () => {
     if (transformingRef.current || stageRef.current !== "capture") return;
     const captured = docRef.current.body;
-    if (captured.trim() === "") return; // ⌘⏎ on empty = no-op
+    const already = taskIdRef.current;
+    if (captured.trim() === "" && !already) return; // ⌘⏎ on empty = no-op
 
     const body = normalizeCaptureBody(captured);
-    const title = captureSeedTitle(body);
+    const title = captureSeedTitle(body) || "Untitled";
     docRef.current.setTitle(title);
     if (body !== captured) docRef.current.setBody(body);
 
@@ -281,29 +309,40 @@ function TaskBodyV2({
     }, TRANSFORM_MS);
 
     try {
-      const response = await client.tasks.$post({
-        json: {
-          projectId,
-          title,
-          body,
-          sortOrder: captureSortOrder(backlogRef.current),
-        },
-      });
-      if (!response.ok) throw new Error(`Failed to create task (${response.status})`);
+      const response = already
+        ? await client.tasks[":id"].$patch({
+            param: { id: already },
+            json: { title, body },
+          })
+        : await client.tasks.$post({
+            json: {
+              projectId,
+              title,
+              body,
+              sortOrder: captureSortOrder(backlogRef.current),
+            },
+          });
+      if (!response.ok) {
+        throw new Error(`Failed to ${already ? "save" : "create"} task (${response.status})`);
+      }
       const task = await response.json();
-      taskIdRef.current = task.id;
-      // The POST landed — the recovery draft's job is done.
+      setCommitted(task.id);
+      // The write landed — the recovery draft's job is done.
       clearCaptureDraft(projectId);
-      // Optimistically append the created row to the tasks cache BEFORE the
-      // union flips to edit mode: the shell resolves the dialog's live row
-      // from this query, and without the row present synchronously the flip
-      // would trip close-on-vanish while the refetch is still in flight
-      // (V1's upsert had the same optimistic-cache guarantee). The refetch
-      // then replaces the list wholesale with server truth.
-      queryClient.setQueryData(
-        ["tasks", { projectId }],
-        (old: unknown) => (Array.isArray(old) ? [...old, task] : [task]),
-      );
+      // Optimistically upsert the row into the tasks cache BEFORE the union
+      // flips to edit mode: the shell resolves the dialog's live row from
+      // this query, and without the row present synchronously the flip would
+      // trip close-on-vanish while the refetch is still in flight (V1's
+      // upsert had the same optimistic-cache guarantee). The refetch then
+      // replaces the list wholesale with server truth.
+      queryClient.setQueryData(["tasks", { projectId }], (old: unknown) => {
+        if (!Array.isArray(old)) return [task];
+        const at = old.findIndex((row) => (row as { id?: string }).id === task.id);
+        if (at === -1) return [...old, task];
+        const next = [...old];
+        next[at] = task;
+        return next;
+      });
       void queryClient.invalidateQueries({ queryKey: ["tasks"] });
       // Bind to the live query row: the shell flips its union capture→edit
       // KEEPING the same session, so this component is NOT remounted — the
@@ -312,21 +351,61 @@ function TaskBodyV2({
       // what we just posted, so the first arrival is a no-op rebase.
       onCommitted(task.id);
     } catch (err) {
-      // The POST never landed (offline, a rejected create): undo the
+      // The write never landed (offline, a rejected create): undo the
       // optimistic transition and drop back to capture so the user can retry.
-      // Stash the text as a recovery draft in case they dismiss instead.
+      // Stash the text as a recovery draft in case they dismiss instead. A
+      // materialized row keeps its id — the next ⌘⏎ retries the PATCH, and a
+      // dismiss still discards it.
       console.error("Failed to create task on ⌘⏎", err);
       transformingRef.current = false;
       setStage("capture");
       saveCaptureDraft(projectId, body);
     }
-  }, [beginGrow, client, onCommitted, projectId, queryClient]);
+  }, [beginGrow, client, onCommitted, projectId, queryClient, setCommitted]);
+
+  // File paste/drop → materialize the row early + upload (V1 Decision 3, over
+  // server rows). The POST stays here — it owns the provisional title, the
+  // sortOrder prepend and the tasks-cache refresh; the listener plumbing lives
+  // in the hook.
+  //
+  // Binding boundary (V1's, verbatim in spirit): this creates a provisional
+  // row WITHOUT leaving the capture stage, and esc deletes that row (dismiss
+  // below). It deliberately does NOT call onCommitted — binding to the live
+  // query starts at ⌘⏎, not at materialization. A provisionally materialized
+  // capture is still a draft: it may be discarded whole on esc.
+  useCaptureAttachmentsV2({
+    rootRef,
+    docRef,
+    editorRef,
+    committedRef: taskIdRef,
+    attachmentsRef,
+    materializeEarly: async () => {
+      const body = normalizeCaptureBody(docRef.current.body);
+      const title = captureSeedTitle(body) || "Untitled";
+      const response = await client.tasks.$post({
+        json: {
+          projectId,
+          title,
+          body,
+          sortOrder: captureSortOrder(backlogRef.current),
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to create task (${response.status})`);
+      }
+      const task = await response.json();
+      setCommitted(task.id);
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
 
   // ─── Dismiss policy (esc, outside press, ✕) ────────────────────────────────
   // Both stages close INSTANTLY. Saved: flush the dirty fields in the
   // background (save-on-close; a failed flush logs — last-write-wins, single
   // user). Capture: stash the typed body as the recovery draft (cleared when
-  // empty) — nothing was ever created, so nothing to delete.
+  // empty), and delete a row materialized early by a file ingress — esc
+  // always discards the provisional draft (V1 Decision 3), attachment rows
+  // riding along via the task CASCADE.
   const dismiss = useCallback(
     (_reason: string) => {
       if (stageRef.current === "saved") {
@@ -337,9 +416,18 @@ function TaskBodyV2({
         return;
       }
       saveCaptureDraft(projectId, docRef.current.body);
+      const discardId = taskIdRef.current;
       onClose();
+      if (discardId) {
+        void client.tasks[":id"]
+          .$delete({ param: { id: discardId } })
+          .then(() => queryClient.invalidateQueries({ queryKey: ["tasks"] }))
+          .catch((err) =>
+            console.error("Failed to delete discarded capture", err),
+          );
+      }
     },
-    [onClose, projectId],
+    [client, onClose, projectId, queryClient],
   );
 
   useEffect(() => {
@@ -378,7 +466,7 @@ function TaskBodyV2({
   }, [transform]);
 
   return (
-    <div>
+    <div ref={rootRef}>
       <div
         ref={cardRef}
         className="flex max-h-[76vh] flex-col overflow-hidden rounded-xl border border-[#E4E4E4] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.16)] transition-[height] duration-[250ms] ease-out dark:border-border dark:bg-card"
@@ -460,8 +548,12 @@ function TaskBodyV2({
 
         {/* The document area. One MarkdownEditor instance serves both stages —
             it must never remount on the stage flip (focus, caret, and undo
-            history ride through the transform). PR 6 seam: attachments arrive
-            as the editor's imageUploadHandler/imagePreviewHandler props. */}
+            history ride through the transform). Attachments (PR 6) ride the
+            editor's V1 seams: the upload handler caret-inserts an all-image
+            paste once the task row exists; the preview handler resolves the
+            body's relative refs to presigned GETs. Gated on `enabled` exactly
+            like V1's TodoEditorArea (no row → the dialog-level listeners own
+            every file ingress via materialize-early). */}
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div className="flex flex-col px-5">
             <div
@@ -478,7 +570,13 @@ function TaskBodyV2({
                 placeholder={
                   stage === "capture"
                     ? "What needs doing?"
-                    : "Describe what you're working on"
+                    : "Describe what you're working on, or drop in a screenshot or file"
+                }
+                imageUploadHandler={
+                  attachments.enabled ? attachments.imageUploadHandler : undefined
+                }
+                imagePreviewHandler={
+                  attachments.enabled ? attachments.imagePreviewHandler : undefined
                 }
               />
             </div>
