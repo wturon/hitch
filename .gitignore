@@ -38,3 +38,4 @@ desktop/e2e/shots/
 .impeccable/config.local.json
 .impeccable/critique/
 **/.impeccable/live/
+backups/
