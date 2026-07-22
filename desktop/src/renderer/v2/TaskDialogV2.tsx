@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import { CaptureFooter } from "@/components/todo-dialog/CaptureFooter";
+import { DelegateBar } from "./DelegateBar";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { useGrowAnimation } from "@/components/todo-dialog/useGrowAnimation";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
@@ -584,9 +585,19 @@ function TaskBodyV2({
         </div>
 
         {/* Footer — the capture coaching strip (V1's, imported: pure
-            presentation). The saved stage has no footer band yet: delegation
-            is M4; the compose/linked/requested machinery lands there. */}
+            presentation) in the capture stage; the delegate bar (M4 PR 5,
+            option L) in the saved stage once the task row exists. The bar owns
+            its own compose/active/re-delegate states off the task's assignment
+            history + the machine list. */}
         {stage === "capture" && <CaptureFooter />}
+        {stage === "saved" && committedId && (
+          <DelegateBar
+            client={client}
+            taskId={committedId}
+            title={doc.title}
+            body={doc.body}
+          />
+        )}
       </div>
     </div>
   );
