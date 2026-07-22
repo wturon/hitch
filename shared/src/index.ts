@@ -26,9 +26,11 @@ export type {
 // Explicit alias so the declaration emit doesn't have to name hono internals.
 export type HitchClient = ReturnType<typeof hc<AppType>>;
 
-// With the step-3 placeholder auth, pass the user via
-// `opts.headers["x-hitch-user-id"]`; step 4 (better-auth) swaps that for a
-// session cookie / api key without changing this signature.
+// Auth (better-auth on the server): pass a session cookie via
+// `opts.headers.cookie` (desktop) or an API key via
+// `opts.headers["x-api-key"]` (CLI + daemon). Both come from the server's
+// /api/auth/* endpoints — sign-in sets the cookie; a signed-in session
+// creates keys at /api/auth/api-key/create.
 export function createHitchClient(baseUrl: string, opts?: ClientRequestOptions): HitchClient {
   return hc<AppType>(baseUrl, opts);
 }

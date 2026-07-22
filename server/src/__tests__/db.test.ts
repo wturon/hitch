@@ -79,6 +79,13 @@ describeDb("db schema + migrations + triggers (postgres:16 in Docker)", () => {
     pool = new pg.Pool({ connectionString });
     db = drizzle(pool, { schema });
     await migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+
+    // user_id columns FK into the better-auth user table now, so the rows
+    // below need a real user to hang off (auth flows themselves are covered
+    // in auth.test.ts).
+    await db
+      .insert(schema.user)
+      .values({ id: "user-1", name: "Test User", email: "user-1@test.local" });
   }, 120_000);
 
   afterAll(async () => {
