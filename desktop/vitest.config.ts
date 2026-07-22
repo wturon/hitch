@@ -29,6 +29,7 @@ export default defineConfig({
       "src/renderer/editor/__tests__/**/*.test.{ts,tsx}",
       "src/renderer/lib/__tests__/**/*.test.ts",
       "src/renderer/lib/server/__tests__/**/*.test.ts",
+      "src/renderer/v2/__tests__/**/*.test.ts",
       "src/renderer/components/todo-dialog/__tests__/**/*.test.ts",
       "src/renderer/components/__tests__/**/*.test.{ts,tsx}",
       "src/renderer/hooks/__tests__/**/*.test.{ts,tsx}",
