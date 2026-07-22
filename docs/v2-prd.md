@@ -116,17 +116,18 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
 ## Milestones
 
 - [x] **M0 — All decisions closed** (2026-07-22)
-- [ ] **M1 — Server up** (each step ≈ a PR-able chunk):
-  1. Workspace scaffold: `server/` + `shared/` packages
-  2. Drizzle schema + migrations (exactly the spec above) + NOTIFY/updated_at triggers
-  3. Hono CRUD + zod validation + typed client export (`hc<AppType>` from shared/)
-  4. better-auth: email/password + api-key plugin; single requireAuth middleware
-  5. WS layer: LISTEN/NOTIFY → invalidation broadcast; ephemeral event relay (focus)
-  6. Dockerfile + docker-compose (server + postgres:16 + Garage); attachments presigned flow
-  7. Importer: `.hitch/tasks/*.md` frontmatter+body + Convex export zip → Postgres; --dry-run flag;
-     throwaway (deleted at M5)
-  8. Railway deploy (needs Will: `railway login`)
-  Verify locally: docker compose up + vitest + curl against routes; WS notify observed via test client.
+- [ ] **M1 — Server up** (steps 1–7 DONE 2026-07-22, PRs #86–#92; step 8 pending):
+  1. [x] Workspace scaffold (PR #86)
+  2. [x] Drizzle schema + migrations + NOTIFY/updated_at triggers (PR #87)
+  3. [x] Hono CRUD + zod + typed client (PR #88)
+  4. [x] better-auth email/password + api-key (PR #89)
+  5. [x] WS layer: invalidation broadcast + ephemeral event relay (PR #90)
+  6. [x] Dockerfile + compose (server+postgres:16+Garage) + attachments presigned flow (PR #91)
+  7. [x] Importer with --dry-run default (PR #92)
+  8. [ ] Railway deploy (needs Will: `railway login`; then create project + Postgres + Bucket via
+     CLI, set BETTER_AUTH_SECRET/URL + S3_* env, deploy from server/Dockerfile, run a smoke curl)
+  All local verification done: 50 server tests (Docker-backed postgres+Garage), composed-stack
+  curl transcript (sign-up→task→upload→download), WS invalidate + relay observed by test clients.
 - [ ] **M2 — Desktop on server:** TanStack Query + WS invalidation replaces Convex queries; editor
   binds to server task bodies; attachments UI via presigned URLs. Verify via desktop/e2e harness.
 - [ ] **M3 — CLI:** `hitch` bin end-to-end with a real agent chat.
@@ -158,3 +159,19 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   enforced (client PATCH: desired_state/reviewed_at; daemon PATCH: observed_state/chat_id/worktree).
   **Design ripple accepted:** tasks REQUIRE a project (no user_id on tasks) → "Inbox" becomes a
   real per-user project, Todoist-style. M2 capture UX + M1.7 importer must create/use it.
+- 2026-07-22 — M1.4 merged (PR #89): better-auth 1.6.24 (+@better-auth/api-key — split out of core
+  in 1.6.x). Keys-as-sessions so requireAuth = one getSession path; per-key rate limit disabled
+  (default 10 req/day would starve the daemon tick). Migration 0002 = auth tables + real user_id FKs.
+- 2026-07-22 — M1.5 merged (PR #90): /ws (upgrade auth = requireAuth verbatim), LISTEN client with
+  capped backoff, invalidate broadcast to ALL authed conns (documented v1 simplification), ephemeral
+  event relay with hello/machine registration. Wire types exported from shared/.
+- 2026-07-22 — M1.6 merged (PR #91): node:24-slim Dockerfile (MIGRATE_ON_BOOT), compose = self-host
+  story (Garage init via curl sidecar — image has no shell). Attachments presigned flow; gotchas
+  banked: AWS SDK ≥3.729 CRC32 default breaks S3-compat presigned PUTs (WHEN_REQUIRED fix, also
+  matters on Buckets/R2); S3_PUBLIC_ENDPOINT for split-horizon presigning.
+- 2026-07-22 — M1.7 merged (PR #92): importer. V1 facts learned: no sections exist in V1;
+  backlogOrders empty in prod → order = updatedAt/completed-at desc; export is PRE-todos-v1 for
+  status (legacy status: values) and STALE for the Hitch project (41 vs 98 live tasks).
+  **M5 must import Hitch project via --from-dir and everything else via the export zip.**
+  Dry-runs verified: dir = 98 tasks/4 tags/54 links; export (Will) = 7 projects/93 tasks/12 archived
+  skipped. Bodies byte-for-byte in both paths. M1 steps 1–7 COMPLETE — step 8 (Railway) blocks on Will.
