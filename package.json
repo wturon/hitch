@@ -15,6 +15,9 @@
     "server",
     "shared"
   ],
+  "overrides": {
+    "@hono/node-server@^1.19.11": "^2.0.11"
+  },
   "scripts": {
     "dev": "npm run dev:desktop",
     "dev:all": "concurrently -n convex,desktop -c blue,green \"npm:dev:convex\" \"npm:dev:desktop\"",
