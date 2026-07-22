@@ -1,4 +1,6 @@
 import { startHitchDaemon, type HitchDaemonHandle } from "./daemon.js";
+import { isServerMode } from "./v2/config.js";
+import { startHitchDaemonV2, type HitchDaemonV2Handle } from "./v2/daemonV2.js";
 
 interface StopMessage {
   type: "stop";
@@ -29,13 +31,14 @@ function send(message: Record<string, unknown>): void {
 }
 
 let daemon: HitchDaemonHandle | undefined;
+let daemonV2: HitchDaemonV2Handle | undefined;
 let stopping = false;
 
 async function stopAndExit(code: number): Promise<void> {
   if (stopping) return;
   stopping = true;
   try {
-    await daemon?.stop();
+    await (daemon ?? daemonV2)?.stop();
     send({ type: "stopped" });
     process.exit(code);
   } catch (err) {
@@ -45,6 +48,24 @@ async function stopAndExit(code: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // V2 mode (HITCH_SERVER_URL present): start the server-backed daemon instead
+  // of the V1 Convex daemon. The V1 branch below is byte-identical otherwise.
+  if (isServerMode()) {
+    try {
+      daemonV2 = await startHitchDaemonV2({
+        cwd: process.env.HITCH_ROOT,
+        logger: {
+          info: (message) => send({ type: "log", stream: "stdout", message }),
+          error: (message) => send({ type: "log", stream: "stderr", message }),
+        },
+      });
+      send({ type: "ready", mode: "v2", machineId: daemonV2.machineId });
+    } catch (err) {
+      send({ type: "error", message: String(err) });
+      process.exit(1);
+    }
+    return;
+  }
   try {
     daemon = await startHitchDaemon({
       cwd: process.env.HITCH_ROOT,
