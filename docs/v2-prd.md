@@ -150,3 +150,11 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   `runs` renamed `assignments`. D1/schema closed → **M0 complete**.
 - 2026-07-22 — Convex prod export banked + verified + gitignored. Docker confirmed running.
   Ready to start M1 step 1 on branch `feat/v2-server`. (Conversation compacted after this point.)
+- 2026-07-22 — M1.1 merged (PR #86): server/ + shared/ scaffold, chained-route AppType.
+- 2026-07-22 — M1.2 merged (PR #87): schema v1 exact-per-spec + NOTIFY/updated_at triggers.
+  Amendment in review: deliberate ON DELETE (task children CASCADE; section→tasks SET NULL;
+  machines NO ACTION). task_tags NOTIFY payload is {table, task_id, tag_id} — step 5 handles it.
+- 2026-07-22 — M1.3 merged (PR #88): CRUD + zod + hc<AppType> client in shared/. Ownership split
+  enforced (client PATCH: desired_state/reviewed_at; daemon PATCH: observed_state/chat_id/worktree).
+  **Design ripple accepted:** tasks REQUIRE a project (no user_id on tasks) → "Inbox" becomes a
+  real per-user project, Todoist-style. M2 capture UX + M1.7 importer must create/use it.
