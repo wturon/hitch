@@ -11,7 +11,9 @@
   },
   "workspaces": [
     "daemon",
-    "desktop"
+    "desktop",
+    "server",
+    "shared"
   ],
   "scripts": {
     "dev": "npm run dev:desktop",
