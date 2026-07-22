@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { XIcon } from "lucide-react";
+import {
+  CircleCheckIcon,
+  CircleIcon,
+  EllipsisIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 
 import { CaptureFooter } from "@/components/todo-dialog/CaptureFooter";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { useGrowAnimation } from "@/components/todo-dialog/useGrowAnimation";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import type { HitchClient } from "@/lib/server/client";
@@ -35,10 +42,11 @@ import { useTaskDocument, type TaskDocumentFields } from "./useTaskDocument";
 //     useTaskDocument bound to the live query row: ~1.5s idle autosave,
 //     save-on-close, last-write-wins.
 //
-// Deliberately absent vs V1 (M4-or-later): the delegation footer band, the ⋯
-// menu (mark done / archive / delete are PR 4 list mutations), the raw view,
-// the auto-title spinner, skills/snippets in the `/` menu. Seams for the next
-// PRs: the tag lane slots between the header row and the editor (PR 5); the
+// Deliberately absent vs V1 (M4-or-later): the delegation footer band, the
+// raw view, the auto-title spinner, skills/snippets in the `/` menu. The ⋯
+// menu (PR 4) carries mark done + delete, threaded from the shell's
+// useTaskMutations (see TaskDialogActions). Seams for the next PRs: the tag
+// lane slots between the header row and the editor (PR 5); the
 // editor's imageUploadHandler/imagePreviewHandler props take attachments
 // (PR 6).
 type Stage = "capture" | "saved";
@@ -50,6 +58,18 @@ const TRANSFORM_MS = 260;
 // The live-row projection the dialog needs from the tasks list query.
 export interface TaskDialogRow extends TaskDocumentFields {
   id: string;
+}
+
+// The saved-stage ⋯ menu's actions, threaded from the shell's single
+// useTaskMutations instance so the dialog shares the row/keyboard code path
+// (same undo toasts, same pending-delete window). V1's SavedActions menu
+// minus its V1-only entries: raw view / copy path / detach / archive have no
+// V2 counterpart (M4-or-never). Present only once the task exists on the
+// server (edit mode / a committed capture).
+export interface TaskDialogActions {
+  completed: boolean;
+  onToggleCompleted: () => void;
+  onDelete: () => void;
 }
 
 export interface TaskDialogV2Props {
@@ -65,6 +85,9 @@ export interface TaskDialogV2Props {
   // The current backlog in list order, so a capture's sortOrder prepends
   // before the head.
   backlog: ReadonlyArray<{ sortOrder: string }>;
+  // The ⋯ menu's actions (PR 4), resolved by the shell against the live row;
+  // undefined until the task exists on the server (fresh capture pre-⌘⏎).
+  actions?: TaskDialogActions;
   // Close the dialog (the shell resets the union to closed).
   onClose: () => void;
   // Called after a capture's ⌘⏎ POST SUCCEEDS, handing the shell the new task
@@ -121,6 +144,7 @@ export function TaskDialogV2(props: TaskDialogV2Props) {
               projectId={props.projectId}
               existing={existing}
               backlog={props.backlog}
+              actions={state.mode === "edit" ? props.actions : undefined}
               onClose={props.onClose}
               onCommitted={props.onCommitted}
               registerDismiss={(fn) => (dismissRef.current = fn)}
@@ -141,6 +165,7 @@ interface TaskBodyV2Props {
   projectId: string;
   existing?: TaskDialogRow;
   backlog: ReadonlyArray<{ sortOrder: string }>;
+  actions?: TaskDialogActions;
   onClose: () => void;
   onCommitted: (taskId: string) => void;
   registerDismiss: (fn: (reason: string) => void) => void;
@@ -151,6 +176,7 @@ function TaskBodyV2({
   projectId,
   existing,
   backlog,
+  actions,
   onClose,
   onCommitted,
   registerDismiss,
@@ -350,9 +376,8 @@ function TaskBodyV2({
       >
         {/* Header row — saved stage only (capture is chrome-free). The title
             is metadata presented as window chrome: small, muted, single-line,
-            inline with the ✕ — the BODY stays the card's largest, darkest
-            element. V2 drops the auto-title spinner (seed-only) and the ⋯
-            menu (its actions are PR 4 list mutations). */}
+            inline with the ⋯/✕ — the BODY stays the card's largest, darkest
+            element. V2 drops the auto-title spinner (seed-only). */}
         {stage === "saved" && (
           <div className="flex items-center gap-2 pt-2.5 pr-2.5 pl-5">
             <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -372,14 +397,49 @@ function TaskBodyV2({
                 className="hitch-autosize min-w-0 max-w-full truncate border-0 bg-transparent p-0 text-[13px] font-medium leading-4 text-muted-foreground outline-none transition-colors hover:text-foreground focus:text-foreground placeholder:text-muted-foreground/40"
               />
             </div>
-            <button
-              type="button"
-              aria-label="Close"
-              onClick={() => dismiss("close-press")}
-              className="flex size-6.5 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <XIcon className="size-4" />
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              {/* The ⋯ overflow menu — V1's SavedActions silhouette reduced
+                  to V2's action set. Deleting routes through the shell's
+                  pending-delete window; the vanished row then closes this
+                  dialog via close-on-vanish (reconcileTaskDialog). */}
+              {actions && (
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label="Task actions"
+                        className="flex size-6.5 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                      />
+                    }
+                  >
+                    <EllipsisIcon className="size-4" />
+                  </MenuTrigger>
+                  <MenuContent align="end">
+                    <MenuItem onClick={actions.onToggleCompleted}>
+                      {actions.completed ? <CircleIcon /> : <CircleCheckIcon />}
+                      {actions.completed ? "Mark not done" : "Mark done"}
+                    </MenuItem>
+                    <div className="my-1 h-px bg-border" />
+                    <MenuItem
+                      onClick={actions.onDelete}
+                      className="text-[#B42318] data-highlighted:bg-[#B42318]/10 data-highlighted:text-[#B42318]"
+                    >
+                      <Trash2Icon />
+                      Delete
+                    </MenuItem>
+                  </MenuContent>
+                </Menu>
+              )}
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={() => dismiss("close-press")}
+                className="flex size-6.5 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <XIcon className="size-4" />
+              </button>
+            </div>
           </div>
         )}
 
