@@ -21,6 +21,8 @@ export interface HitchServerBridge {
   signOut: () => Promise<void>;
   onWsMessage: (callback: (message: unknown) => void) => () => void;
   onWsOpen: (callback: () => void) => () => void;
+  getWsStatus: () => Promise<boolean>;
+  onWsStatus: (callback: (connected: boolean) => void) => () => void;
 }
 
 declare global {

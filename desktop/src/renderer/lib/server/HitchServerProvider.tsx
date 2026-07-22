@@ -23,6 +23,12 @@ interface HitchServerContextValue {
   authReady: boolean;
   /** Signed in iff non-null. */
   client: HitchClient | null;
+  /**
+   * Main-held WS connectivity: true = open, false = closed/refused, null =
+   * no verdict yet (boot, before the first open — so the unreachable banner
+   * never flashes during the initial handshake).
+   */
+  wsConnected: boolean | null;
   signIn: (input: { email: string; password: string }) => Promise<HitchServerAuthResult>;
   signUp: (input: {
     email: string;
@@ -74,6 +80,26 @@ export function HitchServerProvider({
     return startRealtimeInvalidation(queryClient, bridge);
   }, [bridge, queryClient]);
 
+  // WS connectivity for the unreachable banner. The pull only ever upgrades
+  // null → true: a `false` at boot could just mean "handshake in flight", but
+  // a pushed `false` is a real close/refusal and always lands.
+  const [wsConnected, setWsConnected] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!bridge) return;
+    let cancelled = false;
+    void bridge.getWsStatus().then((connected) => {
+      if (cancelled || !connected) return;
+      setWsConnected((prev) => prev ?? true);
+    });
+    const off = bridge.onWsStatus((connected) => {
+      if (!cancelled) setWsConnected(connected);
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [bridge]);
+
   const refreshApiKey = useCallback(async (target: HitchServerBridge) => {
     setApiKey(await target.getApiKey());
   }, []);
@@ -87,6 +113,7 @@ export function HitchServerProvider({
       serverUrl,
       authReady,
       client: apiKey ? createServerClient(serverUrl, apiKey) : null,
+      wsConnected,
       async signIn(input) {
         if (!bridge) return missingBridge;
         const result = await bridge.signIn(input);
@@ -102,10 +129,13 @@ export function HitchServerProvider({
       async signOut() {
         await bridge?.signOut();
         setApiKey(null);
+        // Back to "no verdict": the sign-out close is deliberate, and the next
+        // sign-in's handshake shouldn't start under a stale disconnected flag.
+        setWsConnected(null);
         queryClient.clear();
       },
     };
-  }, [serverUrl, authReady, apiKey, bridge, refreshApiKey, queryClient]);
+  }, [serverUrl, authReady, apiKey, wsConnected, bridge, refreshApiKey, queryClient]);
 
   return (
     <QueryClientProvider client={queryClient}>

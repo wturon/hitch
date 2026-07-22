@@ -303,6 +303,10 @@ export interface HitchServerApi {
   // renderer narrows them against @hitch/shared's WsServerMessage.
   onWsMessage: (callback: (message: unknown) => void) => () => void;
   onWsOpen: (callback: () => void) => () => void;
+  // Connectivity for the unreachable banner: current state on demand plus a
+  // push on every transition (true = socket open, false = closed/refused).
+  getWsStatus: () => Promise<boolean>;
+  onWsStatus: (callback: (connected: boolean) => void) => () => void;
 }
 
 const api: HitchDaemonApi = {
@@ -434,6 +438,14 @@ const serverApi: HitchServerApi = {
     };
     ipcRenderer.on("hitch-server:ws-open", listener);
     return () => ipcRenderer.removeListener("hitch-server:ws-open", listener);
+  },
+  getWsStatus: () => ipcRenderer.invoke("hitch-server:get-ws-status"),
+  onWsStatus: (callback) => {
+    const listener = (_event: IpcRendererEvent, connected: boolean) => {
+      callback(connected);
+    };
+    ipcRenderer.on("hitch-server:ws-status", listener);
+    return () => ipcRenderer.removeListener("hitch-server:ws-status", listener);
   },
 };
 

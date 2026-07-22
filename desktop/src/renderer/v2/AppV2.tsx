@@ -17,6 +17,11 @@ import {
 } from "lucide-react";
 
 import { CreateProjectDialog } from "@/components/AppSidebar";
+import {
+  CommandPalette,
+  type PaletteProject,
+  type PaletteTask,
+} from "@/components/CommandPalette";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { Toaster } from "@/components/ui/sonner";
@@ -29,6 +34,7 @@ import { useHitchServer } from "@/lib/server/HitchServerProvider";
 import type { HitchClient } from "@/lib/server/client";
 import { useUndoHotkey } from "@/lib/undoToast";
 import { cn } from "@/lib/utils";
+import { ConnectionBanner } from "./ConnectionBanner";
 import { TaskDialogV2, type TaskDialogActions } from "./TaskDialogV2";
 import {
   captureState,
@@ -47,8 +53,13 @@ import { useTaskMutations } from "./useTaskMutations";
 // chrome so switching modes feels like the same app — same rail classes, same
 // titlebar row, same monochrome register. Deliberately absent (vs V1): view
 // tabs (Todos is the only V2 view), Automations, Archive, pins/status chips
-// (M4), the ⌘K search bar (PR 7). CreateProjectDialog is V1's own component,
-// imported — it is pure presentation.
+// (M4). CreateProjectDialog and CommandPalette are V1's own components,
+// imported — they are pure presentation.
+//
+// ⌘K (PR 7): V1's CommandPalette, scoped like V1 to the ACTIVE project —
+// fuzzy-open a task, capture a new one, switch/create projects. V1's actions
+// group (theme, settings, sandbox…) is deliberately empty here: those are V1
+// surfaces, or M4+.
 //
 // Inbox: on boot a project named "Inbox" is ensured (created if missing),
 // pinned first in the rail, and is the default selection.
@@ -498,10 +509,13 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
             !taskMutations.pendingDeleteIds.has(task.id),
         )
       : undefined;
-  const dialogBacklog = useMemo(
-    () => deriveTaskGroups(dialogTasks.data ?? []).backlog,
+  // One grouping fold shared by the dialog's backlog-prepend maths and the
+  // ⌘K palette's task list — both read the same query, so this derives once.
+  const taskGroups = useMemo(
+    () => deriveTaskGroups(dialogTasks.data ?? []),
     [dialogTasks.data],
   );
+  const dialogBacklog = taskGroups.backlog;
   // Close-on-vanish: once tasks have loaded, if the edited row is gone
   // (deleted from another client) drop the dialog AND reset the union.
   useEffect(() => {
@@ -559,6 +573,63 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [taskDialog.mode, selectedProject, openCapture]);
+
+  // --- ⌘K command palette (PR 7) --------------------------------------------
+  // V1's palette, active-project scoped: fuzzy-open a task, capture, switch or
+  // create a project. The actions group is empty on purpose (V1-only surfaces).
+  const [showPalette, setShowPalette] = useState(false);
+  // Palette-driven "New project" reuses the sidebar dialog, pre-filled with
+  // the typed query (V1's exact pattern).
+  const [createProjectName, setCreateProjectName] = useState<string | null>(null);
+
+  // ⌘K (Ctrl+K) toggles the palette — V1's exact gating: when open, close.
+  // When closed, suppress only where ⌘K means something else or the palette
+  // shouldn't appear: a contenteditable (the editor owns ⌘K for links) or
+  // while another dialog/menu is up (the task dialog included).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "k") return;
+      if (showPalette) {
+        e.preventDefault();
+        setShowPalette(false);
+        return;
+      }
+      const el = e.target as HTMLElement | null;
+      if (el?.isContentEditable) return;
+      // One refinement over V1's selector: Base UI keeps a dismissed popup
+      // mounted (with data-closed) until its exit animation ends — that
+      // corpse shouldn't swallow a ⌘K that lands mid-fade.
+      if (
+        document.querySelector(
+          '[role="dialog"]:not([data-closed]),[role="alertdialog"]:not([data-closed]),[role="menu"]:not([data-closed])',
+        )
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setShowPalette(true);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showPalette]);
+
+  // The palette's searchable rows. Ids stand in for V1's task paths (the
+  // palette's opaque selection key), and the group ordering mirrors V1:
+  // attention first, then backlog in manual order, done last.
+  const paletteProjects: PaletteProject[] = orderedProjects.map((project) => ({
+    id: project.id as PaletteProject["id"],
+    name: project.name,
+  }));
+  const paletteTasks: PaletteTask[] = useMemo(
+    () =>
+      [
+        ...taskGroups.needsYou.map((task) => ({ task, meta: "Needs you" })),
+        ...taskGroups.working.map((task) => ({ task, meta: "Working" })),
+        ...taskGroups.backlog.map((task) => ({ task, meta: "Backlog" })),
+        ...taskGroups.done.map((task) => ({ task, meta: "Done" })),
+      ].map(({ task, meta }) => ({ path: task.id, title: task.title, meta })),
+    [taskGroups],
+  );
 
   // --- New project (the one write this PR keeps) ----------------------------
   const createProject = useMutation({
@@ -668,6 +739,42 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
           onCommitted={commitTaskDialog}
         />
       )}
+      {/* ⌘K (PR 7). Gated on a selected project like the task dialog — the
+          palette is active-project scoped and captures into it. `New task`
+          opens the capture card body-only (V1 Decision 10: the typed query is
+          not seeded); `New project` re-uses the sidebar dialog below. */}
+      {selectedProject && (
+        <CommandPalette
+          open={showPalette}
+          onOpenChange={setShowPalette}
+          projects={paletteProjects}
+          activeProjectId={selectedProject.id as PaletteProject["id"]}
+          activeProjectName={selectedProject.name}
+          currentView="todos"
+          tasks={paletteTasks}
+          actions={[]}
+          onSelectProject={selectProject}
+          onSelectView={() => {}}
+          onOpenTask={openTask}
+          onCreateTask={() => openCapture()}
+          onCreateProject={(name) => setCreateProjectName(name)}
+        />
+      )}
+      {/* Palette-driven "New project", pre-filled with the typed query. */}
+      <CreateProjectDialog
+        open={createProjectName !== null}
+        onOpenChange={(open) => {
+          if (!open) setCreateProjectName(null);
+        }}
+        creating={createProject.isPending}
+        onCreate={async (name) => {
+          await createProject.mutateAsync(name);
+        }}
+        initialName={createProjectName ?? undefined}
+      />
+      {/* Server-unreachable pill (PR 7): floats under the titlebar, shows on
+          WS loss or failing queries, self-dismisses on recovery. */}
+      <ConnectionBanner />
       {/* The undo-toast surface (V1's exact mount: sonner, bottom-right). */}
       <Toaster richColors position="bottom-right" expand visibleToasts={6} />
       {/* Rendered last so its no-drag region is subtracted after the sidebar
