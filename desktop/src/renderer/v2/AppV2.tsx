@@ -19,6 +19,7 @@ import {
 import { CreateProjectDialog } from "@/components/AppSidebar";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
+import { Toaster } from "@/components/ui/sonner";
 import {
   Tooltip,
   TooltipContent,
@@ -26,8 +27,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useHitchServer } from "@/lib/server/HitchServerProvider";
 import type { HitchClient } from "@/lib/server/client";
+import { useUndoHotkey } from "@/lib/undoToast";
 import { cn } from "@/lib/utils";
-import { TaskDialogV2 } from "./TaskDialogV2";
+import { TaskDialogV2, type TaskDialogActions } from "./TaskDialogV2";
 import {
   captureState,
   closedTaskDialog,
@@ -38,6 +40,7 @@ import {
 } from "./taskDialogState";
 import { deriveTaskGroups } from "./todoGroups";
 import { fetchTasks, TodosViewV2 } from "./TodosViewV2";
+import { useTaskMutations } from "./useTaskMutations";
 
 // The V2 shell (M2 PR 2): sidebar + header + TodosViewV2, mirroring V1's
 // chrome so switching modes feels like the same app — same rail classes, same
@@ -468,6 +471,11 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
     setTaskDialog((prev) => commitTaskState(prev, taskId));
   }, []);
 
+  // The list mutations (PR 4): ONE instance for the whole workspace, so the
+  // list rows, the keyboard shortcuts and the dialog ⋯ menu share the same
+  // optimistic cache and the same pending-delete window.
+  const taskMutations = useTaskMutations(client, selectedProject?.id ?? null);
+
   const dialogTasks = useQuery({
     queryKey: ["tasks", { projectId: selectedProject?.id }],
     queryFn: () => fetchTasks(client, selectedProject!.id),
@@ -475,7 +483,15 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
   });
   const dialogRow =
     taskDialog.mode === "edit"
-      ? dialogTasks.data?.find((task) => task.id === taskDialog.taskId)
+      ? dialogTasks.data?.find(
+          (task) =>
+            task.id === taskDialog.taskId &&
+            // A task in its delete window has vanished as far as the UI is
+            // concerned: treating it as absent here lets close-on-vanish
+            // (below) drop an open dialog the moment its task is deleted —
+            // from the dialog's own ⋯ menu included.
+            !taskMutations.pendingDeleteIds.has(task.id),
+        )
       : undefined;
   const dialogBacklog = useMemo(
     () => deriveTaskGroups(dialogTasks.data ?? []).backlog,
@@ -488,6 +504,20 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
       reconcileTaskDialog(prev, dialogRow !== undefined, dialogTasks.data !== undefined),
     );
   }, [dialogRow, dialogTasks.data]);
+  // The dialog ⋯ menu's actions, bound to the live row through the SAME
+  // mutation handlers the list rows use (one code path, one undo toast).
+  const dialogActions: TaskDialogActions | undefined = dialogRow
+    ? {
+        completed: dialogRow.status === "done",
+        onToggleCompleted: () =>
+          taskMutations.toggleDone(dialogRow, dialogRow.status !== "done"),
+        onDelete: () => taskMutations.deleteTaskWithUndo(dialogRow),
+      }
+    : undefined;
+
+  // ⌘Z targets the newest visible undo toast (delete / mark-done); inert
+  // otherwise. Mounted once for the workspace, like V1's App root.
+  useUndoHotkey();
 
   // `C` captures a task from anywhere within a project (V1 Decision 10, same
   // shortcut): opens the capture card into the project's backlog. Ignored
@@ -586,8 +616,15 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
             <TodosViewV2
               client={client}
               projectId={selectedProject.id}
+              // Keyboard nav is live only while no dialog floats above the
+              // list (V1's `active` contract).
+              active={taskDialog.mode === "closed"}
+              pendingDeleteIds={taskMutations.pendingDeleteIds}
               onOpenTask={openTask}
               onAddTask={openCapture}
+              onToggleDone={taskMutations.toggleDone}
+              onReorderTask={taskMutations.reorderTask}
+              onDeleteTask={taskMutations.deleteTaskWithUndo}
             />
           ) : (
             <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -606,10 +643,13 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
           projectId={selectedProject.id}
           row={dialogRow}
           backlog={dialogBacklog}
+          actions={dialogActions}
           onClose={closeTaskDialog}
           onCommitted={commitTaskDialog}
         />
       )}
+      {/* The undo-toast surface (V1's exact mount: sonner, bottom-right). */}
+      <Toaster richColors position="bottom-right" expand visibleToasts={6} />
       {/* Rendered last so its no-drag region is subtracted after the sidebar
           and titlebar drag regions are unioned (Electron resolves overlapping
           app-regions in DOM order — see V1's App shell). */}
