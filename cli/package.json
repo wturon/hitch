@@ -1,0 +1,26 @@
+{
+  "name": "@hitch/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-teaching `hitch` CLI — the agent access surface for the Hitch V2 server.",
+  "bin": {
+    "hitch": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hitch/shared": "*",
+    "fractional-indexing": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "3.2.4"
+  }
+}
