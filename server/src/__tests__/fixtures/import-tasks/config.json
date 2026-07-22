@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "tags": [
+    {
+      "id": "easy",
+      "color": "blue"
+    },
+    {
+      "id": "bug",
+      "color": "red"
+    }
+  ]
+}
