@@ -31,8 +31,10 @@ export function createAuth(db: Db) {
         rateLimit: { enabled: false },
       }),
     ],
-    // TODO(M2): add the Electron client's origin to trustedOrigins once the
-    // desktop app talks to this server (OAuth-loopback precedent: port 51789).
+    // No trustedOrigins needed: desktop auth runs in the Electron MAIN
+    // process via Node fetch, which sends no Origin header, and the renderer
+    // talks to the API with x-api-key only — no renderer origin ever hits
+    // /api/auth/*, so there is nothing to trust beyond the defaults.
   });
 }
 

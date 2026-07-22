@@ -368,6 +368,51 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       );
       expect(afterRemove).toEqual([]);
     });
+
+    it("embeds tagIds on list/get/create/patch responses, tracking link changes", async () => {
+      const project = await createProject(USER_A, "TagIds project");
+      const task = await createTask(USER_A, project.id, { title: "with tagIds" });
+      // Create responds with the uniform shape even though no links exist yet.
+      expect(task.tagIds).toEqual([]);
+
+      const tagA = await json(await api(USER_A, "POST", "/tags", { name: "ids-a", color: "olive" }));
+      const tagB = await json(await api(USER_A, "POST", "/tags", { name: "ids-b", color: "rust" }));
+      expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${tagA.id}`)).status).toBe(201);
+      expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${tagB.id}`)).status).toBe(201);
+
+      const got = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
+      expect(got.tagIds.sort()).toEqual([tagA.id, tagB.id].sort());
+
+      const listed = await json(await api(USER_A, "GET", `/tasks?project_id=${project.id}`));
+      const listedTask = listed.find((t: any) => t.id === task.id);
+      expect(listedTask.tagIds.sort()).toEqual([tagA.id, tagB.id].sort());
+
+      // Patch responses carry the current links alongside the updated row.
+      const patched = await json(await api(USER_A, "PATCH", `/tasks/${task.id}`, { title: "re" }));
+      expect(patched.title).toBe("re");
+      expect(patched.tagIds.sort()).toEqual([tagA.id, tagB.id].sort());
+
+      // Unlink shows up on the next read.
+      expect((await api(USER_A, "DELETE", `/tasks/${task.id}/tags/${tagA.id}`)).status).toBe(200);
+      const afterUnlink = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
+      expect(afterUnlink.tagIds).toEqual([tagB.id]);
+    });
+  });
+
+  describe("CORS", () => {
+    it("answers a renderer-style preflight with wildcard origin + x-api-key header", async () => {
+      const res = await app.request("/tasks", {
+        method: "OPTIONS",
+        headers: {
+          origin: "http://127.0.0.1:5173",
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "x-api-key",
+        },
+      });
+      expect(res.status).toBe(204);
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
+      expect(res.headers.get("access-control-allow-headers")?.toLowerCase()).toContain("x-api-key");
+    });
   });
 
   describe("comments", () => {

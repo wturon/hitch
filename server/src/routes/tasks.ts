@@ -1,12 +1,31 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, exists, type SQL } from "drizzle-orm";
+import { and, eq, exists, inArray, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 
 import { requireAuth } from "../auth.js";
-import type { AppEnv } from "../context.js";
+import type { AppEnv, Db } from "../context.js";
 import { projects, tasks, taskTags } from "../db/schema.js";
 import { idParam, taskCreate, taskListQuery, taskTagParams, taskUpdate } from "../validation.js";
 import { notFound, ownedProject, ownedSection, ownedTag, ownedTask } from "./helpers.js";
+
+// Every task response embeds `tagIds` so the client cache shape is uniform
+// and a task_tags change can invalidate plain ["tasks"] keys without a
+// follow-up links fetch. One grouped query per response — never N+1.
+async function tagIdsByTask(db: Db, taskIds: string[]) {
+  const map = new Map<string, string[]>();
+  if (taskIds.length === 0) return map;
+  const links = await db
+    .select({ taskId: taskTags.taskId, tagId: taskTags.tagId })
+    .from(taskTags)
+    .where(inArray(taskTags.taskId, taskIds))
+    .orderBy(taskTags.createdAt);
+  for (const { taskId, tagId } of links) {
+    const list = map.get(taskId);
+    if (list) list.push(tagId);
+    else map.set(taskId, [tagId]);
+  }
+  return map;
+}
 
 export const taskRoutes = new Hono<AppEnv>()
   .use(requireAuth)
@@ -33,7 +52,11 @@ export const taskRoutes = new Hono<AppEnv>()
       .innerJoin(projects, eq(tasks.projectId, projects.id))
       .where(and(...conds))
       .orderBy(tasks.sortOrder);
-    return c.json(rows.map((r) => r.task));
+    const tagIds = await tagIdsByTask(
+      db,
+      rows.map((r) => r.task.id),
+    );
+    return c.json(rows.map((r) => ({ ...r.task, tagIds: tagIds.get(r.task.id) ?? [] })));
   })
   .post("/", zValidator("json", taskCreate), async (c) => {
     const body = c.req.valid("json");
@@ -48,12 +71,14 @@ export const taskRoutes = new Hono<AppEnv>()
       }
     }
     const [row] = await db.insert(tasks).values(body).returning();
-    return c.json(row, 201);
+    // A fresh task can't have links yet — [] keeps the response shape uniform.
+    return c.json({ ...row, tagIds: [] as string[] }, 201);
   })
   .get("/:id", zValidator("param", idParam), async (c) => {
     const row = await ownedTask(c.var.db, c.var.userId, c.req.valid("param").id);
     if (!row) return c.json(notFound, 404);
-    return c.json(row);
+    const tagIds = await tagIdsByTask(c.var.db, [row.id]);
+    return c.json({ ...row, tagIds: tagIds.get(row.id) ?? [] });
   })
   .patch("/:id", zValidator("param", idParam), zValidator("json", taskUpdate), async (c) => {
     const { id } = c.req.valid("param");
@@ -98,9 +123,11 @@ export const taskRoutes = new Hono<AppEnv>()
       updates.completedAt = patch.status === "done" ? new Date() : null;
     }
 
-    if (Object.keys(updates).length === 0) return c.json(existing);
+    // The patch never touches links, so current tagIds are safe to read here.
+    const tagIds = (await tagIdsByTask(db, [id])).get(id) ?? [];
+    if (Object.keys(updates).length === 0) return c.json({ ...existing, tagIds });
     const [row] = await db.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
-    return c.json(row);
+    return c.json({ ...row, tagIds });
   })
   .delete("/:id", zValidator("param", idParam), async (c) => {
     const { id } = c.req.valid("param");
