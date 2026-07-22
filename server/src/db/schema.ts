@@ -254,3 +254,18 @@ export const attachments = pgTable(
     ),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Row types ($inferSelect) — re-exported through @hitch/server for shared/.
+// ---------------------------------------------------------------------------
+
+export type Project = typeof projects.$inferSelect;
+export type Section = typeof sections.$inferSelect;
+export type Task = typeof tasks.$inferSelect;
+export type Tag = typeof tags.$inferSelect;
+export type TaskTag = typeof taskTags.$inferSelect;
+export type Comment = typeof comments.$inferSelect;
+export type Machine = typeof machines.$inferSelect;
+export type Chat = typeof chats.$inferSelect;
+export type Assignment = typeof assignments.$inferSelect;
+export type Attachment = typeof attachments.$inferSelect;

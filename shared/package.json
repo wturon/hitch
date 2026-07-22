@@ -12,8 +12,12 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hitch/server": "*",
+    "hono": "^4.12.31"
   },
   "devDependencies": {
     "typescript": "^6.0.3"
