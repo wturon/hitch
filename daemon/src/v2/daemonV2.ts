@@ -21,6 +21,7 @@ import { setCmuxLogger, setCmuxTraceSink } from "../cmux.js";
 import { ChatStateObserver } from "../observer/index.js";
 import { ChatSync } from "./chatSync.js";
 import { resolveServerConfig } from "./config.js";
+import { createFakeLaunchers, isFakeLaunch } from "./fakeLauncher.js";
 import { ProjectsProvider } from "./projects.js";
 import { Reconciler } from "./reconciler.js";
 import { createServerClient } from "./serverClient.js";
@@ -234,6 +235,20 @@ export async function startHitchDaemonV2(
   // only observations. Triggers: a ~30s fallback tick (its own timer, parallel
   // to the heartbeat), a WS `assignments` invalidate ("look now"), and a WS
   // reconnect (a dropped socket may have missed invalidations — re-diff).
+  // Fake-launch mode (HITCH_FAKE_LAUNCH=1, test-only): swap the reconciler's
+  // launcher resolution for cmux-less stand-ins that script the chat lifecycle
+  // straight into the shared store. Unset → the seam is a no-op and the real
+  // registry runs. Isolate the store with HITCH_APP_SUPPORT_DIR so a fake daemon
+  // never touches the real chat-lifecycle.sqlite.
+  const fakeLaunch = isFakeLaunch(env)
+    ? createFakeLaunchers({ store, host: name, logger, env })
+    : null;
+  if (fakeLaunch) {
+    logger.info(
+      "[hitch] HITCH_FAKE_LAUNCH=1 — spawns are simulated (no cmux, no processes).",
+    );
+  }
+
   const reconciler = new Reconciler({
     client,
     store,
@@ -241,6 +256,7 @@ export async function startHitchDaemonV2(
     host: name,
     logger,
     tickMs: reconcileMs(env),
+    resolveLauncher: fakeLaunch?.resolve,
   });
   ws.onInvalidate("assignments", () => reconciler.trigger("ws-invalidate"));
   ws.onReconnect(() => reconciler.trigger("ws-reconnect"));
@@ -251,6 +267,7 @@ export async function startHitchDaemonV2(
     if (stopped) return;
     stopped = true;
     reconciler.stop();
+    fakeLaunch?.stop();
     clearInterval(heartbeat);
     clearInterval(relayTimer);
     ws.stop();

@@ -24,6 +24,7 @@
     "dev:all": "concurrently -n convex,desktop -c blue,green \"npm:dev:convex\" \"npm:dev:desktop\"",
     "dev:convex": "convex dev",
     "dev:daemon": "tsx daemon/src/index.ts",
+  "dev:v2-stack": "node scripts/dev-v2-stack.mjs",
     "dev:desktop": "npm -w desktop run dev",
     "dev:renderer": "npm -w desktop run dev:renderer",
     "dev:electron": "npm -w desktop run dev:electron",
