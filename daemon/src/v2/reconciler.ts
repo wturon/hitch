@@ -29,9 +29,17 @@ import type {
   ChatLifecycleStatus,
 } from "../chatLifecycleStore.js";
 import { CmuxError } from "../cmux.js";
-import { resolveLauncher } from "../launchers/registry.js";
-import type { Environment, Harness } from "../launchers/types.js";
+import { resolveLauncher as registryResolveLauncher } from "../launchers/registry.js";
+import type { Environment, Harness, Launcher } from "../launchers/types.js";
 import type { HitchClient } from "./serverClient.js";
+
+// The registry's resolveLauncher shape. Injectable (defaults to the registry) so
+// the fake-launch seam (M4 PR 4) can swap in cmux-less stand-ins without touching
+// any launcher-resolution call site here — zero behavior change when unset.
+export type LauncherResolver = (
+  harness: Harness,
+  environment?: Environment,
+) => Launcher | undefined;
 
 // Wire row shapes. The shared @hitch/shared row types are the Drizzle
 // $inferSelect shapes whose timestamp fields are Date; over the wire (JSON)
@@ -194,6 +202,12 @@ export interface ReconcilerOptions {
   /** Fallback reconcile cadence; parallels the heartbeat tick. Default 30_000. */
   tickMs?: number;
   now?: () => number;
+  /**
+   * Launcher resolver. Defaults to the real registry; the fake-launch daemon
+   * (HITCH_FAKE_LAUNCH=1) passes a cmux-less resolver here. When omitted the
+   * behavior is identical to calling the registry directly.
+   */
+  resolveLauncher?: LauncherResolver;
 }
 
 const DEFAULT_TICK_MS = 30_000;
@@ -224,6 +238,7 @@ export class Reconciler {
   private readonly logger: ReconcilerLogger;
   private readonly tickMs: number;
   private readonly now: () => number;
+  private readonly resolveLauncher: LauncherResolver;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -243,6 +258,7 @@ export class Reconciler {
     this.logger = options.logger;
     this.tickMs = options.tickMs ?? DEFAULT_TICK_MS;
     this.now = options.now ?? Date.now;
+    this.resolveLauncher = options.resolveLauncher ?? registryResolveLauncher;
   }
 
   // Start the fallback tick and run an initial pass.
@@ -385,7 +401,7 @@ export class Reconciler {
     const serverHarness = (a.harness as ServerHarness) ?? "claude";
     const harness = storeHarness(serverHarness);
     const environment: Environment = "cmux"; // Decision 5: always cmux for V2.
-    const launcher = resolveLauncher(harness, environment);
+    const launcher = this.resolveLauncher(harness, environment);
     if (!launcher?.startNew) {
       throw new Error(`no ${harness}/${environment} launcher with startNew`);
     }
@@ -522,7 +538,7 @@ export class Reconciler {
     const row = this.resolveStoreRow(a, chatsById);
     const sessionId = row?.chatId ?? this.sessionIdFromChat(a, chatsById);
     const harness = storeHarness((a.harness as ServerHarness) ?? "claude");
-    const launcher = resolveLauncher(harness, "cmux");
+    const launcher = this.resolveLauncher(harness, "cmux");
     if (sessionId && launcher?.close) {
       await launcher.close({
         sessionId,
