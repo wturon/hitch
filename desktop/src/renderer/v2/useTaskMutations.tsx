@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import type { HitchClient } from "@/lib/server/client";
 import { showUndoableToast } from "@/lib/undoToast";
+import { assignmentsToStopOnDone, type StoppableAssignment } from "./delegation";
 import { uncheckSortOrder } from "./listMutations";
 import {
   createPendingDeleteStore,
@@ -99,6 +100,30 @@ export function useTaskMutations(
     },
   });
 
+  // Close-on-done (Decision 3): a done-check also asks the task's live
+  // assignments to stop; the reconciler closes the tab and settles them to
+  // done. desired_state is the only field the client owns here. Its own
+  // invalidation refetches ["assignments"] so the list drops the row out of
+  // WORKING/NEEDS YOU once the daemon observes the close.
+  const stopAssignment = useMutation({
+    mutationFn: async (assignmentId: string) => {
+      const response = await client.assignments[":id"].$patch({
+        param: { id: assignmentId },
+        json: { desiredState: "stopped" },
+      });
+      // 404 = the assignment is already gone; the goal state holds either way.
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`Failed to stop assignment (${response.status})`);
+      }
+    },
+    onError: (error) => {
+      console.error("Failed to stop assignment on done-check", error);
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["assignments"] });
+    },
+  });
+
   const deleteTask = useMutation({
     mutationFn: async (taskId: string) => {
       const response = await client.tasks[":id"].$delete({ param: { id: taskId } });
@@ -158,6 +183,14 @@ export function useTaskMutations(
       patch: { status: "done" },
       optimistic: { status: "done", completedAt: new Date().toISOString() },
     });
+    // Close-on-done: stop the task's live assignments (read from the shared
+    // ["assignments"] cache the list populates). Undo (markOpen) deliberately
+    // does NOT restart them — re-delegation is explicit in the delegate bar.
+    const live = assignmentsToStopOnDone(
+      queryClient.getQueryData<StoppableAssignment[]>(["assignments"]),
+      task.id,
+    );
+    for (const assignmentId of live) stopAssignment.mutate(assignmentId);
     // Same rationale as V1: a done row drops into a truncated DONE group, so
     // an accidental check is a pain to walk back by hand. Undo re-runs the
     // uncheck, which also re-pins the row to the top of the backlog.

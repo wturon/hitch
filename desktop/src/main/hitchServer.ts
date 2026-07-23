@@ -72,6 +72,22 @@ export function initHitchServer(deps: HitchServerDeps): void {
   let attempt = 0;
   let wsEnabled = false;
   let wsConnected = false;
+  const WS_OPEN = 1; // WebSocket.OPEN
+
+  // Send a client message (e.g. a focus event) up the main-held socket. The
+  // renderer can't hold the api-key'd socket itself, so it hands the frame to
+  // main via IPC — the events half of the PRD's two-forms model (ephemeral,
+  // no ack; a closed socket just drops it). Returns whether it was sent.
+  const wsSend = (message: unknown): boolean => {
+    if (!socket || socket.readyState !== WS_OPEN) return false;
+    try {
+      socket.send(JSON.stringify(message));
+      return true;
+    } catch (error) {
+      deps.log("stderr", `Hitch server WS send failed: ${String(error)}`);
+      return false;
+    }
+  };
 
   // Connectivity truth for the renderer's unreachable banner: broadcast on
   // every transition, and answerable on demand (a reloaded renderer asks via
@@ -258,6 +274,7 @@ export function initHitchServer(deps: HitchServerDeps): void {
   ipcMain.handle("hitch-server:get-config", () => config);
   ipcMain.handle("hitch-server:get-api-key", () => activeCredentials()?.apiKey ?? null);
   ipcMain.handle("hitch-server:get-ws-status", () => wsConnected);
+  ipcMain.handle("hitch-server:ws-send", (_event, message: unknown) => wsSend(message));
   ipcMain.handle(
     "hitch-server:sign-in",
     (_event, input: { email: string; password: string }) =>

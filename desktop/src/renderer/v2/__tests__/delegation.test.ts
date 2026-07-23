@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assignmentsToStopOnDone,
   buildDelegatePreamble,
   composeDelegatePrompt,
   deriveBarState,
@@ -12,6 +13,7 @@ import {
   type AssignmentLike,
   type MachineLike,
   type ObservedState,
+  type StoppableAssignment,
 } from "../delegation";
 
 // A fixed clock so staleness math is deterministic.
@@ -190,5 +192,48 @@ describe("composeDelegatePrompt", () => {
 
   it("collapses to just the preamble for a blank instruction", () => {
     expect(composeDelegatePrompt(task, "   ")).toBe(buildDelegatePreamble(task));
+  });
+});
+
+describe("assignmentsToStopOnDone", () => {
+  const make = (
+    over: Partial<StoppableAssignment> & Pick<StoppableAssignment, "id" | "observedState">,
+  ): StoppableAssignment => ({
+    taskId: "t1",
+    desiredState: "running",
+    ...over,
+  });
+
+  it("stops live assignments for the task (running desire, non-terminal observed)", () => {
+    const rows: StoppableAssignment[] = [
+      make({ id: "a1", observedState: "running" }),
+      make({ id: "a2", observedState: "waiting_input" }),
+      make({ id: "a3", observedState: "spawning" }),
+      make({ id: "a4", observedState: "pending" }),
+    ];
+    expect(assignmentsToStopOnDone(rows, "t1").sort()).toEqual(["a1", "a2", "a3", "a4"]);
+  });
+
+  it("leaves terminal (done/dead) and already-stopped assignments alone", () => {
+    const rows: StoppableAssignment[] = [
+      make({ id: "done", observedState: "done" }),
+      make({ id: "dead", observedState: "dead" }),
+      make({ id: "stopped", observedState: "running", desiredState: "stopped" }),
+      make({ id: "live", observedState: "running" }),
+    ];
+    expect(assignmentsToStopOnDone(rows, "t1")).toEqual(["live"]);
+  });
+
+  it("scopes to the given task id", () => {
+    const rows: StoppableAssignment[] = [
+      make({ id: "mine", taskId: "t1", observedState: "running" }),
+      make({ id: "other", taskId: "t2", observedState: "running" }),
+    ];
+    expect(assignmentsToStopOnDone(rows, "t1")).toEqual(["mine"]);
+  });
+
+  it("returns [] for no assignments", () => {
+    expect(assignmentsToStopOnDone(undefined, "t1")).toEqual([]);
+    expect(assignmentsToStopOnDone([], "t1")).toEqual([]);
   });
 });

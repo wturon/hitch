@@ -31,6 +31,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getHitchServerBridge } from "@/lib/server/bridge";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import {
@@ -177,6 +178,22 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
     }
   }, [client, queryClient, latest]);
 
+  // Open chat (M4 PR 6): relay a focus EVENT to the assignment's machine — the
+  // ephemeral half of the two-forms model (PRD). client → main-held WS → server
+  // relay → daemon → cmux openChat + activateApp. Fire-and-forget: an
+  // undelivered event just evaporates (~30s reconcile never touches focus).
+  // Enabled once the daemon has linked a chat (chatId set at spawn).
+  const canOpenChat = latest?.chatId != null && latest?.machineId != null;
+  const openChat = useCallback(() => {
+    if (!latest?.chatId || !latest.machineId) return;
+    void getHitchServerBridge()?.wsSend({
+      type: "event",
+      event: "focus",
+      machineId: latest.machineId,
+      payload: { chatId: latest.chatId },
+    });
+  }, [latest]);
+
   const bandClass =
     "flex flex-col gap-2.5 rounded-b-xl border-t border-t-[#E8E8E8] bg-[#F9F9F9] px-5 pt-3 pb-3.5 dark:border-t-border dark:bg-muted/40";
 
@@ -194,23 +211,29 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
             <StatusChip info={chip} />
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            {/* Open chat — the focus relay lands in PR 6. Inert this PR:
-                aria-disabled (not `disabled`) so the tooltip still explains. */}
+            {/* Open chat — relays a focus event to the assignment's machine;
+                the daemon focuses (or resumes) the cmux tab and raises the app.
+                Disabled until the daemon has linked a chat (chatId set). */}
             <Tooltip>
               <TooltipTrigger
                 render={
                   <button
                     type="button"
-                    aria-disabled
+                    onClick={openChat}
+                    disabled={!canOpenChat}
                     aria-label="Open chat"
-                    className="flex h-8 cursor-not-allowed items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground/70"
+                    className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground hover:bg-black/5 disabled:cursor-not-allowed disabled:text-muted-foreground/60 disabled:hover:bg-transparent dark:hover:bg-white/5"
                   />
                 }
               >
                 <ArrowUpRight className="size-3.5" />
                 Open chat
               </TooltipTrigger>
-              <TooltipContent>Opening the chat lands in the next update.</TooltipContent>
+              <TooltipContent>
+                {canOpenChat
+                  ? "Bring the chat forward in cmux"
+                  : "Waiting for the agent's chat to start…"}
+              </TooltipContent>
             </Tooltip>
             <button
               type="button"
@@ -263,7 +286,10 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
 function StatusChip({ info }: { info: ChipInfo }) {
   if (info.tone === "needs-you") {
     return (
-      <span className="inline-flex items-center gap-1.5 text-[13px] font-medium text-amber-700 dark:text-amber-500/90">
+      <span
+        data-testid="v2-delegate-chip"
+        className="inline-flex items-center gap-1.5 text-[13px] font-medium text-amber-700 dark:text-amber-500/90"
+      >
         <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
         {info.label}
       </span>
@@ -271,7 +297,10 @@ function StatusChip({ info }: { info: ChipInfo }) {
   }
   const spinning = info.tone === "spawning" || info.tone === "working";
   return (
-    <span className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
+    <span
+      data-testid="v2-delegate-chip"
+      className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground"
+    >
       {spinning ? (
         <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
       ) : info.tone === "done" ? (

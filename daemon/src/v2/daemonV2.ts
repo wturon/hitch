@@ -22,6 +22,7 @@ import { ChatStateObserver } from "../observer/index.js";
 import { ChatSync } from "./chatSync.js";
 import { resolveServerConfig } from "./config.js";
 import { createFakeLaunchers, isFakeLaunch } from "./fakeLauncher.js";
+import { createFocusHandler } from "./focus.js";
 import { ProjectsProvider } from "./projects.js";
 import { Reconciler } from "./reconciler.js";
 import { createServerClient } from "./serverClient.js";
@@ -165,11 +166,8 @@ export async function startHitchDaemonV2(
     logger,
   });
 
-  // PR 1 wires the focus handler to a log line only; PR 6 makes it drive
-  // cmux openChat + activateApp.
-  ws.onEvent("focus", (message) => {
-    logger.info(`[hitch] focus event received: ${JSON.stringify(message.payload ?? null)}`);
-  });
+  // The focus event handler (PR 6) is wired after the fake-launch decision
+  // below, so fake mode can log instead of shelling to a cmux that isn't there.
 
   // --- Chat-state relay (PR 2) ----------------------------------------------
   // Mirrors daemon.ts: a machine-wide chat-state observer writes discovered
@@ -248,6 +246,26 @@ export async function startHitchDaemonV2(
       "[hitch] HITCH_FAKE_LAUNCH=1 — spawns are simulated (no cmux, no processes).",
     );
   }
+
+  // --- Focus relay (PR 6) ---------------------------------------------------
+  // A focus event resolves the server chat's cmux session and drives cmux
+  // openChat + activateApp. Fake mode injects a logging no-op so a headless run
+  // never shells to cmux (the acceptance e2e asserts against this log line).
+  ws.onEvent(
+    "focus",
+    createFocusHandler({
+      client,
+      machineId,
+      logger,
+      focus: fakeLaunch
+        ? async (spec) => {
+            logger.info(
+              `[hitch] fake-focus: would open session ${spec.sessionId.slice(0, 8)} in cmux (no-op)`,
+            );
+          }
+        : undefined,
+    }),
+  );
 
   const reconciler = new Reconciler({
     client,

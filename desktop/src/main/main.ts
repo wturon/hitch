@@ -2581,10 +2581,44 @@ function startDaemon(): DaemonState {
     return state();
   }
 
+  // V2 (HITCH_SERVER_URL) mode: the daemon reconciles against the Hono server,
+  // not Convex, so it needs no local hitches — bypass the empty-hitches idle
+  // guard below and pass the server URL + stored api key explicitly (the
+  // daemon's config.ts can also fall back to secrets.json, but explicit env is
+  // deterministic and honors the isolated-store rule). Idle until signed in.
+  // When HITCH_SERVER_URL is absent, serverEnv stays null and the V1 path below
+  // is byte-identical.
+  const serverUrl = process.env.HITCH_SERVER_URL?.trim();
+  let serverEnv: Record<string, string> | null = null;
+  if (serverUrl) {
+    // Test-only escape hatch: the M4 acceptance e2e runs its OWN fake daemon
+    // (isolated store, api key from the signed-in secrets) and disables the
+    // app-managed one so there's exactly one daemon per machine. Never set in
+    // normal use — the V1 path can't reach this branch (no HITCH_SERVER_URL).
+    if (process.env.HITCH_DISABLE_APP_DAEMON === "1") {
+      addLog("system", "Hitch server mode: app-managed daemon disabled (HITCH_DISABLE_APP_DAEMON).");
+      setStatus("stopped");
+      return state();
+    }
+    const normalizedUrl = serverUrl.replace(/\/+$/, "");
+    const creds = readLocalSecrets().hitchServer;
+    if (creds?.apiKey && creds.serverUrl === normalizedUrl) {
+      serverEnv = { HITCH_SERVER_URL: serverUrl, HITCH_API_KEY: creds.apiKey };
+    } else {
+      addLog(
+        "system",
+        "Hitch server mode: not signed in yet — daemon idle until you sign in.",
+      );
+      setStatus("stopped");
+      return state();
+    }
+  }
+
   // Nothing hitched yet (the normal fresh-install state): stay idle instead of
   // spawning a daemon that would immediately error on an empty config. The user
-  // adds a project via the UI, which calls addHitch -> restartDaemon.
-  if (config.hitches.filter((hitch) => hitch.enabled).length === 0) {
+  // adds a project via the UI, which calls addHitch -> restartDaemon. Server
+  // mode has no hitches concept, so this guard applies to V1 only.
+  if (!serverEnv && config.hitches.filter((hitch) => hitch.enabled).length === 0) {
     addLog("system", "No projects hitched yet — daemon idle. Add a project to start syncing.");
     setStatus("stopped");
     return state();
@@ -2604,6 +2638,8 @@ function startDaemon(): DaemonState {
       // Point the daemon at the baked prod Convex deployment when present.
       ...(bakedConvexUrl ? { CONVEX_URL: bakedConvexUrl } : {}),
       ...(deviceToken ? { HITCH_DEVICE_TOKEN: deviceToken } : {}),
+      // V2 mode: the server URL + api key the reconciler authenticates with.
+      ...(serverEnv ?? {}),
     },
     stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
