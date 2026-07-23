@@ -98,8 +98,13 @@ All user-data tables carry `user_id` FK → better-auth user.
   is in `files/documents.jsonl` (1.7MB — tasks are file rows in Convex's file-sync model).
   Her data is safe; nothing is irreversible anymore.
 - ✅ Docker Desktop running on Will's Mac.
-- ⏳ Railway: NOT set up. Will must run `! railway login` when we reach deploy (step 8); then Claude
-  creates project + Postgres + Bucket via CLI.
+- ✅ Railway LIVE (2026-07-22): project `hitch` (personal workspace, Hobby plan), services:
+  server (https://server-production-33a4.up.railway.app, Dockerfile deploy via `railway up`),
+  Postgres, bucket `attachments` (S3: t3.storageapi.dev, virtual-host style → S3_FORCE_PATH_STYLE
+  =false, unlike Garage). Migrations ran on boot; WS listener up; smoke test green (sign-up →
+  api key → project → task, body verbatim). Gotchas: staged env changes need
+  `environmentPatchCommitStaged` via `railway api` (no CLI command); free tier blocked peak-hour
+  deploys → Hobby. Smoke user smoke@test.hitch left in prod DB (harmless; delete at M5 import).
 
 ## Repo context
 
@@ -116,7 +121,7 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
 ## Milestones
 
 - [x] **M0 — All decisions closed** (2026-07-22)
-- [ ] **M1 — Server up** (steps 1–7 DONE 2026-07-22, PRs #86–#92; step 8 pending):
+- [x] **M1 — Server up** (COMPLETE 2026-07-22; steps 1–7 PRs #86–#92, step 8 deployed):
   1. [x] Workspace scaffold (PR #86)
   2. [x] Drizzle schema + migrations + NOTIFY/updated_at triggers (PR #87)
   3. [x] Hono CRUD + zod + typed client (PR #88)
@@ -124,8 +129,7 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   5. [x] WS layer: invalidation broadcast + ephemeral event relay (PR #90)
   6. [x] Dockerfile + compose (server+postgres:16+Garage) + attachments presigned flow (PR #91)
   7. [x] Importer with --dry-run default (PR #92)
-  8. [ ] Railway deploy (needs Will: `railway login`; then create project + Postgres + Bucket via
-     CLI, set BETTER_AUTH_SECRET/URL + S3_* env, deploy from server/Dockerfile, run a smoke curl)
+  8. [x] Railway deploy — LIVE at https://server-production-33a4.up.railway.app (see Environment status)
   All local verification done: 50 server tests (Docker-backed postgres+Garage), composed-stack
   curl transcript (sign-up→task→upload→download), WS invalidate + relay observed by test clients.
 - [x] **M2 — Desktop on server** (DONE 2026-07-22, PRs #93–#100; plan + per-PR detail in
