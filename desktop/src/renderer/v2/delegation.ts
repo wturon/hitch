@@ -9,6 +9,17 @@
 // Harness type and its model/effort catalog stay out of this path (V2
 // assignments carry only a harness — the daemon owns model/effort at spawn).
 
+import {
+  defaultModel,
+  defaultReasoning,
+  MODELS_BY_HARNESS,
+  modelLabel,
+  reasoningLabel,
+  reasoningOptions,
+  type Harness as CatalogHarness,
+  type LaunchOption,
+} from "@/lib/chat";
+
 // The server harness enum (mirror of pgEnum("harness", ...)). Kept as a local
 // literal so this module has no server-package import in its type surface.
 export type ServerHarness = "claude" | "codex";
@@ -16,6 +27,53 @@ export const SERVER_HARNESSES: readonly ServerHarness[] = ["claude", "codex"];
 
 export function serverHarnessLabel(harness: ServerHarness): string {
   return harness === "codex" ? "Codex" : "Claude Code";
+}
+
+// ─── Model / effort catalog (reused from V1) ─────────────────────────────────
+//
+// V2 carries model + effort on the assignment again (the daemon passes them to
+// the launcher argv). Rather than fork the catalog, we REUSE V1's single source
+// of truth in lib/chat — the only impedance is the harness naming: the V2 server
+// enum is `claude | codex`, V1's is `claude-code | codex`. catalogHarness maps
+// one to the other; every wrapper below speaks the V2 name so the composer/UI
+// never touch the V1 vocabulary.
+
+export function catalogHarness(harness: ServerHarness): CatalogHarness {
+  return harness === "codex" ? "codex" : "claude-code";
+}
+
+// Models offered for a V2 harness, in catalog order. Each carries {id, label}.
+export function modelsForHarness(harness: ServerHarness): LaunchOption[] {
+  return MODELS_BY_HARNESS[catalogHarness(harness)];
+}
+
+export function defaultModelFor(harness: ServerHarness): string {
+  return defaultModel(catalogHarness(harness));
+}
+
+export function modelLabelFor(harness: ServerHarness, model: string): string {
+  return modelLabel(catalogHarness(harness), model);
+}
+
+// Reasoning/effort options for a (harness, model) pair — model-specific where the
+// catalog defines it (e.g. Codex GPT-5.6 adds none/max), else the harness ladder.
+export function reasoningOptionsFor(
+  harness: ServerHarness,
+  model: string,
+): LaunchOption[] {
+  return reasoningOptions(catalogHarness(harness), model);
+}
+
+export function defaultReasoningFor(harness: ServerHarness, model: string): string {
+  return defaultReasoning(catalogHarness(harness), model);
+}
+
+export function reasoningLabelFor(
+  harness: ServerHarness,
+  effort: string,
+  model: string,
+): string {
+  return reasoningLabel(catalogHarness(harness), effort, model);
 }
 
 // The daemon-written lifecycle of an assignment (mirror of
@@ -273,31 +331,69 @@ export function composeDelegatePrompt(
 
 // ─── Last-agent seed (V2-local) ──────────────────────────────────────────────
 
-// V2 stores only the harness (no model/effort), so it keeps its OWN last-agent
-// key rather than sharing V1's hitch:last-agent blob — the two never collide,
-// and a V2 delegation can't rewrite a V1 model/effort choice.
-const V2_LAST_HARNESS_KEY = "hitch:v2:last-harness";
+// V2 keeps its OWN last-agent key rather than sharing V1's hitch:last-agent blob
+// — the two never collide, and a V2 delegation can't rewrite a V1 choice. The
+// key name is historical (it once stored just the harness); it now holds the
+// full {harness, model, effort} triple as JSON. A legacy bare-harness string is
+// still read (below) so an existing user's harness choice survives the upgrade.
+const V2_LAST_AGENT_KEY = "hitch:v2:last-harness";
 
 function isServerHarness(value: unknown): value is ServerHarness {
   return value === "claude" || value === "codex";
 }
 
-// The bar seeds its agent picker from the user's last V2 delegation, falling
-// back to Claude Code. Guarded for the no-window (test node) path.
-export function loadLastHarness(): ServerHarness {
-  if (typeof window === "undefined") return "claude";
+// The (harness, model, effort) triple the V2 bar launches with, persisted as one
+// blob so the bar reopens on the user's last choice instead of a hardcoded
+// default (V1 parity — see AgentChoice in lib/chat).
+export interface V2AgentChoice {
+  harness: ServerHarness;
+  model: string;
+  effort: string;
+}
+
+export function defaultV2AgentChoice(): V2AgentChoice {
+  const harness: ServerHarness = "claude";
+  const model = defaultModelFor(harness);
+  return { harness, model, effort: defaultReasoningFor(harness, model) };
+}
+
+// Read the last-used agent, validating every field against the CURRENT catalog —
+// a build that dropped a model or renamed an effort must never seed the bar with
+// a stale value, so each unknown piece falls back to its default (an unknown
+// harness resets the whole triple). Falls back to Claude Code. Guarded for the
+// no-window (test node) path.
+export function loadLastAgent(): V2AgentChoice {
+  if (typeof window === "undefined") return defaultV2AgentChoice();
   try {
-    const raw = window.localStorage.getItem(V2_LAST_HARNESS_KEY);
-    return isServerHarness(raw) ? raw : "claude";
+    const raw = window.localStorage.getItem(V2_LAST_AGENT_KEY);
+    if (!raw) return defaultV2AgentChoice();
+    // Legacy value: a bare harness string ("claude" | "codex") from the
+    // harness-only era. Adopt the harness, default model + effort.
+    if (isServerHarness(raw)) {
+      const harness = raw;
+      const model = defaultModelFor(harness);
+      return { harness, model, effort: defaultReasoningFor(harness, model) };
+    }
+    const parsed = JSON.parse(raw) as Partial<V2AgentChoice>;
+    const harness = isServerHarness(parsed.harness) ? parsed.harness : "claude";
+    const model = modelsForHarness(harness).some((m) => m.id === parsed.model)
+      ? (parsed.model as string)
+      : defaultModelFor(harness);
+    const effort = reasoningOptionsFor(harness, model).some(
+      (r) => r.id === parsed.effort,
+    )
+      ? (parsed.effort as string)
+      : defaultReasoningFor(harness, model);
+    return { harness, model, effort };
   } catch {
-    return "claude";
+    return defaultV2AgentChoice();
   }
 }
 
-export function saveLastHarness(harness: ServerHarness): void {
+export function saveLastAgent(choice: V2AgentChoice): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(V2_LAST_HARNESS_KEY, harness);
+    window.localStorage.setItem(V2_LAST_AGENT_KEY, JSON.stringify(choice));
   } catch {
     // Private-mode / quota failures are non-fatal — we just don't remember.
   }

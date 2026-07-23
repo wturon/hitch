@@ -152,6 +152,11 @@ export const assignmentCreate = z.strictObject({
   machineId: z.uuid(),
   harness: harnessSchema,
   prompt: z.string().optional(),
+  // Kickoff-only launch params (mirror the nullable schema columns). Optional
+  // AND nullable: omitting them, or passing null, means "harness default" — the
+  // daemon falls back to the launcher's argv defaults (today's behavior).
+  model: z.string().nullable().optional(),
+  effort: z.string().nullable().optional(),
   desiredState: desiredStateSchema.default("running"),
 });
 

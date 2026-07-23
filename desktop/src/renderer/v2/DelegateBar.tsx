@@ -7,6 +7,7 @@ import {
   ChevronUp,
   CircleAlertIcon,
   CircleCheckIcon,
+  GaugeIcon,
   LoaderCircle,
   MonitorIcon,
   PencilIcon,
@@ -38,7 +39,11 @@ import {
   composeDelegatePrompt,
   deriveBarState,
   machineAvailability,
+  modelLabelFor,
+  modelsForHarness,
   observedStateChip,
+  reasoningLabelFor,
+  reasoningOptionsFor,
   selectLatestAssignment,
   serverHarnessLabel,
   SERVER_HARNESSES,
@@ -128,7 +133,7 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
 
   // POST /assignments — the composed prompt is built here (current title/body).
   const onStart = useCallback(
-    async ({ harness, prompt }: DelegateStartParams) => {
+    async ({ harness, model, effort, prompt }: DelegateStartParams) => {
       if (!selectedMachineId) throw new Error("No machine selected");
       const composed = composeDelegatePrompt({ id: taskId, title, body }, prompt);
       const response = await client.assignments.$post({
@@ -136,6 +141,11 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
           taskId,
           machineId: selectedMachineId,
           harness,
+          // Kickoff-only launch params; the daemon passes them to the launcher
+          // argv. Null/undefined would fall back to the harness default, but the
+          // compose UI always has a concrete selection.
+          model,
+          effort,
           prompt: composed,
           desiredState: "running",
         },
@@ -495,6 +505,57 @@ function ComposeControls({
                 <SelectItem key={h} value={h}>
                   <HarnessIcon harness={iconHarness(h)} className="size-3.5" />
                   {serverHarnessLabel(h)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Model — the harness's model catalog (reused from V1). Picking a
+              model routes through chooseAgent so effort resets to its default. */}
+          <Select
+            value={composer.model}
+            onValueChange={(value) =>
+              composer.chooseAgent(`${composer.harness}|${value}`)
+            }
+          >
+            <SelectTrigger aria-label="Model" className={chip}>
+              <SelectValue>
+                {(value: string) => (
+                  <span className="text-[13px] text-[#717171] dark:text-muted-foreground">
+                    {modelLabelFor(composer.harness, value)}
+                  </span>
+                )}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {modelsForHarness(composer.harness).map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Reasoning/effort — harness+model specific. Always enabled in V2:
+              the reconciler spawns into cmux, which honors launch params. */}
+          <Select
+            value={composer.effort}
+            onValueChange={(value) => composer.setEffort(value as string)}
+          >
+            <SelectTrigger aria-label="Reasoning effort" className={chip}>
+              <GaugeIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <SelectValue>
+                {(value: string) => (
+                  <span className="text-[13px] text-[#717171] dark:text-muted-foreground">
+                    {reasoningLabelFor(composer.harness, value, composer.model)}
+                  </span>
+                )}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {reasoningOptionsFor(composer.harness, composer.model).map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {r.label}
                 </SelectItem>
               ))}
             </SelectContent>
