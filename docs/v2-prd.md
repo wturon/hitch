@@ -232,3 +232,9 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
     folder?" prompt can appear when the reconciler spawns into a repoPath the agent hasn't seen,
     stalling the spawn on human input — the fake-launch path never exercises it. Flagged, not
     auto-handled (revisit if it bites during Will's M5 dogfood).
+- 2026-07-23 — REAL IMPORT into Railway prod DONE (pulled forward from M5): pass 1 export zip
+  minus Hitch (6 projects, 58 tasks), pass 2 live .hitch/tasks → Hitch (98 tasks, 4 tags, 54
+  links). Verified: 156 tasks total, 98/98 Hitch bodies byte-exact vs source files. Smoke user
+  deleted. Importer flags --skip-project/--allow-existing + scripts/sync-local-from-prod.mjs
+  (npm run db:sync-from-prod, read-only-against-prod by construction) merged in PR #109.
+  M5 remaining = the deletion cutover only (convex/, file sync, V1 surfaces) after dogfooding.
