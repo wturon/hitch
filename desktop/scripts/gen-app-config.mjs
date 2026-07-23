@@ -19,11 +19,17 @@ const serverUrl = (
   .trim()
   .replace(/\/+$/, "");
 
+// Fail closed: a packaged build with no server URL cannot sign in or start the
+// reconciler, so refuse to produce one rather than shipping a dead app.
 if (!serverUrl) {
-  console.warn(
-    "[gen-app-config] WARNING: no HITCH_SERVER_URL set. " +
-      "The packaged app will have no server URL baked in.",
+  console.error(
+    "[gen-app-config] ERROR: HITCH_SERVER_URL is not set.\n" +
+      "  A packaged build needs the prod server URL baked in. Set it in the\n" +
+      "  release environment (e.g. ../.env.production), for example:\n" +
+      "    HITCH_SERVER_URL=https://server-production-33a4.up.railway.app\n" +
+      "  Then re-run `npm run package`.",
   );
+  process.exit(1);
 }
 
 mkdirSync(outDir, { recursive: true });

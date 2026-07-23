@@ -42,15 +42,12 @@ export function harnessLabel(harness: Harness): string {
 // settings UI models this axis explicitly so future environments (e.g. the VS Code
 // extension) slot in without reshaping the mental model. Keep in sync with the
 // daemon's launcher registry.
-export type Environment = "cmux" | "codex-app" | "vscode" | "cursor" | "t3code";
+export type Environment = "cmux" | "codex-app" | "vscode" | "cursor";
 
 export interface EnvironmentOption {
   id: Environment;
   label: string;
 }
-
-export const T3CODE_BLOCKED_REASON =
-  "blocked until programmatic chat focusing is enabled by the maintainers";
 
 export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
   "claude-code": [
@@ -66,13 +63,7 @@ export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
   ],
 };
 
-// T3Code remains in the Environment type so old task metadata can be read, but
-// it is intentionally absent from selectable options until upstream supports
-// programmatic chat focusing.
-export function environmentOptions(
-  harness: Harness,
-  _opts?: { experimentalT3Code?: boolean },
-): EnvironmentOption[] {
+export function environmentOptions(harness: Harness): EnvironmentOption[] {
   return ENVIRONMENTS_BY_HARNESS[harness];
 }
 
@@ -88,8 +79,6 @@ export function environmentLabel(env: Environment): string {
       return "VS Code extension";
     case "cursor":
       return "Cursor extension";
-    case "t3code":
-      return "T3Code (experimental)";
     default:
       return "cmux (TUI)";
   }
@@ -100,8 +89,7 @@ export function isEnvironment(value: string): value is Environment {
     value === "cmux" ||
     value === "codex-app" ||
     value === "vscode" ||
-    value === "cursor" ||
-    value === "t3code"
+    value === "cursor"
   );
 }
 

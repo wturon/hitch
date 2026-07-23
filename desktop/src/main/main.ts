@@ -5,7 +5,6 @@ import {
   type ChildProcess,
 } from "node:child_process";
 import {
-  appendFileSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -21,7 +20,6 @@ import {
   app,
   BrowserWindow,
   clipboard,
-  dialog,
   ipcMain,
   nativeImage,
   nativeTheme,
@@ -43,7 +41,6 @@ import {
 } from "./hitchServer.js";
 
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
-type ProjectId = string;
 
 interface KeepAwakeState {
   enabled: boolean;
@@ -57,63 +54,6 @@ interface LogEntry {
   at: string;
   stream: "system" | "stdout" | "stderr";
   message: string;
-}
-
-interface ProjectConflict {
-  projectId: string;
-  projectName?: string;
-  localPath: string;
-  diskProjectId: string;
-}
-
-interface DaemonState {
-  status: DaemonStatus;
-  pid: number | null;
-  repoRoot: string;
-  configPath: string;
-  logs: LogEntry[];
-  conflicts: ProjectConflict[];
-}
-
-interface HitchBinding {
-  projectId: ProjectId;
-  projectName?: string;
-  localPath: string;
-  enabled: boolean;
-}
-
-interface LocalHitchConfig {
-  hitches: HitchBinding[];
-}
-
-interface AddHitchInput {
-  projectId: ProjectId;
-  projectName?: string;
-  localPath: string;
-  updateGitignore?: boolean;
-}
-
-interface AddHitchResult {
-  config: LocalHitchConfig;
-  gitignoreUpdated: boolean;
-  restarted: boolean;
-}
-
-interface RemoveHitchResult {
-  config: LocalHitchConfig;
-  removed: boolean;
-  restarted: boolean;
-}
-
-interface ProjectSetupStatus {
-  projectId: ProjectId;
-  hitch: HitchBinding | null;
-  localPathExists: boolean;
-  hitchPath: string | null;
-  hitchPathExists: boolean;
-  gitignorePath: string | null;
-  gitignoreExists: boolean;
-  gitignoreHasHitch: boolean;
 }
 
 type Harness = "codex" | "claude-code";
@@ -182,7 +122,6 @@ const localSecretsPath =
 // daemon reads the same file to resolve which launcher to use.
 const localPreferencesPath =
   process.env.HITCH_PREFERENCES_PATH ?? join(appSupportDir, "preferences.json");
-const PROJECT_CONFIG_FILENAME = "project.json";
 const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
 const run = promisify(execFile);
@@ -626,11 +565,6 @@ let status: DaemonStatus = "stopped";
 let nextLogId = 1;
 const logs: LogEntry[] = [];
 const maxLogs = 500;
-// Folders the running daemon refused to sync because their project.json points
-// at a different project (e.g. a folder shared between the dev and prod Convex
-// deployments). Repopulated from each daemon "ready" message; the renderer
-// surfaces an override prompt. See handleRunnerMessage / resolveProjectConflict.
-let conflicts: ProjectConflict[] = [];
 let stopTimer: NodeJS.Timeout | null = null;
 let quitAfterDaemonStops = false;
 let updaterConfigured = false;
@@ -681,27 +615,9 @@ function setUpdaterStatus(patch: Partial<UpdaterStatus>): void {
   }
 }
 
-function state(): DaemonState {
-  return {
-    status,
-    pid: daemon?.pid ?? null,
-    repoRoot,
-    configPath: localConfigPath,
-    logs,
-    conflicts,
-  };
-}
-
-function broadcastState(): void {
-  // During quitAndInstall the window's webContents is destroyed before the
-  // daemon's exit handler fires its final setStatus, so guard against a
-  // destroyed window — `mainWindow?` alone stays truthy and would throw
-  // "Object has been destroyed".
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("daemon:state", state());
-  }
-}
-
+// Append to the in-process log buffer. These logs are no longer streamed to the
+// renderer (the V1 daemon:state broadcast is gone); the buffer is retained so
+// the daemon-lifecycle code and hitchServer callbacks keep a single logging sink.
 function addLog(stream: LogEntry["stream"], message: string): void {
   for (const line of message.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -713,12 +629,10 @@ function addLog(stream: LogEntry["stream"], message: string): void {
     });
   }
   if (logs.length > maxLogs) logs.splice(0, logs.length - maxLogs);
-  broadcastState();
 }
 
 function setStatus(next: DaemonStatus): void {
   status = next;
-  broadcastState();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -778,101 +692,6 @@ function readBakedServerUrl(): string | undefined {
     // No baked config — dev relies on the HITCH_SERVER_URL env var instead.
   }
   return undefined;
-}
-
-function emptyLocalConfig(): LocalHitchConfig {
-  return { hitches: [] };
-}
-
-function ensureLocalConfig(): void {
-  const repoConfigPath = join(repoRoot, "hitch.config.json");
-  const wasExisting = existsSync(localConfigPath);
-  const sourcePath = wasExisting ? localConfigPath : repoConfigPath;
-  if (!existsSync(sourcePath)) {
-    // Fresh install: no local config and no dev repo fallback. Bootstrap an
-    // empty config so the UI (readLocalConfig / addHitch) works and the user can
-    // hitch their first project; the daemon stays idle until a hitch exists.
-    const emptyConfig = emptyLocalConfig();
-    mkdirSync(dirname(localConfigPath), { recursive: true });
-    writeFileSync(
-      localConfigPath,
-      `${JSON.stringify(emptyConfig, null, 2)}\n`,
-      "utf8",
-    );
-    addLog("system", `Created empty Hitch config at ${localConfigPath}`);
-    return;
-  }
-
-  const existingText = readFileSync(sourcePath, "utf8");
-  let localConfig: LocalHitchConfig;
-  try {
-    localConfig = normalizeLocalConfig(JSON.parse(existingText) as unknown);
-  } catch (err) {
-    localConfig = emptyLocalConfig();
-    addLog(
-      "system",
-      `Discarded old Hitch config at ${sourcePath}: ${String(err)}`,
-    );
-  }
-  const nextText = `${JSON.stringify(localConfig, null, 2)}\n`;
-  if (wasExisting && existingText === nextText) return;
-
-  mkdirSync(dirname(localConfigPath), { recursive: true });
-  writeFileSync(localConfigPath, nextText, "utf8");
-  addLog(
-    "system",
-    wasExisting
-      ? `Migrated local Hitch config at ${localConfigPath}`
-      : `Created local Hitch config at ${localConfigPath}`,
-  );
-}
-
-function normalizeLocalConfig(raw: unknown): LocalHitchConfig {
-  if (!isRecord(raw)) throw new Error("expected Hitch config object");
-  if (!Array.isArray(raw.hitches)) throw new Error("hitches must be an array");
-
-  const hitches = raw.hitches.map((entry, index): HitchBinding => {
-    if (!isRecord(entry)) throw new Error(`hitches[${index}] must be an object`);
-    const projectId =
-      typeof entry.projectId === "string" ? entry.projectId.trim() : "";
-    const projectName =
-      typeof entry.projectName === "string" && entry.projectName.trim()
-        ? entry.projectName.trim()
-        : undefined;
-    const localPath =
-      typeof entry.localPath === "string"
-        ? resolve(entry.localPath)
-        : typeof entry.repoPath === "string"
-          ? resolve(entry.repoPath)
-          : typeof entry.hitchPath === "string"
-            ? resolve(resolve(entry.hitchPath), "..")
-            : "";
-    const enabled = entry.enabled !== false;
-
-    if (!projectId) throw new Error(`hitches[${index}].projectId is required`);
-    if (!localPath) throw new Error(`hitches[${index}].localPath is required`);
-
-    return { projectId, projectName, localPath, enabled };
-  });
-
-  return { hitches };
-}
-
-function readLocalConfig(): LocalHitchConfig {
-  ensureLocalConfig();
-  return normalizeLocalConfig(
-    JSON.parse(readFileSync(localConfigPath, "utf8")) as unknown,
-  );
-}
-
-function writeLocalConfig(config: LocalHitchConfig): LocalHitchConfig {
-  mkdirSync(dirname(localConfigPath), { recursive: true });
-  writeFileSync(
-    localConfigPath,
-    `${JSON.stringify(normalizeLocalConfig(config), null, 2)}\n`,
-    "utf8",
-  );
-  return readLocalConfig();
 }
 
 function readLocalSecrets(): LocalSecrets {
@@ -952,55 +771,6 @@ function setHarnessEnvironment(
   }
   const next = { ...readHarnessEnvironments(), [harness]: environment };
   writePreferences({ harnessEnvironments: next });
-  return next;
-}
-
-// Small model Hitch drives to auto-title tasks. Two rails: "gpt-5.4-mini" (Codex,
-// the default) and "claude-haiku-4-5" (Claude Code). The daemon reads this fresh
-// per command from the same preferences.json; a missing/unknown value is the
-// codex default there too, so reads and writes normalize to the known set.
-const DEFAULT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
-function readTextGenerationModel(): string {
-  const stored = readPreferences().textGenerationModel;
-  return stored === "gpt-5.4-mini" || stored === "claude-haiku-4-5"
-    ? stored
-    : DEFAULT_TEXT_GENERATION_MODEL;
-}
-
-function setTextGenerationModel(model: string): string {
-  const next =
-    model === "claude-haiku-4-5" ? "claude-haiku-4-5" : DEFAULT_TEXT_GENERATION_MODEL;
-  writePreferences({ textGenerationModel: next });
-  return next;
-}
-
-// Opt-in experimental feature flags. T3Code is currently hard-blocked, so reads
-// and writes always normalize it to false.
-function readExperimentalFlags(): Record<string, boolean> {
-  const stored = readPreferences().experimental;
-  if (!isRecord(stored)) return { t3code: false };
-  return {
-    ...Object.fromEntries(
-      Object.entries(stored).filter(
-        (entry): entry is [string, boolean] =>
-          typeof entry[0] === "string" && typeof entry[1] === "boolean",
-      ),
-    ),
-    t3code: false,
-  };
-}
-
-function setExperimentalFlag(
-  key: string,
-  enabled: boolean,
-): Record<string, boolean> {
-  if (key === "t3code") {
-    const next = { ...readExperimentalFlags(), t3code: false };
-    writePreferences({ experimental: next });
-    return next;
-  }
-  const next = { ...readExperimentalFlags(), [key]: enabled };
-  writePreferences({ experimental: next });
   return next;
 }
 
@@ -1134,146 +904,6 @@ function setStartingPrompts(prompts: unknown): StoredStartingPrompt[] {
     : [];
   writePreferences({ startingPrompts: sanitized });
   return readStartingPrompts();
-}
-
-function updateGitignore(localPath: string): boolean {
-  const gitignorePath = join(localPath, ".gitignore");
-  const existing = existsSync(gitignorePath)
-    ? readFileSync(gitignorePath, "utf8")
-    : "";
-  if (
-    existing
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .some((line) => line === ".hitch/" || line === ".hitch")
-  ) {
-    return false;
-  }
-
-  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
-  appendFileSync(gitignorePath, `${prefix}.hitch/\n`, "utf8");
-  return true;
-}
-
-function gitignoreHasHitch(localPath: string): boolean {
-  const gitignorePath = join(localPath, ".gitignore");
-  if (!existsSync(gitignorePath)) return false;
-  return readFileSync(gitignorePath, "utf8")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .some((line) => line === ".hitch/" || line === ".hitch");
-}
-
-function readExistingHitchProjectId(localPath: string): string | null {
-  const configPath = join(localPath, ".hitch", PROJECT_CONFIG_FILENAME);
-  if (!existsSync(configPath)) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
-  } catch (err) {
-    throw new Error(`Could not read existing .hitch/${PROJECT_CONFIG_FILENAME}: ${String(err)}`);
-  }
-  if (!isRecord(parsed)) {
-    throw new Error(`Existing .hitch/${PROJECT_CONFIG_FILENAME} must be a JSON object`);
-  }
-  const existingProjectId =
-    typeof parsed.projectId === "string" ? parsed.projectId.trim() : "";
-  if (!existingProjectId) {
-    throw new Error(`Existing .hitch/${PROJECT_CONFIG_FILENAME} is missing projectId`);
-  }
-  return existingProjectId;
-}
-
-// Rewrite the projectId baked into a folder's .hitch/project.json, preserving
-// every other field (name, statuses, …). Used to resolve a cross-environment
-// conflict: the file's body is the other deployment's metadata, but pointing it
-// at this deployment's project id lets the daemon adopt it on the next sync.
-function writeHitchProjectId(localPath: string, projectId: string): void {
-  const configPath = join(localPath, ".hitch", PROJECT_CONFIG_FILENAME);
-  if (!existsSync(configPath)) {
-    throw new Error(`No .hitch/${PROJECT_CONFIG_FILENAME} to rewrite at ${localPath}`);
-  }
-  const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
-  if (!isRecord(parsed)) {
-    throw new Error(`Existing .hitch/${PROJECT_CONFIG_FILENAME} must be a JSON object`);
-  }
-  const next = { ...parsed, projectId };
-  writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-}
-
-// User confirmed the override prompt: rewrite the folder's project.json to this
-// environment's project id and restart the daemon, which re-checks and now syncs
-// the folder (union of local ∪ server). See daemon startHitchBinding.
-async function resolveProjectConflict(projectId: ProjectId): Promise<DaemonState> {
-  const trimmed = projectId.trim();
-  const conflict = conflicts.find((entry) => entry.projectId === trimmed);
-  if (!conflict) return state();
-
-  writeHitchProjectId(conflict.localPath, trimmed);
-  addLog(
-    "system",
-    `Overrode project.json at ${conflict.localPath}: ${conflict.diskProjectId} → ${trimmed}`,
-  );
-  conflicts = conflicts.filter((entry) => entry.projectId !== trimmed);
-  broadcastState();
-  await restartDaemon();
-  return state();
-}
-
-function projectSetupStatus(projectId: ProjectId): ProjectSetupStatus {
-  const trimmed = projectId.trim();
-  if (!trimmed) throw new Error("Project ID is required");
-  const config = readLocalConfig();
-  const hitch = config.hitches.find((entry) => entry.projectId === trimmed) ?? null;
-  if (!hitch) {
-    return {
-      projectId: trimmed,
-      hitch: null,
-      localPathExists: false,
-      hitchPath: null,
-      hitchPathExists: false,
-      gitignorePath: null,
-      gitignoreExists: false,
-      gitignoreHasHitch: false,
-    };
-  }
-
-  const localPathExists = existsSync(hitch.localPath);
-  const hitchPath = join(hitch.localPath, ".hitch");
-  const gitignorePath = join(hitch.localPath, ".gitignore");
-  return {
-    projectId: trimmed,
-    hitch,
-    localPathExists,
-    hitchPath,
-    hitchPathExists: localPathExists && existsSync(hitchPath),
-    gitignorePath,
-    gitignoreExists: localPathExists && existsSync(gitignorePath),
-    gitignoreHasHitch: localPathExists && gitignoreHasHitch(hitch.localPath),
-  };
-}
-
-function ensureProjectHitchDirectory(projectId: ProjectId): ProjectSetupStatus {
-  const setup = projectSetupStatus(projectId);
-  if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
-  if (!setup.localPathExists) {
-    throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
-  }
-  mkdirSync(join(setup.hitch.localPath, ".hitch"), { recursive: true });
-  addLog("system", `Ensured .hitch folder for ${projectId}`);
-  return projectSetupStatus(projectId);
-}
-
-function ensureProjectGitignore(projectId: ProjectId): ProjectSetupStatus {
-  const setup = projectSetupStatus(projectId);
-  if (!setup.hitch) throw new Error("Project is not hitched to a local folder");
-  if (!setup.localPathExists) {
-    throw new Error(`Local path does not exist: ${setup.hitch.localPath}`);
-  }
-  updateGitignore(setup.hitch.localPath);
-  addLog("system", `Ensured .hitch/ is ignored for ${projectId}`);
-  return projectSetupStatus(projectId);
 }
 
 // The lifecycle events each harness wires to the chat-status hook. `matcher`
@@ -2200,16 +1830,6 @@ function removeGlobalClaudeHooks(): GlobalHarnessSetupStatus {
   return globalHarnessSetupStatus();
 }
 
-function firstEnabledHitchPath(): string {
-  try {
-    const config = readLocalConfig();
-    const hitch = config.hitches.find((entry) => entry.enabled !== false);
-    return hitch?.localPath ?? homedir();
-  } catch {
-    return homedir();
-  }
-}
-
 async function openGlobalCodexHookTrust(): Promise<string> {
   const setup = globalHarnessSetupStatus();
   if (!setup.codex.installed) {
@@ -2219,7 +1839,9 @@ async function openGlobalCodexHookTrust(): Promise<string> {
     throw new Error("Opening Codex for hook trust is only supported on macOS");
   }
 
-  const cwd = firstEnabledHitchPath();
+  // The trust flow just needs a folder to launch Codex in; the home dir is fine
+  // now that V2 no longer tracks hitched local folders.
+  const cwd = homedir();
   const command = [
     `cd ${shellQuote(cwd)}`,
     `${shellQuote(codexBin())} -C ${shellQuote(cwd)}`,
@@ -2234,19 +1856,6 @@ async function openGlobalCodexHookTrust(): Promise<string> {
   await run("/usr/bin/osascript", ["-e", script], { timeout: 5_000 });
   addLog("system", "Opened Codex hook trust flow for global Hitch hooks");
   return "opened";
-}
-
-async function chooseLocalPath(defaultPath?: string): Promise<string | null> {
-  const options: Electron.OpenDialogOptions = {
-    title: "Choose project folder",
-    defaultPath: defaultPath?.trim() || undefined,
-    properties: ["openDirectory", "createDirectory"],
-  };
-  const result = mainWindow
-    ? await dialog.showOpenDialog(mainWindow, options)
-    : await dialog.showOpenDialog(options);
-  if (result.canceled) return null;
-  return result.filePaths[0] ?? null;
 }
 
 async function restartDaemon(): Promise<boolean> {
@@ -2271,73 +1880,6 @@ async function restartDaemon(): Promise<boolean> {
   });
 }
 
-async function addHitch(input: AddHitchInput): Promise<AddHitchResult> {
-  const projectId = input.projectId.trim();
-  const projectName = input.projectName?.trim() || undefined;
-  const localPath = resolve(input.localPath.trim());
-  if (!projectId) throw new Error("Project ID is required");
-  if (!localPath) throw new Error("Local path is required");
-  if (!existsSync(localPath)) throw new Error(`Local path does not exist: ${localPath}`);
-
-  // A folder whose project.json names a different project usually means it was
-  // last synced against another Convex deployment (the dev⇄prod shared-folder
-  // case). Don't hard-block: create the binding anyway and let the daemon detect
-  // the mismatch and surface an explicit override prompt, rather than dead-end
-  // here before the daemon ever runs.
-  const existingProjectId = readExistingHitchProjectId(localPath);
-  if (existingProjectId && existingProjectId !== projectId) {
-    addLog(
-      "system",
-      `Hitching ${localPath} to ${projectId}, but its project.json names ${existingProjectId} — the daemon will prompt to override`,
-    );
-  }
-
-  const hitchPath = join(localPath, ".hitch");
-  mkdirSync(hitchPath, { recursive: true });
-
-  const config = readLocalConfig();
-  const next: HitchBinding = {
-    projectId,
-    projectName,
-    localPath,
-    enabled: true,
-  };
-
-  const existingIndex = config.hitches.findIndex(
-    (hitch) => hitch.projectId === projectId,
-  );
-  if (existingIndex >= 0) {
-    config.hitches[existingIndex] = next;
-  } else {
-    config.hitches.push(next);
-  }
-
-  const savedConfig = writeLocalConfig(config);
-  const gitignoreUpdated = input.updateGitignore === false ? false : updateGitignore(localPath);
-  addLog("system", `Hitched project ${projectName ?? projectId} to ${localPath}`);
-  const restarted = await restartDaemon();
-  return { config: savedConfig, gitignoreUpdated, restarted };
-}
-
-async function removeHitch(projectId: ProjectId): Promise<RemoveHitchResult> {
-  const trimmed = projectId.trim();
-  if (!trimmed) throw new Error("Project ID is required");
-
-  const config = readLocalConfig();
-  const nextHitches = config.hitches.filter(
-    (hitch) => hitch.projectId !== trimmed,
-  );
-  const removed = nextHitches.length !== config.hitches.length;
-  if (!removed) {
-    return { config, removed: false, restarted: false };
-  }
-
-  const savedConfig = writeLocalConfig({ hitches: nextHitches });
-  addLog("system", `Unhitched project ${trimmed}`);
-  const restarted = daemon ? await restartDaemon() : false;
-  return { config: savedConfig, removed: true, restarted };
-}
-
 function handleRunnerMessage(message: RunnerMessage): void {
   if (!isRecord(message)) return;
 
@@ -2346,7 +1888,6 @@ function handleRunnerMessage(message: RunnerMessage): void {
       typeof message.machineId === "string" ? message.machineId : "unknown";
     addLog("system", `Daemon runtime ready (machine ${machineId})`);
     setStatus("running");
-    broadcastState();
     return;
   }
 
@@ -2366,21 +1907,10 @@ function handleRunnerMessage(message: RunnerMessage): void {
   }
 }
 
-function startDaemon(): DaemonState {
-  if (daemon) return state();
+function startDaemon(): void {
+  if (daemon) return;
 
-  // Stale until the fresh daemon reports its conflicts in the "ready" message.
-  conflicts = [];
   setStatus("starting");
-  let config: LocalHitchConfig;
-  try {
-    ensureLocalConfig();
-    config = readLocalConfig();
-  } catch (err) {
-    addLog("stderr", `Failed to prepare local config: ${String(err)}`);
-    setStatus("stopped");
-    return state();
-  }
 
   // The daemon reconciles against the Hono server, so it needs the server URL +
   // stored api key. The daemon's config.ts can also fall back to secrets.json,
@@ -2389,7 +1919,7 @@ function startDaemon(): DaemonState {
   if (!serverUrl) {
     addLog("system", "No Hitch server URL configured — daemon idle.");
     setStatus("stopped");
-    return state();
+    return;
   }
   // Test-only escape hatch: the acceptance e2e runs its OWN fake daemon
   // (isolated store, api key from the signed-in secrets) and disables the
@@ -2397,7 +1927,7 @@ function startDaemon(): DaemonState {
   if (process.env.HITCH_DISABLE_APP_DAEMON === "1") {
     addLog("system", "Hitch server mode: app-managed daemon disabled (HITCH_DISABLE_APP_DAEMON).");
     setStatus("stopped");
-    return state();
+    return;
   }
   const normalizedUrl = serverUrl.replace(/\/+$/, "");
   const creds = readLocalSecrets().hitchServer;
@@ -2407,7 +1937,7 @@ function startDaemon(): DaemonState {
       "Hitch server mode: not signed in yet — daemon idle until you sign in.",
     );
     setStatus("stopped");
-    return state();
+    return;
   }
   const serverEnv: Record<string, string> = {
     HITCH_SERVER_URL: serverUrl,
@@ -2420,7 +1950,10 @@ function startDaemon(): DaemonState {
     env: {
       ...process.env,
       HITCH_ROOT: repoRoot,
-      HITCH_CONFIG_PATH: localConfigPath,
+      // Anchor the daemon's store (chat-lifecycle.sqlite) + secrets.json lookup on
+      // the SAME App Support dir the desktop uses. Passed explicitly (rather than
+      // via the removed local hitch config) so it survives the V1 config removal.
+      HITCH_APP_SUPPORT_DIR: appSupportDir,
       // Run the bundled daemon as plain Node under the Electron binary in prod.
       ...(isDev ? {} : { ELECTRON_RUN_AS_NODE: "1" }),
       // The server URL + api key the reconciler authenticates with.
@@ -2457,12 +1990,10 @@ function startDaemon(): DaemonState {
     setStatus("stopped");
     if (quitAfterDaemonStops) app.quit();
   });
-
-  return state();
 }
 
-function stopDaemon(): DaemonState {
-  if (!daemon) return state();
+function stopDaemon(): void {
+  if (!daemon) return;
   setStatus("stopping");
   addLog("system", "Stopping daemon");
   if (daemon.connected) daemon.send({ type: "stop" });
@@ -2472,13 +2003,6 @@ function stopDaemon(): DaemonState {
       daemon.kill("SIGTERM");
     }
   }, 5_000);
-  return state();
-}
-
-function clearLogs(): DaemonState {
-  logs.splice(0, logs.length);
-  broadcastState();
-  return state();
 }
 
 function updateConfigPath(): string {
@@ -2643,29 +2167,6 @@ ipcMain.handle("spellcheck:add-to-dictionary", (event, word: string) => {
   event.sender.session.addWordToSpellCheckerDictionary(word);
 });
 
-ipcMain.handle("daemon:get-state", () => state());
-ipcMain.handle("daemon:start", () => startDaemon());
-ipcMain.handle("daemon:stop", () => stopDaemon());
-ipcMain.handle("daemon:clear-logs", () => clearLogs());
-ipcMain.handle("config:get", () => readLocalConfig());
-ipcMain.handle("config:add-hitch", (_event, input: AddHitchInput) =>
-  addHitch(input),
-);
-ipcMain.handle("config:resolve-conflict", (_event, projectId: ProjectId) =>
-  resolveProjectConflict(projectId),
-);
-ipcMain.handle("config:remove-hitch", (_event, projectId: ProjectId) =>
-  removeHitch(projectId),
-);
-ipcMain.handle("config:get-project-setup", (_event, projectId: ProjectId) =>
-  projectSetupStatus(projectId),
-);
-ipcMain.handle("config:ensure-hitch-directory", (_event, projectId: ProjectId) =>
-  ensureProjectHitchDirectory(projectId),
-);
-ipcMain.handle("config:ensure-gitignore", (_event, projectId: ProjectId) =>
-  ensureProjectGitignore(projectId),
-);
 ipcMain.handle("config:get-global-harness-setup", () =>
   globalHarnessSetupStatus(),
 );
@@ -2697,27 +2198,12 @@ ipcMain.handle(
   (_event, harness: string, environment: string) =>
     setHarnessEnvironment(harness, environment),
 );
-ipcMain.handle("config:get-text-generation-model", () =>
-  readTextGenerationModel(),
-);
-ipcMain.handle(
-  "config:set-text-generation-model",
-  (_event, model: string) => setTextGenerationModel(model),
-);
-ipcMain.handle("config:get-experimental", () => readExperimentalFlags());
-ipcMain.handle(
-  "config:set-experimental",
-  (_event, key: string, enabled: boolean) => setExperimentalFlag(key, enabled),
-);
 ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>
   setStartingPrompts(prompts),
 );
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());
-ipcMain.handle("dialog:choose-local-path", (_event, defaultPath?: string) =>
-  chooseLocalPath(defaultPath),
-);
 
 ipcMain.handle("keep-awake:get-state", () => keepAwakeState());
 ipcMain.handle("keep-awake:start", () => startKeepAwake());

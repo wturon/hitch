@@ -23,10 +23,7 @@ import {
   type PaletteProject,
   type PaletteTask,
 } from "@/components/CommandPalette";
-import {
-  GlobalSettingsDialog,
-  type GlobalSettingsTab,
-} from "@/components/GlobalSettingsDialog";
+import { GlobalSettingsDialog } from "@/components/GlobalSettingsDialog";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { Toaster } from "@/components/ui/sonner";
@@ -73,13 +70,6 @@ const INBOX_NAME = "Inbox";
 // Same key as V1's rail so the collapse preference carries across modes.
 const SIDEBAR_COLLAPSED_KEY = "hitch:sidebar:collapsed";
 const SELECTED_PROJECT_KEY = "hitch:v2:selected-project";
-const V2_SETTINGS_TABS = [
-  "harnesses",
-  "integrations",
-  "appearance",
-  "starting-prompts",
-  "updates",
-] as const satisfies readonly GlobalSettingsTab[];
 
 const inputClass =
   "h-9 w-full min-w-0 rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -800,7 +790,6 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
       <GlobalSettingsDialog
         open={showSettings}
         onOpenChange={setShowSettings}
-        visibleTabs={V2_SETTINGS_TABS}
         description="Manage this Mac's agent setup, appearance, prompts, and app updates."
         contentClassName="h-[760px] sm:max-w-[min(64rem,calc(100%-2rem))]"
       />

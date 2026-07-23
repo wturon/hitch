@@ -4,73 +4,6 @@ import {
   type IpcRendererEvent,
 } from "electron";
 
-type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
-type ProjectId = string;
-
-export interface LogEntry {
-  id: number;
-  at: string;
-  stream: "system" | "stdout" | "stderr";
-  message: string;
-}
-
-export interface ProjectConflict {
-  projectId: ProjectId;
-  projectName?: string;
-  localPath: string;
-  diskProjectId: string;
-}
-
-export interface DaemonState {
-  status: DaemonStatus;
-  pid: number | null;
-  repoRoot: string;
-  configPath: string;
-  logs: LogEntry[];
-  conflicts: ProjectConflict[];
-}
-
-export interface HitchBinding {
-  projectId: ProjectId;
-  projectName?: string;
-  localPath: string;
-  enabled: boolean;
-}
-
-export interface LocalHitchConfig {
-  hitches: HitchBinding[];
-}
-
-export interface AddHitchInput {
-  projectId: ProjectId;
-  projectName?: string;
-  localPath: string;
-  updateGitignore?: boolean;
-}
-
-export interface AddHitchResult {
-  config: LocalHitchConfig;
-  gitignoreUpdated: boolean;
-  restarted: boolean;
-}
-
-export interface RemoveHitchResult {
-  config: LocalHitchConfig;
-  removed: boolean;
-  restarted: boolean;
-}
-
-export interface ProjectSetupStatus {
-  projectId: ProjectId;
-  hitch: HitchBinding | null;
-  localPathExists: boolean;
-  hitchPath: string | null;
-  hitchPathExists: boolean;
-  gitignorePath: string | null;
-  gitignoreExists: boolean;
-  gitignoreHasHitch: boolean;
-}
-
 export type IntegrationState = "ok" | "missing" | "drifted" | "broken" | "quiet";
 
 export interface IntegrationStatus {
@@ -149,17 +82,6 @@ export interface EnableCmuxResult {
 }
 
 export interface HitchDaemonApi {
-  getState: () => Promise<DaemonState>;
-  start: () => Promise<DaemonState>;
-  stop: () => Promise<DaemonState>;
-  clearLogs: () => Promise<DaemonState>;
-  getConfig: () => Promise<LocalHitchConfig>;
-  addHitch: (input: AddHitchInput) => Promise<AddHitchResult>;
-  removeHitch: (projectId: ProjectId) => Promise<RemoveHitchResult>;
-  resolveProjectConflict: (projectId: ProjectId) => Promise<DaemonState>;
-  getProjectSetup: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
-  ensureHitchDirectory: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
-  ensureGitignore: (projectId: ProjectId) => Promise<ProjectSetupStatus>;
   getGlobalHarnessSetup: () => Promise<GlobalHarnessSetupStatus>;
   checkIntegrations: () => Promise<IntegrationHealth>;
   repairIntegration: (id: string) => Promise<IntegrationHealth>;
@@ -174,18 +96,10 @@ export interface HitchDaemonApi {
     harness: string,
     environment: string,
   ) => Promise<Record<string, string>>;
-  getTextGenerationModel: () => Promise<string>;
-  setTextGenerationModel: (model: string) => Promise<string>;
-  getExperimentalFlags: () => Promise<Record<string, boolean>>;
-  setExperimentalFlag: (
-    key: string,
-    enabled: boolean,
-  ) => Promise<Record<string, boolean>>;
   getStartingPrompts: () => Promise<StartingPrompt[]>;
   setStartingPrompts: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
   enableCmuxAutomation: () => Promise<EnableCmuxResult>;
   openCmuxApp: () => Promise<string>;
-  chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
   getUpdaterStatus: () => Promise<UpdaterStatus>;
   checkForUpdates: () => Promise<UpdaterStatus>;
   downloadUpdate: () => Promise<void>;
@@ -202,7 +116,6 @@ export interface HitchDaemonApi {
   onSpellcheckMenu: (
     callback: (payload: SpellcheckMenuPayload) => void,
   ) => () => void;
-  onState: (callback: (state: DaemonState) => void) => () => void;
   onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => () => void;
   onKeepAwakeState: (callback: (state: KeepAwakeState) => void) => () => void;
 }
@@ -247,18 +160,6 @@ export interface HitchServerApi {
 }
 
 const api: HitchDaemonApi = {
-  getState: () => ipcRenderer.invoke("daemon:get-state"),
-  start: () => ipcRenderer.invoke("daemon:start"),
-  stop: () => ipcRenderer.invoke("daemon:stop"),
-  clearLogs: () => ipcRenderer.invoke("daemon:clear-logs"),
-  getConfig: () => ipcRenderer.invoke("config:get"),
-  addHitch: (input) => ipcRenderer.invoke("config:add-hitch", input),
-  removeHitch: (projectId) => ipcRenderer.invoke("config:remove-hitch", projectId),
-  resolveProjectConflict: (projectId) =>
-    ipcRenderer.invoke("config:resolve-conflict", projectId),
-  getProjectSetup: (projectId) => ipcRenderer.invoke("config:get-project-setup", projectId),
-  ensureHitchDirectory: (projectId) => ipcRenderer.invoke("config:ensure-hitch-directory", projectId),
-  ensureGitignore: (projectId) => ipcRenderer.invoke("config:ensure-gitignore", projectId),
   getGlobalHarnessSetup: () => ipcRenderer.invoke("config:get-global-harness-setup"),
   checkIntegrations: () => ipcRenderer.invoke("integrations:check"),
   repairIntegration: (id) => ipcRenderer.invoke("integrations:repair", id),
@@ -277,19 +178,11 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("config:get-harness-environments"),
   setHarnessEnvironment: (harness, environment) =>
     ipcRenderer.invoke("config:set-harness-environment", harness, environment),
-  getTextGenerationModel: () =>
-    ipcRenderer.invoke("config:get-text-generation-model"),
-  setTextGenerationModel: (model) =>
-    ipcRenderer.invoke("config:set-text-generation-model", model),
-  getExperimentalFlags: () => ipcRenderer.invoke("config:get-experimental"),
-  setExperimentalFlag: (key, enabled) =>
-    ipcRenderer.invoke("config:set-experimental", key, enabled),
   getStartingPrompts: () => ipcRenderer.invoke("config:get-starting-prompts"),
   setStartingPrompts: (prompts) =>
     ipcRenderer.invoke("config:set-starting-prompts", prompts),
   enableCmuxAutomation: () => ipcRenderer.invoke("cmux:enable-automation"),
   openCmuxApp: () => ipcRenderer.invoke("cmux:open-app"),
-  chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),
   getUpdaterStatus: () => ipcRenderer.invoke("updater:get-status"),
   checkForUpdates: () => ipcRenderer.invoke("updater:check"),
   downloadUpdate: () => ipcRenderer.invoke("updater:download"),
@@ -311,13 +204,6 @@ const api: HitchDaemonApi = {
     };
     ipcRenderer.on("spellcheck:show", listener);
     return () => ipcRenderer.removeListener("spellcheck:show", listener);
-  },
-  onState: (callback) => {
-    const listener = (_event: IpcRendererEvent, state: DaemonState) => {
-      callback(state);
-    };
-    ipcRenderer.on("daemon:state", listener);
-    return () => ipcRenderer.removeListener("daemon:state", listener);
   },
   onUpdaterStatus: (callback) => {
     const listener = (_event: IpcRendererEvent, status: UpdaterStatus) => {

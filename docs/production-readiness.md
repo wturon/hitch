@@ -1,5 +1,10 @@
 # Production Readiness
 
+> **⚠️ ARCHIVED — describes the deleted V1 (Convex) architecture.** V2 runs on a
+> Hono + Postgres server deployed to Railway; packaged desktop builds bake the
+> prod server URL into `app-config.json`. See [v2-prd.md](v2-prd.md) (Environment
+> status + Deployment) for the current shape. Kept only as historical context.
+
 This is the checklist for sharing the simplest Hitch desktop build with other
 engineers.
 
