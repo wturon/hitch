@@ -41,6 +41,13 @@ export interface ServerWsClient {
   onInvalidate(table: string, handler: InvalidateHandler): () => void;
   /** Register a handler for the named ephemeral event. Returns an unsubscribe. */
   onEvent(event: string, handler: EventHandler): () => void;
+  /**
+   * Register a handler fired on every RE-connect (not the initial connect) —
+   * the reconnect trigger for the reconciler: a dropped socket may have missed
+   * invalidations, so we re-diff from scratch on reconnect. Returns an
+   * unsubscribe.
+   */
+  onReconnect(handler: () => void): () => void;
   stop(): void;
 }
 
@@ -61,11 +68,15 @@ export function startServerWs(options: ServerWsClientOptions): ServerWsClient {
 
   const invalidateHandlers = new Map<string, Set<InvalidateHandler>>();
   const eventHandlers = new Map<string, Set<EventHandler>>();
+  const reconnectHandlers = new Set<() => void>();
 
   let socket: WebSocket | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let attempt = 0;
   let stopped = false;
+  // The initial connect is not a "reconnect"; only opens after the first fire
+  // the reconnect handlers.
+  let hasConnectedOnce = false;
 
   const scheduleReconnect = () => {
     if (stopped || reconnectTimer) return;
@@ -109,6 +120,16 @@ export function startServerWs(options: ServerWsClientOptions): ServerWsClient {
       // dropped on close, so a reconnect must re-register this machine.
       ws.send(JSON.stringify({ type: "hello", machineId }));
       logger.info(`[hitch] server WS connected (${wsUrl}); hello sent for machine ${machineId}`);
+      if (hasConnectedOnce) {
+        for (const handler of reconnectHandlers) {
+          try {
+            handler();
+          } catch {
+            // A reconnect handler must never break the socket.
+          }
+        }
+      }
+      hasConnectedOnce = true;
     });
     ws.on("message", (data) => dispatch(data.toString()));
     // 'error' is always followed by 'close'; reconnect once, from 'close'.
@@ -136,6 +157,12 @@ export function startServerWs(options: ServerWsClientOptions): ServerWsClient {
   return {
     onInvalidate: (table, handler) => register(invalidateHandlers, table, handler),
     onEvent: (event, handler) => register(eventHandlers, event, handler),
+    onReconnect: (handler) => {
+      reconnectHandlers.add(handler);
+      return () => {
+        reconnectHandlers.delete(handler);
+      };
+    },
     stop() {
       stopped = true;
       if (reconnectTimer) {
