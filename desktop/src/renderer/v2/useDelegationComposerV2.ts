@@ -6,30 +6,37 @@ import {
   type StartingPrompt,
 } from "@/lib/chat";
 import {
-  loadLastHarness,
-  saveLastHarness,
+  defaultModelFor,
+  defaultReasoningFor,
+  loadLastAgent,
+  saveLastAgent,
   type ServerHarness,
 } from "./delegation";
 
 // The V2 delegate composer — ports the SHAPE of V1's useDelegationComposer
-// (hooks/useDelegationComposer.ts, left byte-untouched) minus everything V2's
-// assignments model doesn't carry:
+// (hooks/useDelegationComposer.ts, left byte-untouched):
 //
-//   • agent selection is just a harness (claude | codex). No model/effort,
-//     no environment/launch-param honoring — the daemon owns those at spawn.
+//   • agent selection is a (harness, model) pair plus a reasoning/effort. V2
+//     carries model/effort on the assignment again; the daemon passes them to
+//     the launcher argv at spawn. No launch-param honoring gate is needed — V2
+//     always spawns into cmux, which honors both.
 //   • the prompt is the chosen INSTRUCTION text only (a preset body or the
 //     user's one-off edit). The machine-facing task preamble is NOT in this
 //     text — DelegateBar prepends it verbatim at delegate time via
 //     composeDelegatePrompt, so the textarea stays about the instruction.
 //
-// Kept verbatim in spirit from V1: the last-agent seed (loadLastHarness /
-// saveLastHarness on a successful delegate), the custom-prompts bridge
+// Kept verbatim in spirit from V1: the last-agent seed (loadLastAgent /
+// saveLastAgent on a successful delegate), the (harness, model) pair selection
+// with effort resetting to the model default, the custom-prompts bridge
 // (loadCustomPrompts — Decision 1: reuse, no prompt_templates table), the
 // phase latch against double-launch, and the global ⌘⏎ arming.
 export type ComposerPhase = "idle" | "sending" | "submitted";
 
 export interface DelegateStartParams {
   harness: ServerHarness;
+  // Kickoff-only launch params — passed to the launcher argv by the daemon.
+  model: string;
+  effort: string;
   // The chosen instruction text (preamble-free); DelegateBar composes the final
   // stamped prompt.
   prompt: string;
@@ -37,8 +44,17 @@ export interface DelegateStartParams {
 
 export interface DelegationComposerV2 {
   phase: ComposerPhase;
+  // Agent selection (seeded from the user's last delegation, persisted on a
+  // successful start).
   harness: ServerHarness;
+  // Switch harness and reset model + effort to that harness's defaults.
   setHarness: (harness: ServerHarness) => void;
+  model: string;
+  effort: string;
+  setEffort: (effort: string) => void;
+  // Pick a (harness, model) pair from the combined dropdown's "h|m" value;
+  // switching either resets effort to that model's default.
+  chooseAgent: (value: string) => void;
   // Built-ins + the user's custom prompts (loaded once on mount).
   prompts: StartingPrompt[];
   promptId: string;
@@ -65,8 +81,13 @@ export function useDelegationComposerV2({
   keyboardArmed: boolean;
   onStart: (params: DelegateStartParams) => Promise<void> | void;
 }): DelegationComposerV2 {
-  // Seed the picker from the user's last V2 delegation, not a hardcoded default.
-  const [harness, setHarness] = useState<ServerHarness>(() => loadLastHarness());
+  // Seed the pickers from the user's last V2 delegation, not a hardcoded
+  // default — read once.
+  const [harness, setHarnessRaw] = useState<ServerHarness>(
+    () => loadLastAgent().harness,
+  );
+  const [model, setModelRaw] = useState(() => loadLastAgent().model);
+  const [effort, setEffort] = useState(() => loadLastAgent().effort);
   const [prompts, setPrompts] = useState<StartingPrompt[]>(
     BUILTIN_STARTING_PROMPTS,
   );
@@ -87,6 +108,33 @@ export function useDelegationComposerV2({
     };
   }, []);
 
+  // The combined agent primitive: pick a (harness, model) pair at once from a
+  // "harness|model" value (ported from V1's chooseAgent). Switching either
+  // resets reasoning to that model's default, since Codex exposes effort as
+  // per-model capability metadata. Backs the standalone selects below.
+  const chooseAgent = useCallback(
+    (value: string) => {
+      const sep = value.indexOf("|");
+      const nextHarness = value.slice(0, sep) as ServerHarness;
+      const nextModel = value.slice(sep + 1);
+      setModelRaw(nextModel);
+      if (nextHarness !== harness) setHarnessRaw(nextHarness);
+      if (nextHarness !== harness || nextModel !== model) {
+        setEffort(defaultReasoningFor(nextHarness, nextModel));
+      }
+    },
+    [harness, model],
+  );
+
+  // Standalone harness Select: switch harness and reset model + effort to that
+  // harness's defaults (routed through chooseAgent so the reset path is shared).
+  const setHarness = useCallback(
+    (next: ServerHarness) => {
+      chooseAgent(`${next}|${defaultModelFor(next)}`);
+    },
+    [chooseAgent],
+  );
+
   // Picking a preset refills the instruction text, which stays freely editable
   // for one-off tweaks — edits never write back to the saved preset.
   const choosePreset = useCallback(
@@ -106,15 +154,16 @@ export function useDelegationComposerV2({
     if (phase !== "idle" || !canStart) return;
     setPhase("sending");
     try {
-      await onStart({ harness, prompt });
-      saveLastHarness(harness);
+      await onStart({ harness, model, effort, prompt });
+      // Remember this exact combination for the next surface's composer.
+      saveLastAgent({ harness, model, effort });
       setPhase("submitted");
     } catch (error) {
       // The launch never left — unlatch so the user can retry.
       setPhase("idle");
       throw error;
     }
-  }, [phase, canStart, harness, prompt, onStart]);
+  }, [phase, canStart, harness, model, effort, prompt, onStart]);
 
   // Global ⌘⏎ fires the current delegation from anywhere in the dialog, while
   // the consumer arms it and no delegation is latched in flight.
@@ -143,6 +192,10 @@ export function useDelegationComposerV2({
     phase,
     harness,
     setHarness,
+    model,
+    effort,
+    setEffort,
+    chooseAgent,
     prompts,
     promptId,
     prompt,

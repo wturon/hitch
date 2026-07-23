@@ -51,6 +51,10 @@ interface WireAssignment {
   machineId: string;
   harness: ServerHarness;
   prompt: string | null;
+  // Kickoff-only launch params chosen client-side; null → harness default
+  // (the launcher's argv defaults stand, i.e. today's behavior).
+  model: string | null;
+  effort: string | null;
   desiredState: DesiredState;
   observedState: ObservedState;
   chatId: string | null;
@@ -400,6 +404,11 @@ export class Reconciler {
       a.prompt != null ? a.prompt : buildDelegatePreamble({ id: task.id, title: task.title, body: task.body });
     const serverHarness = (a.harness as ServerHarness) ?? "claude";
     const harness = storeHarness(serverHarness);
+    // Kickoff-only launch params. null/undefined → undefined so the launcher
+    // uses the harness default (StartCtx.model/effort are optional). V2 always
+    // spawns into cmux, which honors both, so no param-honoring gate is needed.
+    const model = a.model ?? undefined;
+    const effort = a.effort ?? undefined;
     const environment: Environment = "cmux"; // Decision 5: always cmux for V2.
     const launcher = this.resolveLauncher(harness, environment);
     if (!launcher?.startNew) {
@@ -448,6 +457,8 @@ export class Reconciler {
         prompt,
         cwd,
         title,
+        model,
+        effort,
         project: projectRef,
         logger: this.logger,
         onLinked: async (threadId) => {
@@ -488,6 +499,8 @@ export class Reconciler {
       prompt,
       cwd,
       title,
+      model,
+      effort,
       project: projectRef,
       logger: this.logger,
       onLinked: async (sessionId) => {

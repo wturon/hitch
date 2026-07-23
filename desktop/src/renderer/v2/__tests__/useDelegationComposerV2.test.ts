@@ -8,14 +8,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { BUILTIN_STARTING_PROMPTS } from "@/lib/chat";
+import { defaultModelFor, defaultReasoningFor } from "../delegation";
 import { useDelegationComposerV2 } from "../useDelegationComposerV2";
 
+// Historical key name (once held a bare harness; now holds the {harness, model,
+// effort} JSON blob, with a legacy bare-harness string still read on upgrade).
 const LAST_HARNESS_KEY = "hitch:v2:last-harness";
 
 // A no-op consumer arm — the ⌘⏎ listener is off, so start() is only exercised
 // through direct calls here.
 function render(
-  onStart: (params: { harness: string; prompt: string }) => Promise<void> | void,
+  onStart: (params: {
+    harness: string;
+    model: string;
+    effort: string;
+    prompt: string;
+  }) => Promise<void> | void,
   canStart = true,
 ) {
   return renderHook(() =>
@@ -49,6 +57,41 @@ describe("seeding", () => {
   });
 });
 
+describe("agent selection", () => {
+  it("seeds model + effort from the catalog default", () => {
+    const { result } = render(vi.fn());
+    const model = defaultModelFor("claude");
+    expect(result.current.model).toBe(model);
+    expect(result.current.effort).toBe(defaultReasoningFor("claude", model));
+  });
+
+  it("chooseAgent sets harness+model and resets effort to the model default", () => {
+    const { result } = render(vi.fn());
+    const codexModel = defaultModelFor("codex");
+    act(() => result.current.chooseAgent(`codex|${codexModel}`));
+    expect(result.current.harness).toBe("codex");
+    expect(result.current.model).toBe(codexModel);
+    expect(result.current.effort).toBe(defaultReasoningFor("codex", codexModel));
+  });
+
+  it("setHarness switches harness and resets model + effort to that harness's defaults", () => {
+    const { result } = render(vi.fn());
+    act(() => result.current.setHarness("codex"));
+    const model = defaultModelFor("codex");
+    expect(result.current.harness).toBe("codex");
+    expect(result.current.model).toBe(model);
+    expect(result.current.effort).toBe(defaultReasoningFor("codex", model));
+  });
+
+  it("setEffort overrides the effort without touching harness/model", () => {
+    const { result } = render(vi.fn());
+    act(() => result.current.setEffort("low"));
+    expect(result.current.effort).toBe("low");
+    expect(result.current.harness).toBe("claude");
+    expect(result.current.model).toBe(defaultModelFor("claude"));
+  });
+});
+
 describe("choosePreset", () => {
   it("refills the instruction text from the picked preset", () => {
     const second = BUILTIN_STARTING_PROMPTS[1];
@@ -67,8 +110,11 @@ describe("choosePreset", () => {
 });
 
 describe("start", () => {
-  it("runs idle → submitted, calls onStart, and remembers the harness", async () => {
+  it("runs idle → submitted, calls onStart, and remembers the agent triple", async () => {
+    // Legacy bare-harness seed → harness codex, default model + effort.
     window.localStorage.setItem(LAST_HARNESS_KEY, "codex");
+    const model = defaultModelFor("codex");
+    const effort = defaultReasoningFor("codex", model);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const { result } = render(onStart);
 
@@ -78,10 +124,15 @@ describe("start", () => {
 
     expect(onStart).toHaveBeenCalledWith({
       harness: "codex",
+      model,
+      effort,
       prompt: BUILTIN_STARTING_PROMPTS[0].body,
     });
     expect(result.current.phase).toBe("submitted");
-    expect(window.localStorage.getItem(LAST_HARNESS_KEY)).toBe("codex");
+    // The full triple is persisted as a JSON blob now.
+    expect(
+      JSON.parse(window.localStorage.getItem(LAST_HARNESS_KEY)!),
+    ).toEqual({ harness: "codex", model, effort });
   });
 
   it("is a no-op while canStart is false", async () => {

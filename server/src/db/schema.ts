@@ -208,6 +208,13 @@ export const assignments = pgTable(
       .references(() => machines.id),
     harness: harness("harness").notNull(),
     prompt: text("prompt"),
+    // Kickoff-only launch params chosen in the compose UI. Nullable on purpose:
+    // an existing row or a client that omits them means "use the harness
+    // default" — the daemon passes undefined and the launcher's argv defaults
+    // stand (today's behavior). Freeform text, not enums: the model/effort
+    // catalog is client-owned and versions faster than a pgEnum should.
+    model: text("model"),
+    effort: text("effort"),
     desiredState: assignmentDesiredState("desired_state").notNull(),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     observedState: assignmentObservedState("observed_state").notNull().default("pending"),
