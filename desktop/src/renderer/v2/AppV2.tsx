@@ -14,14 +14,19 @@ import {
   LogOutIcon,
   PanelLeftIcon,
   PlusIcon,
+  SettingsIcon,
 } from "lucide-react";
 
-import { CreateProjectDialog } from "@/components/AppSidebar";
+import { CreateProjectDialog } from "@/components/CreateProjectDialog";
 import {
   CommandPalette,
   type PaletteProject,
   type PaletteTask,
 } from "@/components/CommandPalette";
+import {
+  GlobalSettingsDialog,
+  type GlobalSettingsTab,
+} from "@/components/GlobalSettingsDialog";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { Toaster } from "@/components/ui/sonner";
@@ -58,8 +63,8 @@ import { useTaskMutations } from "./useTaskMutations";
 //
 // ⌘K (PR 7): V1's CommandPalette, scoped like V1 to the ACTIVE project —
 // fuzzy-open a task, capture a new one, switch/create projects. V1's actions
-// group (theme, settings, sandbox…) is deliberately empty here: those are V1
-// surfaces, or M4+.
+// group remains deliberately empty here: global settings live in the account
+// footer, while V1-only actions such as the editor sandbox stay out of V2.
 //
 // Inbox: on boot a project named "Inbox" is ensured (created if missing),
 // pinned first in the rail, and is the default selection.
@@ -68,6 +73,13 @@ const INBOX_NAME = "Inbox";
 // Same key as V1's rail so the collapse preference carries across modes.
 const SIDEBAR_COLLAPSED_KEY = "hitch:sidebar:collapsed";
 const SELECTED_PROJECT_KEY = "hitch:v2:selected-project";
+const V2_SETTINGS_TABS = [
+  "harnesses",
+  "integrations",
+  "appearance",
+  "starting-prompts",
+  "updates",
+] as const satisfies readonly GlobalSettingsTab[];
 
 const inputClass =
   "h-9 w-full min-w-0 rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -252,14 +264,15 @@ function ProjectRowV2({
 }
 
 // The rail's footer identity control — V1's AccountFooter silhouette (avatar
-// row opening an upward menu) reduced to what V2 has today: the server you're
-// signed in to, and Sign out. Harness health / keep-awake / settings are V1
-// concerns (or arrive with M4+).
+// row opening an upward menu), with V2-safe settings plus server identity and
+// sign-out. Harness-health and keep-awake status remain outside this slim shell.
 function AccountFooterV2({
   serverUrl,
+  onShowSettings,
   onSignOut,
 }: {
   serverUrl: string;
+  onShowSettings: () => void;
   onSignOut: () => void;
 }) {
   return (
@@ -300,6 +313,10 @@ function AccountFooterV2({
           </span>
         </div>
         <div className="my-0.5 h-px bg-border" />
+        <MenuItem onClick={onShowSettings}>
+          <SettingsIcon />
+          Settings
+        </MenuItem>
         <MenuItem onClick={onSignOut}>
           <LogOutIcon />
           Sign out
@@ -317,6 +334,7 @@ function SidebarV2({
   serverUrl,
   onSelectProject,
   onCreateProject,
+  onShowSettings,
   onSignOut,
 }: {
   projects: ProjectItem[];
@@ -326,6 +344,7 @@ function SidebarV2({
   serverUrl: string;
   onSelectProject: (projectId: string) => void;
   onCreateProject: (name: string) => Promise<void>;
+  onShowSettings: () => void;
   onSignOut: () => void;
 }) {
   const [showCreateProject, setShowCreateProject] = useState(false);
@@ -386,7 +405,11 @@ function SidebarV2({
       />
 
       <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-2">
-        <AccountFooterV2 serverUrl={serverUrl} onSignOut={onSignOut} />
+        <AccountFooterV2
+          serverUrl={serverUrl}
+          onShowSettings={onShowSettings}
+          onSignOut={onSignOut}
+        />
       </div>
     </aside>
   );
@@ -395,6 +418,7 @@ function SidebarV2({
 function WorkspaceV2({ client }: { client: HitchClient }) {
   const { serverUrl, signOut } = useHitchServer();
   const queryClient = useQueryClient();
+  const [showSettings, setShowSettings] = useState(false);
 
   const projects = useQuery({
     queryKey: ["projects"],
@@ -682,6 +706,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
         onCreateProject={async (name) => {
           await createProject.mutateAsync(name);
         }}
+        onShowSettings={() => setShowSettings(true)}
         onSignOut={() => void signOut()}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -771,6 +796,13 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
           await createProject.mutateAsync(name);
         }}
         initialName={createProjectName ?? undefined}
+      />
+      <GlobalSettingsDialog
+        open={showSettings}
+        onOpenChange={setShowSettings}
+        visibleTabs={V2_SETTINGS_TABS}
+        description="Manage this Mac's agent setup, appearance, prompts, and app updates."
+        contentClassName="h-[760px] sm:max-w-[min(64rem,calc(100%-2rem))]"
       />
       {/* Server-unreachable pill (PR 7): floats under the titlebar, shows on
           WS loss or failing queries, self-dismisses on recovery. */}

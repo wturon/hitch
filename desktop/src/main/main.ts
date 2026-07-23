@@ -4,7 +4,6 @@ import {
   spawn,
   type ChildProcess,
 } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   copyFileSync,
@@ -14,10 +13,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer, type Server } from "node:http";
 import { promisify } from "node:util";
 import {
   app,
@@ -27,7 +25,6 @@ import {
   ipcMain,
   nativeImage,
   nativeTheme,
-  shell,
 } from "electron";
 import {
   autoUpdater,
@@ -41,7 +38,6 @@ import {
   parse as parseJsonc,
 } from "jsonc-parser";
 import {
-  getHitchServerConfig,
   initHitchServer,
   type HitchServerCredentials,
 } from "./hitchServer.js";
@@ -138,17 +134,7 @@ interface GlobalHarnessSetupStatus {
   claudeCode: HarnessHookStatus;
 }
 
-interface DeviceAuthState {
-  deviceId: string;
-  deviceName: string;
-  hostname: string;
-  hasToken: boolean;
-}
-
 interface LocalSecrets {
-  deviceId?: string;
-  deviceToken?: string;
-  authStorage?: Record<string, string>;
   // V2 (HITCH_SERVER_URL mode) credentials — owned by hitchServer.ts.
   hitchServer?: HitchServerCredentials;
 }
@@ -157,16 +143,7 @@ interface RunnerMessage {
   type?: unknown;
   stream?: unknown;
   message?: unknown;
-  projectId?: unknown;
-  localPath?: unknown;
-  hitchPath?: unknown;
-  hitches?: unknown;
-  conflicts?: unknown;
-  // debug-response correlation fields
-  id?: unknown;
-  ok?: unknown;
-  data?: unknown;
-  error?: unknown;
+  machineId?: unknown;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -208,11 +185,6 @@ const localPreferencesPath =
 const PROJECT_CONFIG_FILENAME = "project.json";
 const devRendererUrl =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
-// GitHub OAuth runs in the system browser (RFC 8252); Convex Auth's SITE_URL is
-// set to this loopback origin so the final redirect lands back in the app. The
-// port is fixed because SITE_URL is a single configured value — see startAuthLoopback.
-const AUTH_LOOPBACK_PORT = 51789;
-const AUTH_LOOPBACK_ORIGIN = `http://127.0.0.1:${AUTH_LOOPBACK_PORT}`;
 const run = promisify(execFile);
 
 function globalCodexChatStatusHook(): string {
@@ -651,52 +623,6 @@ let mainWindow: BrowserWindow | null = null;
 let daemon: ChildProcess | null = null;
 let status: DaemonStatus = "stopped";
 
-// In-flight debug API calls into the daemon child, keyed by request id. The
-// renderer's debug screen calls these via the preload bridge; we forward over
-// the child's Node IPC and resolve when the matching debug-response arrives.
-const pendingDebugRequests = new Map<
-  string,
-  { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
->();
-let debugRequestSeq = 0;
-
-// Fail every in-flight debug request at once — called when the daemon child
-// dies so the renderer's poll rejects immediately with a truthful reason
-// instead of stalling for the full 15s timeout on each request.
-function rejectAllPendingDebug(reason: string): void {
-  for (const [, pending] of pendingDebugRequests) {
-    clearTimeout(pending.timer);
-    pending.reject(new Error(reason));
-  }
-  pendingDebugRequests.clear();
-}
-
-function callDaemonDebug(
-  op: string,
-  payload: Record<string, unknown>,
-): Promise<unknown> {
-  const child = daemon;
-  if (!child || !child.connected) {
-    return Promise.reject(new Error("Daemon is not running."));
-  }
-  const id = `dbg-${++debugRequestSeq}`;
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingDebugRequests.delete(id);
-      reject(new Error(`Daemon debug request timed out (${op}).`));
-    }, 15_000);
-    pendingDebugRequests.set(id, { resolve, reject, timer });
-    try {
-      child.send({ type: "debug-request", id, op, ...payload });
-    } catch (err) {
-      // Channel closed between the connected check and send (EPIPE etc.): clean
-      // up this entry's timer so it can't fire later, and reject now.
-      clearTimeout(timer);
-      pendingDebugRequests.delete(id);
-      reject(err instanceof Error ? err : new Error(String(err)));
-    }
-  });
-}
 let nextLogId = 1;
 const logs: LogEntry[] = [];
 const maxLogs = 500;
@@ -832,24 +758,24 @@ function daemonRunnerCommand(): { command: string; args: string[] } {
 }
 
 // Packaged builds ship an app-config.json (written at build time from the prod
-// CONVEX_URL) into the app resources. The Convex deployment URL is not secret —
-// the renderer ships it too — so baking it lets the daemon reach the right
-// backend without a system .env. In dev this file is absent and the daemon
-// derives the URL from .env.local (CONVEX_DEPLOYMENT) as before.
-function readBakedConvexUrl(): string | undefined {
+// HITCH_SERVER_URL) into the app resources. The Hitch server URL is not secret,
+// so baking it lets a packaged build run against Railway prod with no system
+// .env. In dev this file is absent and the URL comes from HITCH_SERVER_URL
+// (e.g. `npm run dev:v2-stack`).
+function readBakedServerUrl(): string | undefined {
   if (isDev) return undefined;
   try {
     const raw = readFileSync(join(process.resourcesPath, "app-config.json"), "utf8");
     const parsed = JSON.parse(raw) as unknown;
     if (
       isRecord(parsed) &&
-      typeof parsed.convexUrl === "string" &&
-      parsed.convexUrl.trim()
+      typeof parsed.serverUrl === "string" &&
+      parsed.serverUrl.trim()
     ) {
-      return parsed.convexUrl.trim();
+      return parsed.serverUrl.trim();
     }
   } catch {
-    // No baked config — fall back to env-file derivation in the daemon.
+    // No baked config — dev relies on the HITCH_SERVER_URL env var instead.
   }
   return undefined;
 }
@@ -953,13 +879,6 @@ function readLocalSecrets(): LocalSecrets {
   if (!existsSync(localSecretsPath)) return {};
   const raw = JSON.parse(readFileSync(localSecretsPath, "utf8")) as unknown;
   if (!isRecord(raw)) return {};
-  const rawAuthStorage = isRecord(raw.authStorage) ? raw.authStorage : {};
-  const authStorage = Object.fromEntries(
-    Object.entries(rawAuthStorage).filter(
-      (entry): entry is [string, string] =>
-        typeof entry[0] === "string" && typeof entry[1] === "string",
-    ),
-  );
   const rawHitchServer = isRecord(raw.hitchServer) ? raw.hitchServer : null;
   const hitchServer =
     rawHitchServer &&
@@ -975,9 +894,6 @@ function readLocalSecrets(): LocalSecrets {
         }
       : undefined;
   return {
-    deviceId: typeof raw.deviceId === "string" ? raw.deviceId : undefined,
-    deviceToken: typeof raw.deviceToken === "string" ? raw.deviceToken : undefined,
-    authStorage,
     hitchServer,
   };
 }
@@ -1218,69 +1134,6 @@ function setStartingPrompts(prompts: unknown): StoredStartingPrompt[] {
     : [];
   writePreferences({ startingPrompts: sanitized });
   return readStartingPrompts();
-}
-
-function ensureDeviceId(): string {
-  const secrets = readLocalSecrets();
-  if (secrets.deviceId) return secrets.deviceId;
-  const deviceId = randomUUID();
-  writeLocalSecrets({ ...secrets, deviceId });
-  return deviceId;
-}
-
-function readDeviceToken(): string | undefined {
-  return readLocalSecrets().deviceToken?.trim() || process.env.HITCH_DEVICE_TOKEN?.trim();
-}
-
-function deviceAuthState(): DeviceAuthState {
-  return {
-    deviceId: ensureDeviceId(),
-    deviceName: hostname(),
-    hostname: hostname(),
-    hasToken: Boolean(readDeviceToken()),
-  };
-}
-
-async function saveDeviceToken(token: string): Promise<DeviceAuthState> {
-  const next = { ...readLocalSecrets(), deviceId: ensureDeviceId(), deviceToken: token };
-  writeLocalSecrets(next);
-  addLog("system", "Saved local device authorization");
-  await restartDaemon();
-  return deviceAuthState();
-}
-
-async function clearDeviceToken(): Promise<DeviceAuthState> {
-  const secrets = readLocalSecrets();
-  writeLocalSecrets({
-    ...secrets,
-    deviceId: secrets.deviceId ?? ensureDeviceId(),
-    deviceToken: undefined,
-  });
-  addLog("system", "Cleared local device authorization");
-  await restartDaemon();
-  return deviceAuthState();
-}
-
-function authStorageGet(key: string): string | null {
-  return readLocalSecrets().authStorage?.[key] ?? null;
-}
-
-function authStorageSet(key: string, value: string): void {
-  const secrets = readLocalSecrets();
-  writeLocalSecrets({
-    ...secrets,
-    authStorage: {
-      ...(secrets.authStorage ?? {}),
-      [key]: value,
-    },
-  });
-}
-
-function authStorageRemove(key: string): void {
-  const secrets = readLocalSecrets();
-  const authStorage = { ...(secrets.authStorage ?? {}) };
-  delete authStorage[key];
-  writeLocalSecrets({ ...secrets, authStorage });
 }
 
 function updateGitignore(localPath: string): boolean {
@@ -2485,53 +2338,13 @@ async function removeHitch(projectId: ProjectId): Promise<RemoveHitchResult> {
   return { config: savedConfig, removed: true, restarted };
 }
 
-function parseConflicts(value: unknown): ProjectConflict[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry): ProjectConflict[] => {
-    if (
-      isRecord(entry) &&
-      typeof entry.projectId === "string" &&
-      typeof entry.localPath === "string" &&
-      typeof entry.diskProjectId === "string"
-    ) {
-      return [
-        {
-          projectId: entry.projectId,
-          projectName:
-            typeof entry.projectName === "string" ? entry.projectName : undefined,
-          localPath: entry.localPath,
-          diskProjectId: entry.diskProjectId,
-        },
-      ];
-    }
-    return [];
-  });
-}
-
 function handleRunnerMessage(message: RunnerMessage): void {
   if (!isRecord(message)) return;
 
   if (message.type === "ready") {
-    const projectId =
-      typeof message.projectId === "string" ? message.projectId : "unknown";
-    const localPath =
-      typeof message.localPath === "string" ? message.localPath : "unknown local path";
-    const hitchPath =
-      typeof message.hitchPath === "string" ? message.hitchPath : join(localPath, ".hitch");
-    const hitchCount = Array.isArray(message.hitches) ? message.hitches.length : 1;
-    addLog(
-      "system",
-      hitchCount > 1
-        ? `Daemon runtime ready for ${hitchCount} projects; primary project ${projectId} at ${hitchPath}`
-        : `Daemon runtime ready for project ${projectId} at ${hitchPath}`,
-    );
-    conflicts = parseConflicts(message.conflicts);
-    for (const conflict of conflicts) {
-      addLog(
-        "system",
-        `Project ID mismatch at ${conflict.localPath}: project.json points at ${conflict.diskProjectId}, expected ${conflict.projectId} — not syncing until resolved`,
-      );
-    }
+    const machineId =
+      typeof message.machineId === "string" ? message.machineId : "unknown";
+    addLog("system", `Daemon runtime ready (machine ${machineId})`);
     setStatus("running");
     broadcastState();
     return;
@@ -2545,18 +2358,6 @@ function handleRunnerMessage(message: RunnerMessage): void {
 
   if (message.type === "error") {
     addLog("stderr", String(message.message ?? "Daemon runner error"));
-    return;
-  }
-
-  if (message.type === "debug-response") {
-    const id = typeof message.id === "string" ? message.id : null;
-    if (!id) return;
-    const pending = pendingDebugRequests.get(id);
-    if (!pending) return;
-    pendingDebugRequests.delete(id);
-    clearTimeout(pending.timer);
-    if (message.ok) pending.resolve(message.data);
-    else pending.reject(new Error(String(message.error ?? "Debug request failed.")));
     return;
   }
 
@@ -2581,52 +2382,39 @@ function startDaemon(): DaemonState {
     return state();
   }
 
-  // V2 (HITCH_SERVER_URL) mode: the daemon reconciles against the Hono server,
-  // not Convex, so it needs no local hitches — bypass the empty-hitches idle
-  // guard below and pass the server URL + stored api key explicitly (the
-  // daemon's config.ts can also fall back to secrets.json, but explicit env is
-  // deterministic and honors the isolated-store rule). Idle until signed in.
-  // When HITCH_SERVER_URL is absent, serverEnv stays null and the V1 path below
-  // is byte-identical.
+  // The daemon reconciles against the Hono server, so it needs the server URL +
+  // stored api key. The daemon's config.ts can also fall back to secrets.json,
+  // but explicit env is deterministic and honors the isolated-store rule.
   const serverUrl = process.env.HITCH_SERVER_URL?.trim();
-  let serverEnv: Record<string, string> | null = null;
-  if (serverUrl) {
-    // Test-only escape hatch: the M4 acceptance e2e runs its OWN fake daemon
-    // (isolated store, api key from the signed-in secrets) and disables the
-    // app-managed one so there's exactly one daemon per machine. Never set in
-    // normal use — the V1 path can't reach this branch (no HITCH_SERVER_URL).
-    if (process.env.HITCH_DISABLE_APP_DAEMON === "1") {
-      addLog("system", "Hitch server mode: app-managed daemon disabled (HITCH_DISABLE_APP_DAEMON).");
-      setStatus("stopped");
-      return state();
-    }
-    const normalizedUrl = serverUrl.replace(/\/+$/, "");
-    const creds = readLocalSecrets().hitchServer;
-    if (creds?.apiKey && creds.serverUrl === normalizedUrl) {
-      serverEnv = { HITCH_SERVER_URL: serverUrl, HITCH_API_KEY: creds.apiKey };
-    } else {
-      addLog(
-        "system",
-        "Hitch server mode: not signed in yet — daemon idle until you sign in.",
-      );
-      setStatus("stopped");
-      return state();
-    }
-  }
-
-  // Nothing hitched yet (the normal fresh-install state): stay idle instead of
-  // spawning a daemon that would immediately error on an empty config. The user
-  // adds a project via the UI, which calls addHitch -> restartDaemon. Server
-  // mode has no hitches concept, so this guard applies to V1 only.
-  if (!serverEnv && config.hitches.filter((hitch) => hitch.enabled).length === 0) {
-    addLog("system", "No projects hitched yet — daemon idle. Add a project to start syncing.");
+  if (!serverUrl) {
+    addLog("system", "No Hitch server URL configured — daemon idle.");
     setStatus("stopped");
     return state();
   }
+  // Test-only escape hatch: the acceptance e2e runs its OWN fake daemon
+  // (isolated store, api key from the signed-in secrets) and disables the
+  // app-managed one so there's exactly one daemon per machine.
+  if (process.env.HITCH_DISABLE_APP_DAEMON === "1") {
+    addLog("system", "Hitch server mode: app-managed daemon disabled (HITCH_DISABLE_APP_DAEMON).");
+    setStatus("stopped");
+    return state();
+  }
+  const normalizedUrl = serverUrl.replace(/\/+$/, "");
+  const creds = readLocalSecrets().hitchServer;
+  if (!(creds?.apiKey && creds.serverUrl === normalizedUrl)) {
+    addLog(
+      "system",
+      "Hitch server mode: not signed in yet — daemon idle until you sign in.",
+    );
+    setStatus("stopped");
+    return state();
+  }
+  const serverEnv: Record<string, string> = {
+    HITCH_SERVER_URL: serverUrl,
+    HITCH_API_KEY: creds.apiKey,
+  };
 
   const { command, args } = daemonRunnerCommand();
-  const bakedConvexUrl = readBakedConvexUrl();
-  const deviceToken = readDeviceToken();
   const child = spawn(command, args, {
     cwd: repoRoot,
     env: {
@@ -2635,11 +2423,8 @@ function startDaemon(): DaemonState {
       HITCH_CONFIG_PATH: localConfigPath,
       // Run the bundled daemon as plain Node under the Electron binary in prod.
       ...(isDev ? {} : { ELECTRON_RUN_AS_NODE: "1" }),
-      // Point the daemon at the baked prod Convex deployment when present.
-      ...(bakedConvexUrl ? { CONVEX_URL: bakedConvexUrl } : {}),
-      ...(deviceToken ? { HITCH_DEVICE_TOKEN: deviceToken } : {}),
-      // V2 mode: the server URL + api key the reconciler authenticates with.
-      ...(serverEnv ?? {}),
+      // The server URL + api key the reconciler authenticates with.
+      ...serverEnv,
     },
     stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
@@ -2657,7 +2442,6 @@ function startDaemon(): DaemonState {
   child.once("error", (error) => {
     addLog("stderr", `Failed to start daemon: ${error.message}`);
     daemon = null;
-    rejectAllPendingDebug("Daemon failed to start.");
     setStatus("stopped");
   });
   child.once("exit", (code, signal) => {
@@ -2670,7 +2454,6 @@ function startDaemon(): DaemonState {
       stopTimer = null;
     }
     daemon = null;
-    rejectAllPendingDebug("Daemon stopped.");
     setStatus("stopped");
     if (quitAfterDaemonStops) app.quit();
   });
@@ -2786,78 +2569,6 @@ function configureAutoUpdates(): void {
   updateCheckInterval = setInterval(runCheck, UPDATE_CHECK_INTERVAL_MS);
 }
 
-// Convex Auth starts OAuth by navigating the window to
-// {CONVEX_SITE}/api/auth/signin/<provider>, which then 302s to the provider
-// (github.com). We send that whole flow to the system browser instead of the
-// embedded window — matching both the signin entrypoint and the provider host so
-// it works whether the hop arrives as a navigation or an HTTP redirect.
-function isExternalSignInUrl(rawUrl: string): boolean {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    return (
-      url.pathname.startsWith("/api/auth/signin/") ||
-      url.hostname === "github.com"
-    );
-  } catch {
-    return false;
-  }
-}
-
-let authLoopbackServer: Server | null = null;
-
-// Receives Convex Auth's final OAuth redirect after the system-browser round-trip
-// (SITE_URL -> http://127.0.0.1:51789/?code=...) and hands the code to the renderer,
-// which holds the PKCE verifier and completes the token exchange.
-function startAuthLoopback(): void {
-  if (authLoopbackServer) return;
-  const server = createServer((req, res) => {
-    let code: string | null = null;
-    try {
-      code = new URL(req.url ?? "/", AUTH_LOOPBACK_ORIGIN).searchParams.get(
-        "code",
-      );
-    } catch {
-      code = null;
-    }
-    res.writeHead(code ? 200 : 404, {
-      "Content-Type": "text/html; charset=utf-8",
-    });
-    res.end(authLoopbackPage(code != null));
-    if (!code) return;
-    mainWindow?.webContents.send("auth:callback", { code });
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
-    app.focus({ steal: true });
-  });
-  server.on("error", (error: NodeJS.ErrnoException) => {
-    authLoopbackServer = null;
-    const detail =
-      error.code === "EADDRINUSE"
-        ? `Sign-in can't complete: port ${AUTH_LOOPBACK_PORT} is already in use. Quit whatever is using it and try again.`
-        : `Sign-in callback server failed: ${error.message}`;
-    addLog("stderr", detail);
-    mainWindow?.webContents.send("auth:callback", { error: detail });
-  });
-  server.listen({ host: "127.0.0.1", port: AUTH_LOOPBACK_PORT, exclusive: true });
-  authLoopbackServer = server;
-}
-
-function stopAuthLoopback(): void {
-  authLoopbackServer?.close();
-  authLoopbackServer = null;
-}
-
-function authLoopbackPage(ok: boolean): string {
-  const title = ok ? "Signed in to Hitch" : "Hitch sign-in";
-  const detail = ok
-    ? "You can close this tab and return to Hitch."
-    : "No authorization code was found. Return to Hitch and try again.";
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:-apple-system,system-ui,sans-serif;background:#101316;color:#e6e8ea;display:flex;min-height:100vh;margin:0;align-items:center;justify-content:center}main{text-align:center;max-width:28rem;padding:2rem}h1{font-size:1.25rem;margin:0 0 .5rem}p{color:#9aa3ab;margin:0}</style></head><body><main><h1>${title}</h1><p>${detail}</p></main></body></html>`;
-}
-
 // Window chrome / launch-flash background per resolved theme. Light is the
 // app's --background (white); dark mirrors the renderer's dark --background.
 function themeBackground(dark: boolean): string {
@@ -2892,23 +2603,6 @@ async function createWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
     },
-  });
-
-  // Keep OAuth out of the embedded window: open the sign-in flow in the system
-  // browser (RFC 8252). Cover both will-navigate (the initial location change)
-  // and will-redirect (the convex.site -> github.com 302).
-  const externalizeSignIn = (event: { preventDefault: () => void }, url: string) => {
-    if (!isExternalSignInUrl(url)) return;
-    event.preventDefault();
-    void shell.openExternal(url);
-  };
-  mainWindow.webContents.on("will-navigate", externalizeSignIn);
-  mainWindow.webContents.on("will-redirect", externalizeSignIn);
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!isExternalSignInUrl(url)) return { action: "allow" };
-    void shell.openExternal(url);
-    return { action: "deny" };
   });
 
   // Spellcheck suggestions. Chromium already underlines misspellings (spellcheck
@@ -3019,36 +2713,10 @@ ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>
   setStartingPrompts(prompts),
 );
-ipcMain.handle("debug:list-cmux-chats", (_event, projectId: string | null) =>
-  callDaemonDebug("listCmuxChats", { projectId: projectId ?? null }),
-);
-ipcMain.handle("debug:reconcile-cmux", (_event, projectId: string | null) =>
-  callDaemonDebug("reconcileCmux", { projectId: projectId ?? null }),
-);
-ipcMain.handle(
-  "debug:read-cmux-trace",
-  (
-    _event,
-    filter: { chatId?: string | null; launchId?: string | null } | undefined,
-    limit?: number,
-  ) => callDaemonDebug("readCmuxTrace", { filter: filter ?? {}, limit }),
-);
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());
 ipcMain.handle("dialog:choose-local-path", (_event, defaultPath?: string) =>
   chooseLocalPath(defaultPath),
-);
-ipcMain.handle("device-auth:get", () => deviceAuthState());
-ipcMain.handle("device-auth:set-token", (_event, token: string) =>
-  saveDeviceToken(token),
-);
-ipcMain.handle("device-auth:clear-token", () => clearDeviceToken());
-ipcMain.handle("auth-storage:get", (_event, key: string) => authStorageGet(key));
-ipcMain.handle("auth-storage:set", (_event, key: string, value: string) =>
-  authStorageSet(key, value),
-);
-ipcMain.handle("auth-storage:remove", (_event, key: string) =>
-  authStorageRemove(key),
 );
 
 ipcMain.handle("keep-awake:get-state", () => keepAwakeState());
@@ -3108,8 +2776,16 @@ ipcMain.handle("updater:install", () => {
   autoUpdater.quitAndInstall(false, true);
 });
 
-// V2 (HITCH_SERVER_URL mode): auth + WS against the Hono server. No-ops as a
-// data path when the env var is absent — V1 stays the default.
+// V2 is the only mode now. Packaged builds carry the server URL in the baked
+// app-config.json rather than the environment, so promote it into
+// HITCH_SERVER_URL here — before initHitchServer / the renderer bridge / the
+// daemon fork read it — and everything downstream sees one resolved URL.
+if (!process.env.HITCH_SERVER_URL?.trim()) {
+  const bakedServerUrl = readBakedServerUrl();
+  if (bakedServerUrl) process.env.HITCH_SERVER_URL = bakedServerUrl;
+}
+
+// V2: auth + WS against the Hono server.
 initHitchServer({
   getStoredCredentials: () => readLocalSecrets().hitchServer ?? null,
   setStoredCredentials: (creds) =>
@@ -3139,8 +2815,6 @@ app.whenReady().then(async () => {
   }
 
   await createWindow();
-  // V2 mode never shows the V1 sign-in, so the OAuth loopback isn't needed.
-  if (!getHitchServerConfig()) startAuthLoopback();
   if (readKeepAwakeEnabled()) startKeepAwake(false);
   // Move any legacy config.toml Codex hooks to hooks.json before the daemon can
   // launch Codex, so there's a single hook representation (avoids Codex's
@@ -3163,7 +2837,6 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", (event) => {
-  stopAuthLoopback();
   if (updateCheckInterval) clearInterval(updateCheckInterval);
   stopKeepAwake(false);
   if (!daemon || quitAfterDaemonStops) return;

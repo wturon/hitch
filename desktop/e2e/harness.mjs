@@ -8,13 +8,9 @@
 //   - Its own Hitch config (HITCH_CONFIG_PATH) pointed at an EMPTY config, so
 //     startDaemon() stays idle (main.ts) and no second daemon touches your
 //     project's file-sync.
-//   - Its own secrets (HITCH_SECRETS_PATH) seeded from your signed-in dev
-//     profile, so it boots authenticated as you with no OAuth dance. Auth tokens
-//     are plain JSON in secrets.json (authStorage), so this is a file copy.
-//
-// The auth-loopback port (51789) is process-global; if your dev app is open it
-// owns the port and this instance logs a benign "port in use" line and disables
-// fresh sign-in — harmless, since we seed auth instead.
+//   - Its own isolated app-support dir so its daemon never touches your real
+//     data. V2 checks sign up against a fresh server (HITCH_SERVER_URL), so no
+//     seeded credentials are needed.
 //
 // Prereq: the Vite dev server is running (npm run dev:renderer, :5173). Dev mode
 // loads the renderer from there, so it serves your current working tree.

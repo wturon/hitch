@@ -1,9 +1,9 @@
 // Write the app-config.json that ships in the packaged app's Resources/ folder.
-// It carries the prod Convex deployment URL (not secret — the renderer bakes the
-// same value) so the bundled daemon can reach the right backend without a system
-// .env. main.ts reads it via readBakedConvexUrl() and passes CONVEX_URL to the
-// daemon. In dev this file is absent and the daemon derives the URL from
-// .env.local (CONVEX_DEPLOYMENT) as before.
+// It carries the prod Hitch server URL (Railway) so a packaged build runs
+// against prod without a system .env. main.ts reads it via readBakedServerUrl()
+// and promotes it into HITCH_SERVER_URL for the renderer, auth, and the daemon.
+// In dev this file is absent and the URL comes from the HITCH_SERVER_URL env var
+// (e.g. `npm run dev:v2-stack`).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,23 +11,25 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const outDir = resolve(__dirname, "../dist-daemon");
 
-const convexUrl = (
-  process.env.CONVEX_URL ??
-  process.env.NEXT_PUBLIC_CONVEX_URL ??
+const serverUrl = (
+  process.env.HITCH_SERVER_URL ??
+  process.env.VITE_HITCH_SERVER_URL ??
   ""
-).trim();
+)
+  .trim()
+  .replace(/\/+$/, "");
 
-if (!convexUrl) {
+if (!serverUrl) {
   console.warn(
-    "[gen-app-config] WARNING: no CONVEX_URL / NEXT_PUBLIC_CONVEX_URL set. " +
-      "The packaged daemon will have no backend URL baked in.",
+    "[gen-app-config] WARNING: no HITCH_SERVER_URL set. " +
+      "The packaged app will have no server URL baked in.",
   );
 }
 
 mkdirSync(outDir, { recursive: true });
 writeFileSync(
   resolve(outDir, "app-config.json"),
-  `${JSON.stringify({ convexUrl }, null, 2)}\n`,
+  `${JSON.stringify({ serverUrl }, null, 2)}\n`,
   "utf8",
 );
-console.log(`[gen-app-config] wrote app-config.json (convexUrl=${convexUrl || "<empty>"})`);
+console.log(`[gen-app-config] wrote app-config.json (serverUrl=${serverUrl || "<empty>"})`);

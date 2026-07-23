@@ -7,11 +7,6 @@ import {
 type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
 type ProjectId = string;
 
-export interface AuthCallback {
-  code?: string;
-  error?: string;
-}
-
 export interface LogEntry {
   id: number;
   at: string;
@@ -122,13 +117,6 @@ export interface GlobalHarnessSetupStatus {
   claudeCode: HarnessHookStatus;
 }
 
-export interface DeviceAuthState {
-  deviceId: string;
-  deviceName: string;
-  hostname: string;
-  hasToken: boolean;
-}
-
 export interface KeepAwakeState {
   enabled: boolean;
   running: boolean;
@@ -158,47 +146,6 @@ export interface EnableCmuxResult {
   status: "created" | "updated" | "already-enabled";
   configPath: string;
   backupPath?: string;
-}
-
-// --- cmux debug screen (local-only data from the daemon) ---
-export type CmuxDriftState = "ok" | "multi-surface" | "no-binding" | "closed";
-
-export interface CmuxChatSummary {
-  chatId: string | null;
-  launchId: string | null;
-  harness: string;
-  title: string;
-  status: string;
-  cwd: string;
-  host: string;
-  pending: boolean;
-  lastEventAt: number;
-}
-
-export interface CmuxReconcileEntry extends CmuxChatSummary {
-  surfaces: string[];
-  matchCount: number;
-  drift: CmuxDriftState;
-}
-
-export interface CmuxReconcileResult {
-  scannedAt: number;
-  driftCount: number;
-  entries: CmuxReconcileEntry[];
-}
-
-export interface CmuxTraceRow {
-  seq: number;
-  ts: number;
-  chatId: string | null;
-  launchId: string | null;
-  kind: "io" | "decision" | "warn";
-  command: string | null;
-  args: string[] | null;
-  durationMs: number | null;
-  ok: boolean | null;
-  errorCode: string | null;
-  message: string | null;
 }
 
 export interface HitchDaemonApi {
@@ -238,19 +185,7 @@ export interface HitchDaemonApi {
   setStartingPrompts: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
   enableCmuxAutomation: () => Promise<EnableCmuxResult>;
   openCmuxApp: () => Promise<string>;
-  listCmuxChats: (projectId: string | null) => Promise<CmuxChatSummary[]>;
-  reconcileCmux: (projectId: string | null) => Promise<CmuxReconcileResult>;
-  readCmuxTrace: (
-    filter?: { chatId?: string | null; launchId?: string | null },
-    limit?: number,
-  ) => Promise<CmuxTraceRow[]>;
   chooseLocalPath: (defaultPath?: string) => Promise<string | null>;
-  getDeviceAuth: () => Promise<DeviceAuthState>;
-  setDeviceToken: (token: string) => Promise<DeviceAuthState>;
-  clearDeviceToken: () => Promise<DeviceAuthState>;
-  getAuthStorageItem: (key: string) => Promise<string | null>;
-  setAuthStorageItem: (key: string, value: string) => Promise<void>;
-  removeAuthStorageItem: (key: string) => Promise<void>;
   getUpdaterStatus: () => Promise<UpdaterStatus>;
   checkForUpdates: () => Promise<UpdaterStatus>;
   downloadUpdate: () => Promise<void>;
@@ -268,7 +203,6 @@ export interface HitchDaemonApi {
     callback: (payload: SpellcheckMenuPayload) => void,
   ) => () => void;
   onState: (callback: (state: DaemonState) => void) => () => void;
-  onAuthCallback: (callback: (payload: AuthCallback) => void) => () => void;
   onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => () => void;
   onKeepAwakeState: (callback: (state: KeepAwakeState) => void) => () => void;
 }
@@ -355,19 +289,7 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("config:set-starting-prompts", prompts),
   enableCmuxAutomation: () => ipcRenderer.invoke("cmux:enable-automation"),
   openCmuxApp: () => ipcRenderer.invoke("cmux:open-app"),
-  listCmuxChats: (projectId) => ipcRenderer.invoke("debug:list-cmux-chats", projectId),
-  reconcileCmux: (projectId) => ipcRenderer.invoke("debug:reconcile-cmux", projectId),
-  readCmuxTrace: (filter, limit) =>
-    ipcRenderer.invoke("debug:read-cmux-trace", filter, limit),
   chooseLocalPath: (defaultPath) => ipcRenderer.invoke("dialog:choose-local-path", defaultPath),
-  getDeviceAuth: () => ipcRenderer.invoke("device-auth:get"),
-  setDeviceToken: (token) => ipcRenderer.invoke("device-auth:set-token", token),
-  clearDeviceToken: () => ipcRenderer.invoke("device-auth:clear-token"),
-  getAuthStorageItem: (key) => ipcRenderer.invoke("auth-storage:get", key),
-  setAuthStorageItem: (key, value) =>
-    ipcRenderer.invoke("auth-storage:set", key, value),
-  removeAuthStorageItem: (key) =>
-    ipcRenderer.invoke("auth-storage:remove", key),
   getUpdaterStatus: () => ipcRenderer.invoke("updater:get-status"),
   checkForUpdates: () => ipcRenderer.invoke("updater:check"),
   downloadUpdate: () => ipcRenderer.invoke("updater:download"),
@@ -403,13 +325,6 @@ const api: HitchDaemonApi = {
     };
     ipcRenderer.on("updater:status", listener);
     return () => ipcRenderer.removeListener("updater:status", listener);
-  },
-  onAuthCallback: (callback) => {
-    const listener = (_event: IpcRendererEvent, payload: AuthCallback) => {
-      callback(payload);
-    };
-    ipcRenderer.on("auth:callback", listener);
-    return () => ipcRenderer.removeListener("auth:callback", listener);
   },
   onKeepAwakeState: (callback) => {
     const listener = (_event: IpcRendererEvent, state: KeepAwakeState) => {

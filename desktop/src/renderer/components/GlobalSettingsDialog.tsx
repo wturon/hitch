@@ -7,9 +7,7 @@ import {
   Code2Icon,
   DownloadIcon,
   FlaskConicalIcon,
-  FolderSyncIcon,
   InfoIcon,
-  KeyRoundIcon,
   MessageSquareIcon,
   MonitorIcon,
   MoonIcon,
@@ -20,7 +18,6 @@ import {
   SparklesIcon,
   SunIcon,
   SunMoonIcon,
-  TextQuoteIcon,
   Trash2Icon,
   WrenchIcon,
 } from "lucide-react";
@@ -42,14 +39,8 @@ import {
   T3CODE_BLOCKED_REASON,
   type Environment,
 } from "@/lib/chat";
-import { DeviceTokensPanel } from "@/components/DeviceTokens";
 import { HarnessIcon } from "@/components/HarnessIcon";
-import { SnippetsPanel } from "@/components/SnippetsPanel";
 import { StartingPromptsPanel } from "@/components/StartingPromptsPanel";
-import {
-  LocalSyncPanel,
-  type LocalHitchConfig,
-} from "@/components/LocalSyncDialog";
 import { useUpdater } from "@/components/UpdateBanner";
 import {
   Dialog,
@@ -105,9 +96,6 @@ export type GlobalSettingsTab =
   | "integrations"
   | "appearance"
   | "starting-prompts"
-  | "snippets"
-  | "local-sync"
-  | "device-tokens"
   | "updates";
 
 const TABS = [
@@ -115,9 +103,6 @@ const TABS = [
   { id: "integrations", label: "Integrations", icon: WrenchIcon },
   { id: "appearance", label: "Appearance", icon: SunMoonIcon },
   { id: "starting-prompts", label: "Starting prompts", icon: MessageSquareIcon },
-  { id: "snippets", label: "Snippets", icon: TextQuoteIcon },
-  { id: "local-sync", label: "Local sync logs", icon: FolderSyncIcon },
-  { id: "device-tokens", label: "Device tokens", icon: KeyRoundIcon },
   { id: "updates", label: "App updates", icon: RotateCwIcon },
 ] as const satisfies ReadonlyArray<{
   id: GlobalSettingsTab;
@@ -190,14 +175,18 @@ export function GlobalSettingsDialog({
   open,
   onOpenChange,
   initialTab = "harnesses",
-  onLocalConfigChange,
+  visibleTabs,
+  description = "Manage Hitch Desktop and user-level harness setup.",
+  contentClassName,
   onHarnessSetupChange,
   onIntegrationHealthChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialTab?: GlobalSettingsTab;
-  onLocalConfigChange?: (config: LocalHitchConfig) => void;
+  visibleTabs?: readonly GlobalSettingsTab[];
+  description?: string;
+  contentClassName?: string;
   onHarnessSetupChange?: (setup: GlobalHarnessSetupStatus) => void;
   onIntegrationHealthChange?: (health: IntegrationHealth) => void;
 }) {
@@ -211,6 +200,12 @@ export function GlobalSettingsDialog({
     useState<IntegrationHealth | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const tabs = visibleTabs
+    ? TABS.filter(({ id }) => visibleTabs.includes(id))
+    : TABS;
+  const defaultTab = tabs.some(({ id }) => id === initialTab)
+    ? initialTab
+    : (tabs[0]?.id ?? "harnesses");
   // T3Code remains visibly listed below, but is hard-locked off until the
   // upstream app exposes a supported way to focus a specific chat.
   const [t3codeEnabled, setT3codeEnabled] = useState(false);
@@ -263,23 +258,26 @@ export function GlobalSettingsDialog({
 
   useEffect(() => {
     if (!open) return;
-    setTab(initialTab);
+    setTab(defaultTab);
     void refresh();
-  }, [bridge, initialTab, open]);
+  }, [bridge, defaultTab, open]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[660px] max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-4xl">
+      <DialogContent
+        className={cn(
+          "flex h-[660px] max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-4xl",
+          contentClassName,
+        )}
+      >
         <DialogHeader>
           <DialogTitle>Global settings</DialogTitle>
-          <DialogDescription>
-            Manage Hitch Desktop, local sync, and user-level harness setup.
-          </DialogDescription>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
           <nav className="flex w-44 shrink-0 flex-col gap-1 overflow-y-auto">
-            {TABS.map(({ id, label, icon: Icon }) => (
+            {tabs.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
@@ -365,35 +363,6 @@ export function GlobalSettingsDialog({
             {tab === "appearance" && <AppearanceSection />}
 
             {tab === "starting-prompts" && <StartingPromptsPanel />}
-
-            {tab === "snippets" && <SnippetsPanel />}
-
-            {tab === "local-sync" && (
-              <div className="flex flex-col gap-3">
-                <div>
-                  <h3 className="text-sm font-medium">Local sync logs</h3>
-                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                    Monitor the daemon and the folders it is watching.
-                  </p>
-                </div>
-                <LocalSyncPanel
-                  active={open && tab === "local-sync"}
-                  onConfigChange={onLocalConfigChange}
-                />
-              </div>
-            )}
-
-            {tab === "device-tokens" && (
-              <div className="flex flex-col gap-3">
-                <div>
-                  <h3 className="text-sm font-medium">Device tokens</h3>
-                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                    Create and revoke tokens for local daemons.
-                  </p>
-                </div>
-                <DeviceTokensPanel />
-              </div>
-            )}
 
             {tab === "updates" && <UpdatesSection />}
           </div>

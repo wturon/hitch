@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A local file sync engine that keeps git-ignored .hitch/ folders in sync with Convex.",
+  "description": "Hitch — AI-native task management with an agent delegation layer (Hono server + Electron desktop + reconciler daemon).",
   "packageManager": "npm@11.11.0",
   "engines": {
     "node": ">=24.15.0",
@@ -21,26 +21,18 @@
   },
   "scripts": {
     "dev": "npm run dev:desktop",
-    "dev:all": "concurrently -n convex,desktop -c blue,green \"npm:dev:convex\" \"npm:dev:desktop\"",
-    "dev:convex": "convex dev",
+    "dev:all": "concurrently -n server,desktop -c blue,green \"npm:dev:v2-stack\" \"npm:dev:desktop\"",
     "dev:daemon": "tsx daemon/src/index.ts",
-  "dev:v2-stack": "node scripts/dev-v2-stack.mjs",
+    "dev:v2-stack": "node scripts/dev-v2-stack.mjs",
     "db:sync-from-prod": "node scripts/sync-local-from-prod.mjs",
     "dev:desktop": "npm -w desktop run dev",
     "dev:renderer": "npm -w desktop run dev:renderer",
     "dev:electron": "npm -w desktop run dev:electron",
-    "typecheck": "npm run typecheck:convex && npm -w @hitch/daemon run typecheck && npm -w desktop run typecheck",
-    "typecheck:convex": "tsc -p convex/tsconfig.json --noEmit",
+    "typecheck": "npm -w @hitch/server run typecheck && npm -w @hitch/daemon run typecheck && npm -w desktop run typecheck",
     "check": "npm run typecheck && npm -w desktop run build && npm -w desktop run test",
     "package:desktop": "npm -w desktop run package",
     "release:desktop": "npm -w desktop run release",
-    "setup": "convex dev --once",
     "icons": "node scripts/generate-icons.mjs"
-  },
-  "dependencies": {
-    "@auth/core": "^0.37.4",
-    "@convex-dev/auth": "^0.0.92",
-    "convex": "^1.39.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",

@@ -10,7 +10,6 @@ release/
 out/
 
 # Convex
-.convex/
 
 # Env / secrets
 .env
