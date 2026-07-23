@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
@@ -481,60 +481,55 @@ function ComposeControls({
       {/* Agent row */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1">
+          {/* Combined harness + model picker: models are grouped under their
+              harness, so choosing a model also fixes the harness. Picking a
+              model routes through chooseAgent so effort resets to its default. */}
           <Select
-            value={composer.harness}
-            onValueChange={(value) => composer.setHarness(value as ServerHarness)}
+            value={`${composer.harness}|${composer.model}`}
+            onValueChange={(value) => composer.chooseAgent(value as string)}
           >
-            <SelectTrigger aria-label="Agent" className={chip}>
+            <SelectTrigger aria-label="Agent and model" className={chip}>
               <SelectValue>
-                {(value: string) => (
-                  <span className="flex items-center gap-1.5">
-                    <HarnessIcon
-                      harness={iconHarness(value as ServerHarness)}
-                      className="size-3.5"
-                    />
-                    <span className="text-[13px] font-medium text-[#222222] dark:text-foreground">
-                      {serverHarnessLabel(value as ServerHarness)}
+                {(value: string) => {
+                  const sep = value.indexOf("|");
+                  const h = value.slice(0, sep) as ServerHarness;
+                  const m = value.slice(sep + 1);
+                  return (
+                    <span className="flex items-center gap-1.5">
+                      <HarnessIcon harness={iconHarness(h)} className="size-3.5" />
+                      <span className="text-[13px] font-medium text-[#222222] dark:text-foreground">
+                        {serverHarnessLabel(h)}
+                      </span>
+                      <span className="text-[13px] text-[#717171] dark:text-muted-foreground">
+                        {modelLabelFor(h, m)}
+                      </span>
                     </span>
-                  </span>
-                )}
+                  );
+                }}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {SERVER_HARNESSES.map((h) => (
-                <SelectItem key={h} value={h}>
-                  <HarnessIcon harness={iconHarness(h)} className="size-3.5" />
-                  {serverHarnessLabel(h)}
-                </SelectItem>
+                <Fragment key={h}>
+                  <div className="flex items-center gap-2 px-2 pt-1.5 pb-1 text-xs font-medium text-muted-foreground">
+                    <HarnessIcon harness={iconHarness(h)} className="size-3.5" />
+                    {serverHarnessLabel(h)}
+                  </div>
+                  {modelsForHarness(h).map((mm) => (
+                    <SelectItem
+                      key={`${h}|${mm.id}`}
+                      value={`${h}|${mm.id}`}
+                      className="pl-7"
+                    >
+                      {mm.label}
+                    </SelectItem>
+                  ))}
+                </Fragment>
               ))}
             </SelectContent>
           </Select>
 
-          {/* Model — the harness's model catalog (reused from V1). Picking a
-              model routes through chooseAgent so effort resets to its default. */}
-          <Select
-            value={composer.model}
-            onValueChange={(value) =>
-              composer.chooseAgent(`${composer.harness}|${value}`)
-            }
-          >
-            <SelectTrigger aria-label="Model" className={chip}>
-              <SelectValue>
-                {(value: string) => (
-                  <span className="text-[13px] text-[#717171] dark:text-muted-foreground">
-                    {modelLabelFor(composer.harness, value)}
-                  </span>
-                )}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {modelsForHarness(composer.harness).map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <span className="h-4 w-px shrink-0 bg-border" aria-hidden />
 
           {/* Reasoning/effort — harness+model specific. Always enabled in V2:
               the reconciler spawns into cmux, which honors launch params. */}
