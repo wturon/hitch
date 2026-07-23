@@ -169,6 +169,19 @@ export function isMachineStale(
   return now - toEpoch(machine.lastSeenAt) > MACHINE_STALE_MS;
 }
 
+// A terse human age for the "why is my machine offline" hint: "4m ago",
+// "2h ago", "3d ago". Coarse on purpose — the picker just needs to tell the
+// user roughly how stale the last heartbeat is, not to the second.
+export function formatLastSeen(lastSeenAt: string | Date, now: number): string {
+  const deltaMs = Math.max(0, now - toEpoch(lastSeenAt));
+  const minutes = Math.floor(deltaMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 export interface MachineAvailability<T extends MachineLike> {
   // Non-stale machines, in the server's order.
   usable: T[];
@@ -198,10 +211,18 @@ export function machineAvailability<T extends MachineLike>(
     };
   }
   if (usable.length === 0) {
+    // Every machine is stale. Surface WHY with the freshest machine's last
+    // heartbeat, so the hint is "last seen 4m ago" instead of a vague "recently".
+    const freshest = all.reduce((best, m) =>
+      toEpoch(m.lastSeenAt) > toEpoch(best.lastSeenAt) ? m : best,
+    );
+    const detail =
+      all.length === 1
+        ? `${freshest.name} last checked in ${formatLastSeen(freshest.lastSeenAt, now)}`
+        : `last checked in ${formatLastSeen(freshest.lastSeenAt, now)}`;
     return {
       usable: [],
-      disabledReason:
-        "No machine is online — the Hitch daemon hasn’t checked in recently.",
+      disabledReason: `No machine is online — ${detail}. Is the Hitch daemon running?`,
       hidePicker: all.length === 1,
     };
   }

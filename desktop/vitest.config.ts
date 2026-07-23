@@ -33,6 +33,8 @@ export default defineConfig({
       "src/renderer/components/todo-dialog/__tests__/**/*.test.ts",
       "src/renderer/components/__tests__/**/*.test.{ts,tsx}",
       "src/renderer/hooks/__tests__/**/*.test.{ts,tsx}",
+      // Main-process unit tests (electron is mocked per-file with vi.mock).
+      "src/main/__tests__/**/*.test.ts",
     ],
     environment: "node",
   },

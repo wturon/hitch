@@ -141,15 +141,24 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   --json everywhere, unique-prefix ids, verbatim bodies. Acceptance: cold `claude -p` runs drove
   it end-to-end with zero stumbles, no skill file. No `attention` command yet (assignments empty
   until M4). No CLI sign-up (accounts come from the desktop; login error says so).
-- [ ] **M4 — Daemon reconciler:** desired/observed loop, spawn-on-assign, machine registration +
-  heartbeat, chat-state relay, focus relay handling. Remove file sync + Convex push from daemon.
-  Assign UX decided here (D5 — rip from existing dialog/snippets surfaces).
+- [x] **M4 — Daemon reconciler** (DONE 2026-07-22, PRs #102–#108; plan + per-PR detail in
+  docs/v2-m4-plan.md): the daemon is a pure reconciler in V2 mode (`HITCH_SERVER_URL`), V1
+  byte-untouched and still the default. Machine register + 30s heartbeat, chat-state relay
+  (shared sqlite store, independent server_synced_at cursor so V1+V2 don't starve each other),
+  desired/observed reconcile loop (spawn-on-assign via cmux launchers, close-on-stop, transition-
+  only observations), WS focus relay, and reconnect resilience (re-hello + re-register + reconcile
+  + resync). D5 assign UX shipped as the delegate bar (option L). Fake-launch mode
+  (`HITCH_FAKE_LAUNCH=1`) drives the whole loop with no cmux/agent. File sync + Convex push
+  REMAIN (they die at M5, not M4 — see the plan's confirmed reading). Acceptance: the fake-loop
+  check (13/13, pending→spawning→running→waiting_input→done + chat busy→waiting_input→dead) and
+  Will's real-cmux reconciler pass. REMAINING: Will dogfoods real delegation ahead of M5.
 - [ ] **M5 — Cutover + delete:** real import, one week of real V2 use, then delete convex/ + task
   files + sync machinery. (Prod export already banked — see Environment status.)
 
 ## Still-open (deferred, not blockers)
 
-- D5 assign-time UX — decide at M4.
+- D5 assign-time UX — DECIDED at M4: the delegate bar (option L — compose/active/re-delegate,
+  agent + machine pickers, preset + editable prompt, ⌘⏎). Shipped in PR #106.
 - D6 chat-monitoring hardening (ground-truth backstop under hooks) — carved-out separate workstream.
 - projects.repo_path multi-machine normalization — when a 2nd machine appears.
 
@@ -185,3 +194,37 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   **M5 must import Hitch project via --from-dir and everything else via the export zip.**
   Dry-runs verified: dir = 98 tasks/4 tags/54 links; export (Will) = 7 projects/93 tasks/12 archived
   skipped. Bodies byte-for-byte in both paths. M1 steps 1–7 COMPLETE — step 8 (Railway) blocks on Will.
+- 2026-07-22 — **M4 started** (plan: docs/v2-m4-plan.md). PRs #102–#105 landed the daemon
+  reconciler: #102 V2 foundation (config/serverClient/daemonV2 register+heartbeat, Node-`ws`
+  client with capped backoff + re-hello), #103 chat-state relay (observer → shared sqlite →
+  `POST/PATCH /daemon/chats`, independent `server_synced_at` cursor so V1 Convex + V2 Hono sinks
+  don't starve each other), #104 reconciler core (pure desired-vs-truth diff; spawn = claim →
+  chat row → `spawning` → cmux launch → transition-only observations; close-on-stop → `done`;
+  in-flight guard), #105 fake-launch (`HITCH_FAKE_LAUNCH=1`, cmux-less scripted lifecycle,
+  heal-proof by construction).
+- 2026-07-22 — M4 #106 delegate bar (D5, option L): compose/active/re-delegate, agent + machine
+  pickers (machine hidden-when-one, disabled-when-stale), preset + editable prompt, ⌘⏎; POST
+  /assignments; preamble stamps title + verbatim body + id + `hitch` CLI line. #107 attention
+  queue + focus relay + close-on-done: NEEDS-YOU/WORKING groups joined by task_id, main-held
+  ws-send IPC → focus event → daemon `openChat` + activateApp; done-check PATCHes
+  desired=stopped. **Acceptances:** fake-loop (13/13 on the compose stack, zero real spawns) and
+  Will's real-cmux reconciler pass (`v2-reconciler-real-machine.mjs`).
+- 2026-07-22 — **M4 DONE** #108 hardening + docs (`feat/v2-m4-07-hardening`). Two carried-over
+  review items + resilience:
+  - **Legacy-chat 400-storm (real-machine finding).** ~720 legacy V1 chats carry a Convex-id
+    `project_id` (e.g. `m17brnqs30pyevfc05dp3r3x4s87z3an`), which `chatCreate`'s `z.uuid()`
+    rejects → a 400 per row every 2s sync round, forever (a failed push never cleared the
+    server cursor). Fix: relay only chats it can represent — an `isRepresentable` guard skips a
+    non-UUID-projectId row before the wire, and any non-retryable 4xx (400/409/422) marks-synced-
+    and-skips permanently. Pinned by `smoke:v2-chat-legacy-skip` (zero repeated 400s across two
+    rounds + a restart).
+  - **In-session sign-in now starts the daemon** via the existing seam (`onSignIn`→`restartDaemon`,
+    idempotent; `onSignOut`→`stopDaemon`), instead of only on next boot.
+  - **Reconnect trio**: on every WS re-connect the daemon re-registers (idempotent upsert) +
+    reconciles + resyncs chats (on top of re-hello) — verified with a mid-run `docker compose
+    restart server`. **Stale-machine surfacing**: the delegate bar now says WHY ("last checked
+    in 4m ago").
+  - **Real-machine gotcha (banked):** on a COLD machine the harness's first-run "trust this
+    folder?" prompt can appear when the reconciler spawns into a repoPath the agent hasn't seen,
+    stalling the spawn on human input — the fake-launch path never exercises it. Flagged, not
+    auto-handled (revisit if it bites during Will's M5 dogfood).

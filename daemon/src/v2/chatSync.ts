@@ -46,6 +46,36 @@ export interface ChatSyncResult {
   created: number;
   updated: number;
   failed: number;
+  // Rows the sink permanently declined to relay this round (legacy/unrepresentable
+  // — see `isRepresentable`, or a non-retryable 4xx). Marked server-synced so a
+  // 400 never storms: they leave `listServerDirtyChats` and don't retry forever.
+  skipped: number;
+}
+
+// The server keys `chats.projectId` as a server UUID (nullable). A local row
+// carrying a NON-UUID projectId is a legacy V1 chat whose projectId is a Convex
+// document id (e.g. "m17brnqs30pyevfc05dp3r3x4s87z3an") — the server's
+// `chatCreate` validator rejects it with a 400, and because a failed push never
+// clears the server cursor the row re-POSTs (and re-400s) every single sync
+// round. On a real machine that's ~720 legacy chats storming the server forever.
+//
+// Such rows can't be faithfully represented (their project doesn't exist on the
+// server), so the sink SKIPS them permanently rather than relay them project-less
+// or storm 400s. A null projectId is representable (the column is nullable); a
+// UUID projectId is a real V2 chat.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isRepresentable(chat: Pick<LocalChatRow, "projectId">): boolean {
+  return chat.projectId == null || UUID_RE.test(chat.projectId);
+}
+
+// A server response that will NOT change on retry, so the row is permanently
+// skipped instead of re-pushed forever. Validation (400/422) and conflict (409)
+// are non-retryable; 401/403 (a rotated key), 404 (handled separately on PATCH),
+// and 408/429 (transient) stay retryable and are NOT treated as permanent.
+export function isPermanentReject(status: number): boolean {
+  if (status < 400 || status >= 500) return false;
+  return status !== 401 && status !== 403 && status !== 404 && status !== 408 && status !== 429;
 }
 
 // Store status → server chat_status. endedAt takes precedence: a settled chat
@@ -121,8 +151,19 @@ export class ChatSync {
     let created = 0;
     let updated = 0;
     let failed = 0;
+    let skipped = 0;
 
     for (const chat of dirty) {
+      // Legacy/unrepresentable rows (Convex-id projectId) never touch the wire:
+      // mark them server-synced so they leave the dirty set and never storm the
+      // server with 400s. A settled legacy chat never re-dirties; if one somehow
+      // updates it just re-skips here — still zero network.
+      if (!isRepresentable(chat)) {
+        this.store.markChatServerSynced(chat.localKey, { syncedAt: chat.updatedAt });
+        skipped += 1;
+        continue;
+      }
+
       const status = mapChatStatus(chat);
       const cmuxRef = cmuxRefFor(chat);
       const title = titleFor(chat);
@@ -146,6 +187,14 @@ export class ChatSync {
           if (res.status === 404) {
             // Server row is gone — fall through and recreate it.
             serverChatId = null;
+          } else if (isPermanentReject(res.status)) {
+            const detail = await res.text().catch(() => "");
+            this.logger.error?.(
+              `[hitch] chat PATCH rejected (${res.status}${detail ? `: ${detail}` : ""}) for ${chat.localKey} — skipping permanently`,
+            );
+            this.store.markChatServerSynced(chat.localKey, { syncedAt });
+            skipped += 1;
+            continue;
           } else {
             const detail = await res.text().catch(() => "");
             this.logger.error?.(
@@ -169,6 +218,14 @@ export class ChatSync {
         });
         if (!res.ok) {
           const detail = await res.text().catch(() => "");
+          if (isPermanentReject(res.status)) {
+            this.logger.error?.(
+              `[hitch] chat POST rejected (${res.status}${detail ? `: ${detail}` : ""}) for ${chat.localKey} — skipping permanently`,
+            );
+            this.store.markChatServerSynced(chat.localKey, { syncedAt });
+            skipped += 1;
+            continue;
+          }
           this.logger.error?.(
             `[hitch] chat POST failed (${res.status}${detail ? `: ${detail}` : ""}) for ${chat.localKey}`,
           );
@@ -184,6 +241,6 @@ export class ChatSync {
       }
     }
 
-    return { created, updated, failed };
+    return { created, updated, failed, skipped };
   }
 }

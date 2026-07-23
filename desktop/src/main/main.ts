@@ -3116,6 +3116,16 @@ initHitchServer({
     writeLocalSecrets({ ...readLocalSecrets(), hitchServer: creds ?? undefined }),
   getWindow: () => mainWindow,
   log: (stream, message) => addLog(stream, message),
+  // In-session sign-in: start the reconciler daemon that sat idle without
+  // credentials (startDaemon reads the freshly-written secrets). restartDaemon
+  // is a no-op-then-start when none is running, so there's never two.
+  onSignIn: () => {
+    void restartDaemon();
+  },
+  // Sign-out: the api key is revoked, so stop the daemon rather than let it 401.
+  onSignOut: () => {
+    stopDaemon();
+  },
 });
 
 app.whenReady().then(async () => {

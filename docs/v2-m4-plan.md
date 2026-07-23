@@ -105,5 +105,31 @@ assignments.observed_state (daemon-only, transition-writes only):
 
 ## Progress
 
-- [ ] PR 1 foundation · [ ] PR 2 chat relay · [ ] PR 3 reconciler · [ ] PR 4 fake launch ·
-  [ ] PR 5 delegate bar · [ ] PR 6 attention+focus · [ ] PR 7 hardening
+- [x] PR 1 foundation · [x] PR 2 chat relay · [x] PR 3 reconciler · [x] PR 4 fake launch ·
+  [x] PR 5 delegate bar · [x] PR 6 attention+focus · [x] PR 7 hardening
+
+**M4 COMPLETE (2026-07-22).** PR 7 (`feat/v2-m4-07-hardening`) closed the two carried-over
+review items + the hardening pass:
+
+- **Legacy-chat 400-storm (from the PR 2/3 real-machine review).** The chat relay tried to
+  sync ~720 legacy V1 chats whose `local_chats.project_id` is a Convex document id (e.g.
+  `m17brnqs30pyevfc05dp3r3x4s87z3an`), not a server UUID. `POST /daemon/chats` validates
+  `projectId` with `z.uuid()`, so every one 400'd — and a failed push never cleared the
+  server cursor, so all ~720 re-POSTed (and re-400'd) every 2s sync round forever. Fix in
+  `chatSync.ts`: (1) a proactive `isRepresentable` guard skips a non-UUID-projectId row
+  BEFORE any network call and marks it server-synced so it leaves the dirty set; (2) a durable
+  backstop marks-synced-and-skips on any non-retryable 4xx (400/409/422; 401/403/408/429 stay
+  retryable, 404 keeps its recreate path). A 400 can never storm again. Verified by
+  `smoke:v2-chat-legacy-skip` (zero repeated 400s across two rounds + a restart).
+- **In-session sign-in didn't start the daemon.** A fresh V2 sign-in only started the daemon
+  on the NEXT app boot (boot-time `startDaemon` sees no creds → idle). Fix in the sanctioned
+  seam: `hitchServer.completeSignIn` now calls a new `onSignIn` dep after minting the key;
+  `main.ts` wires it to `restartDaemon` (idempotent → never two). Symmetric `onSignOut` →
+  `stopDaemon` so a revoked key doesn't 401 forever.
+- **Reconnect/re-register resilience.** `daemonV2` `ws.onReconnect` now runs the full recovery
+  TRIO — re-register (idempotent machines upsert) + reconcile + chat resync — on top of the
+  PR 1 re-hello. A different machine id on re-register (server DB reset) is logged loudly
+  (needs a restart). Verified against a live compose stack with a mid-run `docker compose
+  restart server`.
+- **Stale-machine surfacing.** The delegate bar already disabled on >90s heartbeat;
+  `machineAvailability` now surfaces WHY ("last checked in 4m ago", freshest machine).
