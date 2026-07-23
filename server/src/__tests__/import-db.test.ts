@@ -179,5 +179,20 @@ describeDb("importer --execute (postgres:16 in Docker)", () => {
     await expect(executePlan(db, plan, "will@example.com")).rejects.toThrow(
       /already has 5 task/,
     );
+
+    // …but --allow-existing bypasses the guard and appends (the two-pass
+    // import). A skip-Hitch plan re-run adds only Eagle on top of the first.
+    const pass2 = buildPlan(
+      await loadFromConvexExport(EXPORT_DIR, "will@example.com"),
+      { skipProjects: ["Hitch"] },
+    );
+    const appended = await executePlan(db, pass2, "will@example.com", {
+      allowExisting: true,
+    });
+    expect(appended.projects).toBe(1); // Eagle only — Hitch was skipped
+    expect(appended.tasks).toBe(1);
+
+    const allProjects = await db.select().from(schema.projects);
+    expect(allProjects.map((p) => p.name).sort()).toEqual(["Eagle", "Eagle", "Hitch"]);
   });
 });

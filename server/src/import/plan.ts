@@ -18,6 +18,14 @@ export interface PlanProject {
   ignoredNonTaskFiles: number;
 }
 
+export interface SkippedProject {
+  // A source project excluded from the plan via --skip-project. `taskCount` is
+  // what WOULD have imported (parsed, archived/non-card files already dropped),
+  // for an honest dry-run tally.
+  name: string;
+  taskCount: number;
+}
+
 export interface ImportPlan {
   projects: PlanProject[];
   // Tag id → named color, user-level (V2 tags are per-user). Colors come from
@@ -28,6 +36,9 @@ export interface ImportPlan {
   doneCount: number;
   taskTagLinkCount: number;
   skippedCount: number;
+  // Projects excluded by name via --skip-project (e.g. Hitch, imported from
+  // --from-dir instead). Counted + listed in the dry-run, never written.
+  skippedProjects: SkippedProject[];
 }
 
 function orderTasks(tasks: ParsedTask[]): ParsedTask[] {
@@ -40,8 +51,18 @@ function orderTasks(tasks: ParsedTask[]): ParsedTask[] {
   return [...open, ...done];
 }
 
-export function buildPlan(sources: SourceProject[]): ImportPlan {
+export interface BuildPlanOptions {
+  // Source-project names to exclude entirely (matched by exact name). Used so
+  // the Hitch project can be imported from --from-dir while everything else
+  // comes from the stale export zip. Excluded projects are tallied into
+  // `skippedProjects`, never into the writable totals.
+  skipProjects?: string[];
+}
+
+export function buildPlan(sources: SourceProject[], opts: BuildPlanOptions = {}): ImportPlan {
+  const skipSet = new Set(opts.skipProjects ?? []);
   const projects: PlanProject[] = [];
+  const skippedProjects: SkippedProject[] = [];
   const tagColors = new Map<string, string>();
   let taskCount = 0;
   let doneCount = 0;
@@ -60,15 +81,26 @@ export function buildPlan(sources: SourceProject[]): ImportPlan {
         continue;
       }
       tasks.push(outcome.task);
-      for (const tag of outcome.task.tags) {
+    }
+
+    const ordered = orderTasks(tasks);
+
+    // Excluded by --skip-project: count it for the dry-run, but contribute
+    // nothing to the tag registry, totals, or the writable project list.
+    if (skipSet.has(source.name)) {
+      skippedProjects.push({ name: source.name, taskCount: ordered.length });
+      continue;
+    }
+
+    for (const task of ordered) {
+      for (const tag of task.tags) {
         if (!tagColors.has(tag)) {
           tagColors.set(tag, registry.get(tag) ?? DEFAULT_TAG_COLOR);
         }
       }
-      taskTagLinkCount += outcome.task.tags.length;
+      taskTagLinkCount += task.tags.length;
     }
 
-    const ordered = orderTasks(tasks);
     taskCount += ordered.length;
     doneCount += ordered.filter((t) => t.status === "done").length;
     skippedCount += skipped.length;
@@ -80,11 +112,22 @@ export function buildPlan(sources: SourceProject[]): ImportPlan {
     });
   }
 
-  return { projects, tagColors, taskCount, doneCount, taskTagLinkCount, skippedCount };
+  return {
+    projects,
+    tagColors,
+    taskCount,
+    doneCount,
+    taskTagLinkCount,
+    skippedCount,
+    skippedProjects,
+  };
 }
 
 // Human-readable plan for --dry-run (and echoed before --execute).
-export function renderPlan(plan: ImportPlan, opts: { titlesPerProject?: number } = {}): string {
+export function renderPlan(
+  plan: ImportPlan,
+  opts: { titlesPerProject?: number; allowExisting?: boolean } = {},
+): string {
   const titlesPerProject = opts.titlesPerProject ?? 10;
   const lines: string[] = [];
 
@@ -95,6 +138,23 @@ export function renderPlan(plan: ImportPlan, opts: { titlesPerProject?: number }
       `tags: ${plan.tagColors.size}   task_tags: ${plan.taskTagLinkCount}   ` +
       `sections: 0 (V1 has none)   skipped: ${plan.skippedCount}`,
   );
+
+  // Which guard/skip flags shaped this plan (stated even when inactive, so a
+  // dry-run reader never has to guess what the writable totals excluded).
+  lines.push(
+    `  flags: --skip-project ${
+      plan.skippedProjects.length > 0
+        ? plan.skippedProjects.map((p) => p.name).join(", ")
+        : "(none)"
+    }   --allow-existing ${opts.allowExisting ? "ON (refuse-if-user-has-tasks guard BYPASSED)" : "off (guard active)"}`,
+  );
+
+  if (plan.skippedProjects.length > 0) {
+    lines.push("  skipped (--skip-project):");
+    for (const p of plan.skippedProjects) {
+      lines.push(`    ${p.name} — ${p.taskCount} tasks (not imported from this source)`);
+    }
+  }
 
   if (plan.tagColors.size > 0) {
     lines.push("  tag registry:");

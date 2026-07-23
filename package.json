@@ -25,6 +25,7 @@
     "dev:convex": "convex dev",
     "dev:daemon": "tsx daemon/src/index.ts",
   "dev:v2-stack": "node scripts/dev-v2-stack.mjs",
+    "db:sync-from-prod": "node scripts/sync-local-from-prod.mjs",
     "dev:desktop": "npm -w desktop run dev",
     "dev:renderer": "npm -w desktop run dev:renderer",
     "dev:electron": "npm -w desktop run dev:electron",

@@ -21,10 +21,19 @@ export interface ExecuteResult {
   taskTags: number;
 }
 
+export interface ExecuteOptions {
+  // Bypass the refuse-if-user-has-tasks guard so a second pass can add more
+  // projects on top of the first (e.g. Hitch from --from-dir after the export
+  // pass). The existing counts are still surfaced loudly. Without it the guard
+  // stays: the importer assumes a fresh DB.
+  allowExisting?: boolean;
+}
+
 export async function executePlan(
   db: Db,
   plan: ImportPlan,
   userEmail: string,
+  opts: ExecuteOptions = {},
 ): Promise<ExecuteResult> {
   const [user] = await db
     .select()
@@ -37,7 +46,8 @@ export async function executePlan(
   }
 
   // Idempotency guard (simple, throwaway): refuse when the target user already
-  // has any tasks. Delete their projects (tasks cascade) to re-run.
+  // has any tasks. Delete their projects (tasks cascade) to re-run — or pass
+  // --allow-existing to append (the two-pass import needs pass 2 to run).
   const userProjects = await db
     .select({ id: schema.projects.id })
     .from(schema.projects)
@@ -53,9 +63,16 @@ export async function executePlan(
         ),
       );
     if (existingTasks > 0) {
-      throw new Error(
-        `refusing to import: user ${userEmail} already has ${existingTasks} task(s) — ` +
-          `this importer only targets a fresh DB`,
+      if (!opts.allowExisting) {
+        throw new Error(
+          `refusing to import: user ${userEmail} already has ${existingTasks} task(s) — ` +
+            `this importer only targets a fresh DB (pass --allow-existing to append)`,
+        );
+      }
+      console.warn(
+        `\n⚠️  --allow-existing: user ${userEmail} already has ` +
+          `${userProjects.length} project(s) / ${existingTasks} task(s). ` +
+          `Guard BYPASSED — appending this plan on top of them.\n`,
       );
     }
   }
