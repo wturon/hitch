@@ -17,10 +17,12 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
 import { openChatLifecycleStore } from "../chatLifecycleStore.js";
+import { setCmuxLogger, setCmuxTraceSink } from "../cmux.js";
 import { ChatStateObserver } from "../observer/index.js";
 import { ChatSync } from "./chatSync.js";
 import { resolveServerConfig } from "./config.js";
 import { ProjectsProvider } from "./projects.js";
+import { Reconciler } from "./reconciler.js";
 import { createServerClient } from "./serverClient.js";
 import { startServerWs, type ServerWsClient } from "./ws.js";
 
@@ -79,6 +81,17 @@ function heartbeatMs(env: NodeJS.ProcessEnv): number {
   if (!raw) return DEFAULT_HEARTBEAT_MS;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_HEARTBEAT_MS;
+}
+
+// Fallback reconcile cadence (WS invalidations drive most passes; this is the
+// floor that catches store-only changes like a turn completing, which don't
+// touch the server). Overridable so the real-machine test doesn't wait 30s for
+// running→waiting_input.
+function reconcileMs(env: NodeJS.ProcessEnv): number | undefined {
+  const raw = env.HITCH_RECONCILE_MS?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 export async function startHitchDaemonV2(
@@ -173,6 +186,12 @@ export async function startHitchDaemonV2(
   await projects.refresh();
   ws.onInvalidate("projects", () => void projects.refresh());
 
+  // cmux.ts is dependency-free; wire its human log + per-chat trace into the
+  // same streams V1 uses, so the reconciler's spawn/close calls are debuggable.
+  // (Trace sink after the store is open, mirroring daemon.ts.)
+  setCmuxLogger(logger);
+  setCmuxTraceSink((event) => store.appendCmuxTrace(event));
+
   const observer = new ChatStateObserver({
     store,
     projects: projects.list,
@@ -210,10 +229,28 @@ export async function startHitchDaemonV2(
   const relayTimer = setInterval(() => void relayTick(), RELAY_POLL_MS);
   relayTimer.unref?.();
 
+  // --- Reconciler (PR 3) ----------------------------------------------------
+  // Diffs desired vs ground truth and executes spawn/close/observe, writing
+  // only observations. Triggers: a ~30s fallback tick (its own timer, parallel
+  // to the heartbeat), a WS `assignments` invalidate ("look now"), and a WS
+  // reconnect (a dropped socket may have missed invalidations — re-diff).
+  const reconciler = new Reconciler({
+    client,
+    store,
+    machineId,
+    host: name,
+    logger,
+    tickMs: reconcileMs(env),
+  });
+  ws.onInvalidate("assignments", () => reconciler.trigger("ws-invalidate"));
+  ws.onReconnect(() => reconciler.trigger("ws-reconnect"));
+  reconciler.start();
+
   let stopped = false;
   async function stop(): Promise<void> {
     if (stopped) return;
     stopped = true;
+    reconciler.stop();
     clearInterval(heartbeat);
     clearInterval(relayTimer);
     ws.stop();
