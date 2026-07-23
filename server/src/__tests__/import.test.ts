@@ -185,4 +185,33 @@ describe("loadFromConvexExport + buildPlan", () => {
     expect(rendered).toContain("SKIP tasks/loose-note.md");
     expect(rendered).toContain("easy (blue)");
   });
+
+  it("--skip-project excludes a named project from the writable plan entirely", async () => {
+    const sources = await loadFromConvexExport(EXPORT_DIR, "will@example.com");
+    const plan = buildPlan(sources, { skipProjects: ["Hitch"] });
+
+    // Only Eagle survives; Hitch's 4 tasks + its 2 tag links leave the totals.
+    expect(plan.projects.map((p) => p.name)).toEqual(["Eagle"]);
+    expect(plan.taskCount).toBe(1);
+    expect(plan.doneCount).toBe(0);
+    expect(plan.taskTagLinkCount).toBe(0);
+
+    // But it is tallied for the dry-run, not silently dropped.
+    expect(plan.skippedProjects).toEqual([{ name: "Hitch", taskCount: 4 }]);
+
+    const rendered = renderPlan(plan, { allowExisting: true });
+    expect(rendered).toContain("skipped (--skip-project):");
+    expect(rendered).toContain("Hitch — 4 tasks");
+    expect(rendered).toContain("--skip-project Hitch");
+    expect(rendered).toContain("--allow-existing ON");
+  });
+
+  it("no --skip-project → empty skippedProjects and the flags line says so", async () => {
+    const plan = buildPlan(await loadFromConvexExport(EXPORT_DIR, "will@example.com"));
+    expect(plan.skippedProjects).toEqual([]);
+    const rendered = renderPlan(plan);
+    expect(rendered).toContain("--skip-project (none)");
+    expect(rendered).toContain("--allow-existing off (guard active)");
+    expect(rendered).not.toContain("skipped (--skip-project):");
+  });
 });

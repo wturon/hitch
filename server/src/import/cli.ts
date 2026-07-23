@@ -34,7 +34,15 @@ const USAGE = `V1 → V2 task importer (throwaway; dry-run by default)
   --project-name <name>        --from-dir only: target project name.
                                Default "Inbox" (a bare tasks dir carries no
                                project identity — the Inbox-is-a-project rule)
-  --execute                    actually write to DATABASE_URL (fresh DB only)
+  --skip-project <name>        --from-convex-export only, repeatable: exclude a
+                               project by name from the plan entirely (e.g. the
+                               Hitch project, imported from --from-dir instead
+                               because the export zip is stale for it)
+  --allow-existing             bypass the refuse-if-user-has-tasks guard so a
+                               second --execute can append to the first (the
+                               two-pass import). Existing counts still printed.
+  --execute                    actually write to DATABASE_URL (fresh DB only,
+                               unless --allow-existing)
   --help                       this text`;
 
 async function main(): Promise<void> {
@@ -44,6 +52,8 @@ async function main(): Promise<void> {
       "from-convex-export": { type: "string" },
       "user-email": { type: "string" },
       "project-name": { type: "string" },
+      "skip-project": { type: "string", multiple: true },
+      "allow-existing": { type: "boolean", default: false },
       execute: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -66,6 +76,11 @@ async function main(): Promise<void> {
   if (values["project-name"] !== undefined && fromDir === undefined) {
     throw new Error("--project-name only applies to --from-dir");
   }
+  const skipProjects = values["skip-project"] ?? [];
+  if (skipProjects.length > 0 && fromExport === undefined) {
+    throw new Error("--skip-project only applies to --from-convex-export");
+  }
+  const allowExisting = values["allow-existing"] ?? false;
 
   let sources: SourceProject[];
   if (fromDir !== undefined) {
@@ -82,8 +97,8 @@ async function main(): Promise<void> {
     sources = await loadFromConvexExport(root, userEmail);
   }
 
-  const plan = buildPlan(sources);
-  console.log(renderPlan(plan));
+  const plan = buildPlan(sources, { skipProjects });
+  console.log(renderPlan(plan, { allowExisting }));
 
   if (!values.execute) {
     console.log("\nDRY RUN — nothing written. Pass --execute to import.");
@@ -97,7 +112,7 @@ async function main(): Promise<void> {
   const { db, pool } = await import("../db/index.js");
   const { executePlan } = await import("./execute.js");
   try {
-    const result = await executePlan(db, plan, userEmail);
+    const result = await executePlan(db, plan, userEmail, { allowExisting });
     console.log(
       `\nEXECUTED for ${userEmail} (${result.userId}): ` +
         `${result.projects} projects, ${result.tasks} tasks, ` +
