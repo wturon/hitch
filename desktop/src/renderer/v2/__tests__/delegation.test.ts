@@ -5,6 +5,7 @@ import {
   buildDelegatePreamble,
   composeDelegatePrompt,
   deriveBarState,
+  formatLastSeen,
   isMachineStale,
   machineAvailability,
   MACHINE_STALE_MS,
@@ -138,6 +139,22 @@ describe("machineAvailability", () => {
     expect(a.disabledReason).toMatch(/online/);
   });
 
+  it("surfaces WHY the sole stale machine is offline (last-seen age + name)", () => {
+    const a = machineAvailability([machine("a", 4 * 60_000)], NOW);
+    expect(a.disabledReason).toContain("machine-a");
+    expect(a.disabledReason).toContain("4m ago");
+  });
+
+  it("surfaces the freshest machine's age when several are all stale", () => {
+    // b checked in more recently (2m) than a (10m) — the hint uses the freshest.
+    const a = machineAvailability(
+      [machine("a", 10 * 60_000), machine("b", 2 * 60_000)],
+      NOW,
+    );
+    expect(a.disabledReason).toContain("2m ago");
+    expect(a.disabledReason).not.toContain("10m ago");
+  });
+
   it("shows the picker and lists only fresh machines when several exist", () => {
     const fresh = machine("a", 1_000);
     const stale = machine("b", MACHINE_STALE_MS + 1);
@@ -155,6 +172,15 @@ describe("machineAvailability", () => {
     expect(a.usable).toEqual([]);
     expect(a.hidePicker).toBe(false);
     expect(a.disabledReason).toMatch(/online/);
+  });
+});
+
+describe("formatLastSeen", () => {
+  it("renders minutes, hours, and days coarsely", () => {
+    expect(formatLastSeen(iso(30_000), NOW)).toBe("just now");
+    expect(formatLastSeen(iso(4 * 60_000), NOW)).toBe("4m ago");
+    expect(formatLastSeen(iso(3 * 3_600_000), NOW)).toBe("3h ago");
+    expect(formatLastSeen(iso(2 * 86_400_000), NOW)).toBe("2d ago");
   });
 });
 

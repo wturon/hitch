@@ -40,6 +40,7 @@
     "smoke:v2-config": "tsx scripts/v2-config-smoke.ts",
     "smoke:v2-ws-backoff": "tsx scripts/v2-ws-backoff-smoke.ts",
     "smoke:v2-chat-sync": "tsx scripts/v2-chat-sync-smoke.ts",
+    "smoke:v2-chat-legacy-skip": "tsx scripts/v2-chat-legacy-skip-smoke.ts",
     "smoke:v2-reconciler": "tsx scripts/v2-reconciler-smoke.ts",
     "smoke:v2-focus": "tsx scripts/v2-focus-smoke.ts",
     "start": "node dist/index.js"

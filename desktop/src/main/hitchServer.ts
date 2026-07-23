@@ -34,6 +34,14 @@ interface HitchServerDeps {
   setStoredCredentials: (creds: HitchServerCredentials | null) => void;
   getWindow: () => BrowserWindow | null;
   log: (stream: "system" | "stderr", message: string) => void;
+  // Called after a successful in-session sign-in (credentials persisted, WS up)
+  // so the host can start the reconciler daemon that sat idle while signed out —
+  // otherwise the daemon only starts on the NEXT app boot. Idempotent on the
+  // host side (startDaemon's `if (daemon)` guard), so there's never two.
+  onSignIn?: () => void;
+  // Called after sign-out (credentials cleared, WS down) so the host can stop the
+  // daemon, which would otherwise keep authenticating with a now-revoked key.
+  onSignOut?: () => void;
 }
 
 type AuthResult = { ok: true } | { ok: false; error: string };
@@ -227,6 +235,9 @@ export function initHitchServer(deps: HitchServerDeps): void {
     });
     deps.log("system", `Signed in to Hitch server at ${config.serverUrl}`);
     startWs();
+    // Start the reconciler daemon now (it was idle without credentials at boot),
+    // rather than waiting for the next app launch.
+    deps.onSignIn?.();
     return { ok: true };
   };
 
@@ -265,6 +276,9 @@ export function initHitchServer(deps: HitchServerDeps): void {
       /* offline sign-out still clears local creds */
     }
     deps.log("system", "Signed out of Hitch server");
+    // Stop the daemon: its api key was just revoked, so leaving it running would
+    // only produce 401s until the next boot.
+    deps.onSignOut?.();
   };
 
   // ---------------------------------------------------------------------------

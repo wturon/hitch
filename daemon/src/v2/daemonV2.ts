@@ -213,9 +213,15 @@ export async function startHitchDaemonV2(
         if (result.eventsReduced < 100) break;
       }
       const synced = await chatSync.sync();
-      if (synced.created > 0 || synced.updated > 0 || synced.failed > 0) {
+      if (
+        synced.created > 0 ||
+        synced.updated > 0 ||
+        synced.failed > 0 ||
+        synced.skipped > 0
+      ) {
         logger.info(
-          `[hitch] chat relay: ${synced.created} created, ${synced.updated} updated, ${synced.failed} failed`,
+          `[hitch] chat relay: ${synced.created} created, ${synced.updated} updated, ` +
+            `${synced.failed} failed, ${synced.skipped} skipped`,
         );
       }
     } catch (error) {
@@ -277,7 +283,53 @@ export async function startHitchDaemonV2(
     resolveLauncher: fakeLaunch?.resolve,
   });
   ws.onInvalidate("assignments", () => reconciler.trigger("ws-invalidate"));
-  ws.onReconnect(() => reconciler.trigger("ws-reconnect"));
+
+  // --- Reconnect resilience -------------------------------------------------
+  // A server restart or a long WS outage means the daemon may have missed
+  // invalidations AND the server may have restarted with a fresh in-memory WS
+  // registry (the re-hello in ws.ts re-registers this socket). On every RE-connect
+  // we run the full recovery TRIO so no manual restart is ever needed:
+  //   1. RE-REGISTER the machine (idempotent upsert-by-name) — recreates the row
+  //      if the server lost it and refreshes last_seen_at immediately (so the
+  //      delegate bar sees us online without waiting for the next heartbeat).
+  //   2. RECONCILE from scratch (reconciler.trigger) — re-diff desired vs truth,
+  //      catching any assignment changes whose invalidations we missed.
+  //   3. RESYNC chats (relayTick) — re-push any server-dirty chat state the
+  //      server may not have (or may have lost).
+  async function reregister(reason: string): Promise<void> {
+    try {
+      const res = await client.daemon.machines.$post({
+        json: { name, daemonVersion: version },
+      });
+      if (!res.ok) {
+        logger.error?.(`[hitch] re-register failed (${res.status}) on ${reason}`);
+        return;
+      }
+      const row = (await res.json()) as { id: string };
+      if (row.id !== machineId) {
+        // The upsert-by-name returned a DIFFERENT id — the server was reset and
+        // minted a new machine row. Every id-bearing call (heartbeat, chats,
+        // assignments, the WS hello) still uses the id captured at startup, so a
+        // process restart is required to adopt the new one. Loud, and rare.
+        logger.error?.(
+          `[hitch] machine re-registered with a NEW id (${row.id}) on ${reason} — ` +
+            "the server appears to have been reset. Restart the daemon to adopt it.",
+        );
+        return;
+      }
+      logger.info(`[hitch] re-registered machine ${machineId} on ${reason}`);
+    } catch (error) {
+      logger.error?.(`[hitch] re-register error on ${reason}: ${String(error)}`);
+    }
+  }
+
+  ws.onReconnect(() => {
+    void (async () => {
+      await reregister("ws-reconnect");
+      reconciler.trigger("ws-reconnect");
+      void relayTick();
+    })();
+  });
   reconciler.start();
 
   let stopped = false;
