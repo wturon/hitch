@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { deriveTaskGroups, type TaskRow } from "../todoGroups";
+import {
+  deriveTaskGroups,
+  latestAssignmentByTaskId,
+  taskAttention,
+  type AttentionAssignment,
+  type TaskRow,
+} from "../todoGroups";
 
 // Rows carry an extra field to prove the generic fold returns the caller's
 // full type, not a stripped TaskRow.
@@ -121,5 +127,145 @@ describe("deriveTaskGroups", () => {
     const groups = deriveTaskGroups([task({ sortOrder: "a0", title: "typed" })]);
     // Compile-time: `title` is accessible without a cast. Runtime: it survives.
     expect(groups.backlog[0].title).toBe("typed");
+  });
+});
+
+// ─── Attention queue (M4 PR 6) ───────────────────────────────────────────────
+
+let aseq = 0;
+function assignment(
+  overrides: Partial<AttentionAssignment> & Pick<AttentionAssignment, "taskId" | "observedState">,
+): AttentionAssignment {
+  aseq += 1;
+  return {
+    id: `assignment-${aseq}`,
+    createdAt: `2026-07-22T10:00:${String(aseq % 60).padStart(2, "0")}.000Z`,
+    reviewedAt: null,
+    ...overrides,
+  };
+}
+
+describe("taskAttention", () => {
+  it("maps waiting_input → input", () => {
+    expect(taskAttention({ observedState: "waiting_input", reviewedAt: null })).toBe("input");
+  });
+
+  it("maps in-flight states (pending/spawning/running) → working", () => {
+    for (const observedState of ["pending", "spawning", "running"] as const) {
+      expect(taskAttention({ observedState, reviewedAt: null })).toBe("working");
+    }
+  });
+
+  it("maps done → review only while unreviewed; acked done → null", () => {
+    expect(taskAttention({ observedState: "done", reviewedAt: null })).toBe("review");
+    expect(
+      taskAttention({ observedState: "done", reviewedAt: "2026-07-22T11:00:00.000Z" }),
+    ).toBeNull();
+  });
+
+  it("maps dead and absent → null (backlog, re-delegate in the dialog)", () => {
+    expect(taskAttention({ observedState: "dead", reviewedAt: null })).toBeNull();
+    expect(taskAttention(null)).toBeNull();
+    expect(taskAttention(undefined)).toBeNull();
+  });
+});
+
+describe("latestAssignmentByTaskId", () => {
+  it("keeps the most-recently-created assignment per task", () => {
+    const t = "task-x";
+    const older = assignment({
+      taskId: t,
+      observedState: "dead",
+      createdAt: "2026-07-22T09:00:00.000Z",
+    });
+    const newer = assignment({
+      taskId: t,
+      observedState: "running",
+      createdAt: "2026-07-22T12:00:00.000Z",
+    });
+    const map = latestAssignmentByTaskId([older, newer]);
+    expect(map.get(t)?.id).toBe(newer.id);
+  });
+
+  it("returns an empty map for no assignments", () => {
+    expect(latestAssignmentByTaskId(undefined).size).toBe(0);
+    expect(latestAssignmentByTaskId([]).size).toBe(0);
+  });
+});
+
+describe("deriveTaskGroups with attention", () => {
+  it("buckets open tasks by their latest assignment's attention", () => {
+    const inputTask = task({ sortOrder: "a0", title: "needs-input" });
+    const reviewTask = task({ sortOrder: "a1", title: "needs-review" });
+    const workingTask = task({ sortOrder: "a2", title: "working" });
+    const plainTask = task({ sortOrder: "a3", title: "plain-backlog" });
+    const latest = latestAssignmentByTaskId([
+      assignment({ taskId: inputTask.id, observedState: "waiting_input" }),
+      assignment({ taskId: reviewTask.id, observedState: "done", reviewedAt: null }),
+      assignment({ taskId: workingTask.id, observedState: "running" }),
+      // plainTask's latest is dead → no attention → backlog.
+      assignment({ taskId: plainTask.id, observedState: "dead" }),
+    ]);
+    const groups = deriveTaskGroups(
+      [inputTask, reviewTask, workingTask, plainTask],
+      latest,
+    );
+    expect(groups.needsYou.map((t) => t.title)).toEqual(["needs-input", "needs-review"]);
+    expect(groups.working.map((t) => t.title)).toEqual(["working"]);
+    expect(groups.backlog.map((t) => t.title)).toEqual(["plain-backlog"]);
+  });
+
+  it("removes attention tasks from backlog (no double-count)", () => {
+    const t = task({ sortOrder: "a0", title: "busy" });
+    const latest = latestAssignmentByTaskId([
+      assignment({ taskId: t.id, observedState: "running" }),
+    ]);
+    const groups = deriveTaskGroups([t], latest);
+    expect(groups.working).toHaveLength(1);
+    expect(groups.backlog).toHaveLength(0);
+  });
+
+  it("keeps a DONE task in DONE even with a done-unreviewed assignment (close-on-done)", () => {
+    const t = task({
+      sortOrder: "a0",
+      title: "finished",
+      status: "done",
+      completedAt: "2026-07-22T12:00:00.000Z",
+    });
+    const latest = latestAssignmentByTaskId([
+      assignment({ taskId: t.id, observedState: "done", reviewedAt: null }),
+    ]);
+    const groups = deriveTaskGroups([t], latest);
+    expect(groups.done.map((x) => x.title)).toEqual(["finished"]);
+    expect(groups.needsYou).toHaveLength(0);
+  });
+
+  it("drops a task out of NEEDS YOU once its done assignment is acked", () => {
+    const t = task({ sortOrder: "a0", title: "acked" });
+    const unacked = deriveTaskGroups(
+      [t],
+      latestAssignmentByTaskId([assignment({ taskId: t.id, observedState: "done" })]),
+    );
+    expect(unacked.needsYou.map((x) => x.title)).toEqual(["acked"]);
+    const acked = deriveTaskGroups(
+      [t],
+      latestAssignmentByTaskId([
+        assignment({
+          taskId: t.id,
+          observedState: "done",
+          reviewedAt: "2026-07-22T13:00:00.000Z",
+        }),
+      ]),
+    );
+    expect(acked.needsYou).toHaveLength(0);
+    expect(acked.backlog.map((x) => x.title)).toEqual(["acked"]);
+  });
+
+  it("leaves the groups empty-of-attention when no map is passed", () => {
+    const t = task({ sortOrder: "a0", title: "open" });
+    const groups = deriveTaskGroups([t]);
+    expect(groups.needsYou).toHaveLength(0);
+    expect(groups.working).toHaveLength(0);
+    expect(groups.backlog.map((x) => x.title)).toEqual(["open"]);
   });
 });

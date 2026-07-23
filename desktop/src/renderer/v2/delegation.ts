@@ -111,6 +111,45 @@ export function observedStateChip(state: ObservedState): ChipInfo {
   }
 }
 
+// ─── Close-on-done (Decision 3) ──────────────────────────────────────────────
+
+// The client-written desired lifecycle of an assignment (mirror of
+// pgEnum("assignment_desired_state", ...)).
+export type DesiredState = "running" | "stopped";
+
+// The minimal assignment shape close-on-done needs — a structural subset of
+// GET /assignments.
+export interface StoppableAssignment {
+  id: string;
+  taskId: string;
+  desiredState: DesiredState;
+  observedState: ObservedState;
+}
+
+// Close-on-done is CLIENT intent (Decision 3, V1 PR #68 equivalent): checking a
+// task done PATCHes desired_state=stopped on its LIVE assignments (still
+// desired=running and not yet terminal), and the reconciler closes the tab. A
+// terminal (done|dead) or already-stopped assignment is left alone. Returns the
+// assignment ids to stop. Pure — the payload rule is unit-tested here rather
+// than mocked through the mutation.
+//
+// NOTE: unchecking a task does NOT auto-restart anything — re-delegation is an
+// explicit action in the delegate bar. So there is no inverse helper.
+export function assignmentsToStopOnDone(
+  assignments: readonly StoppableAssignment[] | undefined,
+  taskId: string,
+): string[] {
+  return (assignments ?? [])
+    .filter(
+      (a) =>
+        a.taskId === taskId &&
+        a.desiredState === "running" &&
+        a.observedState !== "done" &&
+        a.observedState !== "dead",
+    )
+    .map((a) => a.id);
+}
+
 // ─── Machines ───────────────────────────────────────────────────────────────
 
 // A machine is stale once its heartbeat is older than this — the daemon ticks

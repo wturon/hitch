@@ -26,6 +26,24 @@ export function useAssignments(client: HitchClient, taskId: string | null) {
   });
 }
 
+// Every assignment for the signed-in user (the coarse ["assignments"] list —
+// same key the WS `assignments` NOTIFY invalidates, so it refetches live as the
+// daemon writes observations). The Todos list joins these to its tasks by
+// task_id to fill the NEEDS YOU / WORKING groups; at this scale one list beats
+// a per-task fan-out.
+export function useAllAssignments(client: HitchClient) {
+  return useQuery({
+    queryKey: ["assignments"],
+    queryFn: async () => {
+      const response = await client.assignments.$get({ query: {} });
+      if (!response.ok) {
+        throw new Error(`Failed to list assignments (${response.status})`);
+      }
+      return await response.json();
+    },
+  });
+}
+
 // The user's machines, so the bar can pick a spawn target (GET /machines is
 // read-only; the daemon registers + heartbeats them). One query for the whole
 // bar — staleness is derived client-side against last_seen_at.

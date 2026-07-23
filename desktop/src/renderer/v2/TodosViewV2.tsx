@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
   PointerSensor,
@@ -17,6 +17,7 @@ import {
   CheckIcon,
   CircleCheckIcon,
   CircleIcon,
+  LoaderCircle,
   PlusIcon,
   SquareArrowOutUpRightIcon,
   TagIcon,
@@ -49,7 +50,14 @@ import {
   EMPTY_TAG_FILTER,
   type TagFilter,
 } from "./tagFilter";
-import { deriveTaskGroups } from "./todoGroups";
+import {
+  deriveTaskGroups,
+  latestAssignmentByTaskId,
+  taskAttention,
+  type AttentionAssignment,
+  type AttentionKind,
+} from "./todoGroups";
+import { useAllAssignments } from "./useAssignments";
 import type { TagActions } from "./useTagMutations";
 
 // The V2 Todos surface (M2 PR 2 read path + PR 4 list mutations): the selected
@@ -170,7 +178,57 @@ type RowActions = {
   onOpen: (taskId: string) => void;
   onToggleDone: (task: TaskItem, done: boolean) => void;
   onDelete: (task: TaskItem) => void;
+  // Ack an attention item (done ∧ unreviewed): PATCH reviewed_at, which drops
+  // the row out of NEEDS YOU.
+  onAck: (assignmentId: string) => void;
 };
+
+// A NEEDS-YOU / WORKING row's attention badge, resolved from its latest
+// assignment. Monochrome except the amber NEEDS-YOU treatment (the existing
+// dot + amber text), matching DelegateBar's chip doctrine. The `review` case
+// (done, not yet acked) is the only one with an affordance — an Ack button that
+// clears reviewed_at; `input` and `working` are read-only status (opening the
+// chat is the response to needs-input).
+function AttentionControl({
+  kind,
+  onAck,
+}: {
+  kind: AttentionKind;
+  onAck: () => void;
+}) {
+  if (kind === "working") {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] font-medium text-muted-foreground">
+        <LoaderCircle className="size-3 animate-spin" aria-hidden />
+        Working
+      </span>
+    );
+  }
+  if (kind === "input") {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] font-medium text-amber-700 dark:text-amber-500/90">
+        <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
+        Needs input
+      </span>
+    );
+  }
+  // review: the agent finished — ack to clear it from the queue.
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onAck();
+      }}
+      aria-label="Mark reviewed"
+      className="inline-flex h-6.5 shrink-0 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-50 px-2 text-[12px] font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-500/90 dark:hover:bg-amber-500/15"
+    >
+      <CircleCheckIcon className="size-3.5" aria-hidden />
+      Mark reviewed
+    </button>
+  );
+}
 
 // The row's right-click Tags ▸ submenu (V1's TagsSubmenu, sibling'd — it isn't
 // exported and is welded to the frontmatter Todo): a searchable combobox that
@@ -203,6 +261,7 @@ function TaskRow({
   done,
   tag,
   actions,
+  attention,
   drag,
   nav,
 }: {
@@ -212,6 +271,9 @@ function TaskRow({
   // single useTagMutations instance (same handlers as the dialog's tag lane).
   tag: TagActions;
   actions: RowActions;
+  // Present only for NEEDS YOU / WORKING rows: the attention badge + (for the
+  // ackable done case) the assignment to ack.
+  attention?: { kind: AttentionKind; assignmentId: string | null };
   // Present only for BACKLOG rows, which are drag-reorderable — dnd-kit's
   // sortable node/transform on the whole row (V1's whole-row drag). The
   // checkbox stops pointerdown so a drag can't start from it, and
@@ -272,6 +334,14 @@ function TaskRow({
           >
             {task.title}
           </span>
+          {attention && (
+            <AttentionControl
+              kind={attention.kind}
+              onAck={() => {
+                if (attention.assignmentId) actions.onAck(attention.assignmentId);
+              }}
+            />
+          )}
           <TagPillGroup tags={tag.namesOf(task)} colorOf={tag.colorOf} dimmed={done} />
         </div>
       </ContextMenuTrigger>
@@ -432,12 +502,54 @@ export function TodosViewV2({
   onDeleteTask: (task: TaskItem) => void;
 }) {
   const [showAllDone, setShowAllDone] = useState(false);
+  const queryClient = useQueryClient();
 
   // The key is ["tasks", …] so the coarse per-table WS invalidation
   // (realtime.ts) hits it by prefix (["tags"] lives in useTagMutations).
   const tasks = useQuery({
     queryKey: ["tasks", { projectId }],
     queryFn: () => fetchTasks(client, projectId),
+  });
+
+  // The attention join (M4 PR 6): every user assignment, keyed to match the
+  // ["assignments"] WS invalidation so the chips advance live as the daemon
+  // writes observed_state. Joined to tasks by task_id below.
+  const assignments = useAllAssignments(client);
+  const latestByTask = useMemo(
+    () => latestAssignmentByTaskId((assignments.data ?? []) as AttentionAssignment[]),
+    [assignments.data],
+  );
+
+  // Ack an attention item (done ∧ unreviewed): stamp reviewed_at so it drops
+  // out of NEEDS YOU. Optimistic — patch the ["assignments"] cache so the row
+  // clears in the same render, then invalidate for server truth.
+  const ackAssignment = useMutation({
+    mutationFn: async (assignmentId: string) => {
+      const response = await client.assignments[":id"].$patch({
+        param: { id: assignmentId },
+        json: { reviewedAt: new Date().toISOString() },
+      });
+      if (!response.ok) throw new Error(`Failed to ack assignment (${response.status})`);
+    },
+    onMutate: async (assignmentId) => {
+      await queryClient.cancelQueries({ queryKey: ["assignments"] });
+      const previous = queryClient.getQueryData<AttentionAssignment[]>(["assignments"]);
+      queryClient.setQueryData<AttentionAssignment[]>(["assignments"], (old) =>
+        old?.map((a) =>
+          a.id === assignmentId ? { ...a, reviewedAt: new Date().toISOString() } : a,
+        ),
+      );
+      return { previous };
+    },
+    onError: (error, _id, context) => {
+      console.error("Failed to ack attention item; rolling back", error);
+      if (context?.previous !== undefined) {
+        queryClient.setQueryData(["assignments"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["assignments"] });
+    },
   });
 
   // Rows in the delete window disappear NOW (the optimistic half of
@@ -476,7 +588,10 @@ export function TodosViewV2({
   // Derive once (unfiltered) for the facet counts + the truly-empty check,
   // then project through the active filter for what actually renders (V1's
   // exact split).
-  const allGroups = useMemo(() => deriveTaskGroups(visibleTasks), [visibleTasks]);
+  const allGroups = useMemo(
+    () => deriveTaskGroups(visibleTasks, latestByTask),
+    [visibleTasks, latestByTask],
+  );
   const groups = useMemo(
     () => filterTaskGroups(allGroups, filter, tag.namesOf),
     [allGroups, filter, tag.namesOf],
@@ -688,6 +803,17 @@ export function TodosViewV2({
     onOpen: onOpenTask,
     onToggleDone,
     onDelete: onDeleteTask,
+    onAck: (assignmentId) => ackAssignment.mutate(assignmentId),
+  };
+
+  // The attention badge for a NEEDS YOU / WORKING row: its latest assignment's
+  // kind + id (for the ack case).
+  const attentionOf = (
+    taskId: string,
+  ): { kind: AttentionKind; assignmentId: string | null } | undefined => {
+    const latest = latestByTask.get(taskId);
+    const kind = taskAttention(latest);
+    return kind ? { kind, assignmentId: latest?.id ?? null } : undefined;
   };
 
   return (
@@ -709,10 +835,12 @@ export function TodosViewV2({
           />
         )}
 
-        {/* Scaffolding groups: always empty until M4, so these never render —
-            kept so the M4 diff is "fill the arrays", not "rebuild the view". */}
+        {/* Attention groups (M4 PR 6): NEEDS YOU (waiting_input ∪ done∧unacked)
+            and WORKING (pending|spawning|running), joined to assignments by
+            task_id. Each row carries its attention badge; the ackable done case
+            gets a Mark-reviewed button. */}
         {groups.needsYou.length > 0 && (
-          <section className="flex flex-col">
+          <section className="flex flex-col" data-testid="v2-needs-you">
             <GroupHeader label="NEEDS YOU" amber />
             {groups.needsYou.map((task) => (
               <TaskRow
@@ -721,13 +849,14 @@ export function TodosViewV2({
                 done={false}
                 tag={tag}
                 actions={actions}
+                attention={attentionOf(task.id)}
                 nav={rowNav(task.id)}
               />
             ))}
           </section>
         )}
         {groups.working.length > 0 && (
-          <section className="flex flex-col">
+          <section className="flex flex-col" data-testid="v2-working">
             <GroupHeader label="WORKING" />
             {groups.working.map((task) => (
               <TaskRow
@@ -736,6 +865,7 @@ export function TodosViewV2({
                 done={false}
                 tag={tag}
                 actions={actions}
+                attention={attentionOf(task.id)}
                 nav={rowNav(task.id)}
               />
             ))}

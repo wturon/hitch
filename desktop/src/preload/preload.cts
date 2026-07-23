@@ -299,6 +299,9 @@ export interface HitchServerApi {
     name: string;
   }) => Promise<HitchServerAuthResult>;
   signOut: () => Promise<void>;
+  // Send an ephemeral client event (e.g. focus) up the main-held socket — the
+  // renderer can't hold the api-key'd WS itself. Resolves true if it went out.
+  wsSend: (message: unknown) => Promise<boolean>;
   // Parsed server WS frames, forwarded verbatim by the main-held socket. The
   // renderer narrows them against @hitch/shared's WsServerMessage.
   onWsMessage: (callback: (message: unknown) => void) => () => void;
@@ -425,6 +428,7 @@ const serverApi: HitchServerApi = {
   signIn: (input) => ipcRenderer.invoke("hitch-server:sign-in", input),
   signUp: (input) => ipcRenderer.invoke("hitch-server:sign-up", input),
   signOut: () => ipcRenderer.invoke("hitch-server:sign-out"),
+  wsSend: (message) => ipcRenderer.invoke("hitch-server:ws-send", message),
   onWsMessage: (callback) => {
     const listener = (_event: IpcRendererEvent, message: unknown) => {
       callback(message);

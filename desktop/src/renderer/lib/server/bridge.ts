@@ -19,6 +19,7 @@ export interface HitchServerBridge {
     name: string;
   }) => Promise<HitchServerAuthResult>;
   signOut: () => Promise<void>;
+  wsSend: (message: unknown) => Promise<boolean>;
   onWsMessage: (callback: (message: unknown) => void) => () => void;
   onWsOpen: (callback: () => void) => () => void;
   getWsStatus: () => Promise<boolean>;
