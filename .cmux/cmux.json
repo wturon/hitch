@@ -2,6 +2,38 @@
   "$schema": "https://raw.githubusercontent.com/manaflow-ai/cmux/main/web/data/cmux.schema.json",
   "commands": [
     {
+      "name": "Hitch V2 Dev (local)",
+      "description": "Run the V2 stack locally: compose (server+postgres+garage), renderer, and Electron in V2 mode.",
+      "keywords": ["hitch", "v2", "dev", "server", "compose", "desktop", "electron"],
+      "workspace": {
+        "name": "Hitch V2 Dev",
+        "cwd": ".",
+        "restart": "confirm",
+        "layout": {
+          "pane": {
+            "surfaces": [
+              {
+                "type": "terminal",
+                "name": "Stack",
+                "command": "docker compose up",
+                "focus": true
+              },
+              {
+                "type": "terminal",
+                "name": "Renderer",
+                "command": "npm run dev:renderer"
+              },
+              {
+                "type": "terminal",
+                "name": "Electron (V2)",
+                "command": "HITCH_SERVER_URL=http://localhost:3010 npm run dev:electron"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
       "name": "Hitch Desktop Dev",
       "description": "Run Convex and Hitch Desktop in separate tabs.",
       "keywords": ["hitch", "dev", "convex", "desktop", "electron"],
