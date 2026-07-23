@@ -2,6 +2,28 @@
   "$schema": "https://raw.githubusercontent.com/manaflow-ai/cmux/main/web/data/cmux.schema.json",
   "commands": [
     {
+      "name": "Hitch V2 (Railway prod)",
+      "description": "Run the desktop app in V2 mode against the Railway production server.",
+      "keywords": ["hitch", "v2", "prod", "railway", "desktop", "electron"],
+      "workspace": {
+        "name": "Hitch V2 Prod",
+        "cwd": ".",
+        "restart": "confirm",
+        "layout": {
+          "pane": {
+            "surfaces": [
+              {
+                "type": "terminal",
+                "name": "App (V2 prod)",
+                "command": "HITCH_SERVER_URL=https://server-production-33a4.up.railway.app npm run dev",
+                "focus": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
       "name": "Hitch V2 Dev (local)",
       "description": "Run the V2 stack locally: compose (server+postgres+garage), renderer, and Electron in V2 mode.",
       "keywords": ["hitch", "v2", "dev", "server", "compose", "desktop", "electron"],
