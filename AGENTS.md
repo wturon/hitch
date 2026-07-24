@@ -1,22 +1,32 @@
 # Hitch — AGENTS.md
 
-Hitch is a **local file sync engine**. A daemon watches git-ignored `.hitch/`
-folders and keeps them in sync, in real time, with a Convex backend — so AI
-agents and humans share one live view of in-progress work without committing it
-to git.
+Hitch is **AI-native task management with a delegation layer**: capture tasks,
+assign them to agents (claude/codex on your subscriptions, running in cmux), and
+quickly find and resume their chats. A Hono server owns all state; the desktop
+app reads/writes it; a reconciler daemon executes the machine-side work.
+
+> **Architecture note (V2, the only architecture):** the legacy Convex file-sync
+> engine (V1) was deleted at the cutover. If you find references to `convex/`,
+> `.hitch/tasks` markdown sync, device tokens, or "hitched folders" in old docs
+> or memories, they describe the dead V1 world — ignore them.
 
 ## Layout
 
-- `convex/` — backend, deploys to Convex cloud (no server we host):
-  - `files.ts` — `upsertFile` (create/update/tombstone), `listFiles`, `getFile`
-  - `status.ts` — `heartbeat` (daemon presence), `listDaemons`
-  - `schema.ts` — `files` and `daemons` tables
-- `daemon/` — TypeScript (`src/index.ts`, run via `tsx`) Node watcher: pushes
-  local file changes up to Convex and writes remote changes back to disk, with
-  echo suppression so a synced write never loops.
-- `desktop/` — Electron app with the canonical Vite/React todos workspace
-  (grouped todo list) and local daemon controls.
-- `hitch.config.json` — the active project + which local paths are hitched.
+- `server/` — Hono (Node) + Postgres + Drizzle + better-auth. Owns ALL state and
+  logic that doesn't need a machine. Deployed on Railway (prod) and runnable via
+  `docker compose`. See `docs/v2-prd.md` for the schema and design decisions.
+- `shared/` — exported types + typed hono client shared by desktop/cli/daemon.
+- `cli/` — the self-teaching `hitch` bin agents use to read/write the backlog.
+- `daemon/` — a **pure reconciler** (`src/index.ts` via `tsx`; `src/v2/`): it
+  reacts to the server (WS push + ~30s tick), diffs desired vs. machine ground
+  truth (cmux/processes), spawns/resumes/closes agent chats via the cmux
+  launchers, and writes back ONLY observations. Chat lifecycle lives in
+  `src/observer/` + the shared sqlite store; it holds no business state.
+- `desktop/` — Electron app. Renderer entry `src/renderer/main.tsx` mounts
+  `src/renderer/v2/AppV2.tsx`; the main process (`src/main/`) holds auth (api key
+  minted after sign-in) and the server WebSocket. Reads/writes the server only.
+- The server URL comes from `HITCH_SERVER_URL` in dev, or the baked
+  `app-config.json` (Railway prod) in a packaged build.
 
 ---
 
@@ -25,24 +35,12 @@ to git.
 `desktop/e2e/` lets you drive the real app under Playwright to check UI work
 end-to-end — click buttons, type, assert focus/caret, take screenshots. It
 launches a **second, isolated** Electron instance: its own Chromium profile
-(`--user-data-dir`) and its own Hitch config (so its daemon stays idle and never
-touches your project sync), seeded with your signed-in `secrets.json` so it
-boots authenticated as you. Your running dev app keeps the auth-loopback port;
-the test instance just logs a benign "port in use" and skips sign-in.
+(`--user-data-dir`) and its own isolated app-support dir, so its daemon never
+touches your real data.
 
-- Prereq: `npm run dev:renderer` running (serves the renderer on :5173).
-- `desktop/e2e/harness.mjs` exports `launchHitch()` → `{ app, page, cleanup }`.
-- `npm run e2e` (in `desktop/`) runs the example task-editor check.
-
-These are **one-off checks, not a maintained suite** — write a throwaway script,
-run it, read the screenshots in `/tmp/hitch-e2e/`, delete it. Confine any edits
-to a scratch task you create and delete.
-
-### Driving V2 (server mode)
-
-Setting `HITCH_SERVER_URL` at launch flips the app into the V2 shell (Hono
-server instead of Convex) — the harness passes it through unchanged. Bring up
-the compose stack first, then point a check at it:
+The app is server-backed: point a check at a running server via
+`HITCH_SERVER_URL`. Bring up the compose stack first, then run a check — each
+signs **up** against the fresh stack, so no seeded credentials are needed:
 
 ```sh
 docker compose up -d --build   # repo root; server on :3010
@@ -50,9 +48,12 @@ HITCH_SERVER_URL=http://localhost:3010 node desktop/e2e/check-v2-todos-read.mjs
 docker compose down -v         # wipe when done (including data)
 ```
 
-V2 checks sign **up** against the fresh stack, so the seeded dev secrets don't
-matter (V1's daemon still stays idle). The `desktop/e2e/check-v2-*.mjs` scripts
-are the working examples.
+- `desktop/e2e/harness.mjs` exports `launchHitch()` → `{ app, page, cleanup }`.
+- The `desktop/e2e/check-v2-*.mjs` scripts are the working examples.
+
+These are **one-off checks, not a maintained suite** — write a throwaway script,
+run it, read the screenshots in `/tmp/hitch-e2e/`, delete it. Confine any edits
+to a scratch task you create and delete.
 
 ### V2 daemon e2e (fake-launch mode)
 

@@ -156,8 +156,23 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   REMAIN (they die at M5, not M4 — see the plan's confirmed reading). Acceptance: the fake-loop
   check (13/13, pending→spawning→running→waiting_input→done + chat busy→waiting_input→dead) and
   Will's real-cmux reconciler pass. REMAINING: Will dogfoods real delegation ahead of M5.
-- [ ] **M5 — Cutover + delete:** real import, one week of real V2 use, then delete convex/ + task
-  files + sync machinery. (Prod export already banked — see Environment status.)
+- [x] **M5 — Cutover + delete** (real import done 2026-07-23; deletion PR `feat/v2-cutover-delete-v1`):
+  V2 is now the ONLY architecture. Flipped desktop + daemon to V2 by default (no HITCH_SERVER_URL
+  required — packaged builds read the Railway URL from the baked app-config.json). Deleted convex/
+  (all modules + generated types), the desktop V1 tree (App.tsx, ConvexClientProvider, TodosView,
+  TodoDialog, AppSidebar, AutomationsView, DeviceTokens, LocalSyncDialog, V1 hooks/lib, OAuth
+  loopback :51789, device-token + convex-auth main/preload plumbing), the daemon V1 path (daemon.ts
+  file-sync/Convex boot, frontmatter projection, skills sync, title generation, t3code, debug API),
+  the throwaway importer (server/src/import), and all V1 e2e + smoke scripts. Convex deps dropped
+  from every package.json + lockfile. Extractions kept the V2 keep-list intact: CreateProjectDialog
+  (out of AppSidebar), CaptureFooter/useGrowAnimation (out of todo-dialog/), CommandPalette id type
+  (Convex Id → string), GlobalSettingsDialog (V1 panels stripped). chatLifecycleStore keeps its
+  vestigial Convex cursor columns/methods (a V2 test still probes sink-independence). Feature
+  regressions accepted (per kill list): task auto-naming, skills `/` menu, snippets management UI
+  (all V1 Convex-backed; snippets/skills export was 0 bytes — nothing lost). All three workspaces
+  typecheck green; desktop build + tests green. NOTE: Convex prod can be decommissioned once the
+  banked export (`backups/convex-prod-export-2026-07-22.zip`, now also copied off-repo) is confirmed
+  safe — it is the ONLY remaining copy of the other user's data.
 
 ## Still-open (deferred, not blockers)
 
@@ -238,3 +253,7 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   deleted. Importer flags --skip-project/--allow-existing + scripts/sync-local-from-prod.mjs
   (npm run db:sync-from-prod, read-only-against-prod by construction) merged in PR #109.
   M5 remaining = the deletion cutover only (convex/, file sync, V1 surfaces) after dogfooding.
+- 2026-07-23 — **M5 DELETION CUTOVER** (branch `feat/v2-cutover-delete-v1`): V2 flipped to default,
+  V1 deleted wholesale (~23k LOC: convex/ + desktop V1 tree + daemon V1 path + importer + V1
+  e2e/smoke). Packaged builds bake the Railway server URL (app-config.json `serverUrl`, promoted to
+  HITCH_SERVER_URL at main boot). See the M5 milestone entry above for the full inventory.

@@ -1,17 +1,16 @@
-// Hitch V2 daemon config resolution.
+// Hitch daemon config resolution.
 //
-// The daemon runs in V2 mode iff HITCH_SERVER_URL is set (the same gate the
-// desktop main process uses — see desktop/src/main/hitchServer.ts). V1 (Convex)
-// stays the default and is untouched.
+// The daemon is always server-backed; it resolves BOTH the server URL and the
+// api key, from env or from the desktop's stored credentials:
+//   - serverUrl: env HITCH_SERVER_URL, else secrets.json `hitchServer.serverUrl`.
+//   - apiKey:    env HITCH_API_KEY, else secrets.json `hitchServer.apiKey` (only
+//     when its serverUrl matches the resolved URL).
+// secrets.json is read from the same App Support dir the rest of the daemon uses
+// (HITCH_APP_SUPPORT_DIR / HITCH_CONFIG_PATH / platform default), honoring
+// HITCH_SECRETS_PATH just like the desktop. This lets a bare `npm run dev:daemon`
+// pick up the URL+key the desktop already minted, with no env at all.
 //
-// Credential precedence:
-//   1. env HITCH_SERVER_URL (+ HITCH_API_KEY) — the scripted/e2e path.
-//   2. fallback: the desktop's secrets.json `hitchServer` key (minted by the
-//      desktop's sign-in flow) in the same App Support dir the rest of the
-//      daemon already resolves (HITCH_APP_SUPPORT_DIR / HITCH_CONFIG_PATH /
-//      platform default), honoring HITCH_SECRETS_PATH just like the desktop.
-//
-// A URL with no resolvable key is a clear startup error, never a silent V1
+// Nothing resolvable is a clear startup error (teaching message), never a silent
 // fallthrough.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -72,21 +71,23 @@ export function readStoredHitchServer(path: string): StoredHitchServer | null {
 const stripTrailingSlash = (url: string) => url.replace(/\/+$/, "");
 
 /**
- * Whether this launch should run the V2 daemon at all — a pure env check so the
- * index.ts/runner.ts seam can branch before touching any V2 code.
+ * Resolve the server URL + api key from env or the desktop's stored
+ * credentials. Always returns a usable config or throws a teaching error — the
+ * daemon is server-backed unconditionally, so there is no null / fallthrough.
  */
-export function isServerMode(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.HITCH_SERVER_URL?.trim());
-}
+export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): ServerV2Config {
+  const secretsPath = secretsPathFromEnv(env);
+  const stored = readStoredHitchServer(secretsPath);
 
-/**
- * Resolve the V2 server URL + api key. Returns null when NOT in server mode
- * (no HITCH_SERVER_URL) so callers can fall through to V1. Throws a teaching
- * error when the URL is set but no key can be resolved.
- */
-export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): ServerV2Config | null {
-  const rawUrl = env.HITCH_SERVER_URL?.trim();
-  if (!rawUrl) return null;
+  // Server URL: env wins, else the stored credentials.
+  const rawUrl = env.HITCH_SERVER_URL?.trim() || stored?.serverUrl?.trim();
+  if (!rawUrl) {
+    throw new Error(
+      `[hitch] No Hitch server URL found.\n` +
+        `        Sign in via the Hitch desktop app (it writes ${secretsPath}),\n` +
+        `        or set HITCH_SERVER_URL=<url> in the environment.`,
+    );
+  }
   const serverUrl = stripTrailingSlash(rawUrl);
 
   // 1. Explicit env key wins.
@@ -94,8 +95,6 @@ export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): Serve
   if (envKey) return { serverUrl, apiKey: envKey };
 
   // 2. Fallback: the desktop's stored credentials.
-  const secretsPath = secretsPathFromEnv(env);
-  const stored = readStoredHitchServer(secretsPath);
   if (stored?.apiKey) {
     // Only trust a stored key that was minted against THIS server (mirrors the
     // desktop's activeCredentials guard) — a stale key for another deployment
@@ -111,7 +110,7 @@ export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): Serve
   }
 
   throw new Error(
-    `[hitch] HITCH_SERVER_URL is set (${serverUrl}) but no API key was found.\n` +
+    `[hitch] Found a Hitch server URL (${serverUrl}) but no API key.\n` +
       `        Sign in via the Hitch desktop app (it writes ${secretsPath}),\n` +
       `        or set HITCH_API_KEY=<key> in the environment.`,
   );

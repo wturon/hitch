@@ -9,10 +9,10 @@ import {
   XIcon,
 } from "lucide-react";
 
-import { CaptureFooter } from "@/components/todo-dialog/CaptureFooter";
+import { CaptureFooter } from "@/components/capture/CaptureFooter";
 import { DelegateBar } from "./DelegateBar";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
-import { useGrowAnimation } from "@/components/todo-dialog/useGrowAnimation";
+import { useGrowAnimation } from "@/components/capture/useGrowAnimation";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import type { HitchClient } from "@/lib/server/client";
 import { normalizeCaptureBody, captureSeedTitle, captureSortOrder } from "./capture";
