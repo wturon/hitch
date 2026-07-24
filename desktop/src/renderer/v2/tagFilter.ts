@@ -1,7 +1,9 @@
-// V2 tag filtering (M2 PR 5). The server-rows successor to lib/todos.ts's
-// filter section + lib/tagFilterStorage: same AND semantics, same exclusive
-// Untagged, same per-project localStorage persistence — but operating on the
-// tag NAMES resolved from a task's `tagIds` instead of frontmatter tag ids.
+// V2 tag filtering (M2 PR 5). The server-rows successor to the removed V1
+// tag-filter derivation: same AND semantics, same exclusive Untagged, same
+// per-project localStorage persistence — but operating on the tag NAMES
+// resolved from a task's `tagIds` instead of frontmatter tag ids. The active-
+// state primitive (TagFilter/EMPTY_TAG_FILTER/isTagFilterActive) is shared,
+// imported from @/lib/tagFilter.
 // Names are the client-side tag identity throughout V2's UI (the server
 // enforces name-unique-per-user, so name ↔ uuid is a bijection): that is what
 // lets TagCombobox/TagFilterBar/TagPill — which all render their option `id`
@@ -13,7 +15,7 @@
 // match/facet/storage functions are siblinged: V1's are welded to the `Todo`
 // row shape and the Convex `Id<"projects">` brand.
 
-import { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter } from "@/lib/todos";
+import { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter } from "@/lib/tagFilter";
 import type { TaskGroups, TaskRow } from "./todoGroups";
 
 export { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter };

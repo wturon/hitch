@@ -257,3 +257,14 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   V1 deleted wholesale (~23k LOC: convex/ + desktop V1 tree + daemon V1 path + importer + V1
   e2e/smoke). Packaged builds bake the Railway server URL (app-config.json `serverUrl`, promoted to
   HITCH_SERVER_URL at main boot). See the M5 milestone entry above for the full inventory.
+- 2026-07-24 — Cutover review round 3 (state-model prune). The earlier passes deleted the V1
+  *surfaces* but left slices of its state model: (1) the Convex `dirty`/`last_synced_at`/`convex_id`
+  sink in `chatLifecycleStore` (model + `markChatSynced`/`markChatDirty`/`listDirtyChats` + the
+  upsert/schema writes + the "two-sink independence" smokes) — all removed; `server_synced_at` is
+  now the sole sync cursor. Old DBs keep the retired physical columns (harmless, documented); no
+  destructive migration. (2) `lib/todos.ts` (479-line Convex derivation) + `lib/chatModel.ts` (its
+  Convex-purity split) + the dead frontmatter chat-link/`chat-request*` helpers in `lib/chat.ts` —
+  deleted; the three still-used tag-filter primitives extracted to `lib/tagFilter.ts`. Dev-loop +
+  isolation fixes: `dev:daemon` now sets `HITCH_ROOT` so the bare script reads the `Hitch Dev`
+  secrets the dev app minted; the e2e harness now scopes `CODEX_HOME`/`CLAUDE_CONFIG_DIR` to scratch
+  so a run can't rewrite the machine's real hook config.

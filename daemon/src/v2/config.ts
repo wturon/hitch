@@ -7,8 +7,9 @@
 //     when its serverUrl matches the resolved URL).
 // secrets.json is read from the same App Support dir the rest of the daemon uses
 // (HITCH_APP_SUPPORT_DIR / HITCH_CONFIG_PATH / platform default), honoring
-// HITCH_SECRETS_PATH just like the desktop. This lets a bare `npm run dev:daemon`
-// pick up the URL+key the desktop already minted, with no env at all.
+// HITCH_SECRETS_PATH just like the desktop. `npm run dev:daemon` sets HITCH_ROOT
+// so this resolves to the dev "Hitch Dev" dir — the same one the dev desktop app
+// writes to — letting the bare script pick up the URL+key the desktop minted.
 //
 // Nothing resolvable is a clear startup error (teaching message), never a silent
 // fallthrough.

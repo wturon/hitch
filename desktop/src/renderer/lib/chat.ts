@@ -1,37 +1,12 @@
-// A task can reference the coding-agent chat that's driving it, so the board can
-// jump back to that conversation. The reference rides the task's frontmatter as
-// flat `chat-*` keys (the reader in ./frontmatter is scalar-only), e.g.
-//
-//   chat-harness: claude-code
-//   chat-id: 9f8e7d6c-1234-...
-//   chat-cwd: /Users/will/code/hitch
-//
-// MVP scope is single-machine: the launch action assumes the board is open on
-// the same Mac that owns the session. See README / the daemon command-bus idea
-// for cross-machine routing later.
-//
-// T3Code (experimental) note: for the `t3code` environment, `chat-id` holds the
-// T3Code *threadId* (the id Hitch acts on for focus/status), not the Claude
-// session UUID. The daemon also writes `chat-t3-thread-id` (mirror) and
-// `chat-t3-environment-id` (the global env id needed to build the focus URL).
+// Launch catalogs for the delegate bar: the harnesses Hitch can drive, their
+// model/effort ladders, the run environments, and the reusable kickoff prompts.
+// All pure data plus small helpers over it — no React and no DOM beyond the
+// localStorage guards in loadLastAgent/saveLastAgent/loadCustomPrompts.
 
-import type { Frontmatter } from "./frontmatter";
-import { setFrontmatterKeys } from "./frontmatter";
-import type { Harness } from "./chatModel";
-import {
-  CHAT_REQUEST_ERROR_KEY,
-  CHAT_REQUEST_HARNESS_KEY,
-  CHAT_REQUEST_ID_KEY,
-  CHAT_REQUEST_KEY,
-  HARNESSES,
-} from "./chatModel";
+// The coding agents Hitch can delegate to.
+export type Harness = "claude-code" | "codex";
 
-// The pure parsing/derivation model (Harness, ChatRef, ChatStatus + aliases,
-// the delegation-request rules, parseChatRef/parseChatStatus/…) lives in
-// ./chatModel so the Todos derivation core stays importable from Convex (see
-// the purity contract there). Re-exported wholesale: every existing consumer
-// keeps importing these names from "@/lib/chat" unchanged.
-export * from "./chatModel";
+export const HARNESSES: Harness[] = ["claude-code", "codex"];
 
 export function harnessLabel(harness: Harness): string {
   return harness === "codex" ? "Codex" : "Claude Code";
@@ -289,51 +264,6 @@ export function honorsLaunchParams(
     harness === "claude-code" &&
     (environment === "vscode" || environment === "cursor")
   );
-}
-
-// Raw, possibly-incomplete field values backing the link editor. Unlike
-// ChatRef these can be half-filled while the user is still typing.
-export interface ChatFields {
-  harness: string;
-  id: string;
-  cwd: string;
-}
-
-export function readChatFields(fm: Frontmatter): ChatFields {
-  return {
-    harness: (fm["chat-harness"] ?? "").trim(),
-    id: (fm["chat-id"] ?? "").trim(),
-    cwd: (fm["chat-cwd"] ?? "").trim(),
-  };
-}
-
-// Write the editor's fields back into raw file content, preserving the body and
-// every other frontmatter key. Empty values are removed; cwd only applies to
-// Claude Code.
-export function writeChatFields(content: string, fields: ChatFields): string {
-  return setFrontmatterKeys(content, {
-    "chat-harness": fields.harness || undefined,
-    "chat-id": fields.id || undefined,
-    "chat-cwd":
-      fields.harness === "claude-code" ? fields.cwd || undefined : undefined,
-  });
-}
-
-export function clearChatFields(content: string): string {
-  return setFrontmatterKeys(content, {
-    "chat-harness": undefined,
-    "chat-id": undefined,
-    "chat-cwd": undefined,
-    "chat-status": undefined,
-    "chat-open-state": undefined,
-    "chat-env": undefined,
-    "chat-t3-thread-id": undefined,
-    "chat-t3-environment-id": undefined,
-    [CHAT_REQUEST_KEY]: undefined,
-    [CHAT_REQUEST_HARNESS_KEY]: undefined,
-    [CHAT_REQUEST_ID_KEY]: undefined,
-    [CHAT_REQUEST_ERROR_KEY]: undefined,
-  });
 }
 
 // A reusable kickoff instruction the user picks from the delegation dropdown.

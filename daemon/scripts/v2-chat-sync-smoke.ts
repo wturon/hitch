@@ -91,20 +91,6 @@ try {
   store.markChatServerSynced(key, { syncedAt: dirty[0].updatedAt });
   assert.equal(store.getLocalChat(key)?.serverChatId, "srv-1", "COALESCE keeps prior id");
   assert.equal(store.listServerDirtyChats().length, 0, "clean after resync");
-
-  // --- V1 dirty flag is independent of the V2 server sync -------------------
-  // The Convex `dirty` flag was set when the observation was recorded; V2's
-  // markChatServerSynced must NOT have cleared it.
-  assert.equal(store.getLocalChat(key)?.dirty, true, "V1 Convex dirty flag untouched by V2 sync");
-
-  // Clearing the V1 flag (markChatSynced) must NOT re-dirty the server sink.
-  store.markChatSynced(key, { convexId: "cvx-1" });
-  assert.equal(store.getLocalChat(key)?.dirty, false, "V1 flag cleared");
-  assert.equal(
-    store.listServerDirtyChats().length,
-    0,
-    "clearing the V1 flag does not touch server_synced_at",
-  );
   assert.equal(store.getLocalChat(key)?.serverChatId, "srv-1", "server mapping still intact");
 
   console.log("v2-chat-sync smoke: OK");

@@ -664,7 +664,6 @@ export class Reconciler {
       lastEventAt: input.now,
       lastStatusAt: input.now,
       endedAt: null,
-      dirty: true,
       updatedAt: input.now,
     });
   }

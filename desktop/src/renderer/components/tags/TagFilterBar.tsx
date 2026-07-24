@@ -8,7 +8,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { tagTint, type TagColorName } from "@/lib/tagColors";
-import { isTagFilterActive, type TagFilter } from "@/lib/todos";
+import { isTagFilterActive, type TagFilter } from "@/lib/tagFilter";
 import { cn } from "@/lib/utils";
 import { TagCombobox, type TagComboboxOption } from "./TagCombobox";
 

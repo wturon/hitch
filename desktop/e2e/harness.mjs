@@ -10,6 +10,10 @@
 //     chat-lifecycle.sqlite store, and the daemon it spawns (which receives the
 //     same dir) — so an isolated instance never touches the real "Hitch"/"Hitch
 //     Dev" store.
+//   - Its own CODEX_HOME / CLAUDE_CONFIG_DIR, also under the scratch dir. On
+//     startup main.ts installs (and may migrate/auto-heal) the per-harness
+//     lifecycle hook config in these dirs; without the override a check run would
+//     read and rewrite the machine's real ~/.codex and ~/.claude hook config.
 //   - No seeded credentials: V2 checks sign up fresh against the server
 //     (HITCH_SERVER_URL), and the app persists the minted api key into the
 //     scratch secrets.json.
@@ -49,6 +53,12 @@ export async function launchHitch({ profile = "default", fresh = true } = {}) {
   mkdirSync(stateDir, { recursive: true });
 
   const userDataDir = join(stateDir, "chromium");
+  // Give the harness installer its own hook-config homes so a check run never
+  // reads or rewrites the machine's real ~/.codex and ~/.claude.
+  const codexHome = join(stateDir, "codex-home");
+  const claudeConfigDir = join(stateDir, "claude-config");
+  mkdirSync(codexHome, { recursive: true });
+  mkdirSync(claudeConfigDir, { recursive: true });
 
   const app = await electron.launch({
     executablePath: electronPath,
@@ -59,6 +69,10 @@ export async function launchHitch({ profile = "default", fresh = true } = {}) {
       // Everything main.ts writes (secrets.json, chat-lifecycle.sqlite) and the
       // daemon it spawns are anchored on this scratch dir — full isolation.
       HITCH_APP_SUPPORT_DIR: stateDir,
+      // Per-harness lifecycle-hook config the app installs on boot goes to
+      // scratch dirs too, so a legacy/drifted global hook can't be mutated.
+      CODEX_HOME: codexHome,
+      CLAUDE_CONFIG_DIR: claudeConfigDir,
       HITCH_DESKTOP_RENDERER_URL: RENDERER_URL,
     },
   });

@@ -58,7 +58,6 @@ try {
   assert.equal(pending?.status, "working");
   assert.equal(pending?.title, "Example task");
   assert.equal(store.readUnreducedEvents().length, 0);
-  store.markChatSynced("launch:launch-1", { syncedAt: 1_800_000_000_101 });
 
   const bound = store.insertLifecycleEvent(
     event("bound", {
@@ -81,10 +80,9 @@ try {
   assert.equal(boundChat?.launchId, "launch-1");
   assert.equal(boundChat?.pending, false);
   assert.equal(boundChat?.resumePayload.automationRunId, "run-1");
-  assert.equal(boundChat?.dirty, true);
-  store.markChatSynced("chat:codex:host-1:thread-1", {
-    syncedAt: 1_800_000_000_301,
-  });
+  // The bind rekeys the pending row and bumps updated_at → never-synced, so the
+  // reconciler still owes the server a push.
+  assert.equal(boundChat?.serverSyncedAt, null);
 
   const completed = store.insertLifecycleEvent(
     event("completed", {
@@ -103,8 +101,8 @@ try {
     store.getLocalChat("chat:codex:host-1:thread-1")?.status,
     "waiting",
   );
-  store.markChatSynced("chat:codex:host-1:thread-1", {
-    syncedAt: 1_800_000_000_501,
+  store.markChatServerSynced("chat:codex:host-1:thread-1", {
+    syncedAt: 1_800_000_000_500,
   });
 
   const noChange = store.insertLifecycleEvent(
@@ -123,7 +121,7 @@ try {
     failed: 0,
     cursor: noChange.seq,
   });
-  assert.equal(store.listDirtyChats().length, 0);
+  assert.equal(store.listServerDirtyChats().length, 0);
 
   const ended = store.insertLifecycleEvent(
     event("ended", {

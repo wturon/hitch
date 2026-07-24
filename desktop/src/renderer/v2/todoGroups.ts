@@ -1,8 +1,8 @@
 // V2 todo grouping (M2 PR 2; M4 PR 6 attention queue). The status-driven
-// successor to lib/todos.ts's deriveTodoGroups: server tasks carry a real
-// `status` column, so there is no frontmatter to parse — grouping is a pure
-// fold over the rows the typed hc client returns from GET /tasks. No React, no
-// HTTP: unit-testable in isolation, exactly like its V1 counterpart.
+// successor to the removed V1 (Convex-frontmatter) todo derivation: server
+// tasks carry a real `status` column, so there is no frontmatter to parse —
+// grouping is a pure fold over the rows the typed hc client returns from GET
+// /tasks. No React, no HTTP: unit-testable in isolation.
 //
 // The four groups (NEEDS YOU / WORKING / BACKLOG / DONE) split OPEN tasks by
 // their latest assignment's observed state (M4). Attention is derived from a
