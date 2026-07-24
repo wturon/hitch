@@ -5,25 +5,21 @@
 // Isolation, the important part:
 //   - Its own Chromium profile via --user-data-dir (separate Local Storage /
 //     IndexedDB / lock files), so it never collides with your open dev window.
-//   - Its own Hitch config (HITCH_CONFIG_PATH) pointed at an EMPTY config, so
-//     startDaemon() stays idle (main.ts) and no second daemon touches your
-//     project's file-sync.
-//   - Its own isolated app-support dir so its daemon never touches your real
-//     data. V2 checks sign up against a fresh server (HITCH_SERVER_URL), so no
-//     seeded credentials are needed.
+//   - Its own App Support dir via HITCH_APP_SUPPORT_DIR, pointed at a scratch
+//     temp dir. main.ts anchors EVERYTHING on this — secrets.json, the
+//     chat-lifecycle.sqlite store, and the daemon it spawns (which receives the
+//     same dir) — so an isolated instance never touches the real "Hitch"/"Hitch
+//     Dev" store.
+//   - No seeded credentials: V2 checks sign up fresh against the server
+//     (HITCH_SERVER_URL), and the app persists the minted api key into the
+//     scratch secrets.json.
 //
 // Prereq: the Vite dev server is running (npm run dev:renderer, :5173). Dev mode
 // loads the renderer from there, so it serves your current working tree.
 
 import { _electron as electron } from "playwright-core";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -35,12 +31,8 @@ const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const RENDERER_URL =
   process.env.HITCH_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:5173";
-const REAL_SECRETS = join(
-  homedir(),
-  "Library/Application Support/Hitch Dev/secrets.json",
-);
 
-// Launch an isolated, signed-in instance.
+// Launch an isolated instance.
 //   profile: name of the temp state dir, so multiple agents can each get their
 //            own (e.g. launchHitch({ profile: "agent-2" })) without colliding.
 //   fresh:   wipe that temp state dir first (default true) for a clean boot.
@@ -51,25 +43,12 @@ export async function launchHitch({ profile = "default", fresh = true } = {}) {
       stdio: "inherit",
     });
   }
-  if (!existsSync(REAL_SECRETS)) {
-    throw new Error(
-      `No signed-in dev secrets at ${REAL_SECRETS}. Sign in to the dev app once first.`,
-    );
-  }
 
   const stateDir = join(tmpdir(), `hitch-e2e-${profile}`);
   if (fresh) rmSync(stateDir, { recursive: true, force: true });
   mkdirSync(stateDir, { recursive: true });
 
   const userDataDir = join(stateDir, "chromium");
-  const configPath = join(stateDir, "config.json");
-  const secretsPath = join(stateDir, "secrets.json");
-  const preferencesPath = join(stateDir, "preferences.json");
-
-  // Empty config → daemon idle → no conflict with your real project sync.
-  writeFileSync(configPath, JSON.stringify({ hitches: [] }, null, 2));
-  // Seed auth from your real signed-in profile.
-  copyFileSync(REAL_SECRETS, secretsPath);
 
   const app = await electron.launch({
     executablePath: electronPath,
@@ -77,9 +56,9 @@ export async function launchHitch({ profile = "default", fresh = true } = {}) {
     args: [".", `--user-data-dir=${userDataDir}`],
     env: {
       ...process.env,
-      HITCH_CONFIG_PATH: configPath,
-      HITCH_SECRETS_PATH: secretsPath,
-      HITCH_PREFERENCES_PATH: preferencesPath,
+      // Everything main.ts writes (secrets.json, chat-lifecycle.sqlite) and the
+      // daemon it spawns are anchored on this scratch dir — full isolation.
+      HITCH_APP_SUPPORT_DIR: stateDir,
       HITCH_DESKTOP_RENDERER_URL: RENDERER_URL,
     },
   });

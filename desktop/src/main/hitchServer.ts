@@ -1,9 +1,9 @@
-// Hitch V2 server integration for the Electron main process (M2 PR 1).
+// Hitch server integration for the Electron main process.
 //
-// The app runs in V2 mode iff HITCH_SERVER_URL is set at launch; V1 (Convex)
-// stays the default and is untouched. Everything V2-specific in the main
-// process lives here — main.ts only injects its secrets accessors + window
-// getter via initHitchServer().
+// The server URL is resolved before this runs (HITCH_SERVER_URL in dev, or the
+// baked app-config.json in a packaged build — see main.ts). All server-facing
+// main-process concerns live here; main.ts only injects its secrets accessors +
+// window getter via initHitchServer().
 //
 // Responsibilities:
 //   - Auth: sign-in/sign-up run HERE (Node fetch, no Origin header, so the

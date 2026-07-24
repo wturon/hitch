@@ -21,7 +21,7 @@
   },
   "scripts": {
     "dev": "npm run dev:desktop",
-    "dev:all": "concurrently -n server,desktop -c blue,green \"npm:dev:v2-stack\" \"npm:dev:desktop\"",
+    "dev:all": "concurrently -n server,desktop -c blue,green \"npm run dev:v2-stack\" \"HITCH_SERVER_URL=http://localhost:3010 npm run dev:desktop\"",
     "dev:daemon": "tsx daemon/src/index.ts",
     "dev:v2-stack": "node scripts/dev-v2-stack.mjs",
     "db:sync-from-prod": "node scripts/sync-local-from-prod.mjs",

@@ -1,16 +1,15 @@
-// V2 projects provider (daemon side).
+// Projects provider (daemon side).
 //
-// The chat-state observer maps a chat's cwd → a hitch project via a list of
-// {projectId, localPath}. In V1 that list comes from the local hitch config; in
-// V2 it comes from the server's `projects` rows that carry a `repo_path` (the
-// machine-local checkout). We fetch GET /projects, keep the subset with a
-// repo_path, and refresh whenever the server broadcasts a `projects`
-// invalidation over the WS.
+// The chat-state observer maps a chat's cwd → a project via a list of
+// {projectId, localPath}. That list comes from the server's `projects` rows that
+// carry a `repo_path` (the machine-local checkout): we fetch GET /projects, keep
+// the subset with a repo_path, and refresh whenever the server broadcasts a
+// `projects` invalidation over the WS.
 //
 // The observer holds `this.projects` by reference and re-reads it every
 // reconcile (projectForCwd iterates it), so we hand it a SINGLE array and
 // refresh it IN PLACE (splice) — never reassign — so a refresh is visible to
-// the already-constructed observer without touching V1 observer code.
+// the already-constructed observer.
 
 import type { ObserverProject } from "../observer/projects.js";
 import type { HitchClient } from "./serverClient.js";

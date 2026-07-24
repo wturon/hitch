@@ -11,7 +11,7 @@ export default defineConfig({
   root: "src/renderer",
   base: "./",
   envDir: resolve(__dirname, ".."),
-  envPrefix: ["VITE_", "NEXT_PUBLIC_", "CONVEX_"],
+  envPrefix: ["VITE_"],
   resolve: {
     alias: {
       "@": resolve(__dirname, "src/renderer"),

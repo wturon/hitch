@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isServerMode, resolveServerConfig } from "../src/v2/config.js";
+import { resolveServerConfig } from "../src/v2/config.js";
 
 // Base env with the V1/app-support resolution knobs stripped so the platform
 // default never leaks into a test.
@@ -19,21 +19,26 @@ function baseEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
 function writeSecrets(hitchServer: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), "hitch-v2-config-"));
   const path = join(dir, "secrets.json");
-  writeFileSync(path, JSON.stringify({ deviceToken: "x", hitchServer }, null, 2));
+  writeFileSync(path, JSON.stringify({ hitchServer }, null, 2));
   return path;
 }
 
-// --- isServerMode -----------------------------------------------------------
-assert.equal(isServerMode({}), false, "no HITCH_SERVER_URL → not server mode");
-assert.equal(isServerMode({ HITCH_SERVER_URL: "  " }), false, "blank URL → not server mode");
-assert.equal(
-  isServerMode({ HITCH_SERVER_URL: "http://localhost:3010" }),
-  true,
-  "URL present → server mode",
+// --- no URL and no stored credentials → clear error (never null) ------------
+assert.throws(
+  () => resolveServerConfig(baseEnv()),
+  /No Hitch server URL found/,
+  "no URL anywhere → teaching error, never null",
 );
 
-// --- not server mode → null (V1 fallthrough) --------------------------------
-assert.equal(resolveServerConfig(baseEnv()), null, "no URL → null, never throws");
+// --- dev:daemon path: no env, BOTH url + key resolved from stored secrets ----
+{
+  const path = writeSecrets({ serverUrl: "http://localhost:3010", apiKey: "stored-key" });
+  assert.deepEqual(
+    resolveServerConfig(baseEnv({ HITCH_SECRETS_PATH: path })),
+    { serverUrl: "http://localhost:3010", apiKey: "stored-key" },
+    "URL + key both resolved from stored secrets when env is absent",
+  );
+}
 
 // --- env api key wins -------------------------------------------------------
 assert.deepEqual(
@@ -109,7 +114,7 @@ assert.deepEqual(
 // --- URL set, no key anywhere → clear error ---------------------------------
 assert.throws(
   () => resolveServerConfig(baseEnv({ HITCH_SERVER_URL: "http://localhost:3010" })),
-  /no API key was found/,
+  /no API key/,
   "URL with no resolvable key throws, never falls through to V1",
 );
 
@@ -121,7 +126,7 @@ assert.throws(
       resolveServerConfig(
         baseEnv({ HITCH_SERVER_URL: "http://localhost:3010", HITCH_SECRETS_PATH: path }),
       ),
-    /no API key was found/,
+    /no API key/,
     "stored record with no apiKey → still an error",
   );
 }

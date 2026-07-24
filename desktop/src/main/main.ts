@@ -40,20 +40,13 @@ import {
   type HitchServerCredentials,
 } from "./hitchServer.js";
 
-type DaemonStatus = "running" | "stopped" | "starting" | "stopping";
+type LogStream = "system" | "stdout" | "stderr";
 
 interface KeepAwakeState {
   enabled: boolean;
   running: boolean;
   pid: number | null;
   error: string | null;
-}
-
-interface LogEntry {
-  id: number;
-  at: string;
-  stream: "system" | "stdout" | "stderr";
-  message: string;
 }
 
 type Harness = "codex" | "claude-code";
@@ -108,11 +101,13 @@ const repoRoot = process.env.HITCH_ROOT
 // project IDs) and secrets (device token + auth, scoped to the dev Convex
 // deployment) never collide with the installed production app. Mirrors the
 // "Hitch Dev" split applied to app.name / the Chromium profile / the keychain key.
-const appSupportDir = join(
-  homedir(),
-  "Library/Application Support",
-  isDev ? "Hitch Dev" : "Hitch",
-);
+// Honors HITCH_APP_SUPPORT_DIR so an isolated instance (the e2e harness) can
+// point its whole state footprint — secrets.json + chat-lifecycle.sqlite + the
+// daemon it spawns (which receives this same dir) — at a scratch directory and
+// never touch the real "Hitch"/"Hitch Dev" store.
+const appSupportDir = process.env.HITCH_APP_SUPPORT_DIR
+  ? resolve(process.env.HITCH_APP_SUPPORT_DIR)
+  : join(homedir(), "Library/Application Support", isDev ? "Hitch Dev" : "Hitch");
 const localConfigPath =
   process.env.HITCH_CONFIG_PATH ?? join(appSupportDir, "config.json");
 const localSecretsPath =
@@ -143,9 +138,8 @@ function globalChatLifecycleHook(harness: Harness): string {
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, resolve } from "node:path";
 
-const HITCH_CONFIG_PATH = ${JSON.stringify(localConfigPath)};
 const HITCH_APP_SUPPORT_DIR = ${JSON.stringify(appSupportDir)};
 const HITCH_DB_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.sqlite";
 const HITCH_BUMP_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.bump";
@@ -184,38 +178,6 @@ function readStdin() {
 
 function hash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function isInside(root, cwd) {
-  const rel = relative(root, cwd);
-  return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep));
-}
-
-function hitchProjects() {
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync(HITCH_CONFIG_PATH, "utf8"));
-  } catch {
-    return [];
-  }
-  if (!raw || !Array.isArray(raw.hitches)) return [];
-
-  return raw.hitches
-    .filter((entry) => entry && entry.enabled !== false)
-    .map((entry) => {
-      const localPath =
-        typeof entry.localPath === "string" ? entry.localPath.trim() : "";
-      return {
-        projectId: typeof entry.projectId === "string" ? entry.projectId : null,
-        localPath: localPath ? resolve(localPath) : null,
-      };
-    })
-    .filter((entry) => entry.projectId && entry.localPath);
-}
-
-function projectForCwd(cwd) {
-  const resolvedCwd = resolve(cwd || process.cwd());
-  return hitchProjects().find((entry) => isInside(entry.localPath, resolvedCwd)) || null;
 }
 
 function chatId(payload) {
@@ -401,8 +363,6 @@ function normalize(payload) {
       : HARNESS === "codex"
         ? process.env.CODEX_PROJECT_DIR || process.env.PWD || process.cwd()
         : process.env.CLAUDE_PROJECT_DIR || process.env.PWD || process.cwd();
-  const project = projectForCwd(cwd);
-  if (!project) return null;
 
   const rawPayloadHash = hash(payload);
   const event = {
@@ -413,8 +373,12 @@ function normalize(payload) {
     providerEvent,
     lifecycle: plan.lifecycle,
     status: plan.status,
-    projectId: project.projectId,
-    projectLocalPath: project.localPath,
+    // The hook records cwd + chat identity only; the daemon correlates cwd → a
+    // server project (repo_path) and the reducer COALESCEs it onto the chat. The
+    // hook no longer depends on any local (V1) project mapping, so it can never
+    // silently drop events on a machine that has never hitched a folder.
+    projectId: null,
+    projectLocalPath: null,
     chatId: id,
     // Codex has no --session-id to pin, so the launch is correlated out-of-band
     // via the surface-keyed claim below — not an env var on the command.
@@ -560,11 +524,6 @@ main().catch(() => {
 
 let mainWindow: BrowserWindow | null = null;
 let daemon: ChildProcess | null = null;
-let status: DaemonStatus = "stopped";
-
-let nextLogId = 1;
-const logs: LogEntry[] = [];
-const maxLogs = 500;
 let stopTimer: NodeJS.Timeout | null = null;
 let quitAfterDaemonStops = false;
 let updaterConfigured = false;
@@ -615,24 +574,16 @@ function setUpdaterStatus(patch: Partial<UpdaterStatus>): void {
   }
 }
 
-// Append to the in-process log buffer. These logs are no longer streamed to the
-// renderer (the V1 daemon:state broadcast is gone); the buffer is retained so
-// the daemon-lifecycle code and hitchServer callbacks keep a single logging sink.
-function addLog(stream: LogEntry["stream"], message: string): void {
+// The single diagnostics sink for the daemon lifecycle + hitchServer callbacks.
+// The V1 daemon:state broadcast and its renderer log viewer are gone, so these
+// go to the main process's stdout/stderr — observable in the terminal / packaged
+// app logs rather than buffered where nothing reads them.
+function addLog(stream: LogStream, message: string): void {
   for (const line of message.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    logs.push({
-      id: nextLogId++,
-      at: new Date().toLocaleTimeString(),
-      stream,
-      message: line,
-    });
+    if (stream === "stderr") console.error(`[daemon] ${line}`);
+    else console.log(`[daemon] ${line}`);
   }
-  if (logs.length > maxLogs) logs.splice(0, logs.length - maxLogs);
-}
-
-function setStatus(next: DaemonStatus): void {
-  status = next;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1887,7 +1838,6 @@ function handleRunnerMessage(message: RunnerMessage): void {
     const machineId =
       typeof message.machineId === "string" ? message.machineId : "unknown";
     addLog("system", `Daemon runtime ready (machine ${machineId})`);
-    setStatus("running");
     return;
   }
 
@@ -1910,15 +1860,12 @@ function handleRunnerMessage(message: RunnerMessage): void {
 function startDaemon(): void {
   if (daemon) return;
 
-  setStatus("starting");
-
   // The daemon reconciles against the Hono server, so it needs the server URL +
   // stored api key. The daemon's config.ts can also fall back to secrets.json,
   // but explicit env is deterministic and honors the isolated-store rule.
   const serverUrl = process.env.HITCH_SERVER_URL?.trim();
   if (!serverUrl) {
     addLog("system", "No Hitch server URL configured — daemon idle.");
-    setStatus("stopped");
     return;
   }
   // Test-only escape hatch: the acceptance e2e runs its OWN fake daemon
@@ -1926,7 +1873,6 @@ function startDaemon(): void {
   // app-managed one so there's exactly one daemon per machine.
   if (process.env.HITCH_DISABLE_APP_DAEMON === "1") {
     addLog("system", "Hitch server mode: app-managed daemon disabled (HITCH_DISABLE_APP_DAEMON).");
-    setStatus("stopped");
     return;
   }
   const normalizedUrl = serverUrl.replace(/\/+$/, "");
@@ -1936,7 +1882,6 @@ function startDaemon(): void {
       "system",
       "Hitch server mode: not signed in yet — daemon idle until you sign in.",
     );
-    setStatus("stopped");
     return;
   }
   const serverEnv: Record<string, string> = {
@@ -1975,7 +1920,6 @@ function startDaemon(): void {
   child.once("error", (error) => {
     addLog("stderr", `Failed to start daemon: ${error.message}`);
     daemon = null;
-    setStatus("stopped");
   });
   child.once("exit", (code, signal) => {
     addLog(
@@ -1987,14 +1931,12 @@ function startDaemon(): void {
       stopTimer = null;
     }
     daemon = null;
-    setStatus("stopped");
     if (quitAfterDaemonStops) app.quit();
   });
 }
 
 function stopDaemon(): void {
   if (!daemon) return;
-  setStatus("stopping");
   addLog("system", "Stopping daemon");
   if (daemon.connected) daemon.send({ type: "stop" });
   stopTimer = setTimeout(() => {
