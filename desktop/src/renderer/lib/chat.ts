@@ -267,15 +267,14 @@ export function honorsLaunchParams(
 }
 
 // A reusable kickoff instruction the user picks from the delegation dropdown.
-// `body` is the user-authored instruction; `includeTaskRef` controls whether the
-// dynamic task-reference preamble (task name + file path) is prepended at launch.
-// The preamble is never stored — it's interpolated against the live task here in
-// the renderer, so prompts stay portable and the context can be kept lean.
+// `body` is the user-authored instruction. It's stamped AFTER the machine-facing
+// task preamble that V2 always prepends at launch (see buildDelegatePreamble in
+// v2/delegation.ts — title + verbatim body + task id + `hitch` CLI line), so a
+// prompt never needs to restate the task; it just says what to DO with it.
 export interface StartingPrompt {
   id: string;
   name: string;
   body: string;
-  includeTaskRef: boolean;
   // Short, plain-English summary shown beside the preset name in the minimized
   // delegate bar (the `body` is too long to show inline). Optional: built-ins
   // always set it; custom prompts may omit it and fall back to a truncated body
@@ -292,48 +291,26 @@ export function promptDescription(prompt: StartingPrompt): string {
   return body.length > 72 ? `${body.slice(0, 71)}…` : body;
 }
 
-// The dynamic preamble that orients the agent to the task it's picking up. The
-// daemon links the session before the first model turn, so the agent can focus on
-// the task instead of introspecting its own session id.
-export function taskRefPreamble(task: { title: string; path: string }): string {
-  return [
-    `You're picking up the Hitch task "${task.title}".`,
-    `Its file is at .hitch/${task.path}, relative to your current project folder.`,
-  ].join("\n");
-}
-
-// Assemble the full seed prompt a preset produces for a given task: the optional
-// task-reference preamble followed by the preset body.
-export function buildStartPrompt(
-  prompt: Pick<StartingPrompt, "body" | "includeTaskRef">,
-  task: { title: string; path: string },
-): string {
-  const body = prompt.body.trim();
-  if (!prompt.includeTaskRef) return body;
-  const preamble = taskRefPreamble(task);
-  return body ? `${preamble}\n\n${body}` : preamble;
-}
-
 // Curated built-in kickoff prompts. These ship in the app binary and are the
 // same for everyone: they're never persisted, can't be edited or removed, and
 // refresh with every app update. The delegation dropdown is composed as these
 // followed by the user's custom prompts. The bodies live only here now — the
 // main process knows the ids (BUILTIN_PROMPT_IDS, mirrored in main.ts) so it can
 // strip any built-in a user previously had seeded into their stored library.
+// Bodies assume the task preamble is already present (it always is), so they
+// reference "this task" and drive the agent via the `hitch` CLI, never a file.
 export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
     name: "Do the task.",
     description: "Reads the task and does what it asks",
     body: "Read this task and do what it asks.",
-    includeTaskRef: true,
   },
   {
     id: "think-through",
     name: "Help me think this through.",
     description: "Talks through the problem with you, no code yet",
     body: "Don't write any code yet. Help me reason through the task, question, or idea described here and organize my own thinking. Read the task and explore any relevant context, then push on it with me: ask clarifying questions, point out inconsistencies or risks I may have missed, and compare plausible approaches with your honest recommendation. The goal is to help me sharpen my judgment, not to produce a step-by-step plan or start implementation.",
-    includeTaskRef: true,
   },
   {
     id: "refine-task",
@@ -341,18 +318,16 @@ export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
     description: "Interviews you, then rewrites the task as a spec",
     body: [
       "Don't start implementation yet. Help me turn this task into a clear, self-contained brief that a fresh agent with no context can execute confidently.",
-      "First, investigate. Read the task body and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
+      "First, investigate. Read the task description above and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
       'Then interview me. Ask your most important clarifying questions, and keep going until we share an unambiguous understanding of the goal, what "done" looks like, the scope boundaries, and any constraints.',
-      "When we agree it's fully specified, rewrite the body of the task file referenced above so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Leave the frontmatter untouched, and confirm when you've written it.",
+      "When we agree it's fully specified, rewrite the task's description so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Save it with `hitch tasks edit <task-id>` (pass the new description via --body-file or piped stdin — run `hitch tasks --help` for the exact flags), then confirm when you've updated it.",
     ].join("\n\n"),
-    includeTaskRef: true,
   },
   {
     id: "investigate",
     name: "How hard would this be?",
     description: "Scopes the work and flags risks, no code",
     body: "Don't write any code. Read the task, explore the parts of the repo it would touch, and come back with a candid read on how hard it'd be to solve — the rough shape of the work, what's risky or uncertain, and any open questions.",
-    includeTaskRef: true,
   },
 ];
 

@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { normalizeChatTitle } from "./chatTitles.js";
-import { LINKED_DOC_TYPES_SQL } from "./linkedDocs.js";
 import { resolveChatStatus } from "./observer/derive.js";
 import type { ObservedExistence } from "./observer/types.js";
 
@@ -77,8 +76,6 @@ export interface LocalChatInput {
   cwd: string;
   host: string;
   environment: string | null;
-  linkedType: "task" | "automation" | null;
-  linkedPath: string | null;
   resumeKind: "open-chat-command" | "external";
   resumePayload?: Record<string, unknown>;
   firstObservedAt: number;
@@ -533,24 +530,6 @@ export class ChatLifecycleStore {
     return row ? this.localChatFromRow(row) : null;
   }
 
-  // Chats linked to an editable doc (a task's task.md),
-  // whose frontmatter the daemon keeps stamped/projected. The accepted kinds
-  // come from LINKED_DOC_KINDS so this stays in lockstep with the bind/reconcile
-  // paths; automations link a path too but aren't projected, so they're excluded.
-  listFileLinkedChats(projectId: string, limit = 500): LocalChatRow[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM local_chats
-         WHERE project_id = ?
-           AND linked_type IN (${LINKED_DOC_TYPES_SQL})
-           AND linked_path IS NOT NULL
-         ORDER BY updated_at ASC
-         LIMIT ?`,
-      )
-      .all(projectId, limit)
-      .map((row) => this.localChatFromRow(row));
-  }
-
   // cmux-environment chats for the debug screen, newest activity first. Scoped
   // to a project when given (matches the rest of the app's project context),
   // or all cmux chats when null.
@@ -826,8 +805,6 @@ export class ChatLifecycleStore {
             cwd TEXT NOT NULL,
             host TEXT NOT NULL,
             environment TEXT,
-            linked_type TEXT,
-            linked_path TEXT,
             resume_kind TEXT NOT NULL,
             resume_payload_json TEXT NOT NULL DEFAULT '{}',
             first_observed_at INTEGER NOT NULL,
@@ -840,10 +817,12 @@ export class ChatLifecycleStore {
             deleted_at INTEGER,
             updated_at INTEGER NOT NULL
           );
-          -- Databases created before the V1 (Convex) sink was removed still
-          -- carry retired dirty/last_synced_at/convex_id columns. They are left
-          -- in place (harmless: dirty had a DEFAULT so INSERTs that omit it
-          -- still work); the model, API, and write path no longer touch them.
+          -- Databases created before the V1 model was removed still carry
+          -- retired columns: dirty/last_synced_at/convex_id (the Convex sink)
+          -- and linked_type/linked_path (V1 frontmatter-doc projection). They
+          -- are left in place (harmless: dirty had a DEFAULT so INSERTs that
+          -- omit it still work); the model, API, and write path no longer touch
+          -- them.
 
           CREATE UNIQUE INDEX IF NOT EXISTS local_chats_by_chat
             ON local_chats(harness, chat_id, host)
@@ -1128,8 +1107,6 @@ export class ChatLifecycleStore {
       cwd: record.cwd,
       host: record.host,
       environment: record.environment,
-      linkedType: null,
-      linkedPath: null,
       resumeKind: "external",
       resumePayload: { chatId: record.chatId, cwd: record.cwd },
       firstObservedAt: now,
@@ -1207,8 +1184,6 @@ export class ChatLifecycleStore {
           cwd,
           host,
           environment,
-          linked_type,
-          linked_path,
           resume_kind,
           resume_payload_json,
           first_observed_at,
@@ -1221,7 +1196,7 @@ export class ChatLifecycleStore {
           deleted_at,
           updated_at,
           observer_created
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(local_key) DO UPDATE SET
           project_id = excluded.project_id,
           launch_id = excluded.launch_id,
@@ -1233,8 +1208,6 @@ export class ChatLifecycleStore {
           cwd = excluded.cwd,
           host = excluded.host,
           environment = excluded.environment,
-          linked_type = excluded.linked_type,
-          linked_path = excluded.linked_path,
           resume_kind = excluded.resume_kind,
           resume_payload_json = excluded.resume_payload_json,
           first_observed_at = excluded.first_observed_at,
@@ -1260,8 +1233,6 @@ export class ChatLifecycleStore {
         chat.cwd,
         chat.host,
         chat.environment,
-        chat.linkedType,
-        chat.linkedPath,
         chat.resumeKind,
         jsonString(chat.resumePayload),
         chat.firstObservedAt,
@@ -1315,11 +1286,11 @@ export class ChatLifecycleStore {
     if (!localKey) return null;
 
     // A bind event (chatId AND launchId) can straddle two rows: an observer-created
-    // `chat:<id>` row (status/observed state, no link) and the pending `launch:<id>`
-    // row (the task/note link, no chatId). Read both so link fields are inherited
-    // from whichever actually carries them — otherwise the bound chat loses its
-    // task link and the pending row is orphaned. upsertLocalChatUnsafe then coalesces
-    // the two rows so only one owns the launch_id.
+    // `chat:<id>` row (status/observed state, no launch) and the pending
+    // `launch:<id>` row (the launch's projectId + resume payload, no chatId). Read
+    // both so those fields are inherited from whichever carries them; otherwise the
+    // pending row is orphaned. upsertLocalChatUnsafe then coalesces the two rows so
+    // only one owns the launch_id.
     const chatRow = event.chatId
       ? this.getLocalChat(`chat:${event.harness}:${event.host}:${event.chatId}`)
       : null;
@@ -1327,26 +1298,9 @@ export class ChatLifecycleStore {
       ? this.getLocalChatByLaunchId(event.launchId)
       : null;
     const existing = chatRow ?? launchRow ?? this.getLocalChat(localKey);
-    // The link lives on whichever row was stamped with it (usually the pending
-    // launch row); the observer row has none.
-    const linkSource =
-      (chatRow?.linkedPath ? chatRow : null) ??
-      (launchRow?.linkedPath ? launchRow : null) ??
-      existing;
 
     const environment =
       optionalString(event.metadata.environment) ?? existing?.environment ?? null;
-    const linkedType =
-      event.metadata.linkedType === "task" ||
-      event.metadata.linkedType === "automation"
-        ? event.metadata.linkedType
-        : linkSource?.linkedType ?? null;
-    const linkedPath =
-      optionalString(event.metadata.linkedPath) ?? linkSource?.linkedPath ?? null;
-    const automationRunId =
-      optionalString(event.metadata.automationRunId) ??
-      optionalString(existing?.resumePayload.automationRunId) ??
-      optionalString(launchRow?.resumePayload.automationRunId);
     const title = normalizeChatTitle(
       optionalString(event.metadata.title) ?? existing?.title,
       event.harness,
@@ -1388,16 +1342,12 @@ export class ChatLifecycleStore {
       cwd: event.cwd || existing?.cwd || "",
       host: event.host || existing?.host || "",
       environment,
-      linkedType,
-      linkedPath,
       resumeKind: existing?.resumeKind ?? "open-chat-command",
       resumePayload: {
         ...(existing?.resumePayload ?? {}),
         launchId,
         chatId,
         cwd: event.cwd || existing?.cwd || "",
-        linkedPath,
-        automationRunId,
       },
       firstObservedAt: Math.min(existing?.firstObservedAt ?? event.observedAt, event.observedAt),
       lastEventAt: Math.max(existing?.lastEventAt ?? event.observedAt, event.observedAt),
@@ -1446,8 +1396,6 @@ export class ChatLifecycleStore {
       existing.cwd === next.cwd &&
       existing.host === next.host &&
       existing.environment === next.environment &&
-      existing.linkedType === next.linkedType &&
-      existing.linkedPath === next.linkedPath &&
       existing.resumeKind === next.resumeKind &&
       JSON.stringify(existing.resumePayload) ===
         JSON.stringify(next.resumePayload ?? {}) &&
@@ -1507,14 +1455,6 @@ export class ChatLifecycleStore {
       cwd: String(value.cwd),
       host: String(value.host),
       environment: value.environment === null ? null : String(value.environment),
-      // Coerce instead of casting: a pre-migration local row may still carry a
-      // retired value (e.g. "note"), which must read as unlinked rather than
-      // leak into the tightened server validator on the next sync.
-      linkedType:
-        value.linked_type === "task" || value.linked_type === "automation"
-          ? value.linked_type
-          : null,
-      linkedPath: value.linked_path === null ? null : String(value.linked_path),
       resumeKind: String(value.resume_kind) as "open-chat-command" | "external",
       resumePayload: jsonObject(String(value.resume_payload_json)),
       firstObservedAt: numberFromSqlite(value.first_observed_at),

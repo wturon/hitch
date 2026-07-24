@@ -268,3 +268,16 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   isolation fixes: `dev:daemon` now sets `HITCH_ROOT` so the bare script reads the `Hitch Dev`
   secrets the dev app minted; the e2e harness now scopes `CODEX_HOME`/`CLAUDE_CONFIG_DIR` to scratch
   so a run can't rewrite the machine's real hook config.
+- 2026-07-24 — Cutover review round 4 (last file-state model + prompt surface). (1) The V1
+  task-file/frontmatter helpers below the deleted surfaces: `lib/frontmatter.ts` (YAML reader/writer)
+  and `lib/tagRegistry.ts` (the `tasks/config.json` registry — zero prod consumers) deleted; the two
+  live helpers relocated (`normalizeTag`→`TagCombobox`, `deriveTitleFromBody`→`v2/capture`) and
+  `lib/tasks.ts` deleted with them; dead test blocks pruned. (2) The matching daemon projection:
+  `linkedDocs.ts` + `listFileLinkedChats` + `linkedType`/`linkedPath`/`automationRunId` (threaded
+  through the producer, reducer, store model/SQL, observer heal, reconciler, smokes) removed — V2 has
+  no consumer (reconciler wrote null, the server sink read none). Old DBs keep retired
+  `linked_type`/`linked_path` columns (documented). (3) `StartingPrompt.includeTaskRef` was broken
+  under V2 (the delegate bar always stamps the server-task preamble; the flag did nothing, the Settings
+  toggle promised `.hitch/{path}`). Chose the always-include contract: removed `includeTaskRef` + the
+  dead `taskRefPreamble`/`buildStartPrompt` + the stale toggle/preview, and rewrote the "refine-task"
+  built-in to drive edits via `hitch tasks edit <task-id>` instead of a `.hitch/tasks` file.

@@ -42,7 +42,6 @@ export interface StartingPrompt {
   id: string;
   name: string;
   body: string;
-  includeTaskRef: boolean;
 }
 
 export interface GlobalHarnessSetupStatus {

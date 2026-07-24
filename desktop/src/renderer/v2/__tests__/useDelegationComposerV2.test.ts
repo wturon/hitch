@@ -197,7 +197,6 @@ describe("custom prompts bridge", () => {
       id: "custom-1",
       name: "My prompt",
       body: "Custom body",
-      includeTaskRef: true,
     };
     (window as unknown as { hitchDaemon?: unknown }).hitchDaemon = {
       getStartingPrompts: vi.fn().mockResolvedValue([custom]),

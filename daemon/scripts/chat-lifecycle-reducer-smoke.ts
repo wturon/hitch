@@ -31,9 +31,6 @@ function event(
     rawPayloadRef: null,
     metadata: {
       environment: "codex-app",
-      linkedType: "task",
-      linkedPath: "tasks/example/task.md",
-      automationRunId: "run-1",
       title: "Example task",
     },
     ...overrides,
@@ -79,7 +76,6 @@ try {
   const boundChat = store.getLocalChat("chat:codex:host-1:thread-1");
   assert.equal(boundChat?.launchId, "launch-1");
   assert.equal(boundChat?.pending, false);
-  assert.equal(boundChat?.resumePayload.automationRunId, "run-1");
   // The bind rekeys the pending row and bumps updated_at → never-synced, so the
   // reconciler still owes the server a push.
   assert.equal(boundChat?.serverSyncedAt, null);
@@ -145,8 +141,6 @@ try {
       launchId: "launch-2",
       metadata: {
         environment: "cmux",
-        linkedType: "task",
-        linkedPath: "tasks/codex-cmux/task.md",
         title: "Codex cmux task",
       },
       observedAt: 1_800_000_000_900,
@@ -179,7 +173,6 @@ try {
   assert.equal(cmuxBound?.launchId, "launch-2");
   assert.equal(cmuxBound?.pending, false);
   assert.equal(cmuxBound?.environment, "cmux");
-  assert.equal(cmuxBound?.linkedPath, "tasks/codex-cmux/task.md");
 
   store.close();
   console.log("chat lifecycle reducer smoke passed");

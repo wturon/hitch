@@ -17,11 +17,9 @@ export interface DaemonLifecycleProducerOptions {
 export interface DaemonLifecycleEventBase {
   commandId?: string;
   launchId?: string | null;
-  automationRunId?: string | null;
   harness: ChatLifecycleHarness;
   environment?: string | null;
   cwd: string;
-  linkedPath?: string | null;
 }
 
 export interface DaemonChatCreatedInput extends DaemonLifecycleEventBase {
@@ -53,15 +51,6 @@ function fallbackLaunchId(commandId: string | undefined): string | null {
 
 function launchId(input: DaemonLifecycleEventBase): string | null {
   return input.launchId ?? fallbackLaunchId(input.commandId);
-}
-
-function linkedType(
-  path: string | null | undefined,
-): "task" | "automation" | null {
-  if (!path) return null;
-  if (path.startsWith("tasks/")) return "task";
-  if (path.startsWith("automations/")) return "automation";
-  return null;
 }
 
 function eventId(
@@ -106,10 +95,7 @@ export class DaemonLifecycleProducer {
       metadata: {
         commandId: input.commandId ?? null,
         launchId: input.launchId ?? null,
-        automationRunId: input.automationRunId ?? null,
         environment: input.environment ?? null,
-        linkedType: linkedType(input.linkedPath),
-        linkedPath: input.linkedPath ?? null,
         title: input.title ?? null,
       },
     });
@@ -127,10 +113,7 @@ export class DaemonLifecycleProducer {
       metadata: {
         commandId: input.commandId ?? null,
         launchId: input.launchId ?? null,
-        automationRunId: input.automationRunId ?? null,
         environment: input.environment ?? null,
-        linkedType: linkedType(input.linkedPath),
-        linkedPath: input.linkedPath ?? null,
       },
     });
   }
@@ -147,10 +130,7 @@ export class DaemonLifecycleProducer {
       metadata: {
         commandId: input.commandId ?? null,
         launchId: input.launchId ?? null,
-        automationRunId: input.automationRunId ?? null,
         environment: input.environment ?? null,
-        linkedType: linkedType(input.linkedPath),
-        linkedPath: input.linkedPath ?? null,
         title: input.title ?? null,
       },
     });
@@ -168,10 +148,7 @@ export class DaemonLifecycleProducer {
       metadata: {
         commandId: input.commandId ?? null,
         launchId: input.launchId ?? null,
-        automationRunId: input.automationRunId ?? null,
         environment: input.environment ?? null,
-        linkedType: linkedType(input.linkedPath),
-        linkedPath: input.linkedPath ?? null,
         pid: input.pid ?? null,
       },
     });

@@ -809,7 +809,6 @@ interface StoredStartingPrompt {
   id: string;
   name: string;
   body: string;
-  includeTaskRef: boolean;
 }
 
 // Ids reserved for the built-in prompts. Custom prompts may never use them, so
@@ -825,14 +824,13 @@ const BUILTIN_PROMPT_IDS = new Set([
 
 function sanitizeStartingPrompt(value: unknown): StoredStartingPrompt | null {
   if (!isRecord(value)) return null;
-  const { id, name, body, includeTaskRef } = value;
+  const { id, name, body } = value;
   if (typeof id !== "string" || typeof name !== "string") return null;
   if (BUILTIN_PROMPT_IDS.has(id)) return null;
   return {
     id,
     name,
     body: typeof body === "string" ? body : "",
-    includeTaskRef: includeTaskRef !== false,
   };
 }
 

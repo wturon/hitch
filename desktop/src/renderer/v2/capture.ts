@@ -1,7 +1,5 @@
 import { generateKeyBetween } from "fractional-indexing";
 
-import { deriveTitleFromBody } from "@/lib/tasks";
-
 // Pure capture helpers for TaskDialogV2 (M2 PR 3). No React, no HTTP —
 // unit-testable in isolation.
 //
@@ -18,11 +16,29 @@ export function normalizeCaptureBody(text: string): string {
   return text.replace(/\r\n/g, "\n");
 }
 
+// Fall back to the first line of the body when a task is captured without a
+// title: the first ~6 words of the first non-empty line, with the most common
+// inline/leading markdown stripped so the title reads as plain prose. Returns
+// "" when the body has no words, so the caller can substitute a default.
+export function deriveTitleFromBody(body: string, maxWords = 6): string {
+  const firstLine =
+    body.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  const cleaned = firstLine
+    .replace(/^#{1,6}\s+/, "") // heading markers
+    .replace(/^>\s+/, "") // blockquote
+    .replace(/^[-*+]\s+/, "") // bullet
+    .replace(/^\d+\.\s+/, "") // ordered-list marker
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // links/images → their text
+    .replace(/[*_`~]/g, "") // emphasis / code / strike marks
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.split(" ").filter(Boolean).slice(0, maxWords).join(" ");
+}
+
 // The seed title: the body's first ~6 words with leading/inline markdown
-// stripped — V1's deriveTitleFromBody, IMPORTED (it's a pure string helper,
-// not welded to the file model). Falls back to "Untitled" when the body has no
-// words (e.g. symbols only): the server requires a non-empty title, and
-// "Untitled" is what the dialog header shows for an empty one anyway.
+// stripped. Falls back to "Untitled" when the body has no words (e.g. symbols
+// only): the server requires a non-empty title, and "Untitled" is what the
+// dialog header shows for an empty one anyway.
 export function captureSeedTitle(body: string): string {
   return deriveTitleFromBody(body) || "Untitled";
 }

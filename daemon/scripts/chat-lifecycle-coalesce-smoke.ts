@@ -55,8 +55,6 @@ function observerRow(overrides: Partial<LocalChatInput>): LocalChatInput {
     cwd: "/tmp/project",
     host: "host-1",
     environment: "cmux",
-    linkedType: null,
-    linkedPath: null,
     resumeKind: "external",
     firstObservedAt: 1_800_000_000_000,
     lastEventAt: 1_800_000_000_000,
@@ -76,14 +74,12 @@ function observerRow(overrides: Partial<LocalChatInput>): LocalChatInput {
     const X = "launch-X";
     const T = "thread-T";
 
-    // 1) Launch: pending launch:X row carrying the task link.
+    // 1) Launch: pending launch:X row.
     store.insertLifecycleEvent(
       event({
         launchId: X,
         metadata: {
           launchId: X,
-          linkedType: "task",
-          linkedPath: "tasks/foo/task.md",
         },
       }),
     );
@@ -114,20 +110,12 @@ function observerRow(overrides: Partial<LocalChatInput>): LocalChatInput {
     const bound = store.getLocalChat(`chat:codex:host-1:${T}`);
     assert.equal(bound?.chatId, T);
     assert.equal(bound?.launchId, X, "bound row inherited launch id");
-    assert.equal(
-      bound?.linkedPath,
-      "tasks/foo/task.md",
-      "bound row inherited the task link (the bug)",
-    );
     assert.equal(bound?.pending, false);
     assert.equal(
       store.getLocalChat(`launch:${X}`),
       null,
       "pending launch row coalesced away",
     );
-    const linked = store.listFileLinkedChats("project-1");
-    assert.equal(linked.length, 1);
-    assert.equal(linked[0].chatId, T);
 
     store.close();
   } finally {
