@@ -573,6 +573,166 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     expect(await chatsOf(USER_A, machine.id)).toEqual([]);
   });
 
+  // --- the Chat Inspector's reads (docs/chat-tracking-redesign.md §9) --------
+
+  it("records the snapshot's COVERAGE on the machine, including a truncated tick", async () => {
+    const machine = await registerMachine(USER_A, "snapshot-coverage");
+    const since = new Date(Date.now() - 24 * 3600_000).toISOString();
+    const observedAt = new Date().toISOString();
+
+    expect(
+      (
+        await put(USER_A, machine.id, {
+          observedAt,
+          window: { since, cap: 60, truncated: false },
+          chats: [{ harness: "claude", sessionId: "cov-1", existence: "running", activity: "idle" }],
+          events: [],
+        })
+      ).status,
+    ).toBe(200);
+
+    const machinesOf = async (userKey: string) =>
+      (await json(await api(userKey, "GET", "/machines"))) as any[];
+    let row = (await machinesOf(USER_A)).find((m) => m.id === machine.id);
+    expect(new Date(row.chatSnapshotAt).toISOString()).toBe(observedAt);
+    expect(new Date(row.chatWindowSince).toISOString()).toBe(since);
+    expect(row.chatWindowCap).toBe(60);
+    expect(row.chatWindowTruncated).toBe(false);
+
+    // A truncated tick says so — the health strip's whole job is to make an
+    // incomplete snapshot visible before anyone trusts the rows under it.
+    expect(
+      (
+        await put(USER_A, machine.id, {
+          observedAt: new Date().toISOString(),
+          window: { since, cap: 40, truncated: true },
+          chats: [],
+          events: [],
+        })
+      ).status,
+    ).toBe(200);
+    row = (await machinesOf(USER_A)).find((m) => m.id === machine.id);
+    expect(row.chatWindowTruncated).toBe(true);
+    expect(row.chatWindowCap).toBe(40);
+    // …and the truncated tick still skipped the sweep, so cov-1 lives.
+    expect((await chatsOf(USER_A, machine.id)).map((c) => c.sessionId)).toEqual(["cov-1"]);
+  });
+
+  it("GET /chats carries the machine, project and task a row is attached to", async () => {
+    const machine = await registerMachine(USER_A, "snapshot-attachnames");
+    const project = await json(
+      await api(USER_A, "POST", "/projects", { name: "Inspector project", sortOrder: "a0" }),
+    );
+    const task = await json(
+      await api(USER_A, "POST", "/tasks", {
+        projectId: project.id,
+        title: "Wire the inspector",
+        sortOrder: "a0",
+      }),
+    );
+    const assignment = await json(
+      await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+      }),
+    );
+
+    expect(
+      (
+        await put(
+          USER_A,
+          machine.id,
+          snapshot([
+            { harness: "claude", sessionId: "named-1", existence: "running", activity: "idle" },
+            { harness: "codex", sessionId: "named-2", existence: "running", activity: "idle" },
+          ]),
+        )
+      ).status,
+    ).toBe(200);
+
+    const rows = new Map((await chatsOf(USER_A, machine.id)).map((c) => [c.sessionId, c]));
+    // Bind the assignment to the chat the way the daemon does (observation PATCH).
+    expect(
+      (
+        await api(USER_A, "PATCH", `/daemon/assignments/${assignment.id}`, {
+          chatId: rows.get("named-1").id,
+        })
+      ).status,
+    ).toBe(200);
+    // …and give named-1 a direct project attachment too.
+    expect(
+      (
+        await put(
+          USER_A,
+          machine.id,
+          snapshot([
+            {
+              harness: "claude",
+              sessionId: "named-1",
+              existence: "running",
+              activity: "idle",
+              projectId: project.id,
+            },
+            { harness: "codex", sessionId: "named-2", existence: "running", activity: "idle" },
+          ]),
+        )
+      ).status,
+    ).toBe(200);
+
+    const named = new Map((await chatsOf(USER_A, machine.id)).map((c) => [c.sessionId, c]));
+    expect(named.get("named-1").machineName).toBe("snapshot-attachnames");
+    expect(named.get("named-1").projectName).toBe("Inspector project");
+    expect(named.get("named-1").task).toEqual({
+      id: task.id,
+      title: "Wire the inspector",
+      assignmentId: assignment.id,
+    });
+    // An unattached chat is a complete, correct chat — nulls, not omissions.
+    expect(named.get("named-2").projectName).toBeNull();
+    expect(named.get("named-2").task).toBeNull();
+    expect(named.get("named-2").machineName).toBe("snapshot-attachnames");
+  });
+
+  it("serves a per-chat event tail, newest first, scoped to the owner", async () => {
+    const machine = await registerMachine(USER_A, "snapshot-tail");
+    const chat = {
+      harness: "claude" as const,
+      sessionId: "tail-1",
+      existence: "running" as const,
+      activity: "working" as const,
+    };
+    const t = (secondsAgo: number) => new Date(Date.now() - secondsAgo * 1000).toISOString();
+    expect(
+      (
+        await put(
+          USER_A,
+          machine.id,
+          snapshot([chat], {
+            events: [
+              { sessionId: "tail-1", kind: "block.permission", at: t(30), payload: { tool: "Bash" } },
+              { sessionId: "tail-1", kind: "block.clear", at: t(10) },
+              { sessionId: "tail-1", kind: "turn.completed", at: t(50) },
+            ],
+          }),
+        )
+      ).status,
+    ).toBe(200);
+
+    const row = (await chatsOf(USER_A, machine.id))[0];
+    const tail = (await json(await api(USER_A, "GET", `/chats/${row.id}/events`))) as any[];
+    expect(tail.map((e) => e.kind)).toEqual(["block.clear", "block.permission", "turn.completed"]);
+    expect(tail[1].payload).toEqual({ tool: "Bash" });
+
+    // Bounded, and the bound is honoured.
+    const capped = (await json(await api(USER_A, "GET", `/chats/${row.id}/events?limit=1`))) as any[];
+    expect(capped.map((e) => e.kind)).toEqual(["block.clear"]);
+    expect((await api(USER_A, "GET", `/chats/${row.id}/events?limit=0`)).status).toBe(400);
+
+    // Someone else's chat is a 404, not a leak.
+    expect((await api(USER_B, "GET", `/chats/${row.id}/events`)).status).toBe(404);
+  });
+
   it("scopes GET /chats to the signed-in user", async () => {
     const machineA = await registerMachine(USER_A, "snapshot-scope-a");
     const machineB = await registerMachine(USER_B, "snapshot-scope-b");

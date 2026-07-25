@@ -1,5 +1,6 @@
 import {
   bigint,
+  boolean,
   check,
   index,
   integer,
@@ -185,6 +186,20 @@ export const machines = pgTable("machines", {
   name: text("name").notNull(),
   daemonVersion: text("daemon_version").notNull(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  // Coverage of the LAST chat snapshot this machine PUT (the whole `window`
+  // block of docs/chat-tracking-redesign.md §7, plus its observedAt). The chat
+  // rows carry their own last_observed_at, but the snapshot's *coverage* — how
+  // far back the daemon looked, the cap, and whether it saw everything — is a
+  // property of the tick, not of any row, and was previously dropped on the
+  // floor. The Chat Inspector's health strip is the reader: a stale or
+  // `truncated` snapshot means every chat row below it is fiction, and that has
+  // to be legible before any individual chat is. All nullable: a machine that
+  // has never PUT a snapshot has no coverage to report.
+  chatSnapshotAt: timestamp("chat_snapshot_at", { withTimezone: true }),
+  chatWindowSince: timestamp("chat_window_since", { withTimezone: true }),
+  chatWindowCap: integer("chat_window_cap"),
+  /** true = coverage was incomplete; the server skipped its death sweep. */
+  chatWindowTruncated: boolean("chat_window_truncated"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

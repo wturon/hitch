@@ -72,7 +72,7 @@ describe("hitchServer sign-in/out daemon seam", () => {
       setStoredCredentials: (creds) => {
         stored = creds;
       },
-      getWindow: () => null,
+      getWindows: () => [],
       log: () => {},
       onSignIn,
       onSignOut,

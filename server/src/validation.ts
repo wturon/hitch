@@ -284,6 +284,12 @@ export const chatClientListQuery = z.object({
   live: z.enum(["true", "false"]).optional(),
 });
 
+// The Inspector's per-chat event tail. Bounded by default AND by ceiling: this
+// is an inbox landing zone, not a ledger, and nothing wants all of it.
+export const chatEventListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 // DAEMON-writable fields ONLY — the mirror image of assignmentClientUpdate.
 export const assignmentObservationUpdate = z.strictObject({
   observedState: observedStateSchema.optional(),
