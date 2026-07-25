@@ -139,15 +139,17 @@ describeDb("better-auth (postgres:16 in Docker)", () => {
       ["GET", "/tasks"],
       ["GET", "/tags"],
       ["GET", "/machines"],
+      ["GET", "/chats"],
       ["GET", "/assignments"],
       ["POST", "/projects"],
       ["POST", "/daemon/machines"],
       ["GET", "/daemon/chats?machine_id=00000000-0000-7000-8000-000000000000"],
+      ["PUT", "/daemon/machines/00000000-0000-7000-8000-000000000000/chat-snapshot"],
     ] as const) {
       const res = await app.request(path, {
         method,
         headers: { "x-hitch-user-id": "user-a", "content-type": "application/json" },
-        ...(method === "POST" ? { body: JSON.stringify({}) } : {}),
+        ...(method === "POST" || method === "PUT" ? { body: JSON.stringify({}) } : {}),
       });
       expect(res.status, `${method} ${path} with placeholder header`).toBe(401);
     }

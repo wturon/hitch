@@ -19,6 +19,10 @@ describe("queryKeyForTable", () => {
     expect(queryKeyForTable("task_tags")).toEqual(["tasks"]);
   });
 
+  it("maps chat_events onto the chats key (events are read alongside a chat)", () => {
+    expect(queryKeyForTable("chat_events")).toEqual(["chats"]);
+  });
+
   it("returns null for tables it does not know", () => {
     expect(queryKeyForTable("session")).toBeNull();
     expect(queryKeyForTable("")).toBeNull();
@@ -28,6 +32,7 @@ describe("queryKeyForTable", () => {
     expect(Object.keys(TABLE_QUERY_KEYS).sort()).toEqual([
       "assignments",
       "attachments",
+      "chat_events",
       "chats",
       "comments",
       "machines",
