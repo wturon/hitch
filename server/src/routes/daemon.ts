@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, inArray, or, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, or, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 
 import { requireAuth } from "../auth.js";
@@ -187,11 +187,19 @@ export const daemonRoutes = new Hono<AppEnv>()
       }
 
       // Everything we might touch: the rows named by the snapshot, plus every
-      // row we currently believe is alive on this machine (the sweep set).
+      // row that still carries an existence on this machine (the sweep set).
+      //
+      // `dormant` belongs in that set even though absence never kills a dormant
+      // chat. Existence is a claim about what the machine can SEE, and a row
+      // that has aged out of the window is one the daemon has stopped looking
+      // at — leaving `dormant` on it is a stored copy no ground truth still
+      // backs, the exact drift this architecture exists to prevent. Loading
+      // only running/pending made that unfixable downstream: the row was never
+      // fetched, so the sweep could not have cleared it.
       const sessionIds = body.chats.map((ch) => ch.sessionId);
       const eventSessionIds = body.events.map((e) => e.sessionId);
       const wanted = [...new Set([...sessionIds, ...eventSessionIds])];
-      const preConds: SQL[] = [inArray(chats.existence, ["running", "pending"])];
+      const preConds: SQL[] = [isNotNull(chats.existence)];
       if (wanted.length > 0) preConds.push(inArray(chats.sessionId, wanted));
       const priorRows = await db
         .select()
@@ -346,15 +354,39 @@ export const daemonRoutes = new Hono<AppEnv>()
         }
         if (eventValues.length > 0) await tx.insert(chatEvents).values(eventValues);
 
-        // The death sweep — absence means dead. SKIPPED ENTIRELY when the
-        // daemon flagged the window truncated: coverage was incomplete, so
-        // absence proves nothing. The daemon already debounces two misses, so
-        // the server acts on the FIRST absence it sees (no second debounce).
+        // The absence sweep. SKIPPED ENTIRELY when the daemon flagged the
+        // window truncated: coverage was incomplete, so absence proves nothing.
+        // The daemon already debounces two misses, so the server acts on the
+        // FIRST absence it sees (no second debounce).
+        //
+        // Absence has TWO meanings and they are not the same fact (§5.3):
+        //
+        //   running/pending vanished → it DIED. We were watching a live process
+        //     and it stopped being there. Status becomes dead.
+        //   dormant vanished → we STOPPED LOOKING. Its transcript aged past the
+        //     24h window. We know nothing new about it, and it is very likely
+        //     still resumable, so its status is left exactly as it was —
+        //     "aging out is not deletion; the chat keeps living on the server
+        //     with its final status."
+        //
+        // What both share: the machine is no longer asserting anything about
+        // this row, so `existence` — the machine-owned axis — must be cleared
+        // either way. Clearing it is what makes the row honest; only the status
+        // verdict differs. `last_observed_at` is deliberately NOT restamped on
+        // the aged-out path: it means "when the machine last actually reported
+        // this", and preserving it is what lets the Inspector say "absent, last
+        // seen 46m ago" instead of claiming a sighting that never happened.
         let dead = 0;
+        let agedOut = 0;
         if (!body.window.truncated) {
           const survivors = new Set(upserted.map((r) => r.id));
           const doomed = priorRows.filter((r) => !survivors.has(r.id));
-          if (doomed.length > 0) {
+          const lethal = doomed.filter(
+            (r) => r.existence === "running" || r.existence === "pending",
+          );
+          const stoppedLooking = doomed.filter((r) => r.existence === "dormant");
+
+          if (lethal.length > 0) {
             const swept = await tx
               .update(chats)
               .set({
@@ -369,13 +401,29 @@ export const daemonRoutes = new Hono<AppEnv>()
                   eq(chats.machineId, machineId),
                   inArray(
                     chats.id,
-                    doomed.map((r) => r.id),
+                    lethal.map((r) => r.id),
                   ),
-                  inArray(chats.existence, ["running", "pending"]),
                 ),
               )
               .returning({ id: chats.id });
             dead = swept.length;
+          }
+
+          if (stoppedLooking.length > 0) {
+            const cleared = await tx
+              .update(chats)
+              .set({ existence: null })
+              .where(
+                and(
+                  eq(chats.machineId, machineId),
+                  inArray(
+                    chats.id,
+                    stoppedLooking.map((r) => r.id),
+                  ),
+                ),
+              )
+              .returning({ id: chats.id });
+            agedOut = cleared.length;
           }
         }
 
@@ -393,7 +441,7 @@ export const daemonRoutes = new Hono<AppEnv>()
           })
           .where(eq(machines.id, machineId));
 
-        return { upserted, dead, events: eventValues.length, eventsDropped };
+        return { upserted, dead, agedOut, events: eventValues.length, eventsDropped };
       });
 
       return c.json({
@@ -401,6 +449,10 @@ export const daemonRoutes = new Hono<AppEnv>()
         truncated: body.window.truncated,
         upserted: result.upserted.length,
         dead: result.dead,
+        // Distinct from `dead` on purpose: one is a chat that died, the other
+        // is a chat we stopped watching. Collapsing them in the response would
+        // undo the distinction the sweep just made.
+        agedOut: result.agedOut,
         events: result.events,
         eventsDropped: result.eventsDropped,
         chats: result.upserted,

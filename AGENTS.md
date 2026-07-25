@@ -8,7 +8,7 @@ app reads/writes it; a reconciler daemon executes the machine-side work.
 > **Architecture note (V2, the only architecture):** the legacy Convex file-sync
 > engine (V1) was deleted at the cutover. If you find references to `convex/`,
 > `.hitch/tasks` markdown sync, device tokens, or "hitched folders" in old docs
-> or memories, they describe the dead V1 world — ignore them.
+> or memories, they describe the dead V1 world — flag them and ask if they should be deleted.
 
 ## Layout
 
@@ -44,7 +44,10 @@ app reads/writes it; a reconciler daemon executes the machine-side work.
   above: read its health strip first, because a stale snapshot makes every row
   below it fiction.
 - The server URL comes from `HITCH_SERVER_URL` in dev, or the baked
-  `app-config.json` (Railway prod) in a packaged build.
+  `app-config.json` (Railway prod) in a packaged build. **`npm run dev` defaults
+  to Railway prod** so dev testing matches the shipped experience — it only falls
+  back to that URL when `HITCH_SERVER_URL` is unset, so any explicit value still
+  wins. Use `npm run dev:local` (or `npm run dev:all`) for a local server.
 
 ---
 
@@ -96,3 +99,11 @@ docker compose down -v                       # wipe when done
 `scripts/dev-v2-stack.mjs` (`npm run dev:v2-stack`) brings the whole thing up for
 hand-driven curl; `daemon/scripts/v2-fake-loop.mjs` is the disposable acceptance
 check (the fake analogue of `daemon/scripts/v2-reconciler-real-machine.mjs`).
+
+
+---
+
+## Deployments / Dev principles
+- We're in early development. 
+- We only have one environment: production.
+- It's okay to deploy frequently to prod.

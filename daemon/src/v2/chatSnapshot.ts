@@ -118,15 +118,21 @@ export class ChatSnapshotSink {
       const body = (await res.json()) as {
         upserted?: number;
         dead?: number;
+        // Chats that left the window rather than died — the server clears their
+        // existence and keeps their status. Logged separately because reading
+        // "3 dead" for three chats that are alive and resumable is exactly the
+        // confusion this split exists to end.
+        agedOut?: number;
         events?: number;
         eventsDropped?: number;
         chats?: UpsertedChat[];
       };
       this.lastFingerprint = print;
       this.lastSentAt = this.now();
-      if ((body.dead ?? 0) > 0 || (body.eventsDropped ?? 0) > 0) {
+      if ((body.dead ?? 0) > 0 || (body.agedOut ?? 0) > 0 || (body.eventsDropped ?? 0) > 0) {
         this.logger.info(
           `[hitch] chat snapshot: ${body.upserted ?? 0} observed, ${body.dead ?? 0} dead, ` +
+            `${body.agedOut ?? 0} aged out, ` +
             `${body.events ?? 0} events (${body.eventsDropped ?? 0} dropped)`,
         );
       }

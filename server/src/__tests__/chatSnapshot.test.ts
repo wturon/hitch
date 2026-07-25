@@ -278,6 +278,66 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     expect(liveOnly.map((c: any) => c.sessionId)).toEqual(["sweep-c"]);
   });
 
+  it("clears existence but NOT status when a dormant chat ages out of the window", async () => {
+    const machine = await registerMachine(USER_A, "snapshot-aged-out");
+    const live = [
+      { harness: "claude", sessionId: "age-live", existence: "running", activity: "working" },
+      { harness: "claude", sessionId: "age-old", existence: "dormant", activity: "idle" },
+    ];
+    expect((await put(USER_A, machine.id, snapshot(live))).status).toBe(200);
+    const before = new Map((await chatsOf(USER_A, machine.id)).map((c) => [c.sessionId, c]));
+    expect(before.get("age-old").existence).toBe("dormant");
+
+    // age-old's transcript ages past the 24h window: the daemon simply stops
+    // reporting it. That is NOT a death — we stopped looking, and it is still
+    // resumable.
+    const res = await put(USER_A, machine.id, snapshot([live[0]]));
+    const body = await json(res);
+    expect(body.dead).toBe(0);
+    expect(body.agedOut).toBe(1);
+
+    const after = new Map((await chatsOf(USER_A, machine.id)).map((c) => [c.sessionId, c]));
+    // Existence is machine-owned, and the machine is no longer asserting it.
+    expect(after.get("age-old").existence).toBeNull();
+    // …but the verdict it carried is history, and history survives.
+    expect(after.get("age-old").status).toBe("idle");
+    // Never restamped: "last seen" must keep meaning the last real sighting,
+    // which is what lets a reader say "absent, last seen 46m ago".
+    expect(after.get("age-old").lastObservedAt).toBe(before.get("age-old").lastObservedAt);
+    // It stays resumable, so `live` still lists it — only `dead` is terminal.
+    const liveOnly = await json(
+      await api(USER_A, "GET", `/chats?machine_id=${machine.id}&live=true`),
+    );
+    expect(liveOnly.map((c: any) => c.sessionId).sort()).toEqual(["age-live", "age-old"]);
+
+    // And it does not re-clear on every later tick — one transition, then quiet.
+    const again = await json(await put(USER_A, machine.id, snapshot([live[0]])));
+    expect(again.agedOut).toBe(0);
+  });
+
+  it("resurrects an aged-out chat when its transcript re-enters the window", async () => {
+    const machine = await registerMachine(USER_A, "snapshot-resurrect");
+    const dormant = {
+      harness: "claude",
+      sessionId: "res-1",
+      existence: "dormant",
+      activity: "idle",
+    };
+    expect((await put(USER_A, machine.id, snapshot([dormant]))).status).toBe(200);
+    expect((await json(await put(USER_A, machine.id, snapshot([])))).agedOut).toBe(1);
+
+    // Resuming it pulls it back into the window (§5.3) — the row is the same
+    // row, and it simply starts carrying an existence again.
+    await put(
+      USER_A,
+      machine.id,
+      snapshot([{ ...dormant, existence: "running", activity: "working" }]),
+    );
+    const row = (await chatsOf(USER_A, machine.id)).find((c) => c.sessionId === "res-1");
+    expect(row.existence).toBe("running");
+    expect(row.status).toBe("busy");
+  });
+
   it("skips the death sweep entirely when the window is truncated", async () => {
     const machine = await registerMachine(USER_A, "snapshot-truncated");
     expect(
