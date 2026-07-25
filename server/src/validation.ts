@@ -4,6 +4,9 @@ import {
   assignmentDesiredState,
   assignmentObservedState,
   authorKind,
+  chatActivity,
+  chatBlock,
+  chatExistence,
   chatStatus,
   harness,
   taskStatus,
@@ -16,6 +19,9 @@ export const harnessSchema = z.enum(harness.enumValues);
 export const desiredStateSchema = z.enum(assignmentDesiredState.enumValues);
 export const observedStateSchema = z.enum(assignmentObservedState.enumValues);
 export const chatStatusSchema = z.enum(chatStatus.enumValues);
+export const chatExistenceSchema = z.enum(chatExistence.enumValues);
+export const chatActivitySchema = z.enum(chatActivity.enumValues);
+export const chatBlockSchema = z.enum(chatBlock.enumValues);
 
 // Timestamps cross the wire as ISO-8601 strings and land as Dates.
 const isoDate = () => z.iso.datetime({ offset: true }).transform((s) => new Date(s));
@@ -180,6 +186,10 @@ export const machineHeartbeat = z.strictObject({
 
 export const chatListQuery = z.object({ machine_id: z.uuid() });
 
+// LEGACY (still live). The running daemon creates/patches chats one at a time
+// with a REQUIRED cmuxRef and a self-decided status. Both endpoints stay until
+// the daemon moves to the snapshot PUT below; `cmuxRef` is kept as the wire
+// name and mapped onto the renamed `handle` column in routes/daemon.ts.
 export const chatCreate = z.strictObject({
   machineId: z.uuid(),
   projectId: z.uuid().nullable().optional(),
@@ -198,6 +208,80 @@ export const chatUpdate = z.strictObject({
   cmuxRef: z.json().optional(),
   status: chatStatusSchema.optional(),
   lastActivityAt: isoDate().optional(),
+});
+
+// --- chat snapshot (V3) ------------------------------------------------------
+// docs/chat-tracking-redesign.md §7. The whole working set every tick, each
+// chat carrying its own existence. Not strictObject: the daemon and server ship
+// separately, and a newer daemon adding a field must not 400 an older server.
+
+const chatSnapshotWindow = z.object({
+  since: isoDate(),
+  cap: z.number().int().nonnegative(),
+  // Coverage was incomplete — the server must NOT conclude anything from
+  // absence on this tick. Defaults false so an omitted flag means "complete",
+  // which matches §7's example payload.
+  truncated: z.boolean().default(false),
+});
+
+const chatSnapshotProcess = z.object({
+  pid: z.number().int(),
+  // Kernel start-time. Free-form epoch units (the daemon owns the clock); it is
+  // only ever compared against itself, so the server just stores it.
+  startedAt: z.number().int().nullable().optional(),
+});
+
+const chatSnapshotChat = z.object({
+  harness: harnessSchema,
+  sessionId: z.string().min(1),
+  cwd: z.string().nullable().optional(),
+  process: chatSnapshotProcess.nullable().optional(),
+  existence: chatExistenceSchema,
+  activity: chatActivitySchema,
+  // The daemon's current belief about the block, if it kept one across ticks.
+  // Relayed events below still win — they are applied after the upsert.
+  block: chatBlockSchema.nullable().optional(),
+  // §7 sends `source` alongside `evidence`; it is folded into the evidence
+  // jsonb so the Inspector has one place to read.
+  source: z.string().nullable().optional(),
+  evidence: z.json().optional(),
+  // Attachment 1 — the assignment this chat serves. Null for found chats.
+  task: z.uuid().nullable().optional(),
+  // Direct project attachment; wins over `task` when both are present.
+  projectId: z.uuid().nullable().optional(),
+  // Attachment 2 — focus/close handle. Always nullable.
+  handle: z.json().optional(),
+  // Not in §7: chats.title is NOT NULL, so a first sighting needs something.
+  // Omit it and the server derives a placeholder from cwd/sessionId; it is
+  // never overwritten with a placeholder once a real title exists.
+  title: z.string().min(1).optional(),
+});
+
+const chatSnapshotEvent = z.object({
+  sessionId: z.string().min(1),
+  // OPTIONAL, not required: §7's event object carries only a session id, and an
+  // older daemon must keep working. Supplied, it completes the natural key —
+  // without it the server resolves by session id alone and DROPS the event if
+  // more than one harness on this machine claims that id (never guesses).
+  harness: harnessSchema.optional(),
+  kind: z.string().min(1),
+  at: isoDate(),
+  payload: z.json().optional(),
+});
+
+export const chatSnapshot = z.object({
+  observedAt: isoDate(),
+  window: chatSnapshotWindow,
+  chats: z.array(chatSnapshotChat),
+  events: z.array(chatSnapshotEvent).default([]),
+});
+
+// --- chats (client-facing) ---------------------------------------------------
+
+export const chatClientListQuery = z.object({
+  machine_id: z.uuid().optional(),
+  // "true" → hide chats the machine has stopped seeing (status = dead).
+  live: z.enum(["true", "false"]).optional(),
 });
 
 // DAEMON-writable fields ONLY — the mirror image of assignmentClientUpdate.

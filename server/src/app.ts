@@ -5,6 +5,7 @@ import { createAuth } from "./auth.js";
 import type { AppEnv, AuthGateway, Db } from "./context.js";
 import { assignmentRoutes } from "./routes/assignments.js";
 import { attachmentRoutes } from "./routes/attachments.js";
+import { chatRoutes } from "./routes/chats.js";
 import { commentRoutes } from "./routes/comments.js";
 import { daemonRoutes } from "./routes/daemon.js";
 import { machineRoutes } from "./routes/machines.js";
@@ -48,6 +49,7 @@ export function createApp(db: Db, storage: Storage = createStorage(storageConfig
     .route("/comments", commentRoutes)
     .route("/attachments", attachmentRoutes)
     .route("/machines", machineRoutes)
+    .route("/chats", chatRoutes)
     .route("/assignments", assignmentRoutes)
     .route("/daemon", daemonRoutes);
 }
@@ -65,11 +67,23 @@ export type {
   WsServerMessage,
 } from "./ws.js";
 
+// The status function + its axis types (shared/ re-exports these) — consumers
+// render the axes, but only the server ever derives status from them.
+export {
+  deriveChatStatus,
+  type ChatActivity,
+  type ChatAxes,
+  type ChatBlock,
+  type ChatExistence,
+  type ChatStatus,
+} from "./chatStatus.js";
+
 // Row types for consumers (shared/ re-exports these).
 export type {
   Assignment,
   Attachment,
   Chat,
+  ChatEvent,
   Comment,
   Machine,
   Project,

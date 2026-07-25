@@ -12,6 +12,9 @@ export const TABLE_QUERY_KEYS: Record<string, readonly [string]> = {
   attachments: ["attachments"],
   assignments: ["assignments"],
   chats: ["chats"],
+  // Relayed hook events hang off a chat and are only ever read alongside one,
+  // so they invalidate the chat queries rather than owning a key.
+  chat_events: ["chats"],
   machines: ["machines"],
 };
 

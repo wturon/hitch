@@ -2,6 +2,7 @@ import {
   bigint,
   check,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -11,7 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
 
 // Schema v1 (CLOSED) — see docs/v2-prd.md "Schema v1". Conventions:
@@ -54,7 +55,26 @@ export const assignmentObservedState = pgEnum("assignment_observed_state", [
   "done",
   "dead",
 ]);
+// chat_status stays the rendered vocabulary, but under the V3 chat-tracking
+// design (docs/chat-tracking-redesign.md §3) it is SERVER-DERIVED from the
+// three axes below — see src/chatStatus.ts. The daemon reports; it never decides.
 export const chatStatus = pgEnum("chat_status", ["busy", "waiting_input", "idle", "dead"]);
+
+// Axis 1 — EXISTENCE. Owned by the machine (process table, keyed by
+// (pid, start-time)). Events may never write this. Null = no live observation
+// (either a legacy row, or one the absence sweep marked dead).
+export const chatExistence = pgEnum("chat_existence", ["running", "dormant", "pending"]);
+
+// Axis 2 — ACTIVITY. Owned by the machine (pidfile self-report, transcript
+// mtime delta). `unknown` resolves to idle, NEVER to working: idle beats
+// guessing working.
+export const chatActivity = pgEnum("chat_activity", ["working", "idle", "unknown"]);
+
+// Axis 3 — BLOCK. Owned by hook events, the only source that can see it.
+// Deliberately its own nullable column rather than a status value: a chat can
+// be working AND blocked, and collapsing them is what forced the old
+// "needs-input folds to working" comparison. Never outlives its process.
+export const chatBlock = pgEnum("chat_block", ["permission", "question"]);
 
 // ---------------------------------------------------------------------------
 // Intent tables (written by client/CLI)
@@ -170,6 +190,12 @@ export const machines = pgTable("machines", {
 });
 
 // Daemon-created; can exist task-free for ad-hoc chats. ALL columns daemon-written.
+//
+// V3 chat tracking (docs/chat-tracking-redesign.md): the natural key is
+// (machine_id, harness, session_id) — the harness's own session id — and the
+// observation columns (existence/activity/block/evidence) arrive as one
+// snapshot per tick via PUT /daemon/machines/:id/chat-snapshot. `status` is
+// derived from them on the server.
 export const chats = pgTable(
   "chats",
   {
@@ -181,7 +207,27 @@ export const chats = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     harness: harness("harness").notNull(),
     title: text("title").notNull(),
-    cmuxRef: jsonb("cmux_ref").notNull(),
+    // The harness's own session id: the transcript filename for Claude,
+    // session_meta.id for Codex. Nullable only for legacy rows written before
+    // the snapshot endpoint existed — everything new carries one.
+    sessionId: text("session_id"),
+    cwd: text("cwd"),
+    // Process identity, not just a pid: (pid, start-time) defeats PID reuse.
+    pid: integer("pid"),
+    processStartedAt: bigint("process_started_at", { mode: "number" }),
+    existence: chatExistence("existence"),
+    activity: chatActivity("activity"),
+    // Null means NOT blocked. Its own column on purpose — see chatBlock.
+    block: chatBlock("block"),
+    // What produced the observation: source, mtime age, cursor offsets, ...
+    // Read by the Chat Inspector; never interpreted by the status function.
+    evidence: jsonb("evidence"),
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    // Formerly cmux_ref, and NOT NULL — which structurally forbade a chat Hitch
+    // didn't launch through cmux. Now nullable "attachment 2": how to focus or
+    // close this chat, if we happen to know. A chat with no handle is a
+    // complete, correct chat (docs/chat-tracking-redesign.md §4).
+    handle: jsonb("handle"),
     status: chatStatus("status").notNull(),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -190,7 +236,33 @@ export const chats = pgTable(
   (t) => [
     index("chats_machine_id_idx").on(t.machineId),
     index("chats_project_id_idx").on(t.projectId),
+    // The natural key. Postgres treats NULLs as distinct, so the legacy rows
+    // with no session_id don't collide with each other or with anything new.
+    uniqueIndex("chats_machine_harness_session_unique").on(t.machineId, t.harness, t.sessionId),
   ],
+);
+
+// Hook events relayed verbatim by the daemon out of its spool dir. This is an
+// inbox landing zone, NOT a ledger: the server never derives existence or
+// activity from it. Its job is to carry `block` and to let the Chat Inspector
+// show WHY a chat is in a state, not just what state it is in.
+export const chatEvents = pgTable(
+  "chat_events",
+  {
+    id: id(),
+    chatId: uuid("chat_id")
+      .notNull()
+      .references(() => chats.id, { onDelete: "cascade" }),
+    // Freeform, not a pgEnum: the hook vocabulary versions faster than a
+    // migration should. "block.permission" / "block.question" / "block.clear"
+    // are the kinds the server acts on (see routes/daemon.ts).
+    kind: text("kind").notNull(),
+    // Producer-stamped observation time, not insert time.
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    payload: jsonb("payload"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("chat_events_chat_id_at_idx").on(t.chatId, desc(t.at))],
 );
 
 // One handoff of a task to an agent on a machine. Append-only; created by
@@ -289,5 +361,6 @@ export type TaskTag = typeof taskTags.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
 export type Machine = typeof machines.$inferSelect;
 export type Chat = typeof chats.$inferSelect;
+export type ChatEvent = typeof chatEvents.$inferSelect;
 export type Assignment = typeof assignments.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;

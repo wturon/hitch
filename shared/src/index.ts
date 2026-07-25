@@ -14,6 +14,7 @@ export type {
   Assignment,
   Attachment,
   Chat,
+  ChatEvent,
   Comment,
   Machine,
   Project,
@@ -21,6 +22,18 @@ export type {
   Tag,
   Task,
   TaskTag,
+} from "@hitch/server";
+
+// Chat observation axes + the status function (docs/chat-tracking-redesign.md
+// §3). `deriveChatStatus` is exported so consumers can *explain* a status, not
+// so they can compute one — the server is the only writer of chats.status.
+export { deriveChatStatus } from "@hitch/server";
+export type {
+  ChatActivity,
+  ChatAxes,
+  ChatBlock,
+  ChatExistence,
+  ChatStatus,
 } from "@hitch/server";
 
 // WS wire protocol for the /ws endpoint (invalidation broadcast + ephemeral
