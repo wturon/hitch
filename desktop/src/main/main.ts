@@ -132,17 +132,23 @@ function globalClaudeChatStatusHook(): string {
 function globalChatLifecycleHook(harness: Harness): string {
   return `#!/usr/bin/env node
 // Hitch user-level ${harness === "codex" ? "Codex" : "Claude Code"} lifecycle hook.
-// This hook is installed globally and must never interrupt the harness. It only
-// captures normalized lifecycle events into Hitch's local SQLite inbox.
+// This hook is installed globally and must never interrupt the harness.
+//
+// It writes ONE small JSON file into Hitch's spool directory and exits
+// (docs/chat-tracking-redesign.md §6). No database: no import of node:sqlite, no
+// DDL, no transaction, no lock, no bump file. The write itself is the daemon's
+// wake signal — it watches the spool dir. Written to a .tmp name and renamed, so
+// the daemon can never read a half-written file. Every failure is swallowed:
+// losing an event costs latency, never correctness (§5 — if every hook were
+// lost, status would still be right, just later).
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const HITCH_APP_SUPPORT_DIR = ${JSON.stringify(appSupportDir)};
-const HITCH_DB_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.sqlite";
-const HITCH_BUMP_PATH = HITCH_APP_SUPPORT_DIR + "/chat-lifecycle.bump";
+const HITCH_EVENTS_DIR = HITCH_APP_SUPPORT_DIR + "/events";
 const HITCH_CODEX_CMUX_CLAIMS_PATH = HITCH_APP_SUPPORT_DIR + "/codex-cmux-launch-claims.json";
 const HARNESS = ${JSON.stringify(harness)};
 const PRODUCER = ${JSON.stringify(harness === "codex" ? "codex-hook" : "claude-code-hook")};
@@ -411,98 +417,25 @@ function normalize(payload) {
   return event;
 }
 
-async function openDb() {
-  const { DatabaseSync } = await import("node:sqlite");
-  mkdirSync(dirname(HITCH_DB_PATH), { recursive: true });
-  const db = new DatabaseSync(HITCH_DB_PATH);
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA busy_timeout = 1000");
-  db.exec("PRAGMA foreign_keys = ON");
-  db.exec("BEGIN IMMEDIATE");
+// Append to the spool: one file per event, named <epochMs>-<6 hex>.json so a
+// lexical sort is chronological and two hooks firing in the same millisecond
+// can't collide. Write to .tmp first, then rename — rename is atomic within a
+// directory, so the daemon either sees the whole file or no file at all.
+function spoolEvent(event) {
   try {
-    db.exec(
-      "CREATE TABLE IF NOT EXISTS meta (" +
-        "key TEXT PRIMARY KEY," +
-        "value TEXT NOT NULL" +
-      ");" +
-      "CREATE TABLE IF NOT EXISTS chat_events (" +
-        "seq INTEGER PRIMARY KEY AUTOINCREMENT," +
-        "event_id TEXT NOT NULL UNIQUE," +
-        "schema_version INTEGER NOT NULL," +
-        "source TEXT NOT NULL," +
-        "producer TEXT NOT NULL," +
-        "harness TEXT NOT NULL," +
-        "provider_event TEXT NOT NULL," +
-        "lifecycle TEXT NOT NULL," +
-        "status TEXT," +
-        "project_id TEXT," +
-        "project_local_path TEXT," +
-        "chat_id TEXT," +
-        "launch_id TEXT," +
-        "turn_id TEXT," +
-        "cwd TEXT NOT NULL," +
-        "host TEXT NOT NULL," +
-        "observed_at INTEGER NOT NULL," +
-        "raw_payload_hash TEXT," +
-        "raw_payload_ref TEXT," +
-        "metadata_json TEXT NOT NULL DEFAULT '{}'," +
-        "reduced_at INTEGER" +
-      ");" +
-      "CREATE INDEX IF NOT EXISTS chat_events_by_reducer " +
-        "ON chat_events(seq) WHERE reduced_at IS NULL;" +
-      "CREATE INDEX IF NOT EXISTS chat_events_by_chat " +
-        "ON chat_events(harness, chat_id, seq);" +
-      "CREATE INDEX IF NOT EXISTS chat_events_by_launch " +
-        "ON chat_events(launch_id, seq);"
-    );
-    db.exec("COMMIT");
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
-  }
-  return db;
-}
-
-async function insertEvent(event) {
-  const db = await openDb();
-  try {
-    const result = db.prepare(
-      "INSERT OR IGNORE INTO chat_events (" +
-        "event_id, schema_version, source, producer, harness, provider_event, " +
-        "lifecycle, status, project_id, project_local_path, chat_id, launch_id, " +
-        "turn_id, cwd, host, observed_at, raw_payload_hash, raw_payload_ref, metadata_json" +
-      ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(
-      event.eventId,
-      event.schemaVersion,
-      event.source,
-      event.producer,
-      event.harness,
-      event.providerEvent,
-      event.lifecycle,
-      event.status,
-      event.projectId,
-      event.projectLocalPath,
-      event.chatId,
-      event.launchId,
-      event.turnId,
-      event.cwd,
-      event.host,
-      event.observedAt,
-      event.rawPayloadHash,
-      event.rawPayloadRef,
-      JSON.stringify(event.metadata || {})
-    );
-    if (Number(result.changes) > 0) {
-      mkdirSync(dirname(HITCH_BUMP_PATH), { recursive: true });
-      writeFileSync(HITCH_BUMP_PATH, String(result.lastInsertRowid) + "\\n", "utf8");
-    }
-  } finally {
-    db.close();
+    mkdirSync(HITCH_EVENTS_DIR, { recursive: true });
+    const name = String(event.observedAt) + "-" + randomBytes(3).toString("hex");
+    const target = join(HITCH_EVENTS_DIR, name + ".json");
+    const tmp = join(HITCH_EVENTS_DIR, name + ".tmp");
+    writeFileSync(tmp, JSON.stringify(event) + "\\n", "utf8");
+    renameSync(tmp, target);
+  } catch {
+    // The spool is best-effort by design. A missing event costs latency, not
+    // correctness — the daemon re-derives every chat from the machine anyway.
   }
 }
 
-async function main() {
+function main() {
   let payload;
   try {
     payload = JSON.parse(readStdin() || "{}");
@@ -512,13 +445,15 @@ async function main() {
 
   const event = normalize(payload);
   if (event) {
-    await insertEvent(event);
+    spoolEvent(event);
   }
 }
 
-main().catch(() => {
+try {
+  main();
+} catch {
   // Never let a hook error interrupt the session.
-});
+}
 `;
 }
 

@@ -236,7 +236,9 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
     server cursor). Fix: relay only chats it can represent — an `isRepresentable` guard skips a
     non-UUID-projectId row before the wire, and any non-retryable 4xx (400/409/422) marks-synced-
     and-skips permanently. Pinned by `smoke:v2-chat-legacy-skip` (zero repeated 400s across two
-    rounds + a restart).
+    rounds + a restart). *(Historical: `chatSync.ts` and both guards were deleted in the V3
+    chat-tracking rework — the daemon now PUTs one snapshot per tick, which has no cursor to drift
+    and nothing to storm. See `docs/chat-tracking-redesign.md`.)*
   - **In-session sign-in now starts the daemon** via the existing seam (`onSignIn`→`restartDaemon`,
     idempotent; `onSignOut`→`stopDaemon`), instead of only on next boot.
   - **Reconnect trio**: on every WS re-connect the daemon re-registers (idempotent upsert) +

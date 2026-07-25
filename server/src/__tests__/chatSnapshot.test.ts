@@ -620,7 +620,9 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     // The daemon reads `cmuxRef` off every chat it gets back — keep echoing it.
     expect(chat.cmuxRef).toEqual({ localKey: "chat:claude-code:h:abc", sessionId: "abc" });
     expect(chat.handle).toEqual(chat.cmuxRef);
-    expect(chat.sessionId).toBeNull();
+    // TRANSITIONAL: the legacy route lifts the session id out of the ref so the
+    // legacy writer and the snapshot writer converge on ONE row (see below).
+    expect(chat.sessionId).toBe("abc");
 
     const patched = await json(
       await api(USER_A, "PATCH", `/daemon/chats/${chat.id}`, {
@@ -643,5 +645,121 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
       status: "busy",
     });
     expect(second.status).toBe(201);
+    const third = await api(USER_A, "POST", "/daemon/chats", {
+      machineId: machine.id,
+      harness: "claude",
+      title: "legacy chat 3",
+      cmuxRef: { localKey: "no-session" },
+      status: "busy",
+    });
+    expect(third.status).toBe(201);
+  });
+
+  // TRANSITIONAL, and the reason the legacy routes lift `cmuxRef.sessionId`.
+  // During the changeover the daemon still CREATES chats through the legacy
+  // POST while ALSO PUTting snapshots. If the legacy row carried no session id,
+  // the snapshot's upsert on (machine, harness, session) would have nothing to
+  // collide with and one chat would become two rows. Delete this test with the
+  // legacy routes.
+  it("converges the legacy POST/PATCH and the snapshot PUT on ONE row per session", async () => {
+    const machine = await registerMachine(USER_A, "legacy-convergence");
+
+    // 1. Claude: the reconciler POSTs with the session id already known.
+    const created = await json(
+      await api(USER_A, "POST", "/daemon/chats", {
+        machineId: machine.id,
+        harness: "claude",
+        title: "delegated task",
+        cmuxRef: { localKey: "chat:claude-code:h:sess-1", sessionId: "sess-1" },
+        status: "busy",
+      }),
+    );
+    expect(created.sessionId).toBe("sess-1");
+
+    // 2. The observer discovers the very same session and snapshots it.
+    expect(
+      (
+        await put(
+          USER_A,
+          machine.id,
+          snapshot([
+            { harness: "claude", sessionId: "sess-1", existence: "running", activity: "working" },
+          ]),
+        )
+      ).status,
+    ).toBe(200);
+
+    const rows = (await chatsOf(USER_A, machine.id)).filter((c) => c.sessionId === "sess-1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(created.id);
+    // The snapshot owns the axes; the legacy POST's title and handle survive.
+    expect(rows[0].status).toBe("busy");
+    expect(rows[0].existence).toBe("running");
+    expect(rows[0].title).toBe("delegated task");
+    expect(rows[0].handle).toEqual({ localKey: "chat:claude-code:h:sess-1", sessionId: "sess-1" });
+
+    // 3. A re-POST for the same session updates rather than 500ing on the index.
+    const reposted = await api(USER_A, "POST", "/daemon/chats", {
+      machineId: machine.id,
+      harness: "claude",
+      title: "delegated task (respawn)",
+      cmuxRef: { localKey: "chat:claude-code:h:sess-1", sessionId: "sess-1" },
+      status: "busy",
+    });
+    expect(reposted.status).toBe(201);
+    expect((await json(reposted)).id).toBe(created.id);
+
+    // 4. Codex: the thread id is only known mid-launch, so the row is created
+    //    session-less and PATCHed once the hook binds it.
+    const codex = await json(
+      await api(USER_A, "POST", "/daemon/chats", {
+        machineId: machine.id,
+        harness: "codex",
+        title: "codex task",
+        cmuxRef: { localKey: "launch:l1", launchId: "l1", sessionId: null },
+        status: "busy",
+      }),
+    );
+    expect(codex.sessionId).toBeNull();
+    await api(USER_A, "PATCH", `/daemon/chats/${codex.id}`, {
+      cmuxRef: { localKey: "chat:codex:h:thread-1", sessionId: "thread-1", launchId: "l1" },
+    });
+    expect(
+      (
+        await put(
+          USER_A,
+          machine.id,
+          snapshot([
+            { harness: "claude", sessionId: "sess-1", existence: "running", activity: "working" },
+            { harness: "codex", sessionId: "thread-1", existence: "running", activity: "idle" },
+          ]),
+        )
+      ).status,
+    ).toBe(200);
+    const codexRows = (await chatsOf(USER_A, machine.id)).filter(
+      (c) => c.sessionId === "thread-1",
+    );
+    expect(codexRows).toHaveLength(1);
+    expect(codexRows[0].id).toBe(codex.id);
+
+    // 5. And a PATCH that WOULD collide with a row the snapshot already owns
+    //    leaves session_id alone instead of blowing up on the unique index.
+    const orphan = await json(
+      await api(USER_A, "POST", "/daemon/chats", {
+        machineId: machine.id,
+        harness: "codex",
+        title: "second launch",
+        cmuxRef: { localKey: "launch:l2", launchId: "l2" },
+        status: "busy",
+      }),
+    );
+    const clashing = await api(USER_A, "PATCH", `/daemon/chats/${orphan.id}`, {
+      cmuxRef: { localKey: "chat:codex:h:thread-1", sessionId: "thread-1" },
+    });
+    expect(clashing.status).toBe(200);
+    expect((await json(clashing)).sessionId).toBeNull();
+    expect(
+      (await chatsOf(USER_A, machine.id)).filter((c) => c.sessionId === "thread-1"),
+    ).toHaveLength(1);
   });
 });

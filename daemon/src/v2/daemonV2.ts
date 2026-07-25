@@ -18,13 +18,15 @@ import dotenv from "dotenv";
 
 import { openChatLifecycleStore } from "../chatLifecycleStore.js";
 import { setCmuxLogger, setCmuxTraceSink } from "../cmux.js";
-import { ChatStateObserver } from "../observer/index.js";
-import { ChatSync } from "./chatSync.js";
+import { ChatObserver } from "../observer/index.js";
+import { resolveSpoolPaths } from "../observer/spool.js";
+import { ChatSnapshotSink } from "./chatSnapshot.js";
 import { resolveServerConfig } from "./config.js";
 import { createFakeLaunchers, isFakeLaunch } from "./fakeLauncher.js";
 import { createFocusHandler } from "./focus.js";
 import { ProjectsProvider } from "./projects.js";
 import { Reconciler } from "./reconciler.js";
+import { ReconcilerBridge } from "./reconcilerBridge.js";
 import { createServerClient } from "./serverClient.js";
 import { startServerWs, type ServerWsClient } from "./ws.js";
 
@@ -53,12 +55,6 @@ const defaultLogger: HitchDaemonV2Logger = {
 // 30s heartbeat by default (PRD reconcile cadence). Overridable so the
 // integration test can watch last_seen_at advance without waiting.
 const DEFAULT_HEARTBEAT_MS = 30_000;
-
-// Chat-relay cadence: drain the reducer and push server-dirty chats to the
-// server. Mirrors daemon.ts's 2s chat reduce/sync poll. The observer drives its
-// own adaptive cadence (fast while a chat is active); this poll is the sink's
-// floor for carrying its output to the server.
-const RELAY_POLL_MS = 2_000;
 
 function loadEnvFiles(cwd: string, envFiles: string[], env: NodeJS.ProcessEnv): void {
   for (const file of envFiles) {
@@ -166,14 +162,18 @@ export async function startHitchDaemonV2(
   // The focus event handler (PR 6) is wired after the fake-launch decision
   // below, so fake mode can log instead of shelling to a cmux that isn't there.
 
-  // --- Chat-state relay (PR 2) ----------------------------------------------
-  // Mirrors daemon.ts: a machine-wide chat-state observer writes discovered
-  // chat state into the shared store's shadow columns, a reduce loop folds any
-  // lifecycle events (e.g. the observer's dead-process heal), and the V2 sink
-  // pushes server-dirty chats to the Hono server. The store is the SAME sqlite
-  // file V1 uses — the server_synced_at cursor (Decision 7) keeps the two sinks
-  // from contending.
+  // --- Chat observation (V3: snapshot, not deltas) --------------------------
+  // docs/chat-tracking-redesign.md. The observer derives the WHOLE working set
+  // from the machine every tick and PUTs it to /daemon/machines/:id/chat-snapshot;
+  // the server derives status and treats absence as death. There is no local
+  // chat model, no event ledger and no reducer in that path — hooks write JSON
+  // files into a spool dir, the observer drains them, and cursors.json is the
+  // only persistent local state.
+  //
+  // The sqlite store is still opened, but ONLY for the reconciler's own launch
+  // bookkeeping and the cmux trace (see chatLifecycleStore.ts's header).
   const store = openChatLifecycleStore({ env });
+  const spoolPaths = resolveSpoolPaths(env);
 
   // The observer maps a chat's cwd → project via the server's repo_path-bearing
   // projects. Fetch once up front so the initial reconcile has a project map,
@@ -188,48 +188,24 @@ export async function startHitchDaemonV2(
   setCmuxLogger(logger);
   setCmuxTraceSink((event) => store.appendCmuxTrace(event));
 
-  const observer = new ChatStateObserver({
-    store,
+  const snapshotSink = new ChatSnapshotSink({ client, machineId, logger });
+  // TRANSITIONAL (Phase D deletes it): the reconciler still reads an
+  // assignment's progress off the LOCAL chat row, which the deleted reducer
+  // used to maintain. This adapter carries the snapshot back into those rows so
+  // the delegate loop keeps working, without the observer knowing anything
+  // about launches or the store. See reconcilerBridge.ts.
+  const reconcilerBridge = new ReconcilerBridge({ store, host: name });
+  const observer = new ChatObserver({
+    paths: spoolPaths,
     projects: projects.list,
     host: name,
     logger,
+    publish: async (snapshot) => {
+      reconcilerBridge.apply(snapshot);
+      await snapshotSink.put(snapshot);
+    },
   });
   observer.start();
-
-  const chatSync = new ChatSync({ store, client, machineId, logger });
-
-  let relaying = false;
-  async function relayTick(): Promise<void> {
-    if (relaying) return;
-    relaying = true;
-    try {
-      // Drain the reducer (events → local_chats) before syncing, so a healed
-      // chat's session.ended is reflected in the row we push.
-      for (;;) {
-        const result = store.reduceLifecycleEvents();
-        if (result.eventsReduced < 100) break;
-      }
-      const synced = await chatSync.sync();
-      if (
-        synced.created > 0 ||
-        synced.updated > 0 ||
-        synced.failed > 0 ||
-        synced.skipped > 0
-      ) {
-        logger.info(
-          `[hitch] chat relay: ${synced.created} created, ${synced.updated} updated, ` +
-            `${synced.failed} failed, ${synced.skipped} skipped`,
-        );
-      }
-    } catch (error) {
-      logger.error?.(`[hitch] chat relay tick failed: ${String(error)}`);
-    } finally {
-      relaying = false;
-    }
-  }
-  void relayTick();
-  const relayTimer = setInterval(() => void relayTick(), RELAY_POLL_MS);
-  relayTimer.unref?.();
 
   // --- Reconciler (PR 3) ----------------------------------------------------
   // Diffs desired vs ground truth and executes spawn/close/observe, writing
@@ -291,8 +267,10 @@ export async function startHitchDaemonV2(
   //      delegate bar sees us online without waiting for the next heartbeat).
   //   2. RECONCILE from scratch (reconciler.trigger) — re-diff desired vs truth,
   //      catching any assignment changes whose invalidations we missed.
-  //   3. RESYNC chats (relayTick) — re-push any server-dirty chat state the
-  //      server may not have (or may have lost).
+  //   3. RE-PUT the chat snapshot (observer.runOnce) — the snapshot is
+  //      self-healing by construction, but sending one immediately means the
+  //      server's picture is right within milliseconds of reconnecting rather
+  //      than at the next tick.
   async function reregister(reason: string): Promise<void> {
     try {
       const res = await client.daemon.machines.$post({
@@ -324,7 +302,7 @@ export async function startHitchDaemonV2(
     void (async () => {
       await reregister("ws-reconnect");
       reconciler.trigger("ws-reconnect");
-      void relayTick();
+      void observer.runOnce("ws-reconnect");
     })();
   });
   reconciler.start();
@@ -336,7 +314,6 @@ export async function startHitchDaemonV2(
     reconciler.stop();
     fakeLaunch?.stop();
     clearInterval(heartbeat);
-    clearInterval(relayTimer);
     ws.stop();
     await observer.stop();
     store.close();

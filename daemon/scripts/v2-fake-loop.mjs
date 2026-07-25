@@ -210,8 +210,18 @@ try {
     return a && a.observedState === "waiting_input" ? a : undefined;
   }, { timeoutMs: 30_000 });
   check("8. fake turn completed → waiting_input landed (zero real spawns)");
-  check("9. server chat row reached waiting_input", chatStateLog.includes("waiting_input"),
-    `chat.status transcript: ${chatStateLog.join(" → ")}`);
+  // The server chat row's STATUS is no longer written by the launch path. Since
+  // the V3 rework it comes from the chat snapshot the observer PUTs — and a
+  // fake session has no pidfile, no transcript and no thread, so the observer
+  // correctly never sees it (that is the same "heal-proof by construction"
+  // property this harness has always relied on, read from the other side). So
+  // what we assert here is that the row survives untouched: no phantom
+  // observation, and crucially no death sweep against a chat the machine can't
+  // see. The ASSIGNMENT loop above is the thing the product depends on.
+  const midChat = await chatStatus(machine.id, running.chatId);
+  check("9. server chat row survives, unobserved (status is snapshot-owned now)",
+    Boolean(midChat) && midChat.status === "busy" && midChat.existence == null,
+    `status=${midChat?.status} existence=${String(midChat?.existence)}`);
 
   await api("PATCH", `/assignments/${assignmentId}`, { desiredState: "stopped" });
   log("  patched desired=stopped");
@@ -222,13 +232,15 @@ try {
   }, { timeoutMs: 20_000 });
   check("10. desired=stopped → observed=done");
 
-  // The server chat settled to dead via the fake session.ended.
-  await waitFor("chat.status=dead", async () => {
-    const c = await chatStatus(machine.id, running.chatId);
-    return c && c.status === "dead" ? c : undefined;
-  }, { timeoutMs: 15_000 });
-  check("11. server chat row reached dead", chatStateLog.includes("dead"),
-    `chat.status transcript: ${chatStateLog.join(" → ")}`);
+  // Same story at the end: `dead` used to be relayed from the fake
+  // `session.ended`; it is now a conclusion the SERVER draws from a chat's
+  // absence in a snapshot that covers it. A fake session is never covered, so
+  // the row stays as it was — and the assignment still settles to `done`, which
+  // is what closes the loop for the product.
+  const endChat = await chatStatus(machine.id, running.chatId);
+  check("11. server chat row still intact after close (no phantom sweep)",
+    Boolean(endChat) && endChat.status !== "dead",
+    `status=${endChat?.status}`);
 
   // `spawning` is written by the daemon (onLinked → patchAssignment "spawning")
   // but collapses to `running` within one serialized reconcile burst, so a

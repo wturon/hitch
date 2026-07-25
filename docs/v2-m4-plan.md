@@ -121,6 +121,9 @@ review items + the hardening pass:
   backstop marks-synced-and-skips on any non-retryable 4xx (400/409/422; 401/403/408/429 stay
   retryable, 404 keeps its recreate path). A 400 can never storm again. Verified by
   `smoke:v2-chat-legacy-skip` (zero repeated 400s across two rounds + a restart).
+  *(Historical: `chatSync.ts`, the dirty cursor and both guards were deleted in the V3 chat-tracking
+  rework — one snapshot PUT has no cursor to drift and nothing to storm. See
+  `docs/chat-tracking-redesign.md`.)*
 - **In-session sign-in didn't start the daemon.** A fresh V2 sign-in only started the daemon
   on the NEXT app boot (boot-time `startDaemon` sees no creds → idle). Fix in the sanctioned
   seam: `hitchServer.completeSignIn` now calls a new `onSignIn` dep after minting the key;

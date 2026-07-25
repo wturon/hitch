@@ -1,5 +1,14 @@
 # Chat Lifecycle Contract
 
+> **SUPERSEDED — historical.** `docs/chat-tracking-redesign.md` replaced this
+> model. The local SQLite inbox (`chat_events`, the reducer, the bump file,
+> `local_chats` as a status model) is **gone**: hooks now write one JSON file
+> into a spool directory, the daemon drains it, and status is derived on the
+> server from three axes it PUTs in a snapshot. What survives from this document
+> is the hook payload normalization (the same `chatId`/`metadata` extraction) and
+> the fire-and-forget "never block the harness" rule. Read it for the hook
+> vocabulary and the fixtures, not for the storage or status model.
+
 This is the Part A contract for the Chats lifecycle work. It turns the current
 hook-to-frontmatter behavior into an event producer contract that later tasks can
 implement without changing the product model again.

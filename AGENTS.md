@@ -20,8 +20,14 @@ app reads/writes it; a reconciler daemon executes the machine-side work.
 - `daemon/` — a **pure reconciler** (`src/index.ts` via `tsx`; `src/v2/`): it
   reacts to the server (WS push + ~30s tick), diffs desired vs. machine ground
   truth (cmux/processes), spawns/resumes/closes agent chats via the cmux
-  launchers, and writes back ONLY observations. Chat lifecycle lives in
-  `src/observer/` + the shared sqlite store; it holds no business state.
+  launchers, and writes back ONLY observations. Chat tracking lives in
+  `src/observer/`: every tick it derives the WHOLE working set from the machine
+  (Claude pidfiles, Codex's thread catalog, the process table) and PUTs it to
+  `/daemon/machines/:id/chat-snapshot` — a chat missing from the snapshot is no
+  longer live, which is the entire heal path. It keeps **no chat model**: hooks
+  drop JSON files into `<appSupport>/events/` (drained and deleted), and
+  `cursors.json` is the only persistent local state, disposable by design. See
+  `docs/chat-tracking-redesign.md`.
 - `desktop/` — Electron app. Renderer entry `src/renderer/main.tsx` mounts
   `src/renderer/v2/AppV2.tsx`; the main process (`src/main/`) holds auth (api key
   minted after sign-in) and the server WebSocket. Reads/writes the server only.
@@ -60,11 +66,12 @@ to a scratch task you create and delete.
 The reconcile loop (delegate → chat → done) can be exercised with **no cmux and
 no agent binary** by running the daemon under `HITCH_FAKE_LAUNCH=1`: it swaps the
 real launchers for cmux-less stand-ins that script the chat lifecycle
-(bound→working, then a completed turn→`waiting_input`, then `session.ended` on
-close) straight into the shared store. Point the store at a scratch dir with
+(bound→working, then a completed turn→`waiting_input`, then ended on close)
+straight into the reconciler's store rows. Point the store at a scratch dir with
 `HITCH_APP_SUPPORT_DIR` so it never touches the real `chat-lifecycle.sqlite`.
-Fake sessions write no transcript/pidfile, so the observer's dead-process heal
-can never touch them (heal-proof by construction). Knobs:
+Fake sessions write no transcript/pidfile/thread, so the chat observer never
+discovers them and can never contradict the script (heal-proof by
+construction). Knobs:
 `HITCH_FAKE_LAUNCH_DELAY_MS` (bind→turn delay), `HITCH_RECONCILE_MS`.
 
 ```sh
