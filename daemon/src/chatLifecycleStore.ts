@@ -184,10 +184,6 @@ export interface CmuxTraceInput {
   message: string | null;
 }
 
-export interface CmuxTraceRow extends CmuxTraceInput {
-  seq: number;
-}
-
 export interface ChatLifecyclePaths {
   appSupportDir: string;
   databasePath: string;
@@ -203,12 +199,8 @@ export interface ChatLifecycleStoreOptions {
 
 const SCHEMA_VERSION = 1;
 const REDUCER_CURSOR_KEY = "reducer_cursor";
-const DEFAULT_REDUCED_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-// cmux trace is high-volume debug data, so it ages out faster than lifecycle
-// events (time-based pruneCmuxTrace), AND is hard-capped by row count on write.
-// The row cap is what bounds the table while the debug screen polls an idle
-// project — pruneCmuxTrace only runs on the reduce cycle, which may not fire.
-const DEFAULT_CMUX_TRACE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+// cmux trace is high-volume debug data, so it is hard-capped by row count on
+// write. The row cap is what bounds the table.
 const CMUX_TRACE_MAX_ROWS = 5000;
 // How often (in writes) to enforce the row cap, so we don't run a DELETE on
 // every single cmux call.
@@ -271,24 +263,6 @@ function jsonObject(value: string): Record<string, unknown> {
 
 function booleanInt(value: boolean | undefined, fallback: boolean): number {
   return value ?? fallback ? 1 : 0;
-}
-
-function cmuxTraceFromRow(row: unknown): CmuxTraceRow {
-  const v = row as Record<string, unknown>;
-  const argsJson = v.args_json;
-  return {
-    seq: numberFromSqlite(v.seq),
-    ts: numberFromSqlite(v.ts),
-    chatId: (v.chat_id as string | null) ?? null,
-    launchId: (v.launch_id as string | null) ?? null,
-    kind: v.kind as CmuxTraceInput["kind"],
-    command: (v.command as string | null) ?? null,
-    args: typeof argsJson === "string" ? (JSON.parse(argsJson) as string[]) : null,
-    durationMs: v.duration_ms === null ? null : numberFromSqlite(v.duration_ms),
-    ok: v.ok === null ? null : bool(v.ok),
-    errorCode: (v.error_code as string | null) ?? null,
-    message: (v.message as string | null) ?? null,
-  };
 }
 
 function bool(value: unknown): boolean {
@@ -396,37 +370,11 @@ export class ChatLifecycleStore {
       .map((row) => this.eventFromRow(row));
   }
 
-  readUnreducedEvents(limit = 100): ChatLifecycleEventRow[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM chat_events
-         WHERE reduced_at IS NULL
-         ORDER BY seq ASC
-         LIMIT ?`,
-      )
-      .all(limit)
-      .map((row) => this.eventFromRow(row));
-  }
-
-  markEventsReduced(seqs: number[], reducedAt = Date.now()): void {
-    if (seqs.length === 0) return;
-    runInTransaction(this.db, () => {
-      const stmt = this.db.prepare(
-        "UPDATE chat_events SET reduced_at = ? WHERE seq = ?",
-      );
-      for (const seq of seqs) stmt.run(reducedAt, seq);
-    });
-  }
-
   getReducerCursor(): number {
     const row = this.db
       .prepare("SELECT value FROM meta WHERE key = ?")
       .get(REDUCER_CURSOR_KEY) as { value?: string } | undefined;
     return row?.value ? Number(row.value) : 0;
-  }
-
-  setReducerCursor(cursor: number): void {
-    this.setMeta(REDUCER_CURSOR_KEY, String(cursor));
   }
 
   getMeta(key: string): string | null {
@@ -530,22 +478,6 @@ export class ChatLifecycleStore {
     return row ? this.localChatFromRow(row) : null;
   }
 
-  // cmux-environment chats for the debug screen, newest activity first. Scoped
-  // to a project when given (matches the rest of the app's project context),
-  // or all cmux chats when null.
-  listCmuxChats(projectId: string | null, limit = 200): LocalChatRow[] {
-    const base = `SELECT * FROM local_chats
-         WHERE environment = 'cmux'
-           AND deleted_at IS NULL`;
-    const stmt = projectId
-      ? this.db.prepare(
-          `${base} AND project_id = ? ORDER BY last_event_at DESC LIMIT ?`,
-        )
-      : this.db.prepare(`${base} ORDER BY last_event_at DESC LIMIT ?`);
-    const rows = projectId ? stmt.all(projectId, limit) : stmt.all(limit);
-    return rows.map((row) => this.localChatFromRow(row));
-  }
-
   // Event-backed chats on this host that hitch currently believes are live
   // (working/needs-input/waiting) — the candidates the observer's reconcile floor
   // checks for a dead process to heal a "stuck" status. Excludes observer-created
@@ -570,42 +502,6 @@ export class ChatLifecycleStore {
       )
       .all(harness, host, limit)
       .map((row) => this.localChatFromRow(row));
-  }
-
-  listChatsForTitleRefresh(
-    projectId: string,
-    harness: ChatLifecycleHarness,
-    limit = 20,
-  ): LocalChatRow[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM local_chats
-         WHERE project_id = ?
-           AND harness = ?
-           AND chat_id IS NOT NULL
-           AND deleted_at IS NULL
-         ORDER BY updated_at DESC
-         LIMIT ?`,
-      )
-      .all(projectId, harness, limit)
-      .map((row) => this.localChatFromRow(row));
-  }
-
-  updateChatTitle(localKey: string, title: string, updatedAt = Date.now()): boolean {
-    const existing = this.getLocalChat(localKey);
-    if (!existing) return false;
-    const normalized = normalizeChatTitle(title, existing.harness);
-    if (existing.title === normalized) return false;
-
-    const result = this.db
-      .prepare(
-        `UPDATE local_chats
-         SET title = ?,
-             updated_at = ?
-         WHERE local_key = ?`,
-      )
-      .run(normalized, updatedAt, localKey);
-    return numberFromSqlite(result.changes) > 0;
   }
 
   // --- Server sink (Decision 7) ----------------------------------------------
@@ -643,22 +539,6 @@ export class ChatLifecycleStore {
       .run(options.syncedAt ?? Date.now(), options.serverChatId ?? null, localKey);
   }
 
-  cleanupReducedEvents(
-    options: { now?: number; retentionMs?: number } = {},
-  ): number {
-    const cutoff =
-      (options.now ?? Date.now()) -
-      (options.retentionMs ?? DEFAULT_REDUCED_EVENT_RETENTION_MS);
-    const result = this.db
-      .prepare(
-        `DELETE FROM chat_events
-         WHERE reduced_at IS NOT NULL
-           AND reduced_at < ?`,
-      )
-      .run(cutoff);
-    return numberFromSqlite(result.changes);
-  }
-
   appendCmuxTrace(event: CmuxTraceInput): void {
     this.db
       .prepare(
@@ -690,8 +570,7 @@ export class ChatLifecycleStore {
 
     // Hard row cap, enforced periodically: delete everything older than the
     // newest CMUX_TRACE_MAX_ROWS. The OFFSET subquery yields the cutoff seq (or
-    // nothing when under the cap, in which case `<= NULL` deletes nothing). This
-    // bounds the table independent of the time-based prune.
+    // nothing when under the cap, in which case `<= NULL` deletes nothing).
     if (++this.cmuxTraceWrites % CMUX_TRACE_CAP_EVERY === 0) {
       this.db
         .prepare(
@@ -702,41 +581,6 @@ export class ChatLifecycleStore {
         )
         .run(CMUX_TRACE_MAX_ROWS);
     }
-  }
-
-  // Most-recent trace rows, newest first. With no filter this is the global
-  // firehose; pass chatId and/or launchId to scope to one chat (OR-matched, so a
-  // codex chat's launch-time rows surface alongside its post-bind rows).
-  readCmuxTrace(
-    filter: { chatId?: string | null; launchId?: string | null } = {},
-    limit = 500,
-  ): CmuxTraceRow[] {
-    const clauses: string[] = [];
-    const params: Array<string | number> = [];
-    if (filter.chatId) {
-      clauses.push("chat_id = ?");
-      params.push(filter.chatId);
-    }
-    if (filter.launchId) {
-      clauses.push("launch_id = ?");
-      params.push(filter.launchId);
-    }
-    const where = clauses.length ? `WHERE ${clauses.join(" OR ")}` : "";
-    params.push(limit);
-    return this.db
-      .prepare(`SELECT * FROM cmux_trace ${where} ORDER BY seq DESC LIMIT ?`)
-      .all(...params)
-      .map((row) => cmuxTraceFromRow(row));
-  }
-
-  pruneCmuxTrace(options: { now?: number; retentionMs?: number } = {}): number {
-    const cutoff =
-      (options.now ?? Date.now()) -
-      (options.retentionMs ?? DEFAULT_CMUX_TRACE_RETENTION_MS);
-    const result = this.db
-      .prepare(`DELETE FROM cmux_trace WHERE ts < ?`)
-      .run(cutoff);
-    return numberFromSqlite(result.changes);
   }
 
   private configure(): void {

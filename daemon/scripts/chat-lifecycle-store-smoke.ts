@@ -124,15 +124,6 @@ try {
   assert.equal(events.length, 2);
   assert.equal(events[0]?.metadata.toolName, "shell");
 
-  store.setReducerCursor(second.seq!);
-  assert.equal(store.getReducerCursor(), second.seq);
-
-  store.markEventsReduced(
-    events.map((event) => event.seq),
-    now - 8 * 24 * 60 * 60 * 1000,
-  );
-  assert.equal(store.readUnreducedEvents().length, 0);
-
   store.upsertLocalChat({
     localKey: "chat:codex:host-1:chat-1",
     projectId: "project-1",
@@ -166,40 +157,6 @@ try {
     store.getLocalChat("chat:codex:host-1:chat-1")?.serverChatId,
     "srv-chat-1",
   );
-
-  const codexChats = store.listChatsForTitleRefresh("project-1", "codex");
-  assert.equal(codexChats.length, 1);
-  assert.equal(codexChats[0]?.chatId, "chat-1");
-  // A title change bumps updated_at → the row is server-dirty again, but the
-  // stored serverChatId mapping survives the re-dirty.
-  assert.equal(
-    store.updateChatTitle(
-      "chat:codex:host-1:chat-1",
-      "Generated Codex title",
-      now + 3,
-    ),
-    true,
-  );
-  assert.equal(
-    store.getLocalChat("chat:codex:host-1:chat-1")?.title,
-    "Generated Codex title",
-  );
-  assert.equal(store.listServerDirtyChats().length, 1);
-  assert.equal(
-    store.getLocalChat("chat:codex:host-1:chat-1")?.serverChatId,
-    "srv-chat-1",
-  );
-  // Re-typing the same title is a no-op (no updated_at bump).
-  assert.equal(
-    store.updateChatTitle(
-      "chat:codex:host-1:chat-1",
-      "Generated Codex title",
-      now + 4,
-    ),
-    false,
-  );
-  store.markChatServerSynced("chat:codex:host-1:chat-1", { syncedAt: now + 3 });
-  assert.equal(store.listServerDirtyChats().length, 0);
 
   store.upsertLocalChat({
     localKey: "launch:launch-1",
@@ -248,10 +205,6 @@ try {
   assert.equal(boundChat?.launchId, "launch-1");
   assert.equal(boundChat?.chatId, "session-1");
   assert.equal(boundChat?.pending, false);
-
-  const deleted = store.cleanupReducedEvents({ now });
-  assert.equal(deleted, 2);
-  assert.equal(store.readEventsAfter(0).length, 0);
 
   store.close();
   console.log("chat lifecycle store smoke passed");
