@@ -1,9 +1,12 @@
 # Chat tracking redesign (V3)
 
-**Status:** written 2026-07-25. §7's snapshot endpoint + the server-side status
-function are **built**; the daemon-side rework (spool dir, `cursors.json`,
-snapshot PUT, deletion of the local chat model) is **built** — see §10 for what
-each phase actually landed and what is still open.
+**Status:** written 2026-07-25, **fully built** the same week. §7's snapshot
+endpoint + the server-side status function, the daemon-side rework (spool dir,
+`cursors.json`, snapshot PUT, deletion of the local chat model), §4's attachment
+layer and §9's Chat Inspector all shipped. §10 "What actually landed" records
+what each phase really did — including the two phases that were overtaken and
+the places the implementation contradicted this document. Nothing here is
+unbuilt; §11's open questions are still open.
 **Supersedes:** the status-ownership model in `docs/chat-lifecycle-contract.md`.
 
 Companion artifacts (same content, prettier):
@@ -84,7 +87,13 @@ Supporting detail worth keeping:
   "enrichment overlay" never overwrites the producer-owned lifecycle document (single writer per field).
   Its process-scan fallback publishes `idle` on the stated principle that *idle beats guessing working*.
 - **Both commercial products ship hook self-healing** — CLI updates and rival tools overwrite `settings.json`.
-  It is their #1 shared failure mode. We install once and never verify.
+  It is their #1 shared failure mode. **Correction (2026-07-25):** this row originally read "we install
+  once and never verify", which was wrong when written and is wronger now. `healDriftedHarnessHooks()`
+  (`desktop/src/main/main.ts:1354`, called at boot before the daemon starts) re-verifies both harnesses on
+  every launch and reinstalls anything *drifted* — it deliberately does **not** install for someone who
+  never opted in. Codex already detected drift by comparing the on-disk script against the template
+  byte-for-byte; #115 gave Claude the same `scriptCurrent` content check, which was the real gap, since
+  until then a stale Claude hook script from an older build read as installed and was trusted forever.
 - **Blocking hooks are a real hazard.** Vibe Island's `Stop` hook blocks Claude shutdown 15–21 s;
   Open Island holds hook connections open up to 24 h to render approval buttons. Our fire-and-forget
   write-and-exit is strictly better — do not trade it for interactivity.
@@ -186,7 +195,7 @@ wipe the files, run one tick, assert the world re-derives. (Today you'd lose 748
 One endpoint carries all chat state.
 
 ```
-PUT /machines/:id/chat-snapshot          # every tick, ~1s active / 30s idle, skipped when unchanged
+PUT /daemon/machines/:id/chat-snapshot   # every tick, ~1s active / 30s idle, skipped when unchanged
 
 {
   "observedAt": "2026-07-25T09:14:02Z",
@@ -220,12 +229,18 @@ PUT /machines/:id/chat-snapshot          # every tick, ~1s active / 30s idle, sk
 | --- | --- | --- | --- |
 | Live process bound to a session | yes | `running` | Status from activity + block |
 | Transcript touched inside window, no process | yes | `dormant` | Idle, resumable, still visible |
-| Launched by Hitch, not yet bound | yes | `pending` | Spawning; timeout marks it failed |
+| Launched by Hitch, session id known (claude) | yes | `pending` | Spawning; timeout marks it failed |
+| Launched by Hitch, session id NOT known (codex) | **no** | — | Assignment reads `spawning`, no chat row |
 | Was live last tick, now gone | **no** | — | Marked dead after two consecutive misses |
 | Nothing for 24 h | **no** | — | Keeps last status; stays in history |
 
 The two-miss debounce lives in the daemon, so a transient read failure never removes a live chat.
 Everything downstream of the snapshot needs no heal logic at all.
+
+**Correction (phase 4).** Row 3 originally read "Launched by Hitch, not yet bound → `pending`" with no
+harness split, and that isn't buildable: `pending` needs a session id to key the row on, and Codex has none
+until its first prompt produces a thread. Only Claude (`--session-id`) can be pre-registered. The Codex gap
+is carried by the durable launch record instead of a chat row — see §10, phase 4, "Spawn".
 
 ### What the tick reads
 
@@ -376,14 +391,37 @@ the sensors (the "rewrite" fork above), which deleted the prune question and the
   the reducer, `observed_files`, the observer shadow columns, `chatSync` and
   `chatLifecycleProducers` are deleted; `npm -w @hitch/daemon run
   smoke:chat-disposability` is the CI disposability test.
-- **Still open (phase 4).** `local_chats` survives, reduced to the reconciler's
-  own launch bookkeeping (`getLocalChat` / `upsertLocalChat` /
-  `markChatServerSynced`) plus `cmux_trace`, because
-  `daemon/src/v2/reconciler.ts` and `focus.ts` still create chats through the
-  legacy `POST/PATCH /daemon/chats`. Those routes now lift `cmuxRef.sessionId`
-  into `chats.session_id` so the legacy writer and the snapshot writer converge
-  on one row; delete that lift with the legacy routes. `pending` existence is
-  also unimplemented until the launcher pre-registers through the snapshot.
+- **Phase 4 — done.** `chatLifecycleStore.ts` and `local_chats` are DELETED, and
+  with them `cmux_trace` and the transitional `reconcilerBridge`. The daemon
+  holds no chat model at all: `<appSupport>/events/`, `cursors.json` and
+  `launches.json` are the only local state. What replaced each piece:
+  - **`daemon/src/attachment/`** — the layer §4 asks for, alongside the
+    launchers. It owns the durable launch records, claude pre-registration, the
+    codex surface→thread join (moved out of the hook template in
+    `desktop/src/main/main.ts`, which now only *reports* `CMUX_SURFACE_ID`), and
+    the assignment→chat link.
+  - **Spawn.** Claude's session id is known up front, so the chat is
+    pre-registered through the SNAPSHOT with `existence: "pending"` — this is
+    where `pending` starts being produced — and the server's upsert on
+    `(machine, harness, session)` means discovery lands on that same row moments
+    later. Codex gets NO row at spawn: its thread doesn't exist until the first
+    prompt, so the assignment reads `spawning` with no chat until the hook
+    event arrives. Honest, and bounded by the launch record's 10-minute TTL,
+    past which the assignment is marked `dead` rather than wedging.
+  - **`deriveObserved`** reads the server chat's `status` + `existence` instead
+    of a local row; **close/focus** resolve through the chat's `handle`.
+  - **Legacy routes gone.** `POST/PATCH /daemon/chats`, the `cmuxRef` wire alias
+    and the `session_id` lift are deleted. `GET /daemon/chats` stays (the
+    reconciler and focus read it); the snapshot PUT is the only writer.
+  - **The boundary is enforced**: `npm -w @hitch/daemon run
+    smoke:observer-boundary` walks the module graph from
+    `daemon/src/observer/` and fails on any path to `launchers/`, `cmux.ts` or
+    `attachment/` — transitively, which `no-restricted-imports` would not catch
+    (and the repo has no eslint to hang it off).
+- **Phase 5 — done**, and landed *before* phase 4 (they were built in parallel;
+  the Inspector merged as #116, this as #117). See §9 "What shipped" for its
+  three deviations. Phase 4 is the last of the six, so **the rework is complete**
+  — what remains are the §11 open questions, not unbuilt phases.
 
 ---
 

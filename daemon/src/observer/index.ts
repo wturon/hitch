@@ -52,6 +52,7 @@ import { projectForCwd, type ObserverProject } from "./projects.js";
 import { EventSpool, type SpooledEvent } from "./spool.js";
 import { readLatestTail, type TailCursor } from "./tail.js";
 import type {
+  AttachmentSource,
   ChatSnapshot,
   JsonObject,
   JsonValue,
@@ -77,6 +78,20 @@ export interface ChatObserverOptions {
   logger: ChatObserverLogger;
   /** Ship one snapshot. Throwing is logged, never fatal. */
   publish: (snapshot: ChatSnapshot) => Promise<void> | void;
+  /**
+   * The attachment layer (§4), as plain data. Supplies `task`/`handle` for
+   * chats Hitch launched and pre-registered chats we haven't discovered yet.
+   * Omitted → the observer reports discovery only, which is a complete and
+   * correct snapshot.
+   */
+  attachments?: AttachmentSource;
+  /**
+   * Every drained spool event, BEFORE the wire filter drops the ones whose chat
+   * isn't in this snapshot. The attachment layer needs them all: a codex thread
+   * announces itself on a hook event a beat before it is discoverable, and that
+   * event is exactly the one the wire would drop.
+   */
+  onEvents?: (events: SpooledEvent[]) => void;
   now?: () => number;
   windowMs?: number;
   cap?: number;
@@ -173,6 +188,8 @@ export class ChatObserver {
   private readonly host: string;
   private readonly logger: ChatObserverLogger;
   private readonly publish: ChatObserverOptions["publish"];
+  private readonly attachments: AttachmentSource | null;
+  private readonly onEvents: ((events: SpooledEvent[]) => void) | null;
   private readonly now: () => number;
   private readonly windowMs: number;
   private readonly cap: number;
@@ -201,6 +218,8 @@ export class ChatObserver {
     this.host = options.host;
     this.logger = options.logger;
     this.publish = options.publish;
+    this.attachments = options.attachments ?? null;
+    this.onEvents = options.onEvents ?? null;
     this.now = options.now ?? Date.now;
     this.windowMs = options.windowMs ?? DEFAULT_WINDOW_MS;
     this.cap = options.cap ?? DEFAULT_CAP;
@@ -329,6 +348,13 @@ export class ChatObserver {
     if (drained.malformed > 0) {
       this.logger.error?.(`[observer] dropped ${drained.malformed} malformed spool file(s)`);
     }
+    // Hand the raw drain to the attachment layer BEFORE anything is filtered.
+    // We don't know or care what it does with them.
+    try {
+      this.onEvents?.(drained.events);
+    } catch (err) {
+      this.logger.error?.(`[observer] event listener failed: ${String(err)}`);
+    }
     const events = this.foldEvents(drained.events);
 
     // 2. One `ps` for the whole tick. An EMPTY result means the snapshot itself
@@ -358,6 +384,13 @@ export class ChatObserver {
     for (const chat of this.observeCodex(processes, now, windowStart)) {
       chats.set(chatKey(chat.harness, chat.sessionId), chat);
     }
+
+    // 2b. The attachment layer (§5 rule 1: ONE pipeline, two entry points).
+    //     Discovery found what it could; anything Hitch launched that isn't
+    //     visible yet joins the same tracked set, and everything gets whatever
+    //     task/handle we know. Launch data ENRICHES a chat; it never creates a
+    //     second kind of chat.
+    this.applyAttachments(chats, now);
 
     // 3. Two-miss debounce. A chat that vanished for exactly one tick is
     //    re-published from its last observation; on the second consecutive miss
@@ -394,6 +427,36 @@ export class ChatObserver {
         selected.some((c) => c.harness === e.harness && c.sessionId === e.sessionId),
       ),
     };
+  }
+
+  // --- attachments -----------------------------------------------------------
+
+  // Three steps, in this order:
+  //   1. tell the layer which sessions observation now owns, so it stops
+  //      pre-registering them;
+  //   2. add the ones it is still waiting on (existence "pending");
+  //   3. decorate everything with task/handle/title/project.
+  // Discovery always wins on the AXES — a pre-registration is a claim about
+  // existence only until the machine can answer for itself.
+  private applyAttachments(chats: Map<string, ObservedChat>, now: number): void {
+    const attachments = this.attachments;
+    if (!attachments) return;
+    for (const chat of chats.values()) attachments.observed(chat.harness, chat.sessionId);
+    for (const chat of attachments.injected(now)) {
+      const key = chatKey(chat.harness, chat.sessionId);
+      if (!chats.has(key)) chats.set(key, chat);
+    }
+    for (const chat of chats.values()) {
+      const attachment = attachments.lookup(chat.harness, chat.sessionId);
+      if (!attachment) continue;
+      if (attachment.task !== undefined) chat.task = attachment.task;
+      if (attachment.handle !== undefined) chat.handle = attachment.handle;
+      // Never overwrite what the machine itself reported.
+      if (attachment.title && chat.title === undefined) chat.title = attachment.title;
+      if (attachment.projectId != null && chat.projectId === null) {
+        chat.projectId = attachment.projectId;
+      }
+    }
   }
 
   // --- events ----------------------------------------------------------------

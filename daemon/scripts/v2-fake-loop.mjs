@@ -8,19 +8,23 @@
 //     the fake turn completes → waiting_input →
 //   PATCH desired=stopped → observed → done.
 //
-// It also asserts the server `chats` row the daemon created walks
-// busy → waiting_input → dead alongside the assignment.
+// It also asserts the server `chats` row walks busy → idle → dead alongside the
+// assignment — a row now written ONLY by the snapshot PUT (phase D deleted the
+// legacy POST/PATCH /daemon/chats), with its status derived server-side from the
+// axes the fake launcher scripts through the attachment layer.
 //
-// Because the fake launcher writes NO transcript/thread/pidfile, the observer's
-// dead-process heal can never touch these sessions (heal-proof by construction).
+// Because the fake launcher writes NO transcript/thread/pidfile, real discovery
+// can never see these sessions, so nothing can contradict the script behind its
+// back (heal-proof by construction).
 //
 // Prereq:  docker compose up -d --build   (server on :3010)
 // Run:     node daemon/scripts/v2-fake-loop.mjs
 //          (or HARNESS=codex node daemon/scripts/v2-fake-loop.mjs)
 //
-// The daemon runs with an ISOLATED store (HITCH_APP_SUPPORT_DIR=<scratch>) so it
-// never touches the real chat-lifecycle.sqlite. Cleanup is automatic (kills the
-// daemon, removes the scratch dir). `docker compose down -v` is left to the caller.
+// The daemon runs with an ISOLATED app-support dir (HITCH_APP_SUPPORT_DIR=<scratch>)
+// so it never touches your real spool or launch records. Cleanup is automatic
+// (kills the daemon, removes the scratch dir). `docker compose down -v` is left
+// to the caller.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
@@ -133,8 +137,8 @@ try {
   apiKey = await signUpAndMintKey();
   check("1. signed up + minted api key", Boolean(apiKey));
 
-  // Isolated store dir so the fake daemon never touches the real sqlite. No
-  // HITCH_ROOT and no real cmux — this is fully headless.
+  // Isolated app-support dir so the fake daemon never touches real local state.
+  // No HITCH_ROOT and no real cmux — this is fully headless.
   scratch = mkdtempSync(join(tmpdir(), "hitch-fake-loop-"));
   daemon = spawn("npx", ["tsx", "daemon/src/index.ts"], {
     cwd: REPO_ROOT,
@@ -210,18 +214,25 @@ try {
     return a && a.observedState === "waiting_input" ? a : undefined;
   }, { timeoutMs: 30_000 });
   check("8. fake turn completed → waiting_input landed (zero real spawns)");
-  // The server chat row's STATUS is no longer written by the launch path. Since
-  // the V3 rework it comes from the chat snapshot the observer PUTs — and a
-  // fake session has no pidfile, no transcript and no thread, so the observer
-  // correctly never sees it (that is the same "heal-proof by construction"
-  // property this harness has always relied on, read from the other side). So
-  // what we assert here is that the row survives untouched: no phantom
-  // observation, and crucially no death sweep against a chat the machine can't
-  // see. The ASSIGNMENT loop above is the thing the product depends on.
+  // The chat row is entirely SNAPSHOT-OWNED now (phase D deleted the last
+  // non-snapshot writer). A fake chat reaches it exactly the way a real one
+  // does: the fake launcher scripts its axes into the attachment layer, the
+  // observer carries them in the snapshot, and the server derives the status.
+  // So the row holds real axes here — running + idle, i.e. "the agent finished
+  // a pass" — plus both attachments the launch stamped on it.
+  //
+  // (This check used to assert the OPPOSITE: that the row was never observed at
+  // all, because the fake lifecycle was scripted into a local sqlite row the
+  // server never saw. That store is gone, and its premise with it.)
   const midChat = await chatStatus(machine.id, running.chatId);
-  check("9. server chat row survives, unobserved (status is snapshot-owned now)",
-    Boolean(midChat) && midChat.status === "busy" && midChat.existence == null,
-    `status=${midChat?.status} existence=${String(midChat?.existence)}`);
+  check("9. chat row is snapshot-owned: axes reported, status derived server-side",
+    Boolean(midChat) && midChat.status === "idle" && midChat.existence === "running" &&
+      midChat.handle?.kind === "cmux" && midChat.projectId === project.id,
+    `status=${midChat?.status} existence=${String(midChat?.existence)} ` +
+      `handle=${JSON.stringify(midChat?.handle ?? null)} project=${String(midChat?.projectId)}`);
+  check("9b. chat.status walked busy → idle as the fake turn completed",
+    chatStateLog[0] === "busy" && chatStateLog.includes("idle"),
+    chatStateLog.join(" → "));
 
   await api("PATCH", `/assignments/${assignmentId}`, { desiredState: "stopped" });
   log("  patched desired=stopped");
@@ -232,15 +243,18 @@ try {
   }, { timeoutMs: 20_000 });
   check("10. desired=stopped → observed=done");
 
-  // Same story at the end: `dead` used to be relayed from the fake
-  // `session.ended`; it is now a conclusion the SERVER draws from a chat's
-  // absence in a snapshot that covers it. A fake session is never covered, so
-  // the row stays as it was — and the assignment still settles to `done`, which
-  // is what closes the loop for the product.
-  const endChat = await chatStatus(machine.id, running.chatId);
-  check("11. server chat row still intact after close (no phantom sweep)",
-    Boolean(endChat) && endChat.status !== "dead",
-    `status=${endChat?.status}`);
+  // …and death is a conclusion the SERVER draws from absence. On close the fake
+  // launcher stops reporting the chat; it leaves the next snapshot and the sweep
+  // marks it dead — the exact path a real closed tab takes. (This used to assert
+  // the row was NOT swept, because a fake chat was never in a snapshot to be
+  // missing from. It is now, so the honest assertion is the sweep itself.)
+  const endChat = await waitFor("chat swept dead after close", async () => {
+    const c = await chatStatus(machine.id, running.chatId);
+    return c && c.status === "dead" ? c : undefined;
+  }, { timeoutMs: 20_000 });
+  check("11. closing the chat removes it from the snapshot → server marks it dead",
+    endChat.status === "dead" && endChat.existence == null,
+    `status=${endChat.status} existence=${String(endChat.existence)}`);
 
   // `spawning` is written by the daemon (onLinked → patchAssignment "spawning")
   // but collapses to `running` within one serialized reconcile burst, so a

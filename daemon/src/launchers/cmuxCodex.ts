@@ -1,12 +1,12 @@
 // Codex CLI running in cmux. New sessions are linked deterministically through
-// Hitch's Codex hook: the daemon records an exact cwd+prompt launch claim before
-// spawning Codex, and the hook consumes it when Codex reports the real session id.
+// Hitch's Codex hook: the daemon stamps the cmux SURFACE id onto the launch
+// record before spawning Codex, the hook reports the surface it fired under, and
+// the attachment layer joins the two when Codex first reports its thread
+// (daemon/src/attachment/). Surface ids are unique per pane, so the join is
+// exact — more than one candidate is never guessed at.
 
+import { recordCmuxLaunch, stampCmuxSurface } from "../attachment/launches.js";
 import { closeChat, openChat, startCommand } from "../cmux.js";
-import {
-  recordCodexCmuxLaunchClaim,
-  updateCodexCmuxLaunchClaim,
-} from "../codexCmuxLaunchClaims.js";
 import { codexBin } from "../codex.js";
 import type { Launcher } from "./types.js";
 
@@ -106,7 +106,7 @@ export const cmuxCodexLauncher: Launcher = {
   },
 
   async startNew(ctx) {
-    recordCodexCmuxLaunchClaim({ launchId: ctx.launchId });
+    recordCmuxLaunch({ launchId: ctx.launchId, harness: "codex" });
     const result = await startCommand({
       taskKey: ctx.taskKey,
       cwd: ctx.cwd,
@@ -116,21 +116,17 @@ export const cmuxCodexLauncher: Launcher = {
         model: ctx.model,
         effort: ctx.effort,
       }),
-      // Stamp the surface onto the claim BEFORE Codex runs (not after, via
-      // onPlaced). Codex's hook can fire UserPromptSubmit before a post-launch
-      // stamp lands, and since the hook only consumes the claim on that first
-      // event, a miss is unrecoverable — so the join key must exist up front.
-      // record/update are synchronous file writes, so concurrent launches each
-      // stamp their own surface without racing.
+      // Stamp the surface onto the launch record BEFORE Codex runs (not after,
+      // via onPlaced). Codex's hook can fire UserPromptSubmit before a
+      // post-launch stamp lands, and the join is made on that first event, so a
+      // miss is unrecoverable — the join key must exist up front. Both writes
+      // are synchronous, so concurrent launches each stamp their own surface
+      // without racing.
       beforeCommand: (surfaceId) => {
-        updateCodexCmuxLaunchClaim({
-          launchId: ctx.launchId,
-          surfaceId,
-        });
+        stampCmuxSurface({ launchId: ctx.launchId, surfaceId });
       },
       projectId: ctx.project.projectId,
       projectName: ctx.project.projectName,
-      launchId: ctx.launchId,
     });
     return { result };
   },

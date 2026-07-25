@@ -16,8 +16,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
-import { openChatLifecycleStore } from "../chatLifecycleStore.js";
-import { setCmuxLogger, setCmuxTraceSink } from "../cmux.js";
+import { AttachmentLayer } from "../attachment/index.js";
+import { setCmuxLogger } from "../cmux.js";
 import { ChatObserver } from "../observer/index.js";
 import { resolveSpoolPaths } from "../observer/spool.js";
 import { ChatSnapshotSink } from "./chatSnapshot.js";
@@ -26,7 +26,6 @@ import { createFakeLaunchers, isFakeLaunch } from "./fakeLauncher.js";
 import { createFocusHandler } from "./focus.js";
 import { ProjectsProvider } from "./projects.js";
 import { Reconciler } from "./reconciler.js";
-import { ReconcilerBridge } from "./reconcilerBridge.js";
 import { createServerClient } from "./serverClient.js";
 import { startServerWs, type ServerWsClient } from "./ws.js";
 
@@ -165,14 +164,10 @@ export async function startHitchDaemonV2(
   // --- Chat observation (V3: snapshot, not deltas) --------------------------
   // docs/chat-tracking-redesign.md. The observer derives the WHOLE working set
   // from the machine every tick and PUTs it to /daemon/machines/:id/chat-snapshot;
-  // the server derives status and treats absence as death. There is no local
-  // chat model, no event ledger and no reducer in that path — hooks write JSON
-  // files into a spool dir, the observer drains them, and cursors.json is the
-  // only persistent local state.
-  //
-  // The sqlite store is still opened, but ONLY for the reconciler's own launch
-  // bookkeeping and the cmux trace (see chatLifecycleStore.ts's header).
-  const store = openChatLifecycleStore({ env });
+  // the server derives status and treats absence as death. There is NO local
+  // chat model anywhere in the daemon any more — hooks write JSON files into a
+  // spool dir, the observer drains them, and `cursors.json` plus the attachment
+  // layer's `launches.json` are the only local files, both disposable.
   const spoolPaths = resolveSpoolPaths(env);
 
   // The observer maps a chat's cwd → project via the server's repo_path-bearing
@@ -182,27 +177,32 @@ export async function startHitchDaemonV2(
   await projects.refresh();
   ws.onInvalidate("projects", () => void projects.refresh());
 
-  // cmux.ts is dependency-free; wire its human log + per-chat trace into the
-  // same streams V1 uses, so the reconciler's spawn/close calls are debuggable.
-  // (Trace sink after the store is open, mirroring daemon.ts.)
+  // cmux.ts is dependency-free; wire its human log into the daemon's stream so
+  // the reconciler's spawn/close calls are debuggable. (The per-chat cmux_trace
+  // table went with the sqlite store — §8 "Cut".)
   setCmuxLogger(logger);
-  setCmuxTraceSink((event) => store.appendCmuxTrace(event));
+
+  // --- Attachment layer (§4) ------------------------------------------------
+  // Launch records, claude pre-registration, the codex surface→thread join, and
+  // the assignment→chat link. The observer takes it as a plain data interface
+  // and never learns what it is; see daemon/src/attachment/.
+  const attachments = new AttachmentLayer({ client, host: name, logger, env });
 
   const snapshotSink = new ChatSnapshotSink({ client, machineId, logger });
-  // TRANSITIONAL (Phase D deletes it): the reconciler still reads an
-  // assignment's progress off the LOCAL chat row, which the deleted reducer
-  // used to maintain. This adapter carries the snapshot back into those rows so
-  // the delegate loop keeps working, without the observer knowing anything
-  // about launches or the store. See reconcilerBridge.ts.
-  const reconcilerBridge = new ReconcilerBridge({ store, host: name });
   const observer = new ChatObserver({
     paths: spoolPaths,
     projects: projects.list,
     host: name,
     logger,
+    attachments,
+    // The codex bind rides on a hook event for a thread that usually isn't
+    // discoverable yet, so the attachment layer needs the RAW drain.
+    onEvents: (events) => attachments.onSpooledEvents(events),
     publish: async (snapshot) => {
-      reconcilerBridge.apply(snapshot);
-      await snapshotSink.put(snapshot);
+      const result = await snapshotSink.put(snapshot);
+      // The server echoes the rows it upserted — that echo is how a launched
+      // session learns its server chat id, the job POST /daemon/chats used to do.
+      if (result.chats?.length) await attachments.resolveLinks(result.chats);
     },
   });
   observer.start();
@@ -213,12 +213,12 @@ export async function startHitchDaemonV2(
   // to the heartbeat), a WS `assignments` invalidate ("look now"), and a WS
   // reconnect (a dropped socket may have missed invalidations — re-diff).
   // Fake-launch mode (HITCH_FAKE_LAUNCH=1, test-only): swap the reconciler's
-  // launcher resolution for cmux-less stand-ins that script the chat lifecycle
-  // straight into the shared store. Unset → the seam is a no-op and the real
-  // registry runs. Isolate the store with HITCH_APP_SUPPORT_DIR so a fake daemon
-  // never touches the real chat-lifecycle.sqlite.
+  // launcher resolution for cmux-less stand-ins that script a chat's axes into
+  // the snapshot through the attachment layer. Unset → the seam is a no-op and
+  // the real registry runs. Isolate state with HITCH_APP_SUPPORT_DIR so a fake
+  // daemon never touches the real launch records.
   const fakeLaunch = isFakeLaunch(env)
-    ? createFakeLaunchers({ store, host: name, logger, env })
+    ? createFakeLaunchers({ attachments, logger, env })
     : null;
   if (fakeLaunch) {
     logger.info(
@@ -248,13 +248,16 @@ export async function startHitchDaemonV2(
 
   const reconciler = new Reconciler({
     client,
-    store,
+    attachments,
     machineId,
     host: name,
     logger,
     tickMs: reconcileMs(env),
     resolveLauncher: fakeLaunch?.resolve,
   });
+  // An attachment change (a session bound, a chat linked) is new ground truth
+  // for the diff — look now rather than at the next tick.
+  attachments.onChange = (reason) => reconciler.trigger(`attachment:${reason}`);
   ws.onInvalidate("assignments", () => reconciler.trigger("ws-invalidate"));
 
   // --- Reconnect resilience -------------------------------------------------
@@ -316,7 +319,6 @@ export async function startHitchDaemonV2(
     clearInterval(heartbeat);
     ws.stop();
     await observer.stop();
-    store.close();
   }
 
   return { machineId, stop };

@@ -102,9 +102,9 @@ const repoRoot = process.env.HITCH_ROOT
 // deployment) never collide with the installed production app. Mirrors the
 // "Hitch Dev" split applied to app.name / the Chromium profile / the keychain key.
 // Honors HITCH_APP_SUPPORT_DIR so an isolated instance (the e2e harness) can
-// point its whole state footprint — secrets.json + chat-lifecycle.sqlite + the
-// daemon it spawns (which receives this same dir) — at a scratch directory and
-// never touch the real "Hitch"/"Hitch Dev" store.
+// point its whole state footprint — secrets.json + the hook spool + the daemon
+// it spawns (which receives this same dir) — at a scratch directory and never
+// touch the real "Hitch"/"Hitch Dev" state.
 const appSupportDir = process.env.HITCH_APP_SUPPORT_DIR
   ? resolve(process.env.HITCH_APP_SUPPORT_DIR)
   : join(homedir(), "Library/Application Support", isDev ? "Hitch Dev" : "Hitch");
@@ -145,11 +145,10 @@ function globalChatLifecycleHook(harness: Harness): string {
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const HITCH_APP_SUPPORT_DIR = ${JSON.stringify(appSupportDir)};
 const HITCH_EVENTS_DIR = HITCH_APP_SUPPORT_DIR + "/events";
-const HITCH_CODEX_CMUX_CLAIMS_PATH = HITCH_APP_SUPPORT_DIR + "/codex-cmux-launch-claims.json";
 const HARNESS = ${JSON.stringify(harness)};
 const PRODUCER = ${JSON.stringify(harness === "codex" ? "codex-hook" : "claude-code-hook")};
 
@@ -219,8 +218,15 @@ function metadata(payload, providerEvent) {
   // this Codex session is running inside cmux — no HITCH_CHAT_ENVIRONMENT needed
   // on the launch command. (Claude's environment is known to the daemon at
   // launch via --session-id, so it doesn't rely on this.)
+  //
+  // The surface id is REPORTED, never interpreted: it is the join key the
+  // daemon's attachment layer (daemon/src/attachment/) matches against the
+  // launch record it stamped before running this Codex. The hook used to do
+  // that match itself, reading and rewriting a claims file from a short-lived
+  // process racing the daemon. It now writes one field and exits.
   if (HARNESS === "codex" && process.env.CMUX_SURFACE_ID) {
     out.environment = "cmux";
+    out.surfaceId = process.env.CMUX_SURFACE_ID;
   }
   if (typeof payload.tool_name === "string") out.toolName = payload.tool_name;
   if (typeof payload.toolName === "string") out.toolName = payload.toolName;
@@ -242,102 +248,6 @@ function metadata(payload, providerEvent) {
     out.sessionCronCount = payload.session_crons.length;
   }
   return out;
-}
-
-function readCodexCmuxClaims() {
-  try {
-    const parsed = JSON.parse(readFileSync(HITCH_CODEX_CMUX_CLAIMS_PATH, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCodexCmuxClaims(claims) {
-  try {
-    mkdirSync(dirname(HITCH_CODEX_CMUX_CLAIMS_PATH), { recursive: true });
-    const tmpPath =
-      HITCH_CODEX_CMUX_CLAIMS_PATH + "." + process.pid + "." + Date.now() + ".tmp";
-    writeFileSync(tmpPath, JSON.stringify(claims, null, 2) + "\\n", "utf8");
-    renameSync(tmpPath, HITCH_CODEX_CMUX_CLAIMS_PATH);
-  } catch {
-    // Claim cleanup is best-effort; never interrupt the hook.
-  }
-}
-
-function consumeCodexCmuxLaunchClaim(event) {
-  if (HARNESS !== "codex" || event.providerEvent !== "UserPromptSubmit") {
-    return null;
-  }
-  // cmux gives each pane a unique CMUX_SURFACE_ID; the daemon stamps the same id
-  // onto the launch claim BEFORE the Codex command runs (cmuxCodex.startNew ->
-  // beforeCommand), so by the time Codex fires this UserPromptSubmit the join key
-  // is already on disk. Match on it deterministically — no timing fallback and no
-  // guessing: each launch owns a distinct surface, so concurrent launches resolve
-  // independently, and two identical-prompt launches no longer collide the way
-  // the old cwd+promptHash match did.
-  const surfaceId = process.env.CMUX_SURFACE_ID;
-  if (!surfaceId) return null;
-  const wanted = surfaceId.toLowerCase();
-
-  const now = Date.now();
-  const claims = readCodexCmuxClaims();
-  const freshClaims = claims.filter((claim) => {
-    return (
-      claim &&
-      typeof claim.createdAt === "number" &&
-      now - claim.createdAt <= 10 * 60 * 1000
-    );
-  });
-  const matches = freshClaims
-    .map((claim, index) => ({ claim, index }))
-    .filter(({ claim }) => {
-      return (
-        claim &&
-        claim.claimedAt === undefined &&
-        claim.environment === "cmux" &&
-        typeof claim.launchId === "string" &&
-        typeof claim.surfaceId === "string" &&
-        claim.surfaceId.toLowerCase() === wanted
-      );
-    });
-  if (matches.length !== 1) {
-    // Prune expired claims if we dropped any; never guess when ambiguous.
-    if (freshClaims.length !== claims.length) {
-      writeCodexCmuxClaims(freshClaims);
-    }
-    return null;
-  }
-
-  const { claim, index } = matches[0];
-  freshClaims[index] = {
-    ...claim,
-    claimedAt: now,
-    chatId: event.chatId,
-  };
-  writeCodexCmuxClaims(freshClaims);
-  return claim;
-}
-
-function codexCmuxClaimForChat(event) {
-  if (HARNESS !== "codex" || !event.chatId) return null;
-  const now = Date.now();
-  const claims = readCodexCmuxClaims().filter((claim) => {
-    return (
-      claim &&
-      typeof claim.createdAt === "number" &&
-      now - claim.createdAt <= 10 * 60 * 1000
-    );
-  });
-  return (
-    claims.find((claim) => {
-      return (
-        claim &&
-        claim.environment === "cmux" &&
-        claim.chatId === event.chatId
-      );
-    }) ?? null
-  );
 }
 
 function turnId(payload) {
@@ -386,8 +296,9 @@ function normalize(payload) {
     projectId: null,
     projectLocalPath: null,
     chatId: id,
-    // Codex has no --session-id to pin, so the launch is correlated out-of-band
-    // via the surface-keyed claim below — not an env var on the command.
+    // Codex has no --session-id to pin. The launch is correlated by the daemon,
+    // out of band, from the cmux surface id in the metadata below — never here,
+    // and never from an env var on the command.
     launchId: null,
     turnId: turnId(payload),
     cwd: resolve(cwd),
@@ -397,11 +308,6 @@ function normalize(payload) {
     rawPayloadRef: null,
     metadata: metadata(payload, providerEvent),
   };
-  const launchClaim =
-    consumeCodexCmuxLaunchClaim(event) ?? codexCmuxClaimForChat(event);
-  if (!event.launchId && launchClaim?.launchId) {
-    event.launchId = launchClaim.launchId;
-  }
   event.eventId = hash({
     source: event.source,
     producer: event.producer,
@@ -1840,9 +1746,9 @@ function startDaemon(): void {
     env: {
       ...process.env,
       HITCH_ROOT: repoRoot,
-      // Anchor the daemon's store (chat-lifecycle.sqlite) + secrets.json lookup on
-      // the SAME App Support dir the desktop uses. Passed explicitly (rather than
-      // via the removed local hitch config) so it survives the V1 config removal.
+      // Anchor the daemon's local files (the hook spool it drains, cursors.json,
+      // launch records) + its secrets.json lookup on the SAME App Support dir the
+      // desktop uses — and the same one the hooks this app installs write into.
       HITCH_APP_SUPPORT_DIR: appSupportDir,
       // Run the bundled daemon as plain Node under the Electron binary in prod.
       ...(isDev ? {} : { ELECTRON_RUN_AS_NODE: "1" }),

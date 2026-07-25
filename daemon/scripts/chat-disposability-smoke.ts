@@ -62,9 +62,10 @@ try {
   // --- now wipe every byte of local state ----------------------------------
   rmSync(paths.eventsDir, { recursive: true, force: true });
   rmSync(paths.cursorsPath, { force: true });
-  // …and the sqlite store too, for good measure: no part of it backs the
-  // snapshot any more.
-  rmSync(`${paths.appSupportDir}/chat-lifecycle.sqlite`, { force: true });
+  // …and the attachment layer's launch records, which is the ONLY other file
+  // the daemon keeps. Losing it costs in-flight launches their assignment link
+  // (they still show up as chats); it can never cost us a chat.
+  rmSync(`${paths.appSupportDir}/launches.json`, { force: true });
   assert.ok(!existsSync(paths.eventsDir), "spool gone");
   assert.ok(!existsSync(paths.cursorsPath), "cursors gone");
 
