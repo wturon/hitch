@@ -54,38 +54,6 @@
           }
         }
       }
-    },
-    {
-      "name": "Hitch Desktop Dev",
-      "description": "Run Convex and Hitch Desktop in separate tabs.",
-      "keywords": ["hitch", "dev", "convex", "desktop", "electron"],
-      "workspace": {
-        "name": "Hitch Desktop Dev",
-        "cwd": ".",
-        "restart": "confirm",
-        "layout": {
-          "pane": {
-            "surfaces": [
-              {
-                "type": "terminal",
-                "name": "Convex",
-                "command": "npm run dev:convex",
-                "focus": true
-              },
-              {
-                "type": "terminal",
-                "name": "Renderer",
-                "command": "npm run dev:renderer"
-              },
-              {
-                "type": "terminal",
-                "name": "Electron",
-                "command": "npm run dev:electron"
-              }
-            ]
-          }
-        }
-      }
     }
   ]
 }

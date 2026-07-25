@@ -1,40 +1,35 @@
 # Hitch Desktop
 
-Electron app for Hitch's local daemon and todos workspace.
+Electron app for Hitch — the task workspace and the local reconciler daemon.
 
 ## Development
 
-From the repo root:
+Point the app at a running Hitch server (see the repo-root README for bringing up
+the compose stack), then from the repo root:
 
 ```sh
-npm run dev:desktop
+HITCH_SERVER_URL=http://localhost:3010 npm run dev:desktop
 ```
 
 The desktop app starts a Vite-powered React renderer, opens an Electron window
-with the live todos workspace, and automatically spawns the daemon runner
-process via:
+with the task workspace, and automatically spawns the daemon runner process via:
 
 ```sh
 node ./node_modules/tsx/dist/cli.mjs daemon/src/runner.ts
 ```
 
-The daemon runner imports `@hitch/daemon`'s reusable runtime and reports status
-and logs to Electron over process IPC. The renderer talks to Electron through a
-narrow preload IPC bridge so the renderer can configure local hitches, read status,
-stream logs, and start or stop the daemon without direct Node access.
-
-On first launch, the app creates a local daemon config at:
+The daemon runner imports `@hitch/daemon`'s reconciler runtime and reports status
+and logs to Electron over process IPC. The renderer never talks to a machine
+directly — it reads and writes the server, and the main process holds the api key
+(minted at sign-in) and the server WebSocket. In a packaged build the server URL
+comes from the baked `app-config.json`; in dev it comes from `HITCH_SERVER_URL`.
+Auth credentials live in:
 
 ```text
-~/Library/Application Support/Hitch/config.json
+~/Library/Application Support/Hitch/secrets.json
 ```
 
-In development, that file is seeded from the repo's `hitch.config.json`. The
-local config stores machine-specific hitches: Convex project id, optional
-project display name, local path, and whether the hitch is enabled. The daemon
-derives the watched `.hitch` directory from each local path. The renderer's
-current project comes from the authenticated server project list, not this local
-config.
+The renderer's current project comes from the authenticated server project list.
 
 ## Beta distribution and updates
 

@@ -10,9 +10,18 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import { normalizeTag } from "@/lib/frontmatter";
 import { tagTint, type TagColorName } from "@/lib/tagColors";
 import { cn } from "@/lib/utils";
+
+// Canonical tag id: lowercase kebab. Non-alphanumeric runs collapse to a single
+// hyphen; leading/trailing hyphens are stripped. Returns "" for a token with no
+// slug-able characters, so callers can drop it.
+export function normalizeTag(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 export interface TagComboboxOption {
   id: string;

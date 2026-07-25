@@ -10,7 +10,8 @@
 //   1. A discovered chat with a project-mapped cwd appears on the server with
 //      the right status (busy) and project.
 //   2. Status transitions relay: busy → waiting_input → dead (endedAt).
-//   3. V1's Convex `dirty` flag is untouched by the V2 server sync.
+//   3. The server-sink cursor (serverChatId + server_synced_at) is recorded on
+//      the local row once the push lands.
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -186,13 +187,12 @@ async function main(): Promise<void> {
     await waitFor((c) => c?.status === "dead", "chat to become dead");
     console.log("  ✓ transitioned waiting_input → dead (endedAt)");
 
-    // 3. V1 Convex `dirty` flag is set (the observation dirtied it) and the V2
-    // sink never cleared it — the two sinks are independent.
+    // 3. The server-sink cursor is recorded on the local row once the push
+    // lands: a server id mapping and a server_synced_at watermark.
     const row = store.getLocalChat(localKey);
-    assert.equal(row?.dirty, true, "V1 Convex dirty flag untouched by V2 sync");
     assert.ok(row?.serverChatId, "server id mapping persisted on the row");
     assert.ok((row?.serverSyncedAt ?? 0) > 0, "server_synced_at recorded");
-    console.log(`  ✓ V1 dirty flag intact; serverChatId=${row?.serverChatId}`);
+    console.log(`  ✓ server sink cursor recorded; serverChatId=${row?.serverChatId}`);
 
     console.log("v2-chat-relay integration: OK");
   } finally {

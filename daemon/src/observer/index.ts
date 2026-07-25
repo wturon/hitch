@@ -541,7 +541,6 @@ export class ChatStateObserver {
         harness: "claude-code",
         environment: chat.environment,
         cwd: chat.cwd || this.projectLocalPath(chat.projectId) || "",
-        linkedPath: chat.linkedPath,
         chatId: chat.chatId,
         pid: null,
       });

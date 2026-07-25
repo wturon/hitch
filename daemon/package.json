@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Watches .hitch/ folders and syncs them to Convex.",
+  "description": "Hitch reconciler daemon — observes local agent chats and reconciles desired vs. machine state against the Hitch server.",
   "main": "dist/index.js",
   "exports": {
     ".": {
@@ -22,21 +22,11 @@
     "smoke:chat-lifecycle-reducer": "tsx scripts/chat-lifecycle-reducer-smoke.ts",
     "smoke:chat-lifecycle-coalesce": "tsx scripts/chat-lifecycle-coalesce-smoke.ts",
     "smoke:chat-title": "tsx scripts/chat-title-smoke.ts",
-    "smoke:task-title": "tsx scripts/task-title-smoke.ts",
-    "smoke:chat-frontmatter-projection": "tsx scripts/chat-frontmatter-projection-smoke.ts",
-    "smoke:chat-pending-binding": "tsx scripts/chat-pending-binding-smoke.ts",
-    "smoke:automation-definition": "tsx scripts/automation-definition-smoke.ts",
-    "smoke:automation-scheduler": "tsx scripts/automation-scheduler-smoke.ts",
-    "smoke:automation-run-lifecycle": "tsx scripts/automation-run-lifecycle-smoke.ts",
-    "smoke:automation-prune-path": "tsx scripts/automation-prune-path-smoke.ts",
     "smoke:chat-lifecycle-wakeup": "tsx scripts/chat-lifecycle-wakeup-smoke.ts",
     "smoke:codex-cmux-command": "tsx scripts/codex-cmux-command-smoke.ts",
-    "smoke:cmux-close-placements": "tsx scripts/cmux-close-placements-smoke.ts",
     "smoke:observer-derive": "tsx scripts/observer-derive-smoke.ts",
     "smoke:observer-tail": "tsx scripts/observer-tail-smoke.ts",
     "smoke:observer-store": "tsx scripts/observer-store-smoke.ts",
-    "smoke:skills": "tsx scripts/skills-smoke.ts",
-    "smoke:task-migration": "tsx scripts/task-migration-smoke.ts",
     "smoke:v2-config": "tsx scripts/v2-config-smoke.ts",
     "smoke:v2-ws-backoff": "tsx scripts/v2-ws-backoff-smoke.ts",
     "smoke:v2-chat-sync": "tsx scripts/v2-chat-sync-smoke.ts",
@@ -48,7 +38,6 @@
   "dependencies": {
     "@hitch/shared": "*",
     "chokidar": "^5.0.0",
-    "convex": "^1.39.1",
     "dotenv": "^17.4.2",
     "ws": "^8.21.0"
   },

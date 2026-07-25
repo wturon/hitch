@@ -12,11 +12,11 @@ web
 
 A developer working alongside AI coding agents. The primary user orchestrates several agent chats — Claude Code, Codex — across their own projects from a Mac desktop: delegating work, watching it happen live, and steering it. The context is solo and hands-on; one person holding the thread on a fast-growing pile of in-progress work.
 
-Solo is primary, but not the whole story. Because Hitch syncs git-ignored task state in realtime and branch-agnostically, the same surface is built to let a **small team share one live view** of that work without committing it to git. Design for the solo developer's flow today without foreclosing the shared, realtime collaboration the sync model exists to enable.
+Solo is primary, but not the whole story. Because task state lives on a shared realtime server rather than in a branch, the same surface is built to let a **small team share one live view** of in-progress work. Design for the solo developer's flow today without foreclosing that shared, realtime collaboration.
 
 ## Product Purpose
 
-Hitch couples a local daemon that watches git-ignored `.hitch/` folders — keeping them in realtime sync with a Convex backend — to a desktop app that renders those files as a live, grouped todo workspace with task dialogs, notes, and delegation to coding-agent chats.
+Hitch is a desktop task workspace with an agent delegation layer: a realtime server owns the backlog, the desktop app renders it as a live grouped todo workspace with task dialogs and delegation to coding-agent chats, and a local reconciler daemon runs those chats (claude/codex in cmux) and reports back.
 
 It exists so AI agents and humans share one live view of in-progress work without committing it to git: fast, branch-agnostic task state decoupled from slow, branch-bound code state. Success is a developer who can say what they mean, hand it to their agents, and trust that the work stays legible and in step — never locked to a branch, never drifted out of view.
 

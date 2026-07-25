@@ -44,7 +44,7 @@ try {
   const migratedHookDbStore = openChatLifecycleStore({
     appSupportDir: hookDbTempDir,
   });
-  assert.equal(migratedHookDbStore.listDirtyChats().length, 0);
+  assert.equal(migratedHookDbStore.listServerDirtyChats().length, 0);
   assert.equal(migratedHookDbStore.getMeta("schema_version"), "1");
   migratedHookDbStore.close();
 
@@ -145,32 +145,33 @@ try {
     cwd: "/tmp/project",
     host: "host-1",
     environment: "codex-app",
-    linkedType: "task",
-    linkedPath: "tasks/example/task.md",
     resumeKind: "open-chat-command",
     resumePayload: { commandId: "command-1" },
     firstObservedAt: now,
     lastEventAt: now + 1,
     lastStatusAt: now + 1,
     endedAt: null,
-    dirty: true,
     updatedAt: now + 1,
   });
 
-  assert.equal(store.listDirtyChats().length, 1);
-  store.markChatSynced("chat:codex:host-1:chat-1", {
-    convexId: "convex-chat-1",
-    syncedAt: now + 2,
+  // A freshly upserted chat is server-dirty (never synced); recording the push
+  // clears it and persists the local↔server id mapping.
+  assert.equal(store.listServerDirtyChats().length, 1);
+  store.markChatServerSynced("chat:codex:host-1:chat-1", {
+    serverChatId: "srv-chat-1",
+    syncedAt: now + 1,
   });
-  assert.equal(store.listDirtyChats().length, 0);
+  assert.equal(store.listServerDirtyChats().length, 0);
   assert.equal(
-    store.getLocalChat("chat:codex:host-1:chat-1")?.convexId,
-    "convex-chat-1",
+    store.getLocalChat("chat:codex:host-1:chat-1")?.serverChatId,
+    "srv-chat-1",
   );
 
   const codexChats = store.listChatsForTitleRefresh("project-1", "codex");
   assert.equal(codexChats.length, 1);
   assert.equal(codexChats[0]?.chatId, "chat-1");
+  // A title change bumps updated_at → the row is server-dirty again, but the
+  // stored serverChatId mapping survives the re-dirty.
   assert.equal(
     store.updateChatTitle(
       "chat:codex:host-1:chat-1",
@@ -183,7 +184,12 @@ try {
     store.getLocalChat("chat:codex:host-1:chat-1")?.title,
     "Generated Codex title",
   );
-  assert.equal(store.listDirtyChats().length, 1);
+  assert.equal(store.listServerDirtyChats().length, 1);
+  assert.equal(
+    store.getLocalChat("chat:codex:host-1:chat-1")?.serverChatId,
+    "srv-chat-1",
+  );
+  // Re-typing the same title is a no-op (no updated_at bump).
   assert.equal(
     store.updateChatTitle(
       "chat:codex:host-1:chat-1",
@@ -192,12 +198,8 @@ try {
     ),
     false,
   );
-  store.markChatSynced("chat:codex:host-1:chat-1", {
-    syncedAt: now + 4,
-  });
-
-  store.markChatDirty("chat:codex:host-1:chat-1", now + 3);
-  assert.equal(store.listDirtyChats().length, 1);
+  store.markChatServerSynced("chat:codex:host-1:chat-1", { syncedAt: now + 3 });
+  assert.equal(store.listServerDirtyChats().length, 0);
 
   store.upsertLocalChat({
     localKey: "launch:launch-1",
@@ -211,15 +213,12 @@ try {
     cwd: "/tmp/project",
     host: "host-1",
     environment: "cmux",
-    linkedType: null,
-    linkedPath: null,
     resumeKind: "open-chat-command",
     resumePayload: { commandId: "command-2" },
     firstObservedAt: now,
     lastEventAt: now,
     lastStatusAt: now,
     endedAt: null,
-    dirty: true,
     updatedAt: now,
   });
 
@@ -235,15 +234,12 @@ try {
     cwd: "/tmp/project",
     host: "host-1",
     environment: "cmux",
-    linkedType: null,
-    linkedPath: null,
     resumeKind: "open-chat-command",
     resumePayload: { commandId: "command-2" },
     firstObservedAt: now,
     lastEventAt: now + 4,
     lastStatusAt: now + 4,
     endedAt: null,
-    dirty: true,
     updatedAt: now + 4,
   });
 

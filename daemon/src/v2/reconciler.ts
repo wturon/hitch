@@ -656,15 +656,12 @@ export class Reconciler {
       cwd: input.cwd,
       host: this.host,
       environment: "cmux",
-      linkedType: null,
-      linkedPath: null,
       resumeKind: "open-chat-command",
       resumePayload: input.resumePayload,
       firstObservedAt: input.now,
       lastEventAt: input.now,
       lastStatusAt: input.now,
       endedAt: null,
-      dirty: true,
       updatedAt: input.now,
     });
   }

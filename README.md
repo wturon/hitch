@@ -1,52 +1,52 @@
 # Hitch
 
-A realtime sync layer that couples AI agents and humans to the same view of work — so a fast-growing pile of work stays in step instead of drifting apart.
+AI-native task management with a delegation layer. Capture tasks, assign them to
+agents (claude/codex on your own subscriptions, running in cmux), and quickly
+find and resume their chats.
 
 ## The idea
 
-Coding agents are great at reading and writing files in a repo. But task/status files committed to a repo get locked to a branch, which makes human review and collaboration awkward. Hitch decouples **task state** (fast, branch-agnostic, realtime) from **code state** (slow, branch-bound, git):
+Empty your mental RAM fast, push work to agents easily, and let agents pull from
+and enrich the backlog. A task is a small markdown doc; delegating it hands it to
+an agent on one of your machines, which runs the chat and reports back so you can
+review and resume without hunting through terminals.
 
-- A **git-ignored folder** (e.g. `.hitch/`) lives in your repo's working directory. Because it's untracked, it sits at the same path regardless of which branch is checked out.
-- **Agents write greppable files** into that folder — their progress and context — using the file access they're already good at. No MCP required.
-- A **local daemon** watches the folder and syncs it, in real time, to a shared backend.
-- A **desktop app** runs the daemon and renders those files live as a grouped todo list, so humans can read and collaborate at the task level without checking out a branch.
+## Architecture
 
-## Architecture (v0)
+- **Server** ([`server/`](server)) — [Hono](https://hono.dev) + Postgres +
+  Drizzle + [better-auth](https://better-auth.com). Owns **all** state and any
+  logic that doesn't need a machine. Realtime via Postgres `LISTEN/NOTIFY` →
+  WebSocket invalidation. Deployed on [Railway](https://railway.app); runnable
+  locally with `docker compose`.
+- **Desktop** ([`desktop/`](desktop)) — Electron app (Vite/React renderer). Reads
+  and writes the server only; the main process holds auth (an api key minted at
+  sign-in) and the server WebSocket.
+- **Daemon** ([`daemon/`](daemon)) — a **pure reconciler**. It reacts to the
+  server (WS push + a ~30s tick), diffs desired vs. machine ground truth
+  (cmux/processes), spawns/resumes/closes agent chats via the cmux launchers, and
+  writes back only observations.
+- **CLI** ([`cli/`](cli)) — a self-teaching `hitch` bin agents use to read and
+  write the backlog. **Shared** ([`shared/`](shared)) — types + the typed hono
+  client used across desktop/cli/daemon.
 
-- **Backend:** [Convex](https://convex.dev) — reactive store + functions; handles realtime push, consistency, and reconnection. No separate server.
-- **Daemon:** a Node runtime that watches `.hitch/`, hashes files, pushes changes to Convex, and writes incoming changes back to disk (with echo suppression so a synced write doesn't loop).
-- **Desktop UI:** an Electron app with a Vite/React renderer subscribing to live Convex queries and supervising the daemon.
-
-### v0 conventions
-
-- **One writer per file.** Each agent owns its own file (named by owner/task), which keeps whole-file last-write-wins correct and defers conflict-resolution complexity.
-- File format stays loose for now (Markdown + frontmatter is the likely default); structured primitives can come later.
-
-## Status
-
-Early. The local development target is the Electron desktop app.
+Design decisions and the schema live in [docs/v2-prd.md](docs/v2-prd.md).
 
 ## Local Development
 
-Run Convex and Hitch Desktop in separate terminals:
+Bring up the server (Postgres + Hono) and point the desktop app at it:
 
 ```sh
-npm run dev:convex
-npm run dev
+docker compose up -d --build          # server on :3010
+npm run dev:v2-stack                  # composed stack + a dev api key
+HITCH_SERVER_URL=http://localhost:3010 npm run dev:desktop
 ```
 
-For GitHub sign-in in the desktop renderer, the Convex Auth site URL should be:
+`npm run dev:all` runs the server stack and the desktop app in one combined
+terminal. See [AGENTS.md](AGENTS.md) for the e2e harness and the fake-launch
+daemon loop.
 
-```sh
-npx convex env set SITE_URL http://127.0.0.1:5173
-```
+## Deployment
 
-The `.cmux` Hitch Desktop Dev command runs Convex, the Vite renderer, and
-Electron in separate tabs for easier log scanning. `npm run dev:all` is still
-available when you want a single combined terminal.
-
-## Production Readiness
-
-See [docs/production-readiness.md](docs/production-readiness.md) for the current
-deployment checklist, required environment variables, and the remaining auth /
-project gaps before broad sharing.
+The server deploys to Railway from its Dockerfile (`railway up`). Packaged
+desktop builds bake the prod server URL into `app-config.json`
+(`HITCH_SERVER_URL` at package time); the build fails closed if it's unset.

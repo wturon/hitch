@@ -12,8 +12,7 @@
     "types": ["vite/client"],
     "resolveJsonModule": true,
     "paths": {
-      "@/*": ["./src/renderer/*"],
-      "@convex/*": ["../convex/*"]
+      "@/*": ["./src/renderer/*"]
     }
   },
   "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx"]

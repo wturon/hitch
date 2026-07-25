@@ -74,7 +74,11 @@ try {
   assert.equal(a?.observerCreated, false);
 
   // Observer says the live status is "waiting" (running + idle). Status must
-  // stay hook-driven; only the shadow columns move, and the row goes dirty.
+  // stay hook-driven; only the shadow columns move, and the row's updated_at
+  // advances so the reconciler re-pushes it. Clear the server sink first so the
+  // re-dirty below is meaningful.
+  store.markChatServerSynced(keyA, { syncedAt: store.getLocalChat(keyA)!.updatedAt });
+  assert.equal(store.listServerDirtyChats().length, 0);
   const changed = store.recordObservation(
     observation("chat-A", { activity: "idle", status: "waiting" }),
   );
@@ -84,15 +88,19 @@ try {
   assert.equal(a?.observedStatus, "waiting", "shadow recorded");
   assert.equal(a?.observedActivity, "idle");
   assert.equal(a?.observedSource, "claude-pidfile");
-  assert.equal(a?.dirty, true, "shadow change marks the row for sync");
+  assert.equal(
+    store.listServerDirtyChats().length,
+    1,
+    "shadow change re-dirties the row for the server",
+  );
 
   // Idempotent: same observation again = no change, no extra dirtying churn.
-  store.markChatSynced(keyA);
+  store.markChatServerSynced(keyA, { syncedAt: store.getLocalChat(keyA)!.updatedAt });
   const again = store.recordObservation(
     observation("chat-A", { activity: "idle", status: "waiting" }),
   );
   assert.equal(again, false, "unchanged observation is a no-op");
-  assert.equal(store.getLocalChat(keyA)?.dirty, false);
+  assert.equal(store.listServerDirtyChats().length, 0);
 
   // --- observer-only row: observer owns status ------------------------------
   const keyB = `chat:claude-code:${HOST}:chat-B`;

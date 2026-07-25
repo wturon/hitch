@@ -1,8 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import App from "./App";
-import { ConvexClientProvider } from "./ConvexClientProvider";
 import { applyTheme, getStoredTheme, watchSystemTheme } from "./lib/theme";
 import { getHitchServerBridge } from "./lib/server/bridge";
 import { HitchServerProvider } from "./lib/server/HitchServerProvider";
@@ -14,9 +12,9 @@ import AppV2 from "./v2/AppV2";
 applyTheme(getStoredTheme());
 watchSystemTheme();
 
-// Mode switch (V2, M2 PR 1): the main process reports a server URL iff it was
-// launched with HITCH_SERVER_URL — then the V2 shell mounts against the Hono
-// server. Otherwise the V1 (Convex) tree renders exactly as before.
+// V2 is the only app now (V1/Convex deleted at the cutover). The main process
+// resolves the server URL — from HITCH_SERVER_URL in dev, or the baked
+// app-config.json (Railway prod) in a packaged build — so this always mounts.
 async function boot() {
   const serverConfig = await getHitchServerBridge()
     ?.getConfig()
@@ -24,15 +22,9 @@ async function boot() {
 
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      {serverConfig ? (
-        <HitchServerProvider serverUrl={serverConfig.serverUrl}>
-          <AppV2 />
-        </HitchServerProvider>
-      ) : (
-        <ConvexClientProvider>
-          <App />
-        </ConvexClientProvider>
-      )}
+      <HitchServerProvider serverUrl={serverConfig?.serverUrl ?? ""}>
+        <AppV2 />
+      </HitchServerProvider>
     </StrictMode>,
   );
 }

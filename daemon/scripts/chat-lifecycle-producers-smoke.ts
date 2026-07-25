@@ -22,11 +22,9 @@ try {
     producer.chatCreated({
       commandId: "cmd-1",
       launchId: "launch-1",
-      automationRunId: "run-1",
       harness: "codex",
       environment: "codex-app",
       cwd: "/tmp/project",
-      linkedPath: "tasks/example/task.md",
       title: "Example task",
     }).inserted,
     true,
@@ -36,11 +34,9 @@ try {
     producer.chatBound({
       commandId: "cmd-1",
       launchId: "launch-1",
-      automationRunId: "run-1",
       harness: "codex",
       environment: "codex-app",
       cwd: "/tmp/project",
-      linkedPath: "tasks/example/task.md",
       chatId: "thread-1",
     }).inserted,
     true,
@@ -50,11 +46,9 @@ try {
     producer.chatBound({
       commandId: "cmd-1",
       launchId: "launch-1",
-      automationRunId: "run-1",
       harness: "codex",
       environment: "codex-app",
       cwd: "/tmp/project",
-      linkedPath: "tasks/example/task.md",
       chatId: "thread-1",
     }).inserted,
     false,
@@ -64,11 +58,9 @@ try {
     producer.turnCompleted({
       commandId: "cmd-1",
       launchId: "launch-1",
-      automationRunId: "run-1",
       harness: "codex",
       environment: "codex-app",
       cwd: "/tmp/project",
-      linkedPath: "tasks/example/task.md",
       chatId: "thread-1",
     }).inserted,
     true,
@@ -79,7 +71,6 @@ try {
       harness: "claude-code",
       environment: "cmux",
       cwd: "/tmp/project",
-      linkedPath: "tasks/claude/task.md",
       chatId: "session-1",
       pid: 1234,
     }).inserted,
@@ -103,8 +94,6 @@ try {
       ["daemon-reconcile", "session.ended", null, "session-1", null],
     ],
   );
-  assert.equal(events[1]?.metadata.linkedPath, "tasks/example/task.md");
-  assert.equal(events[2]?.metadata.automationRunId, "run-1");
   assert.equal(events[3]?.metadata.pid, 1234);
 
   store.close();

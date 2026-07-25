@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // The V2 tag filter (PR 5): AND semantics + exclusive Untagged over resolved
 // tag names, the facet-count preview math, and the per-project localStorage
-// persistence — the pure port of V1's lib/todos filter section onto server
+// persistence — the pure port of the removed V1 tag-filter section onto server
 // rows (tagIds → names).
 import { beforeEach, describe, expect, it } from "vitest";
 

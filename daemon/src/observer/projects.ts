@@ -1,8 +1,8 @@
 import { relative, resolve, sep } from "node:path";
 
-// The subset of a resolved hitch the observer needs to associate a chat (by its
-// cwd) with a project. Mirrors `projectForCwd` in the desktop hook and the
-// daemon, kept here so the observer doesn't reach into either.
+// The subset of a project the observer needs to associate a chat (by its cwd)
+// with a project. Populated from the server's projects (see v2/projects.ts),
+// kept as a minimal shape so the observer doesn't reach into the provider.
 export interface ObserverProject {
   projectId: string;
   localPath: string;

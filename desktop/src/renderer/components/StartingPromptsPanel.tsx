@@ -1,13 +1,7 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import {
-  LockIcon,
-  PencilIcon,
-  PlusIcon,
-  SparklesIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { LockIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -16,13 +10,11 @@ import {
   saveCustomPrompts,
   type StartingPrompt,
 } from "@/lib/chat";
-import { cn } from "@/lib/utils";
 
 interface EditorDraft {
   id: string;
   name: string;
   body: string;
-  includeTaskRef: boolean;
   isNew: boolean;
 }
 
@@ -31,7 +23,6 @@ function newDraft(): EditorDraft {
     id: crypto.randomUUID(),
     name: "",
     body: "",
-    includeTaskRef: true,
     isNew: true,
   };
 }
@@ -75,7 +66,6 @@ export function StartingPromptsPanel() {
       id: draft.id,
       name: draft.name.trim(),
       body: draft.body,
-      includeTaskRef: draft.includeTaskRef,
     };
     const next = draft.isNew
       ? [...prompts, prompt]
@@ -257,25 +247,6 @@ function PromptEditor({
         />
       </div>
 
-      <button
-        type="button"
-        onClick={() =>
-          onChange({ ...draft, includeTaskRef: !draft.includeTaskRef })
-        }
-        className="flex items-center gap-3 rounded-md border bg-background px-3 py-2.5 text-left"
-      >
-        <span className="min-w-0 flex-1">
-          <span className="block text-[0.8rem] font-medium">
-            Point the agent at the Hitch task
-          </span>
-          <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
-            Prepend the task name and file path so the agent knows what it's
-            picking up.
-          </span>
-        </span>
-        <Switch checked={draft.includeTaskRef} />
-      </button>
-
       <div className="flex flex-col gap-1.5">
         <label
           htmlFor={bodyId}
@@ -283,7 +254,10 @@ function PromptEditor({
         >
           Prompt
         </label>
-        {draft.includeTaskRef && <TaskRefPreview />}
+        <p className="text-xs leading-5 text-muted-foreground">
+          The task's title and description are always sent to the agent first —
+          write only what it should DO with the task.
+        </p>
         <textarea
           id={bodyId}
           value={draft.body}
@@ -328,46 +302,3 @@ function PromptEditor({
   );
 }
 
-// Read-only preview of the dynamic preamble inserted at launch. The bracketed
-// values are filled from the live task by the daemon-bound launcher, so they're
-// shown as placeholders here.
-function TaskRefPreview() {
-  return (
-    <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 px-3 py-2.5">
-      <span className="flex items-center gap-1.5 text-[0.7rem] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400/90">
-        <SparklesIcon className="size-3" />
-        Added automatically · filled from the task
-      </span>
-      <p className="font-mono text-xs leading-relaxed text-muted-foreground">
-        You're picking up the Hitch task "
-        <span className="text-amber-700 dark:text-amber-400/90">
-          {"{task name}"}
-        </span>
-        ". Its file is at .hitch/
-        <span className="text-amber-700 dark:text-amber-400/90">
-          {"{task path}"}
-        </span>
-        .
-      </p>
-    </div>
-  );
-}
-
-function Switch({ checked }: { checked: boolean }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors",
-        checked ? "bg-foreground" : "bg-muted-foreground/30",
-      )}
-    >
-      <span
-        className={cn(
-          "size-4 rounded-full bg-background shadow-sm transition-transform",
-          checked && "translate-x-4",
-        )}
-      />
-    </span>
-  );
-}

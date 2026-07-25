@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { normalizeChatTitle } from "./chatTitles.js";
-import { LINKED_DOC_TYPES_SQL } from "./linkedDocs.js";
 import { resolveChatStatus } from "./observer/derive.js";
 import type { ObservedExistence } from "./observer/types.js";
 
@@ -77,8 +76,6 @@ export interface LocalChatInput {
   cwd: string;
   host: string;
   environment: string | null;
-  linkedType: "task" | "automation" | null;
-  linkedPath: string | null;
   resumeKind: "open-chat-command" | "external";
   resumePayload?: Record<string, unknown>;
   firstObservedAt: number;
@@ -89,9 +86,6 @@ export interface LocalChatInput {
   pinnedAt?: number | null;
   archivedAt?: number | null;
   deletedAt?: number | null;
-  dirty?: boolean;
-  lastSyncedAt?: number | null;
-  convexId?: string | null;
   updatedAt: number;
   // The observer produced this row on its own (no hook/daemon event bound it).
   // Reset to false whenever the reducer folds an event in, handing status
@@ -117,18 +111,16 @@ export interface ObservedShadow {
 
 export interface LocalChatRow extends Required<LocalChatInput>, ObservedShadow {
   resumePayload: Record<string, unknown>;
-  // V2 server-sink bookkeeping (Decision 7). Independent of the Convex
-  // `dirty`/`lastSyncedAt`/`convexId` flags so a V2 daemon syncing to the Hono
-  // server never clears the V1 daemon's Convex-dirty flag (and vice versa).
-  // `serverSyncedAt` records the `updatedAt` value last pushed to the server;
-  // a row is "server-dirty" when its `updatedAt` has since advanced past it.
-  // `serverChatId` is the server `chats.id` this local row maps to.
+  // Server-sink bookkeeping (Decision 7). `serverSyncedAt` records the
+  // `updatedAt` value last pushed to the Hono server; a row is "server-dirty"
+  // when its `updatedAt` has since advanced past it. `serverChatId` is the
+  // server `chats.id` this local row maps to.
   serverSyncedAt: number | null;
   serverChatId: string | null;
 }
 
 // Per-chat tail bookkeeping for the observer's incremental log reads. Keyed by
-// the chat identity; never synced to Convex. Lets a daemon restart resume a tail
+// the chat identity; never synced to the server. Lets a daemon restart resume a tail
 // from where it left off and lets the reconcile floor detect file changes
 // cheaply.
 export interface ObservedFileRow {
@@ -174,7 +166,7 @@ export interface ChatLifecycleReductionResult {
 }
 
 // Raw cmux command/response trace. Unlike lifecycle events, these are NOT
-// reduced and never sync to Convex — they're a local-only debug record of what
+// reduced and never sync to the server — they're a local-only debug record of what
 // Hitch asked cmux to do (and how it responded) so the chat-lifecycle debug
 // screen can replay why a resume focused the wrong surface or spawned a dupe.
 // `chatId` is the session/thread id when known; codex launches only know their
@@ -487,9 +479,6 @@ export class ChatLifecycleStore {
             const changed = !existing || !this.sameReducedChat(existing, next);
             this.upsertLocalChatUnsafe({
               ...next,
-              dirty: existing?.dirty || changed,
-              lastSyncedAt: existing?.lastSyncedAt ?? null,
-              convexId: existing?.convexId ?? null,
               updatedAt: changed || !existing ? now : existing.updatedAt,
             });
             if (changed) chatsChanged += 1;
@@ -539,36 +528,6 @@ export class ChatLifecycleStore {
       .prepare("SELECT * FROM local_chats WHERE local_key = ?")
       .get(localKey);
     return row ? this.localChatFromRow(row) : null;
-  }
-
-  listDirtyChats(limit = 100): LocalChatRow[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM local_chats
-         WHERE dirty = 1
-         ORDER BY updated_at ASC
-         LIMIT ?`,
-      )
-      .all(limit)
-      .map((row) => this.localChatFromRow(row));
-  }
-
-  // Chats linked to an editable doc (a task's task.md),
-  // whose frontmatter the daemon keeps stamped/projected. The accepted kinds
-  // come from LINKED_DOC_KINDS so this stays in lockstep with the bind/reconcile
-  // paths; automations link a path too but aren't projected, so they're excluded.
-  listFileLinkedChats(projectId: string, limit = 500): LocalChatRow[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM local_chats
-         WHERE project_id = ?
-           AND linked_type IN (${LINKED_DOC_TYPES_SQL})
-           AND linked_path IS NOT NULL
-         ORDER BY updated_at ASC
-         LIMIT ?`,
-      )
-      .all(projectId, limit)
-      .map((row) => this.localChatFromRow(row));
   }
 
   // cmux-environment chats for the debug screen, newest activity first. Scoped
@@ -642,7 +601,6 @@ export class ChatLifecycleStore {
       .prepare(
         `UPDATE local_chats
          SET title = ?,
-             dirty = 1,
              updated_at = ?
          WHERE local_key = ?`,
       )
@@ -650,36 +608,10 @@ export class ChatLifecycleStore {
     return numberFromSqlite(result.changes) > 0;
   }
 
-  markChatDirty(localKey: string, updatedAt = Date.now()): void {
-    this.db
-      .prepare(
-        "UPDATE local_chats SET dirty = 1, updated_at = ? WHERE local_key = ?",
-      )
-      .run(updatedAt, localKey);
-  }
-
-  markChatSynced(
-    localKey: string,
-    options: { convexId?: string | null; syncedAt?: number } = {},
-  ): void {
-    this.db
-      .prepare(
-        `UPDATE local_chats
-         SET dirty = 0,
-             last_synced_at = ?,
-             convex_id = COALESCE(?, convex_id)
-         WHERE local_key = ?`,
-      )
-      .run(options.syncedAt ?? Date.now(), options.convexId ?? null, localKey);
-  }
-
-  // --- V2 server sink (Decision 7) -------------------------------------------
+  // --- Server sink (Decision 7) ----------------------------------------------
   // Rows whose local state has advanced past what was last pushed to the Hono
-  // server. Deliberately parallel to `listDirtyChats` but keyed off the
-  // independent `server_synced_at` cursor: a row is server-dirty when it was
-  // never synced (NULL) or its `updated_at` moved since the last push. This
-  // NEVER reads or writes the Convex `dirty` flag, so the two sinks don't
-  // contend.
+  // server: a row is server-dirty when it was never synced (NULL) or its
+  // `updated_at` moved since the last push.
   listServerDirtyChats(limit = 100): LocalChatRow[] {
     return this.db
       .prepare(
@@ -696,7 +628,7 @@ export class ChatLifecycleStore {
   // row's `updatedAt` at read time so a concurrent update during the network
   // round-trip re-dirties correctly rather than being lost). `serverChatId`
   // persists the local↔server id mapping; COALESCE keeps a prior mapping when
-  // omitted. Touches only the server_* columns — the Convex flags are untouched.
+  // omitted.
   markChatServerSynced(
     localKey: string,
     options: { serverChatId?: string | null; syncedAt?: number } = {},
@@ -873,8 +805,6 @@ export class ChatLifecycleStore {
             cwd TEXT NOT NULL,
             host TEXT NOT NULL,
             environment TEXT,
-            linked_type TEXT,
-            linked_path TEXT,
             resume_kind TEXT NOT NULL,
             resume_payload_json TEXT NOT NULL DEFAULT '{}',
             first_observed_at INTEGER NOT NULL,
@@ -885,11 +815,14 @@ export class ChatLifecycleStore {
             pinned_at INTEGER,
             archived_at INTEGER,
             deleted_at INTEGER,
-            dirty INTEGER NOT NULL DEFAULT 1,
-            last_synced_at INTEGER,
-            convex_id TEXT,
             updated_at INTEGER NOT NULL
           );
+          -- Databases created before the V1 model was removed still carry
+          -- retired columns: dirty/last_synced_at/convex_id (the Convex sink)
+          -- and linked_type/linked_path (V1 frontmatter-doc projection). They
+          -- are left in place (harmless: dirty had a DEFAULT so INSERTs that
+          -- omit it still work); the model, API, and write path no longer touch
+          -- them.
 
           CREATE UNIQUE INDEX IF NOT EXISTS local_chats_by_chat
             ON local_chats(harness, chat_id, host)
@@ -972,12 +905,11 @@ export class ChatLifecycleStore {
         "observer_created INTEGER NOT NULL DEFAULT 0",
       );
 
-      // V2 server-sink bookkeeping (Decision 7). Added idempotently outside the
-      // schema_version gate, exactly like the observer columns: these carry a
-      // second, independent sync cursor so a V2 daemon (Hono server) and a V1
-      // daemon (Convex) can share this store without starving each other's
-      // dirty flags. Default NULL so existing rows read as never-server-synced
-      // and the reducer's upsert (which never names them) is untouched.
+      // Server-sink bookkeeping (Decision 7). Added idempotently outside the
+      // schema_version gate, exactly like the observer columns: they carry the
+      // cursor the reconciler uses to push chat state to the Hono server.
+      // Default NULL so existing rows read as never-server-synced and the
+      // reducer's upsert (which never names them) is untouched.
       this.addColumnIfMissing("local_chats", "server_synced_at", "server_synced_at INTEGER");
       this.addColumnIfMissing("local_chats", "server_chat_id", "server_chat_id TEXT");
 
@@ -1083,9 +1015,9 @@ export class ChatLifecycleStore {
   //     move; `status` is the unchanged event status.
   //   - observer-only row (no event ever bound it) → the observation owns
   //     `status`, since it's the row's only source.
-  // The row is marked dirty only when something actually changed, so we don't
-  // churn Convex syncs every tick. `record.status` is the observer's derived
-  // status (`deriveStatusFromObservation`).
+  // `updated_at` moves only when something actually changed, so the server sink
+  // doesn't churn every tick. `record.status` is the observer's derived status
+  // (`deriveStatusFromObservation`).
   //
   // `createIfMissing` (default true) gates producing a brand-new registry row:
   // callers pass false for dormant/gone observations so the observer doesn't
@@ -1131,7 +1063,6 @@ export class ChatLifecycleStore {
              project_id = COALESCE(project_id, ?),
              environment = COALESCE(environment, ?),
              last_status_at = CASE WHEN ? THEN ? ELSE last_status_at END,
-             dirty = CASE WHEN ? THEN 1 ELSE dirty END,
              updated_at = CASE WHEN ? THEN ? ELSE updated_at END
            WHERE local_key = ?`,
         )
@@ -1147,7 +1078,6 @@ export class ChatLifecycleStore {
           record.environment,
           statusChanged ? 1 : 0,
           now,
-          changed ? 1 : 0,
           changed ? 1 : 0,
           now,
           localKey,
@@ -1177,15 +1107,12 @@ export class ChatLifecycleStore {
       cwd: record.cwd,
       host: record.host,
       environment: record.environment,
-      linkedType: null,
-      linkedPath: null,
       resumeKind: "external",
       resumePayload: { chatId: record.chatId, cwd: record.cwd },
       firstObservedAt: now,
       lastEventAt: now,
       lastStatusAt: now,
       endedAt: record.endedAt,
-      dirty: true,
       updatedAt: now,
       observerCreated: true,
     });
@@ -1257,8 +1184,6 @@ export class ChatLifecycleStore {
           cwd,
           host,
           environment,
-          linked_type,
-          linked_path,
           resume_kind,
           resume_payload_json,
           first_observed_at,
@@ -1269,12 +1194,9 @@ export class ChatLifecycleStore {
           pinned_at,
           archived_at,
           deleted_at,
-          dirty,
-          last_synced_at,
-          convex_id,
           updated_at,
           observer_created
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(local_key) DO UPDATE SET
           project_id = excluded.project_id,
           launch_id = excluded.launch_id,
@@ -1286,8 +1208,6 @@ export class ChatLifecycleStore {
           cwd = excluded.cwd,
           host = excluded.host,
           environment = excluded.environment,
-          linked_type = excluded.linked_type,
-          linked_path = excluded.linked_path,
           resume_kind = excluded.resume_kind,
           resume_payload_json = excluded.resume_payload_json,
           first_observed_at = excluded.first_observed_at,
@@ -1298,9 +1218,6 @@ export class ChatLifecycleStore {
           pinned_at = excluded.pinned_at,
           archived_at = excluded.archived_at,
           deleted_at = excluded.deleted_at,
-          dirty = excluded.dirty,
-          last_synced_at = excluded.last_synced_at,
-          convex_id = excluded.convex_id,
           updated_at = excluded.updated_at,
           observer_created = excluded.observer_created`,
       )
@@ -1316,8 +1233,6 @@ export class ChatLifecycleStore {
         chat.cwd,
         chat.host,
         chat.environment,
-        chat.linkedType,
-        chat.linkedPath,
         chat.resumeKind,
         jsonString(chat.resumePayload),
         chat.firstObservedAt,
@@ -1328,9 +1243,6 @@ export class ChatLifecycleStore {
         chat.pinnedAt ?? null,
         chat.archivedAt ?? null,
         chat.deletedAt ?? null,
-        booleanInt(chat.dirty, true),
-        chat.lastSyncedAt ?? null,
-        chat.convexId ?? null,
         chat.updatedAt,
         booleanInt(chat.observerCreated, false),
       );
@@ -1374,11 +1286,11 @@ export class ChatLifecycleStore {
     if (!localKey) return null;
 
     // A bind event (chatId AND launchId) can straddle two rows: an observer-created
-    // `chat:<id>` row (status/observed state, no link) and the pending `launch:<id>`
-    // row (the task/note link, no chatId). Read both so link fields are inherited
-    // from whichever actually carries them — otherwise the bound chat loses its
-    // task link and the pending row is orphaned. upsertLocalChatUnsafe then coalesces
-    // the two rows so only one owns the launch_id.
+    // `chat:<id>` row (status/observed state, no launch) and the pending
+    // `launch:<id>` row (the launch's projectId + resume payload, no chatId). Read
+    // both so those fields are inherited from whichever carries them; otherwise the
+    // pending row is orphaned. upsertLocalChatUnsafe then coalesces the two rows so
+    // only one owns the launch_id.
     const chatRow = event.chatId
       ? this.getLocalChat(`chat:${event.harness}:${event.host}:${event.chatId}`)
       : null;
@@ -1386,26 +1298,9 @@ export class ChatLifecycleStore {
       ? this.getLocalChatByLaunchId(event.launchId)
       : null;
     const existing = chatRow ?? launchRow ?? this.getLocalChat(localKey);
-    // The link lives on whichever row was stamped with it (usually the pending
-    // launch row); the observer row has none.
-    const linkSource =
-      (chatRow?.linkedPath ? chatRow : null) ??
-      (launchRow?.linkedPath ? launchRow : null) ??
-      existing;
 
     const environment =
       optionalString(event.metadata.environment) ?? existing?.environment ?? null;
-    const linkedType =
-      event.metadata.linkedType === "task" ||
-      event.metadata.linkedType === "automation"
-        ? event.metadata.linkedType
-        : linkSource?.linkedType ?? null;
-    const linkedPath =
-      optionalString(event.metadata.linkedPath) ?? linkSource?.linkedPath ?? null;
-    const automationRunId =
-      optionalString(event.metadata.automationRunId) ??
-      optionalString(existing?.resumePayload.automationRunId) ??
-      optionalString(launchRow?.resumePayload.automationRunId);
     const title = normalizeChatTitle(
       optionalString(event.metadata.title) ?? existing?.title,
       event.harness,
@@ -1447,16 +1342,12 @@ export class ChatLifecycleStore {
       cwd: event.cwd || existing?.cwd || "",
       host: event.host || existing?.host || "",
       environment,
-      linkedType,
-      linkedPath,
       resumeKind: existing?.resumeKind ?? "open-chat-command",
       resumePayload: {
         ...(existing?.resumePayload ?? {}),
         launchId,
         chatId,
         cwd: event.cwd || existing?.cwd || "",
-        linkedPath,
-        automationRunId,
       },
       firstObservedAt: Math.min(existing?.firstObservedAt ?? event.observedAt, event.observedAt),
       lastEventAt: Math.max(existing?.lastEventAt ?? event.observedAt, event.observedAt),
@@ -1468,9 +1359,6 @@ export class ChatLifecycleStore {
       pinnedAt: existing?.pinnedAt ?? null,
       archivedAt: existing?.archivedAt ?? null,
       deletedAt: existing?.deletedAt ?? null,
-      dirty: true,
-      lastSyncedAt: existing?.lastSyncedAt ?? null,
-      convexId: existing?.convexId ?? null,
       updatedAt: now,
     };
   }
@@ -1508,8 +1396,6 @@ export class ChatLifecycleStore {
       existing.cwd === next.cwd &&
       existing.host === next.host &&
       existing.environment === next.environment &&
-      existing.linkedType === next.linkedType &&
-      existing.linkedPath === next.linkedPath &&
       existing.resumeKind === next.resumeKind &&
       JSON.stringify(existing.resumePayload) ===
         JSON.stringify(next.resumePayload ?? {}) &&
@@ -1569,14 +1455,6 @@ export class ChatLifecycleStore {
       cwd: String(value.cwd),
       host: String(value.host),
       environment: value.environment === null ? null : String(value.environment),
-      // Coerce instead of casting: a pre-migration local row may still carry a
-      // retired value (e.g. "note"), which must read as unlinked rather than
-      // leak into the tightened Convex validator on the next sync.
-      linkedType:
-        value.linked_type === "task" || value.linked_type === "automation"
-          ? value.linked_type
-          : null,
-      linkedPath: value.linked_path === null ? null : String(value.linked_path),
       resumeKind: String(value.resume_kind) as "open-chat-command" | "external",
       resumePayload: jsonObject(String(value.resume_payload_json)),
       firstObservedAt: numberFromSqlite(value.first_observed_at),
@@ -1589,12 +1467,6 @@ export class ChatLifecycleStore {
         value.archived_at === null ? null : numberFromSqlite(value.archived_at),
       deletedAt:
         value.deleted_at === null ? null : numberFromSqlite(value.deleted_at),
-      dirty: bool(value.dirty),
-      lastSyncedAt:
-        value.last_synced_at === null
-          ? null
-          : numberFromSqlite(value.last_synced_at),
-      convexId: value.convex_id === null ? null : String(value.convex_id),
       updatedAt: numberFromSqlite(value.updated_at),
       observedStatus:
         value.observed_status == null

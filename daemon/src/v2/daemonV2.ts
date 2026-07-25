@@ -104,12 +104,9 @@ export async function startHitchDaemonV2(
   const logger = options.logger ?? defaultLogger;
   loadEnvFiles(cwd, options.envFiles ?? [".env.local", ".env"], env);
 
+  // Resolves the server URL + api key from env or the desktop's stored
+  // credentials, or throws a teaching error — never returns null.
   const config = resolveServerConfig(env);
-  if (!config) {
-    // Unreachable via the index.ts/runner.ts seam (it only calls us when
-    // HITCH_SERVER_URL is set), but explicit beats a confusing null deref.
-    throw new Error("[hitch] startHitchDaemonV2 called without HITCH_SERVER_URL set.");
-  }
 
   const version = readDaemonVersion();
   const name = hostname();

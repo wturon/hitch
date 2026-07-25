@@ -1,37 +1,12 @@
-// A task can reference the coding-agent chat that's driving it, so the board can
-// jump back to that conversation. The reference rides the task's frontmatter as
-// flat `chat-*` keys (the reader in ./frontmatter is scalar-only), e.g.
-//
-//   chat-harness: claude-code
-//   chat-id: 9f8e7d6c-1234-...
-//   chat-cwd: /Users/will/code/hitch
-//
-// MVP scope is single-machine: the launch action assumes the board is open on
-// the same Mac that owns the session. See README / the daemon command-bus idea
-// for cross-machine routing later.
-//
-// T3Code (experimental) note: for the `t3code` environment, `chat-id` holds the
-// T3Code *threadId* (the id Hitch acts on for focus/status), not the Claude
-// session UUID. The daemon also writes `chat-t3-thread-id` (mirror) and
-// `chat-t3-environment-id` (the global env id needed to build the focus URL).
+// Launch catalogs for the delegate bar: the harnesses Hitch can drive, their
+// model/effort ladders, the run environments, and the reusable kickoff prompts.
+// All pure data plus small helpers over it — no React and no DOM beyond the
+// localStorage guards in loadLastAgent/saveLastAgent/loadCustomPrompts.
 
-import type { Frontmatter } from "./frontmatter";
-import { setFrontmatterKeys } from "./frontmatter";
-import type { Harness } from "./chatModel";
-import {
-  CHAT_REQUEST_ERROR_KEY,
-  CHAT_REQUEST_HARNESS_KEY,
-  CHAT_REQUEST_ID_KEY,
-  CHAT_REQUEST_KEY,
-  HARNESSES,
-} from "./chatModel";
+// The coding agents Hitch can delegate to.
+export type Harness = "claude-code" | "codex";
 
-// The pure parsing/derivation model (Harness, ChatRef, ChatStatus + aliases,
-// the delegation-request rules, parseChatRef/parseChatStatus/…) lives in
-// ./chatModel so the Todos derivation core stays importable from Convex (see
-// the purity contract there). Re-exported wholesale: every existing consumer
-// keeps importing these names from "@/lib/chat" unchanged.
-export * from "./chatModel";
+export const HARNESSES: Harness[] = ["claude-code", "codex"];
 
 export function harnessLabel(harness: Harness): string {
   return harness === "codex" ? "Codex" : "Claude Code";
@@ -42,15 +17,12 @@ export function harnessLabel(harness: Harness): string {
 // settings UI models this axis explicitly so future environments (e.g. the VS Code
 // extension) slot in without reshaping the mental model. Keep in sync with the
 // daemon's launcher registry.
-export type Environment = "cmux" | "codex-app" | "vscode" | "cursor" | "t3code";
+export type Environment = "cmux" | "codex-app" | "vscode" | "cursor";
 
 export interface EnvironmentOption {
   id: Environment;
   label: string;
 }
-
-export const T3CODE_BLOCKED_REASON =
-  "blocked until programmatic chat focusing is enabled by the maintainers";
 
 export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
   "claude-code": [
@@ -66,13 +38,7 @@ export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
   ],
 };
 
-// T3Code remains in the Environment type so old task metadata can be read, but
-// it is intentionally absent from selectable options until upstream supports
-// programmatic chat focusing.
-export function environmentOptions(
-  harness: Harness,
-  _opts?: { experimentalT3Code?: boolean },
-): EnvironmentOption[] {
+export function environmentOptions(harness: Harness): EnvironmentOption[] {
   return ENVIRONMENTS_BY_HARNESS[harness];
 }
 
@@ -88,8 +54,6 @@ export function environmentLabel(env: Environment): string {
       return "VS Code extension";
     case "cursor":
       return "Cursor extension";
-    case "t3code":
-      return "T3Code (experimental)";
     default:
       return "cmux (TUI)";
   }
@@ -100,8 +64,7 @@ export function isEnvironment(value: string): value is Environment {
     value === "cmux" ||
     value === "codex-app" ||
     value === "vscode" ||
-    value === "cursor" ||
-    value === "t3code"
+    value === "cursor"
   );
 }
 
@@ -303,61 +266,15 @@ export function honorsLaunchParams(
   );
 }
 
-// Raw, possibly-incomplete field values backing the link editor. Unlike
-// ChatRef these can be half-filled while the user is still typing.
-export interface ChatFields {
-  harness: string;
-  id: string;
-  cwd: string;
-}
-
-export function readChatFields(fm: Frontmatter): ChatFields {
-  return {
-    harness: (fm["chat-harness"] ?? "").trim(),
-    id: (fm["chat-id"] ?? "").trim(),
-    cwd: (fm["chat-cwd"] ?? "").trim(),
-  };
-}
-
-// Write the editor's fields back into raw file content, preserving the body and
-// every other frontmatter key. Empty values are removed; cwd only applies to
-// Claude Code.
-export function writeChatFields(content: string, fields: ChatFields): string {
-  return setFrontmatterKeys(content, {
-    "chat-harness": fields.harness || undefined,
-    "chat-id": fields.id || undefined,
-    "chat-cwd":
-      fields.harness === "claude-code" ? fields.cwd || undefined : undefined,
-  });
-}
-
-export function clearChatFields(content: string): string {
-  return setFrontmatterKeys(content, {
-    "chat-harness": undefined,
-    "chat-id": undefined,
-    "chat-cwd": undefined,
-    "chat-status": undefined,
-    "chat-open-state": undefined,
-    "chat-env": undefined,
-    "chat-t3-thread-id": undefined,
-    "chat-t3-environment-id": undefined,
-    [CHAT_REQUEST_KEY]: undefined,
-    [CHAT_REQUEST_HARNESS_KEY]: undefined,
-    [CHAT_REQUEST_ID_KEY]: undefined,
-    [CHAT_REQUEST_ERROR_KEY]: undefined,
-  });
-}
-
 // A reusable kickoff instruction the user picks from the delegation dropdown.
-// `body` is the user-authored instruction; `includeTaskRef` controls whether the
-// dynamic task-reference preamble (task name + file path) is prepended at launch.
-// The preamble is never stored — it's interpolated against the live task here in
-// the renderer, so prompts stay portable and the context can be kept lean.
+// `body` is the user-authored instruction. It's stamped AFTER the machine-facing
+// task preamble that V2 always prepends at launch (see buildDelegatePreamble in
+// v2/delegation.ts — title + verbatim body + task id + `hitch` CLI line), so a
+// prompt never needs to restate the task; it just says what to DO with it.
 export interface StartingPrompt {
   id: string;
   name: string;
   body: string;
-  includeTaskRef: boolean;
   // Short, plain-English summary shown beside the preset name in the minimized
   // delegate bar (the `body` is too long to show inline). Optional: built-ins
   // always set it; custom prompts may omit it and fall back to a truncated body
@@ -374,48 +291,26 @@ export function promptDescription(prompt: StartingPrompt): string {
   return body.length > 72 ? `${body.slice(0, 71)}…` : body;
 }
 
-// The dynamic preamble that orients the agent to the task it's picking up. The
-// daemon links the session before the first model turn, so the agent can focus on
-// the task instead of introspecting its own session id.
-export function taskRefPreamble(task: { title: string; path: string }): string {
-  return [
-    `You're picking up the Hitch task "${task.title}".`,
-    `Its file is at .hitch/${task.path}, relative to your current project folder.`,
-  ].join("\n");
-}
-
-// Assemble the full seed prompt a preset produces for a given task: the optional
-// task-reference preamble followed by the preset body.
-export function buildStartPrompt(
-  prompt: Pick<StartingPrompt, "body" | "includeTaskRef">,
-  task: { title: string; path: string },
-): string {
-  const body = prompt.body.trim();
-  if (!prompt.includeTaskRef) return body;
-  const preamble = taskRefPreamble(task);
-  return body ? `${preamble}\n\n${body}` : preamble;
-}
-
 // Curated built-in kickoff prompts. These ship in the app binary and are the
 // same for everyone: they're never persisted, can't be edited or removed, and
 // refresh with every app update. The delegation dropdown is composed as these
 // followed by the user's custom prompts. The bodies live only here now — the
 // main process knows the ids (BUILTIN_PROMPT_IDS, mirrored in main.ts) so it can
 // strip any built-in a user previously had seeded into their stored library.
+// Bodies assume the task preamble is already present (it always is), so they
+// reference "this task" and drive the agent via the `hitch` CLI, never a file.
 export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
     name: "Do the task.",
     description: "Reads the task and does what it asks",
     body: "Read this task and do what it asks.",
-    includeTaskRef: true,
   },
   {
     id: "think-through",
     name: "Help me think this through.",
     description: "Talks through the problem with you, no code yet",
     body: "Don't write any code yet. Help me reason through the task, question, or idea described here and organize my own thinking. Read the task and explore any relevant context, then push on it with me: ask clarifying questions, point out inconsistencies or risks I may have missed, and compare plausible approaches with your honest recommendation. The goal is to help me sharpen my judgment, not to produce a step-by-step plan or start implementation.",
-    includeTaskRef: true,
   },
   {
     id: "refine-task",
@@ -423,18 +318,16 @@ export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
     description: "Interviews you, then rewrites the task as a spec",
     body: [
       "Don't start implementation yet. Help me turn this task into a clear, self-contained brief that a fresh agent with no context can execute confidently.",
-      "First, investigate. Read the task body and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
+      "First, investigate. Read the task description above and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
       'Then interview me. Ask your most important clarifying questions, and keep going until we share an unambiguous understanding of the goal, what "done" looks like, the scope boundaries, and any constraints.',
-      "When we agree it's fully specified, rewrite the body of the task file referenced above so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Leave the frontmatter untouched, and confirm when you've written it.",
+      "When we agree it's fully specified, rewrite the task's description so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Save it with `hitch tasks edit <task-id>` (pass the new description via --body-file or piped stdin — run `hitch tasks --help` for the exact flags), then confirm when you've updated it.",
     ].join("\n\n"),
-    includeTaskRef: true,
   },
   {
     id: "investigate",
     name: "How hard would this be?",
     description: "Scopes the work and flags risks, no code",
     body: "Don't write any code. Read the task, explore the parts of the repo it would touch, and come back with a candid read on how hard it'd be to solve — the rough shape of the work, what's risky or uncertain, and any open questions.",
-    includeTaskRef: true,
   },
 ];
 

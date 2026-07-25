@@ -156,8 +156,23 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   REMAIN (they die at M5, not M4 — see the plan's confirmed reading). Acceptance: the fake-loop
   check (13/13, pending→spawning→running→waiting_input→done + chat busy→waiting_input→dead) and
   Will's real-cmux reconciler pass. REMAINING: Will dogfoods real delegation ahead of M5.
-- [ ] **M5 — Cutover + delete:** real import, one week of real V2 use, then delete convex/ + task
-  files + sync machinery. (Prod export already banked — see Environment status.)
+- [x] **M5 — Cutover + delete** (real import done 2026-07-23; deletion PR `feat/v2-cutover-delete-v1`):
+  V2 is now the ONLY architecture. Flipped desktop + daemon to V2 by default (no HITCH_SERVER_URL
+  required — packaged builds read the Railway URL from the baked app-config.json). Deleted convex/
+  (all modules + generated types), the desktop V1 tree (App.tsx, ConvexClientProvider, TodosView,
+  TodoDialog, AppSidebar, AutomationsView, DeviceTokens, LocalSyncDialog, V1 hooks/lib, OAuth
+  loopback :51789, device-token + convex-auth main/preload plumbing), the daemon V1 path (daemon.ts
+  file-sync/Convex boot, frontmatter projection, skills sync, title generation, t3code, debug API),
+  the throwaway importer (server/src/import), and all V1 e2e + smoke scripts. Convex deps dropped
+  from every package.json + lockfile. Extractions kept the V2 keep-list intact: CreateProjectDialog
+  (out of AppSidebar), CaptureFooter/useGrowAnimation (out of todo-dialog/), CommandPalette id type
+  (Convex Id → string), GlobalSettingsDialog (V1 panels stripped). chatLifecycleStore keeps its
+  vestigial Convex cursor columns/methods (a V2 test still probes sink-independence). Feature
+  regressions accepted (per kill list): task auto-naming, skills `/` menu, snippets management UI
+  (all V1 Convex-backed; snippets/skills export was 0 bytes — nothing lost). All three workspaces
+  typecheck green; desktop build + tests green. NOTE: Convex prod can be decommissioned once the
+  banked export (`backups/convex-prod-export-2026-07-22.zip`, now also copied off-repo) is confirmed
+  safe — it is the ONLY remaining copy of the other user's data.
 
 ## Still-open (deferred, not blockers)
 
@@ -238,3 +253,31 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   deleted. Importer flags --skip-project/--allow-existing + scripts/sync-local-from-prod.mjs
   (npm run db:sync-from-prod, read-only-against-prod by construction) merged in PR #109.
   M5 remaining = the deletion cutover only (convex/, file sync, V1 surfaces) after dogfooding.
+- 2026-07-23 — **M5 DELETION CUTOVER** (branch `feat/v2-cutover-delete-v1`): V2 flipped to default,
+  V1 deleted wholesale (~23k LOC: convex/ + desktop V1 tree + daemon V1 path + importer + V1
+  e2e/smoke). Packaged builds bake the Railway server URL (app-config.json `serverUrl`, promoted to
+  HITCH_SERVER_URL at main boot). See the M5 milestone entry above for the full inventory.
+- 2026-07-24 — Cutover review round 3 (state-model prune). The earlier passes deleted the V1
+  *surfaces* but left slices of its state model: (1) the Convex `dirty`/`last_synced_at`/`convex_id`
+  sink in `chatLifecycleStore` (model + `markChatSynced`/`markChatDirty`/`listDirtyChats` + the
+  upsert/schema writes + the "two-sink independence" smokes) — all removed; `server_synced_at` is
+  now the sole sync cursor. Old DBs keep the retired physical columns (harmless, documented); no
+  destructive migration. (2) `lib/todos.ts` (479-line Convex derivation) + `lib/chatModel.ts` (its
+  Convex-purity split) + the dead frontmatter chat-link/`chat-request*` helpers in `lib/chat.ts` —
+  deleted; the three still-used tag-filter primitives extracted to `lib/tagFilter.ts`. Dev-loop +
+  isolation fixes: `dev:daemon` now sets `HITCH_ROOT` so the bare script reads the `Hitch Dev`
+  secrets the dev app minted; the e2e harness now scopes `CODEX_HOME`/`CLAUDE_CONFIG_DIR` to scratch
+  so a run can't rewrite the machine's real hook config.
+- 2026-07-24 — Cutover review round 4 (last file-state model + prompt surface). (1) The V1
+  task-file/frontmatter helpers below the deleted surfaces: `lib/frontmatter.ts` (YAML reader/writer)
+  and `lib/tagRegistry.ts` (the `tasks/config.json` registry — zero prod consumers) deleted; the two
+  live helpers relocated (`normalizeTag`→`TagCombobox`, `deriveTitleFromBody`→`v2/capture`) and
+  `lib/tasks.ts` deleted with them; dead test blocks pruned. (2) The matching daemon projection:
+  `linkedDocs.ts` + `listFileLinkedChats` + `linkedType`/`linkedPath`/`automationRunId` (threaded
+  through the producer, reducer, store model/SQL, observer heal, reconciler, smokes) removed — V2 has
+  no consumer (reconciler wrote null, the server sink read none). Old DBs keep retired
+  `linked_type`/`linked_path` columns (documented). (3) `StartingPrompt.includeTaskRef` was broken
+  under V2 (the delegate bar always stamps the server-task preamble; the flag did nothing, the Settings
+  toggle promised `.hitch/{path}`). Chose the always-include contract: removed `includeTaskRef` + the
+  dead `taskRefPreamble`/`buildStartPrompt` + the stale toggle/preview, and rewrote the "refine-task"
+  built-in to drive edits via `hitch tasks edit <task-id>` instead of a `.hitch/tasks` file.

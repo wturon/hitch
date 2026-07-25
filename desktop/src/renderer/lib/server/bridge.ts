@@ -29,6 +29,10 @@ export interface HitchServerBridge {
 declare global {
   interface Window {
     hitchServer?: HitchServerBridge;
+    // The preload's local-daemon bridge (harness setup, updater, spellcheck,
+    // clipboard, theme, …). Each consumer narrows it with its own cast, so an
+    // opaque type here is enough to keep the global surface honest.
+    hitchDaemon?: unknown;
   }
 }
 

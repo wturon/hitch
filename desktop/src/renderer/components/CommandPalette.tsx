@@ -10,7 +10,6 @@ import {
   ListTodoIcon,
   PlusIcon,
 } from "lucide-react";
-import type { Id } from "@convex/_generated/dataModel";
 import {
   Command,
   CommandGroup,
@@ -23,7 +22,7 @@ import {
 // The palette is active-project scoped: it searches the active project's tasks
 // and switches between projects. Cross-project search is out of scope.
 export interface PaletteProject {
-  id: Id<"projects">;
+  id: string;
   name: string;
 }
 export interface PaletteTask {
@@ -166,12 +165,12 @@ export function CommandPalette({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projects: PaletteProject[];
-  activeProjectId: Id<"projects">;
+  activeProjectId: string;
   activeProjectName: string;
   currentView: WorkspaceView;
   tasks: PaletteTask[];
   actions: PaletteAction[];
-  onSelectProject: (id: Id<"projects">) => void;
+  onSelectProject: (id: string) => void;
   onSelectView: (view: WorkspaceView) => void;
   onOpenTask: (path: string) => void;
   onCreateTask: (title: string) => void;

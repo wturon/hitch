@@ -1,5 +1,10 @@
 # Auth And Project Access
 
+> **⚠️ ARCHIVED — describes the deleted V1 (Convex) architecture.** V2 uses
+> better-auth (email/password + an api-key plugin for the CLI/daemon), not Convex
+> Auth or device tokens. See [v2-prd.md](v2-prd.md) (M1.4) for the current auth
+> design. Kept only as historical context.
+
 Hitch uses Convex Auth for human web sessions and user-scoped device tokens for
 local daemons.
 
