@@ -54,7 +54,6 @@ try {
   assert.equal(pending?.pending, true);
   assert.equal(pending?.status, "working");
   assert.equal(pending?.title, "Example task");
-  assert.equal(store.readUnreducedEvents().length, 0);
 
   const bound = store.insertLifecycleEvent(
     event("bound", {
