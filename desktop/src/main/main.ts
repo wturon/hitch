@@ -1635,6 +1635,15 @@ function globalClaudeHookStatus(): HarnessHookStatus {
   const configPath = globalClaudeSettingsPath();
   const scriptPath = globalClaudeHookScriptPath();
   const scriptExists = existsSync(scriptPath);
+  const scriptCurrent =
+    scriptExists &&
+    (() => {
+      try {
+        return readFileSync(scriptPath, "utf8") === globalClaudeChatStatusHook();
+      } catch {
+        return false;
+      }
+    })();
   const configExists = existsSync(configPath);
   let configHasHook = false;
   let configWired = false;
@@ -1655,7 +1664,7 @@ function globalClaudeHookStatus(): HarnessHookStatus {
 
   return {
     harness: "claude-code",
-    installed: scriptExists && configWired,
+    installed: scriptCurrent && configWired,
     configPath,
     scriptPath,
     configExists,
