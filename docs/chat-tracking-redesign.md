@@ -311,6 +311,38 @@ Postgres. No second data path, no SQLite-reading IPC, no tiering.
 **Build it during the rework, not after.** The health strip and the axes are the instruments for telling
 whether the new pipeline is behaving.
 
+### What shipped
+
+Built as specified (`desktop/src/renderer/inspector/`, opened with ⌘⌥I from
+`openInspectorWindow` in `desktop/src/main/main.ts`). Three deviations, all
+forced by what the data can and can't support:
+
+- **Snapshot coverage had to be persisted.** §7's `window` block — `since`,
+  `cap`, `truncated` — was validated and then dropped on the floor, so the
+  health strip's window / cap / coverage fields had nothing to read. The
+  snapshot endpoint now writes them to `machines.chat_snapshot_at` /
+  `chat_window_since` / `chat_window_cap` / `chat_window_truncated`
+  (migration `0007`). Coverage is a property of the tick, not of any chat row,
+  which is why it lives on the machine.
+- **Spool backlog is NOT shown**, because it genuinely isn't knowable server-side:
+  the daemon drains its spool dir into the snapshot's `events` array and never
+  reports the dir's depth. The strip says "not reported" rather than rendering a
+  zero, which would be a permanently green early-warning light. Reporting it
+  means adding a counter to §7's `window` block and to the daemon's tick.
+- **`GET /chats` grew two things**: the names behind the ids (`machineName`,
+  `projectName`, and the `task` the chat serves, resolved through
+  `assignments.chat_id`), and a sibling `GET /chats/:id/events?limit=` for the
+  drawer's relayed tail — per-chat and lazy, so the list never pays for it.
+
+Two implementation notes worth keeping:
+
+- `before-input-event` (where the ⌘⌥I accelerator lives) does **not** fire for
+  Playwright/CDP-dispatched keys. `webContents.sendInputEvent` does traverse the
+  native path — that is how `desktop/e2e/check-chat-inspector.mjs` drives it.
+- The main-held WS previously pushed only to `mainWindow`. `initHitchServer` now
+  takes `getWindows` and broadcasts, or the second window would silently go
+  stale.
+
 ---
 
 ## 10. Sequencing
@@ -322,7 +354,7 @@ whether the new pipeline is behaving.
 | **2** | Snapshot endpoint + server-side status function + evidence storage. Daemon stops deciding. | ~3 days |
 | **3** | Replace SQLite with the spool dir + cursor file; delete `local_chats`, the reducer, the shadow columns, `cmux_trace`. Add the disposability test to CI. | ~2 days |
 | **4** | Nullable `handle`; move launch claims to the attachment layer; add the observation-layer lint rule. | ~1 day |
-| **5** | Chat Inspector window. | ~1 day |
+| **5** | Chat Inspector window. **Done** — see §9 "What shipped". | ~1 day |
 
 Phases 0 and 1 are worth shipping immediately regardless of the rest — 0 is a bug, 1 is a boolean, and 1 gives
 a before/after measurement to validate the bigger move.

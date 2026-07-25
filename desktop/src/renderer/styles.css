@@ -249,6 +249,32 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Chat Inspector (dev-only debug window — src/renderer/inspector/).
+   Semantic status color, scoped to `.hitch-inspector` so nothing in the product
+   can see it. DESIGN.md keeps the chrome monochrome and spends color only on
+   information; a status instrument is exactly that case, so rather than mint a
+   new palette these alias the app's EXISTING low-chroma tag tints — which
+   already carry both a light and a dark register (see :root / .dark above), so
+   this block needs no dark counterpart. Semantics: blue = the machine is doing
+   something, amber = it wants a human, neutral = at rest, red = the instrument
+   itself is not to be trusted (stale snapshot / partial coverage).
+   --------------------------------------------------------------------------- */
+.hitch-inspector {
+  --ins-busy: var(--tag-blue-text);
+  --ins-busy-bg: var(--tag-blue-bg);
+  --ins-wait: var(--tag-orange-text);
+  --ins-wait-bg: var(--tag-orange-bg);
+  --ins-idle: var(--muted-foreground);
+  --ins-idle-bg: var(--muted);
+  --ins-alarm: var(--tag-red-text);
+  --ins-alarm-bg: var(--tag-red-bg);
+  /* Not a colour of its own: absent/dead is the muted ink, further receded. */
+  --ins-dead: color-mix(in oklab, var(--muted-foreground) 55%, transparent);
+  /* Numbers that share a column must share a width. */
+  font-variant-numeric: tabular-nums;
+}
+
 .window-drag-region {
   -webkit-app-region: drag;
   height: 38px;

@@ -476,6 +476,20 @@ export const daemonRoutes = new Hono<AppEnv>()
           }
         }
 
+        // Snapshot COVERAGE, on the machine. Not a per-chat fact: how far back
+        // the daemon looked, its cap, and whether it saw everything describe
+        // the tick. Without it the Chat Inspector's health strip can only
+        // guess whether the rows it renders are current or fiction.
+        await tx
+          .update(machines)
+          .set({
+            chatSnapshotAt: observedAt,
+            chatWindowSince: body.window.since,
+            chatWindowCap: body.window.cap,
+            chatWindowTruncated: body.window.truncated,
+          })
+          .where(eq(machines.id, machineId));
+
         return { upserted, dead, events: eventValues.length, eventsDropped };
       });
 

@@ -458,6 +458,9 @@ try {
 }
 
 let mainWindow: BrowserWindow | null = null;
+// Dev-only Chat Inspector window (docs/chat-tracking-redesign.md §9). Same
+// renderer bundle, `?view=inspector`, same preload — see openInspectorWindow.
+let inspectorWindow: BrowserWindow | null = null;
 let daemon: ChildProcess | null = null;
 let stopTimer: NodeJS.Timeout | null = null;
 let quitAfterDaemonStops = false;
@@ -1981,7 +1984,79 @@ function setWindowThemeBackground(mode: "light" | "dark" | "system"): void {
   nativeTheme.themeSource = mode;
   const dark =
     mode === "dark" || (mode === "system" && nativeTheme.shouldUseDarkColors);
-  mainWindow?.setBackgroundColor(themeBackground(dark));
+  const background = themeBackground(dark);
+  mainWindow?.setBackgroundColor(background);
+  inspectorWindow?.setBackgroundColor(background);
+}
+
+// The renderer URL for a given view. Dev loads the Vite dev server; a packaged
+// build loads the built bundle off disk. Both carry `?view=` — src/renderer/
+// main.tsx branches on it before createRoot, so one bundle serves every window.
+function rendererTarget(view?: string): { url?: string; file?: string; query?: Record<string, string> } {
+  const query = view ? { view } : undefined;
+  if (isDev) {
+    const url = new URL(devRendererUrl);
+    if (view) url.searchParams.set("view", view);
+    return { url: url.toString() };
+  }
+  return { file: join(__dirname, "../renderer/index.html"), query };
+}
+
+// Dev-only Chat Inspector (docs/chat-tracking-redesign.md §9): a second window
+// on the SAME renderer bundle, opened with ⌘⌥I. Never created in a packaged
+// build — every call site is behind `isDev`, and the accelerator that reaches
+// here is too.
+function openInspectorWindow(): void {
+  if (!isDev) return;
+  if (inspectorWindow && !inspectorWindow.isDestroyed()) {
+    inspectorWindow.show();
+    inspectorWindow.focus();
+    return;
+  }
+  const target = rendererTarget("inspector");
+  inspectorWindow = new BrowserWindow({
+    width: 1180,
+    height: 760,
+    minWidth: 720,
+    minHeight: 420,
+    title: "Chat Inspector",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 14, y: 14 },
+    backgroundColor: themeBackground(nativeTheme.shouldUseDarkColors),
+    webPreferences: {
+      preload: join(__dirname, "../preload/preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  inspectorWindow.on("closed", () => {
+    inspectorWindow = null;
+  });
+  installInspectorAccelerator(inspectorWindow);
+  void (target.url
+    ? inspectorWindow.loadURL(target.url)
+    : inspectorWindow.loadFile(target.file!, { query: target.query }));
+}
+
+// ⌘⌥I opens the Inspector. Handled on `before-input-event` rather than through a
+// menu accelerator so we don't have to rebuild Electron's default menu template;
+// preventDefault() there also suppresses the default View ▸ Toggle Developer
+// Tools accelerator, which shares this chord — DevTools stays reachable from the
+// View menu itself. Dev only: in a packaged build nothing installs this.
+function installInspectorAccelerator(window: BrowserWindow): void {
+  if (!isDev) return;
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    // Match on `code`, not `key`: on macOS Option is a compose modifier, so
+    // ⌥I produces a dead-key circumflex rather than "i". `code` is the
+    // physical key and is immune to that (and to layout).
+    if (input.code !== "KeyI" && input.key.toLowerCase() !== "i") return;
+    if (!input.alt || input.shift) return;
+    const primary = process.platform === "darwin" ? input.meta : input.control;
+    if (!primary) return;
+    event.preventDefault();
+    openInspectorWindow();
+  });
 }
 
 async function createWindow(): Promise<void> {
@@ -2023,10 +2098,13 @@ async function createWindow(): Promise<void> {
     });
   });
 
-  if (isDev) {
-    await mainWindow.loadURL(devRendererUrl);
+  installInspectorAccelerator(mainWindow);
+
+  const target = rendererTarget();
+  if (target.url) {
+    await mainWindow.loadURL(target.url);
   } else {
-    await mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+    await mainWindow.loadFile(target.file!);
   }
 }
 
@@ -2151,7 +2229,7 @@ initHitchServer({
   getStoredCredentials: () => readLocalSecrets().hitchServer ?? null,
   setStoredCredentials: (creds) =>
     writeLocalSecrets({ ...readLocalSecrets(), hitchServer: creds ?? undefined }),
-  getWindow: () => mainWindow,
+  getWindows: () => [mainWindow, inspectorWindow].filter((w) => w !== null),
   log: (stream, message) => addLog(stream, message),
   // In-session sign-in: start the reconciler daemon that sat idle without
   // credentials (startDaemon reads the freshly-written secrets). restartDaemon

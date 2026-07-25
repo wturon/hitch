@@ -32,7 +32,10 @@ export interface HitchServerConfig {
 interface HitchServerDeps {
   getStoredCredentials: () => HitchServerCredentials | null;
   setStoredCredentials: (creds: HitchServerCredentials | null) => void;
-  getWindow: () => BrowserWindow | null;
+  // EVERY renderer window that should receive WS pushes, not just the main one:
+  // the dev-only Chat Inspector runs the same bundle in a second window and
+  // needs the same invalidation frames, or its table silently goes stale.
+  getWindows: () => BrowserWindow[];
   log: (stream: "system" | "stderr", message: string) => void;
   // Called after a successful in-session sign-in (credentials persisted, WS up)
   // so the host can start the reconciler daemon that sat idle while signed out —
@@ -97,13 +100,22 @@ export function initHitchServer(deps: HitchServerDeps): void {
     }
   };
 
+  // Push to every live renderer window. Destroyed windows are skipped rather
+  // than throwing on a send to a torn-down webContents.
+  const broadcast = (channel: string, ...args: unknown[]) => {
+    for (const window of deps.getWindows()) {
+      if (window.isDestroyed()) continue;
+      window.webContents.send(channel, ...args);
+    }
+  };
+
   // Connectivity truth for the renderer's unreachable banner: broadcast on
   // every transition, and answerable on demand (a reloaded renderer asks via
   // get-ws-status rather than waiting for the next transition).
   const setWsConnected = (value: boolean) => {
     if (wsConnected === value) return;
     wsConnected = value;
-    deps.getWindow()?.webContents.send("hitch-server:ws-status", value);
+    broadcast("hitch-server:ws-status", value);
   };
 
   const scheduleReconnect = () => {
@@ -134,7 +146,7 @@ export function initHitchServer(deps: HitchServerDeps): void {
     ws.onopen = () => {
       attempt = 0;
       setWsConnected(true);
-      deps.getWindow()?.webContents.send("hitch-server:ws-open");
+      broadcast("hitch-server:ws-open");
     };
     ws.onmessage = (event) => {
       let parsed: unknown;
@@ -143,7 +155,7 @@ export function initHitchServer(deps: HitchServerDeps): void {
       } catch {
         return; // malformed frames are dropped, matching the server's rule
       }
-      deps.getWindow()?.webContents.send("hitch-server:ws-message", parsed);
+      broadcast("hitch-server:ws-message", parsed);
     };
     // 'error' is always followed by 'close'; reconnect once, from onclose.
     ws.onerror = () => {};
