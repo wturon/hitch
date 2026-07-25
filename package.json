@@ -20,8 +20,9 @@
     "@hono/node-server@^1.19.11": "^2.0.11"
   },
   "scripts": {
-    "dev": "npm run dev:desktop",
-    "dev:all": "concurrently -n server,desktop -c blue,green \"npm run dev:v2-stack\" \"HITCH_SERVER_URL=http://localhost:3010 npm run dev:desktop\"",
+    "dev": "HITCH_SERVER_URL=\"${HITCH_SERVER_URL:-https://server-production-33a4.up.railway.app}\" npm run dev:desktop",
+    "dev:local": "HITCH_SERVER_URL=http://localhost:3010 npm run dev:desktop",
+    "dev:all": "concurrently -n server,desktop -c blue,green \"npm run dev:v2-stack\" \"npm run dev:local\"",
     "dev:daemon": "HITCH_ROOT=. tsx daemon/src/index.ts",
     "dev:v2-stack": "node scripts/dev-v2-stack.mjs",
     "db:sync-from-prod": "node scripts/sync-local-from-prod.mjs",

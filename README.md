@@ -33,17 +33,28 @@ Design decisions and the schema live in [docs/v2-prd.md](docs/v2-prd.md).
 
 ## Local Development
 
-Bring up the server (Postgres + Hono) and point the desktop app at it:
+`npm run dev` runs the desktop app against the **Railway production server** —
+that's the default, so dev testing matches what users actually get. There is only
+one deployed environment.
+
+```sh
+npm run dev                           # desktop app → Railway prod
+```
+
+To work against a local server instead — when changing the server itself, or when
+prod data must not be touched — bring up the stack (Postgres + Hono) and point the
+app at it:
 
 ```sh
 docker compose up -d --build          # server on :3010
 npm run dev:v2-stack                  # composed stack + a dev api key
-HITCH_SERVER_URL=http://localhost:3010 npm run dev:desktop
+npm run dev:local                     # desktop app → localhost:3010
 ```
 
-`npm run dev:all` runs the server stack and the desktop app in one combined
-terminal. See [AGENTS.md](AGENTS.md) for the e2e harness and the fake-launch
-daemon loop.
+`npm run dev:all` runs the local server stack and the desktop app in one combined
+terminal. Setting `HITCH_SERVER_URL` explicitly overrides the default in every
+case. See [AGENTS.md](AGENTS.md) for the e2e harness and the fake-launch daemon
+loop.
 
 ## Deployment
 
