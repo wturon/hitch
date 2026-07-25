@@ -1,6 +1,9 @@
 # Chat tracking redesign (V3)
 
-**Status:** design agreed, not yet implemented. Written 2026-07-25.
+**Status:** written 2026-07-25. §7's snapshot endpoint + the server-side status
+function are **built**; the daemon-side rework (spool dir, `cursors.json`,
+snapshot PUT, deletion of the local chat model) is **built** — see §10 for what
+each phase actually landed and what is still open.
 **Supersedes:** the status-ownership model in `docs/chat-lifecycle-contract.md`.
 
 Companion artifacts (same content, prettier):
@@ -326,6 +329,29 @@ a before/after measurement to validate the bigger move.
 
 If rewriting rather than converging: the sensing code survives either way, but unpicking the reducer and the
 store is probably slower than rewriting the loop around the sensors we already have.
+
+### What actually landed
+
+Phases 0 and 1 were overtaken: rather than fixing and then flipping the old
+model, phase 2 built the snapshot endpoint and phase 3 rewrote the loop around
+the sensors (the "rewrite" fork above), which deleted the prune question and the
+`preferObserver` flag outright.
+
+- **Phase 2 — done.** `PUT /daemon/machines/:id/chat-snapshot`, the three-axis
+  columns, `deriveChatStatus`, `chat_events`, and a client-facing `GET /chats`.
+- **Phase 3 — done.** Hooks write to `<appSupport>/events/`; the daemon drains
+  it, keeps `cursors.json`, and PUTs a snapshot every tick. The event ledger,
+  the reducer, `observed_files`, the observer shadow columns, `chatSync` and
+  `chatLifecycleProducers` are deleted; `npm -w @hitch/daemon run
+  smoke:chat-disposability` is the CI disposability test.
+- **Still open (phase 4).** `local_chats` survives, reduced to the reconciler's
+  own launch bookkeeping (`getLocalChat` / `upsertLocalChat` /
+  `markChatServerSynced`) plus `cmux_trace`, because
+  `daemon/src/v2/reconciler.ts` and `focus.ts` still create chats through the
+  legacy `POST/PATCH /daemon/chats`. Those routes now lift `cmuxRef.sessionId`
+  into `chats.session_id` so the legacy writer and the snapshot writer converge
+  on one row; delete that lift with the legacy routes. `pending` existence is
+  also unimplemented until the launcher pre-registers through the snapshot.
 
 ---
 

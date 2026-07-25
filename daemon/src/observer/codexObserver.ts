@@ -1,3 +1,16 @@
+// Codex sensing.
+//
+// THE HARNESSES ARE NOT SYMMETRIC, and this file is where that lives. Claude
+// publishes pidfiles that carry existence, process identity and its own
+// activity self-report in one read. Codex publishes `~/.codex/state_5.sqlite`
+// — a durable THREAD CATALOG (`threads`: id, rollout_path, updated_at_ms,
+// recency_at_ms, cwd, title, archived) with NO process information whatsoever.
+//
+// So Codex existence cannot be read off Codex's own state at all: separating
+// `running` from `dormant` requires a process scan (liveness.ts →
+// codexTuiProcesses / codexResumeThreadId). Do not "unify" the two paths; the
+// asymmetry is in the data, not in the code.
+
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";

@@ -1,68 +1,30 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+// The local chat registry — what's LEFT of it.
+//
+// docs/chat-tracking-redesign.md §6 replaced the observation half of this store
+// with a spool directory + cursors.json (see daemon/src/observer/spool.ts and
+// cursors.ts). Gone from here: the `chat_events` ledger, the reducer and its
+// cursor, `observed_files`, `recordObservation`, `listLiveTrackedChats`, and the
+// observer shadow columns. Nothing observes through this file any more.
+//
+// What survives, and why:
+//   - `local_chats` + getLocalChat / upsertLocalChat / markChatServerSynced —
+//     the V2 RECONCILER still tracks its own launches here and still creates
+//     server chats through the legacy POST /daemon/chats. Migrating it onto the
+//     snapshot is the next phase; until then this is its working memory.
+//   - `cmux_trace` — a local-only debug record of what Hitch asked cmux to do.
+//     Launch/focus machinery, not observation.
+//
+// The store is no longer on the hot path: hooks don't open it (they write one
+// JSON file into the spool), and the observer doesn't touch it at all.
+
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { normalizeChatTitle } from "./chatTitles.js";
-import { resolveChatStatus } from "./observer/derive.js";
-import type { ObservedExistence } from "./observer/types.js";
 
-export type ChatLifecycleStatus =
-  | "working"
-  | "needs-input"
-  | "waiting"
-  | "idle";
-
-export type ChatLifecycleSource = "hook" | "daemon";
-
-export type ChatLifecycleProducer =
-  | "codex-hook"
-  | "claude-code-hook"
-  | "daemon-launch"
-  | "daemon-linker"
-  | "daemon-appserver"
-  | "daemon-reconcile";
+export type ChatLifecycleStatus = "working" | "needs-input" | "waiting" | "idle";
 
 export type ChatLifecycleHarness = "codex" | "claude-code";
-
-export type ChatLifecycleKind =
-  | "chat.created"
-  | "chat.bound"
-  | "turn.started"
-  | "turn.resumed"
-  | "turn.needs_input"
-  | "turn.completed"
-  | "session.started"
-  | "session.ended";
-
-export interface ChatLifecycleEventInput {
-  schemaVersion?: 1;
-  eventId: string;
-  source: ChatLifecycleSource;
-  producer: ChatLifecycleProducer;
-  harness: ChatLifecycleHarness;
-  providerEvent: string;
-  lifecycle: ChatLifecycleKind;
-  status: ChatLifecycleStatus | null;
-  projectId: string | null;
-  projectLocalPath: string | null;
-  chatId: string | null;
-  launchId: string | null;
-  turnId: string | null;
-  cwd: string;
-  host: string;
-  observedAt: string | number | Date;
-  rawPayloadHash: string | null;
-  rawPayloadRef: string | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ChatLifecycleEventRow extends ChatLifecycleEventInput {
-  schemaVersion: 1;
-  seq: number;
-  observedAt: number;
-  metadata: Record<string, unknown>;
-  reducedAt: number | null;
-}
 
 export interface LocalChatInput {
   localKey: string;
@@ -87,90 +49,21 @@ export interface LocalChatInput {
   archivedAt?: number | null;
   deletedAt?: number | null;
   updatedAt: number;
-  // The observer produced this row on its own (no hook/daemon event bound it).
-  // Reset to false whenever the reducer folds an event in, handing status
-  // ownership back to the events. Defaults false.
-  observerCreated?: boolean;
 }
 
-// Shadow state written by the chat-state observer alongside the hook-derived
-// status, never by the reducer. Run dark (P0–P3): the observer fills these so we
-// can log disagreements and tune, while `status` stays hook-primary. `observerCreated`
-// marks a row the observer produced on its own (a chat hitch never launched and
-// no hook ever bound) — for those rows the observer owns `status` too, since
-// there's no event truth to preserve.
-export interface ObservedShadow {
-  observedStatus: ChatLifecycleStatus | null;
-  observedExistence: string | null;
-  observedActivity: string | null;
-  observedSource: string | null;
-  observedAt: number | null;
-  observedEvidence: Record<string, unknown> | null;
-  observerCreated: boolean;
-}
-
-export interface LocalChatRow extends Required<LocalChatInput>, ObservedShadow {
+export interface LocalChatRow extends Required<Omit<LocalChatInput, "resumePayload">> {
   resumePayload: Record<string, unknown>;
-  // Server-sink bookkeeping (Decision 7). `serverSyncedAt` records the
-  // `updatedAt` value last pushed to the Hono server; a row is "server-dirty"
-  // when its `updatedAt` has since advanced past it. `serverChatId` is the
-  // server `chats.id` this local row maps to.
+  // `serverChatId` is the server `chats.id` this local row maps to;
+  // `serverSyncedAt` records the `updatedAt` value last pushed there.
   serverSyncedAt: number | null;
   serverChatId: string | null;
 }
 
-// Per-chat tail bookkeeping for the observer's incremental log reads. Keyed by
-// the chat identity; never synced to the server. Lets a daemon restart resume a tail
-// from where it left off and lets the reconcile floor detect file changes
-// cheaply.
-export interface ObservedFileRow {
-  harness: ChatLifecycleHarness;
-  chatId: string;
-  host: string;
-  logPath: string;
-  offset: number;
-  fileDev: number;
-  fileIno: number;
-  fileSize: number;
-  fileMtimeMs: number;
-  updatedAt: number;
-}
-
-// What the observer hands the store per chat per tick: the derived snapshot plus
-// the status it maps to. Kept structural (not importing the observer's types) so
-// the store stays dependency-free.
-export interface ObservationRecord {
-  harness: ChatLifecycleHarness;
-  chatId: string;
-  host: string;
-  cwd: string;
-  projectId: string | null;
-  environment: string | null;
-  existence: string;
-  activity: string;
-  source: string;
-  status: ChatLifecycleStatus;
-  title: string | null;
-  observedAt: number;
-  evidence: Record<string, unknown> | null;
-  endedAt: number | null;
-}
-
-export interface ChatLifecycleReductionResult {
-  eventsReduced: number;
-  chatsChanged: number;
-  // Events whose reduction threw and were quarantined (marked reduced + error
-  // recorded) so a single poison event can't wedge the cursor for every chat.
-  failed: number;
-  cursor: number;
-}
-
-// Raw cmux command/response trace. Unlike lifecycle events, these are NOT
-// reduced and never sync to the server — they're a local-only debug record of what
-// Hitch asked cmux to do (and how it responded) so the chat-lifecycle debug
-// screen can replay why a resume focused the wrong surface or spawned a dupe.
-// `chatId` is the session/thread id when known; codex launches only know their
-// `launchId` until the hook binds the thread, so a per-chat view ORs on both.
+// Raw cmux command/response trace. Local-only, never synced: a debug record of
+// what Hitch asked cmux to do (and how it responded) so a resume that focused
+// the wrong surface can be replayed. `chatId` is the session/thread id when
+// known; codex launches only know their `launchId` until the thread binds, so a
+// per-chat view ORs on both.
 export interface CmuxTraceInput {
   ts: number;
   chatId: string | null;
@@ -187,24 +80,22 @@ export interface CmuxTraceInput {
 export interface ChatLifecyclePaths {
   appSupportDir: string;
   databasePath: string;
-  bumpPath: string;
 }
 
 export interface ChatLifecycleStoreOptions {
   appSupportDir?: string;
   databasePath?: string;
-  bumpPath?: string;
   env?: NodeJS.ProcessEnv;
 }
 
 const SCHEMA_VERSION = 1;
-const REDUCER_CURSOR_KEY = "reducer_cursor";
-// cmux trace is high-volume debug data, so it is hard-capped by row count on
-// write. The row cap is what bounds the table.
+// cmux trace is high-volume debug data, hard-capped by row count on write.
 const CMUX_TRACE_MAX_ROWS = 5000;
-// How often (in writes) to enforce the row cap, so we don't run a DELETE on
-// every single cmux call.
+// How often (in writes) to enforce the row cap, so we don't DELETE on every call.
 const CMUX_TRACE_CAP_EVERY = 250;
+// One-time cleanup marker: the V3 rework left `chat_events` and `observed_files`
+// behind with nothing reading them (10.8 MB of dev data on the author's machine).
+const V3_CLEANUP_KEY = "v3_observation_tables_dropped";
 
 function appSupportDirFromEnv(env: NodeJS.ProcessEnv): string {
   if (env.HITCH_APP_SUPPORT_DIR) return resolve(env.HITCH_APP_SUPPORT_DIR);
@@ -221,32 +112,17 @@ export function resolveChatLifecyclePaths(
   options: ChatLifecycleStoreOptions = {},
 ): ChatLifecyclePaths {
   const env = options.env ?? process.env;
-  const appSupportDir = resolve(
-    options.appSupportDir ?? appSupportDirFromEnv(env),
-  );
+  const appSupportDir = resolve(options.appSupportDir ?? appSupportDirFromEnv(env));
   return {
     appSupportDir,
     databasePath: resolve(
       options.databasePath ?? join(appSupportDir, "chat-lifecycle.sqlite"),
-    ),
-    bumpPath: resolve(
-      options.bumpPath ?? join(appSupportDir, "chat-lifecycle.bump"),
     ),
   };
 }
 
 function numberFromSqlite(value: unknown): number {
   return typeof value === "bigint" ? Number(value) : Number(value);
-}
-
-function timestampFromInput(value: string | number | Date): number {
-  if (typeof value === "number") return value;
-  if (value instanceof Date) return value.getTime();
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Invalid lifecycle timestamp: ${value}`);
-  }
-  return parsed;
 }
 
 function jsonString(value: Record<string, unknown> | undefined): string {
@@ -267,10 +143,6 @@ function booleanInt(value: boolean | undefined, fallback: boolean): number {
 
 function bool(value: unknown): boolean {
   return Number(value) === 1;
-}
-
-function optionalString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function runInTransaction(db: DatabaseSync, fn: () => void): void {
@@ -301,86 +173,10 @@ export class ChatLifecycleStore {
     this.db.close();
   }
 
-  insertLifecycleEvent(
-    event: ChatLifecycleEventInput,
-  ): { inserted: boolean; seq: number | null } {
-    const observedAt = timestampFromInput(event.observedAt);
-    const result = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO chat_events (
-          event_id,
-          schema_version,
-          source,
-          producer,
-          harness,
-          provider_event,
-          lifecycle,
-          status,
-          project_id,
-          project_local_path,
-          chat_id,
-          launch_id,
-          turn_id,
-          cwd,
-          host,
-          observed_at,
-          raw_payload_hash,
-          raw_payload_ref,
-          metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        event.eventId,
-        event.schemaVersion ?? SCHEMA_VERSION,
-        event.source,
-        event.producer,
-        event.harness,
-        event.providerEvent,
-        event.lifecycle,
-        event.status,
-        event.projectId,
-        event.projectLocalPath,
-        event.chatId,
-        event.launchId,
-        event.turnId,
-        event.cwd,
-        event.host,
-        observedAt,
-        event.rawPayloadHash,
-        event.rawPayloadRef,
-        jsonString(event.metadata),
-      );
-
-    if (result.changes === 0) return { inserted: false, seq: null };
-
-    const seq = numberFromSqlite(result.lastInsertRowid);
-    this.writeBump(seq);
-    return { inserted: true, seq };
-  }
-
-  readEventsAfter(cursor: number, limit = 100): ChatLifecycleEventRow[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM chat_events
-         WHERE seq > ?
-         ORDER BY seq ASC
-         LIMIT ?`,
-      )
-      .all(cursor, limit)
-      .map((row) => this.eventFromRow(row));
-  }
-
-  getReducerCursor(): number {
-    const row = this.db
-      .prepare("SELECT value FROM meta WHERE key = ?")
-      .get(REDUCER_CURSOR_KEY) as { value?: string } | undefined;
-    return row?.value ? Number(row.value) : 0;
-  }
-
   getMeta(key: string): string | null {
-    const row = this.db
-      .prepare("SELECT value FROM meta WHERE key = ?")
-      .get(key) as { value?: string } | undefined;
+    const row = this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as
+      | { value?: string }
+      | undefined;
     return row?.value ?? null;
   }
 
@@ -394,130 +190,15 @@ export class ChatLifecycleStore {
       .run(key, value);
   }
 
+  getLocalChat(localKey: string): LocalChatRow | null {
+    const row = this.db.prepare("SELECT * FROM local_chats WHERE local_key = ?").get(localKey);
+    return row ? this.localChatFromRow(row) : null;
+  }
+
   upsertLocalChat(chat: LocalChatInput): void {
     runInTransaction(this.db, () => {
       this.upsertLocalChatUnsafe(chat);
     });
-  }
-
-  reduceLifecycleEvents(
-    options: { limit?: number; now?: number } = {},
-  ): ChatLifecycleReductionResult {
-    const startedCursor = this.getReducerCursor();
-    const events = this.readEventsAfter(startedCursor, options.limit ?? 100);
-    if (events.length === 0) {
-      return { eventsReduced: 0, chatsChanged: 0, failed: 0, cursor: startedCursor };
-    }
-
-    const now = options.now ?? Date.now();
-    let cursor = startedCursor;
-    let chatsChanged = 0;
-    let failed = 0;
-
-    // Reduce ONE event per transaction, not the whole batch. A single event that
-    // throws (e.g. a bind that would collide on a unique index) must not roll back
-    // its neighbors and freeze the cursor forever — the poison event is instead
-    // quarantined below and the cursor advances past it.
-    for (const event of events) {
-      try {
-        runInTransaction(this.db, () => {
-          const next = this.reduceEventToLocalChat(event, now);
-          if (next) {
-            const existing = this.findLocalChatForEvent(event);
-            const changed = !existing || !this.sameReducedChat(existing, next);
-            this.upsertLocalChatUnsafe({
-              ...next,
-              updatedAt: changed || !existing ? now : existing.updatedAt,
-            });
-            if (changed) chatsChanged += 1;
-          }
-          this.db
-            .prepare("UPDATE chat_events SET reduced_at = ? WHERE seq = ?")
-            .run(now, event.seq);
-          this.setMeta(REDUCER_CURSOR_KEY, String(event.seq));
-        });
-      } catch (err) {
-        failed += 1;
-        // Quarantine: mark the event reduced with the error recorded so it's
-        // skipped on the next pass, and advance the cursor regardless. Its own
-        // transaction so it survives even though the reduce transaction rolled
-        // back. A failure here (should be impossible) is swallowed — we still
-        // advance the in-memory cursor so the loop makes progress.
-        try {
-          runInTransaction(this.db, () => {
-            this.db
-              .prepare(
-                `UPDATE chat_events
-                 SET reduced_at = ?,
-                     reduce_error = ?,
-                     reduce_attempts = reduce_attempts + 1
-                 WHERE seq = ?`,
-              )
-              .run(now, String(err).slice(0, 1000), event.seq);
-            this.setMeta(REDUCER_CURSOR_KEY, String(event.seq));
-          });
-        } catch {
-          // Ignore: cursor still advances in memory below.
-        }
-      }
-      cursor = event.seq;
-    }
-
-    return {
-      eventsReduced: events.length,
-      chatsChanged,
-      failed,
-      cursor,
-    };
-  }
-
-  getLocalChat(localKey: string): LocalChatRow | null {
-    const row = this.db
-      .prepare("SELECT * FROM local_chats WHERE local_key = ?")
-      .get(localKey);
-    return row ? this.localChatFromRow(row) : null;
-  }
-
-  // Event-backed chats on this host that hitch currently believes are live
-  // (working/needs-input/waiting) — the candidates the observer's reconcile floor
-  // checks for a dead process to heal a "stuck" status. Excludes observer-created
-  // rows (the observer already owns those) and rows already settled/ended.
-  listLiveTrackedChats(
-    harness: ChatLifecycleHarness,
-    host: string,
-    limit = 200,
-  ): LocalChatRow[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM local_chats
-         WHERE harness = ?
-           AND host = ?
-           AND chat_id IS NOT NULL
-           AND observer_created = 0
-           AND status IN ('working', 'needs-input', 'waiting')
-           AND ended_at IS NULL
-           AND deleted_at IS NULL
-         ORDER BY last_status_at ASC
-         LIMIT ?`,
-      )
-      .all(harness, host, limit)
-      .map((row) => this.localChatFromRow(row));
-  }
-
-  // --- Server sink (Decision 7) ----------------------------------------------
-  // Rows whose local state has advanced past what was last pushed to the Hono
-  // server: a row is server-dirty when it was never synced (NULL) or its
-  // `updated_at` moved since the last push.
-  listServerDirtyChats(limit = 100): LocalChatRow[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM local_chats
-         WHERE server_synced_at IS NULL OR server_synced_at < updated_at
-         ORDER BY updated_at ASC
-         LIMIT ?`,
-      )
-      .all(limit)
-      .map((row) => this.localChatFromRow(row));
   }
 
   // Record that this row was pushed to the server up to `syncedAt` (pass the
@@ -543,16 +224,8 @@ export class ChatLifecycleStore {
     this.db
       .prepare(
         `INSERT INTO cmux_trace (
-          ts,
-          chat_id,
-          launch_id,
-          kind,
-          command,
-          args_json,
-          duration_ms,
-          ok,
-          error_code,
-          message
+          ts, chat_id, launch_id, kind, command, args_json,
+          duration_ms, ok, error_code, message
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
@@ -598,89 +271,45 @@ export class ChatLifecycleStore {
         )
       `);
 
-      const row = this.db
-        .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
-        .get() as { value?: string } | undefined;
-      const version = row?.value ? Number(row.value) : 0;
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS local_chats (
+          local_key TEXT PRIMARY KEY,
+          project_id TEXT,
+          launch_id TEXT,
+          harness TEXT NOT NULL,
+          chat_id TEXT,
+          pending INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL,
+          title TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          host TEXT NOT NULL,
+          environment TEXT,
+          resume_kind TEXT NOT NULL,
+          resume_payload_json TEXT NOT NULL DEFAULT '{}',
+          first_observed_at INTEGER NOT NULL,
+          last_event_at INTEGER NOT NULL,
+          last_status_at INTEGER NOT NULL,
+          ended_at INTEGER,
+          pinned INTEGER NOT NULL DEFAULT 0,
+          pinned_at INTEGER,
+          archived_at INTEGER,
+          deleted_at INTEGER,
+          updated_at INTEGER NOT NULL
+        );
+        -- Databases created before V1 was removed, and before the V3 rework,
+        -- still carry retired columns (the Convex sink's dirty/convex_id, the
+        -- observer's observed_* shadow, observer_created). They are left in
+        -- place — all have defaults, so INSERTs that omit them still work — and
+        -- nothing reads or writes them any more.
 
-      if (version < 1) {
-        this.db.exec(`
-          CREATE TABLE IF NOT EXISTS chat_events (
-            seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_id TEXT NOT NULL UNIQUE,
-            schema_version INTEGER NOT NULL,
-            source TEXT NOT NULL,
-            producer TEXT NOT NULL,
-            harness TEXT NOT NULL,
-            provider_event TEXT NOT NULL,
-            lifecycle TEXT NOT NULL,
-            status TEXT,
-            project_id TEXT,
-            project_local_path TEXT,
-            chat_id TEXT,
-            launch_id TEXT,
-            turn_id TEXT,
-            cwd TEXT NOT NULL,
-            host TEXT NOT NULL,
-            observed_at INTEGER NOT NULL,
-            raw_payload_hash TEXT,
-            raw_payload_ref TEXT,
-            metadata_json TEXT NOT NULL DEFAULT '{}',
-            reduced_at INTEGER
-          );
+        CREATE UNIQUE INDEX IF NOT EXISTS local_chats_by_chat
+          ON local_chats(harness, chat_id, host)
+          WHERE chat_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS local_chats_by_launch
+          ON local_chats(launch_id)
+          WHERE launch_id IS NOT NULL;
+      `);
 
-          CREATE INDEX IF NOT EXISTS chat_events_by_reducer
-            ON chat_events(seq)
-            WHERE reduced_at IS NULL;
-          CREATE INDEX IF NOT EXISTS chat_events_by_chat
-            ON chat_events(harness, chat_id, seq);
-          CREATE INDEX IF NOT EXISTS chat_events_by_launch
-            ON chat_events(launch_id, seq);
-
-          CREATE TABLE IF NOT EXISTS local_chats (
-            local_key TEXT PRIMARY KEY,
-            project_id TEXT,
-            launch_id TEXT,
-            harness TEXT NOT NULL,
-            chat_id TEXT,
-            pending INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL,
-            title TEXT NOT NULL,
-            cwd TEXT NOT NULL,
-            host TEXT NOT NULL,
-            environment TEXT,
-            resume_kind TEXT NOT NULL,
-            resume_payload_json TEXT NOT NULL DEFAULT '{}',
-            first_observed_at INTEGER NOT NULL,
-            last_event_at INTEGER NOT NULL,
-            last_status_at INTEGER NOT NULL,
-            ended_at INTEGER,
-            pinned INTEGER NOT NULL DEFAULT 0,
-            pinned_at INTEGER,
-            archived_at INTEGER,
-            deleted_at INTEGER,
-            updated_at INTEGER NOT NULL
-          );
-          -- Databases created before the V1 model was removed still carry
-          -- retired columns: dirty/last_synced_at/convex_id (the Convex sink)
-          -- and linked_type/linked_path (V1 frontmatter-doc projection). They
-          -- are left in place (harmless: dirty had a DEFAULT so INSERTs that
-          -- omit it still work); the model, API, and write path no longer touch
-          -- them.
-
-          CREATE UNIQUE INDEX IF NOT EXISTS local_chats_by_chat
-            ON local_chats(harness, chat_id, host)
-            WHERE chat_id IS NOT NULL;
-          CREATE UNIQUE INDEX IF NOT EXISTS local_chats_by_launch
-            ON local_chats(launch_id)
-            WHERE launch_id IS NOT NULL;
-        `);
-      }
-
-      // Local-only cmux debug trace. Created unconditionally (IF NOT EXISTS)
-      // rather than behind the schema_version gate, because SCHEMA_VERSION also
-      // stamps lifecycle-event rows — bumping it just to add this side table
-      // would mislabel those events.
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS cmux_trace (
           seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -696,77 +325,26 @@ export class ChatLifecycleStore {
           message TEXT
         );
 
-        CREATE INDEX IF NOT EXISTS cmux_trace_by_chat
-          ON cmux_trace(chat_id, seq);
-        CREATE INDEX IF NOT EXISTS cmux_trace_by_launch
-          ON cmux_trace(launch_id, seq);
-        CREATE INDEX IF NOT EXISTS cmux_trace_by_ts
-          ON cmux_trace(ts);
+        CREATE INDEX IF NOT EXISTS cmux_trace_by_chat ON cmux_trace(chat_id, seq);
+        CREATE INDEX IF NOT EXISTS cmux_trace_by_launch ON cmux_trace(launch_id, seq);
+        CREATE INDEX IF NOT EXISTS cmux_trace_by_ts ON cmux_trace(ts);
       `);
 
-      // Chat-state observer storage. Added idempotently (IF NOT EXISTS + guarded
-      // ALTER) outside the schema_version gate, for the same reason as cmux_trace:
-      // SCHEMA_VERSION stamps lifecycle-event rows, so bumping it just to add
-      // observer side-state would mislabel those events. The shadow columns
-      // default to NULL/0 so existing rows and the reducer's upsert (which never
-      // names them) are untouched.
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS observed_files (
-          harness TEXT NOT NULL,
-          chat_id TEXT NOT NULL,
-          host TEXT NOT NULL,
-          log_path TEXT NOT NULL,
-          offset INTEGER NOT NULL DEFAULT 0,
-          file_dev INTEGER NOT NULL DEFAULT 0,
-          file_ino INTEGER NOT NULL DEFAULT 0,
-          file_size INTEGER NOT NULL DEFAULT 0,
-          file_mtime_ms INTEGER NOT NULL DEFAULT 0,
-          updated_at INTEGER NOT NULL,
-          PRIMARY KEY (harness, chat_id, host)
-        );
-      `);
-      this.addColumnIfMissing("local_chats", "observed_status", "observed_status TEXT");
-      this.addColumnIfMissing(
-        "local_chats",
-        "observed_existence",
-        "observed_existence TEXT",
-      );
-      this.addColumnIfMissing(
-        "local_chats",
-        "observed_activity",
-        "observed_activity TEXT",
-      );
-      this.addColumnIfMissing("local_chats", "observed_source", "observed_source TEXT");
-      this.addColumnIfMissing("local_chats", "observed_at", "observed_at INTEGER");
-      this.addColumnIfMissing(
-        "local_chats",
-        "observed_evidence_json",
-        "observed_evidence_json TEXT",
-      );
-      this.addColumnIfMissing(
-        "local_chats",
-        "observer_created",
-        "observer_created INTEGER NOT NULL DEFAULT 0",
-      );
-
-      // Server-sink bookkeeping (Decision 7). Added idempotently outside the
-      // schema_version gate, exactly like the observer columns: they carry the
-      // cursor the reconciler uses to push chat state to the Hono server.
-      // Default NULL so existing rows read as never-server-synced and the
-      // reducer's upsert (which never names them) is untouched.
+      // Server-sink bookkeeping: the reconciler's local↔server chat id mapping.
       this.addColumnIfMissing("local_chats", "server_synced_at", "server_synced_at INTEGER");
       this.addColumnIfMissing("local_chats", "server_chat_id", "server_chat_id TEXT");
 
-      // Reducer quarantine bookkeeping. Added idempotently outside the
-      // schema_version gate (same reasoning as the observer columns): a single
-      // event whose reduction throws is marked reduced with the error recorded
-      // here instead of rolling back and wedging the cursor for every chat.
-      this.addColumnIfMissing("chat_events", "reduce_error", "reduce_error TEXT");
-      this.addColumnIfMissing(
-        "chat_events",
-        "reduce_attempts",
-        "reduce_attempts INTEGER NOT NULL DEFAULT 0",
-      );
+      // One-time V3 cleanup. The event ledger and the tail-cursor table have no
+      // reader left; dropping them reclaims the megabytes they'd otherwise keep
+      // growing by. Guarded by a meta flag so it runs once, and DROP IF EXISTS
+      // so a database that never had them is untouched.
+      if (this.getMetaUnsafe(V3_CLEANUP_KEY) === null) {
+        this.db.exec(`
+          DROP TABLE IF EXISTS chat_events;
+          DROP TABLE IF EXISTS observed_files;
+        `);
+        this.setMeta(V3_CLEANUP_KEY, String(Date.now()));
+      }
 
       this.db
         .prepare(
@@ -778,209 +356,21 @@ export class ChatLifecycleStore {
     });
   }
 
-  private writeBump(seq: number): void {
-    mkdirSync(dirname(this.paths.bumpPath), { recursive: true });
-    writeFileSync(this.paths.bumpPath, `${seq}\n`, "utf8");
+  // `getMeta` inside migrate(), before the public API is safe to use.
+  private getMetaUnsafe(key: string): string | null {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as
+      | { value?: string }
+      | undefined;
+    return row?.value ?? null;
   }
 
   // Idempotent column add. `table`/`ddl` are internal constants (never user
   // input), so the interpolation is safe. PRAGMA table_info is the portable way
   // to ask "does this column exist yet" without a try/catch on the ALTER.
   private addColumnIfMissing(table: string, column: string, ddl: string): void {
-    const cols = this.db
-      .prepare(`PRAGMA table_info(${table})`)
-      .all() as Array<{ name: string }>;
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
     if (cols.some((c) => c.name === column)) return;
     this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
-  }
-
-  // --- Chat-state observer ---------------------------------------------------
-
-  getObservedFile(
-    harness: ChatLifecycleHarness,
-    chatId: string,
-    host: string,
-  ): ObservedFileRow | null {
-    const row = this.db
-      .prepare(
-        `SELECT * FROM observed_files
-         WHERE harness = ? AND chat_id = ? AND host = ?`,
-      )
-      .get(harness, chatId, host) as Record<string, unknown> | undefined;
-    if (!row) return null;
-    return {
-      harness,
-      chatId,
-      host,
-      logPath: String(row.log_path),
-      offset: numberFromSqlite(row.offset),
-      fileDev: numberFromSqlite(row.file_dev),
-      fileIno: numberFromSqlite(row.file_ino),
-      fileSize: numberFromSqlite(row.file_size),
-      fileMtimeMs: numberFromSqlite(row.file_mtime_ms),
-      updatedAt: numberFromSqlite(row.updated_at),
-    };
-  }
-
-  setObservedFile(row: ObservedFileRow): void {
-    this.db
-      .prepare(
-        `INSERT INTO observed_files (
-          harness, chat_id, host, log_path, offset,
-          file_dev, file_ino, file_size, file_mtime_ms, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(harness, chat_id, host) DO UPDATE SET
-          log_path = excluded.log_path,
-          offset = excluded.offset,
-          file_dev = excluded.file_dev,
-          file_ino = excluded.file_ino,
-          file_size = excluded.file_size,
-          file_mtime_ms = excluded.file_mtime_ms,
-          updated_at = excluded.updated_at`,
-      )
-      .run(
-        row.harness,
-        row.chatId,
-        row.host,
-        row.logPath,
-        row.offset,
-        row.fileDev,
-        row.fileIno,
-        row.fileSize,
-        row.fileMtimeMs,
-        row.updatedAt,
-      );
-  }
-
-  // Write one observer snapshot onto the chat's `local_chats` row. The observer
-  // never decides status policy itself: `status` is resolved through the single
-  // `resolveChatStatus` seam, exactly like the reducer. In dark mode that means
-  //   - hook/daemon-bound row (has events) → only the observed_* shadow columns
-  //     move; `status` is the unchanged event status.
-  //   - observer-only row (no event ever bound it) → the observation owns
-  //     `status`, since it's the row's only source.
-  // `updated_at` moves only when something actually changed, so the server sink
-  // doesn't churn every tick. `record.status` is the observer's derived status
-  // (`deriveStatusFromObservation`).
-  //
-  // `createIfMissing` (default true) gates producing a brand-new registry row:
-  // callers pass false for dormant/gone observations so the observer doesn't
-  // resurrect every historical transcript as a synced chat — it only refreshes
-  // chats hitch already knows. Running chats pass true (wide discovery).
-  recordObservation(
-    record: ObservationRecord,
-    options: { createIfMissing?: boolean } = {},
-  ): boolean {
-    const localKey = `chat:${record.harness}:${record.host}:${record.chatId}`;
-    const existing = this.getLocalChat(localKey);
-    if (!existing && options.createIfMissing === false) return false;
-    const evidenceJson = record.evidence
-      ? JSON.stringify(record.evidence)
-      : null;
-    const now = record.observedAt;
-
-    if (existing) {
-      const shadowChanged =
-        existing.observedStatus !== record.status ||
-        existing.observedExistence !== record.existence ||
-        existing.observedActivity !== record.activity ||
-        existing.observedSource !== record.source;
-      // Status is owned by the seam, not by an inline observer-created branch.
-      const nextStatus = resolveChatStatus({
-        eventStatus: existing.observerCreated ? null : existing.status,
-        observedStatus: record.status,
-        observedExistence: record.existence as ObservedExistence,
-        preferObserver: false,
-      }).status;
-      const statusChanged = existing.status !== nextStatus;
-      const changed = shadowChanged || statusChanged;
-      this.db
-        .prepare(
-          `UPDATE local_chats SET
-             observed_status = ?,
-             observed_existence = ?,
-             observed_activity = ?,
-             observed_source = ?,
-             observed_at = ?,
-             observed_evidence_json = ?,
-             status = ?,
-             project_id = COALESCE(project_id, ?),
-             environment = COALESCE(environment, ?),
-             last_status_at = CASE WHEN ? THEN ? ELSE last_status_at END,
-             updated_at = CASE WHEN ? THEN ? ELSE updated_at END
-           WHERE local_key = ?`,
-        )
-        .run(
-          record.status,
-          record.existence,
-          record.activity,
-          record.source,
-          now,
-          evidenceJson,
-          nextStatus,
-          record.projectId,
-          record.environment,
-          statusChanged ? 1 : 0,
-          now,
-          changed ? 1 : 0,
-          now,
-          localKey,
-        );
-      return changed;
-    }
-
-    // Observer-only row: a chat hitch never launched and no hook bound. Status
-    // is resolved through the same seam (eventStatus = null → the observation
-    // owns it). resumeKind = "external" (we didn't launch it).
-    const title = normalizeChatTitle(record.title ?? undefined, record.harness);
-    const status = resolveChatStatus({
-      eventStatus: null,
-      observedStatus: record.status,
-      observedExistence: record.existence as ObservedExistence,
-      preferObserver: false,
-    }).status;
-    this.upsertLocalChatUnsafe({
-      localKey,
-      projectId: record.projectId,
-      launchId: null,
-      harness: record.harness,
-      chatId: record.chatId,
-      pending: false,
-      status,
-      title,
-      cwd: record.cwd,
-      host: record.host,
-      environment: record.environment,
-      resumeKind: "external",
-      resumePayload: { chatId: record.chatId, cwd: record.cwd },
-      firstObservedAt: now,
-      lastEventAt: now,
-      lastStatusAt: now,
-      endedAt: record.endedAt,
-      updatedAt: now,
-      observerCreated: true,
-    });
-    this.db
-      .prepare(
-        `UPDATE local_chats SET
-           observed_status = ?,
-           observed_existence = ?,
-           observed_activity = ?,
-           observed_source = ?,
-           observed_at = ?,
-           observed_evidence_json = ?
-         WHERE local_key = ?`,
-      )
-      .run(
-        record.status,
-        record.existence,
-        record.activity,
-        record.source,
-        now,
-        evidenceJson,
-        localKey,
-      );
-    return true;
   }
 
   private upsertLocalChatUnsafe(chat: LocalChatInput): void {
@@ -988,28 +378,22 @@ export class ChatLifecycleStore {
     // partial unique index local_chats_by_launch rejects a second holder.
     if (chat.launchId) {
       const targetExists =
-        this.db
-          .prepare("SELECT 1 FROM local_chats WHERE local_key = ?")
-          .get(chat.localKey) !== undefined;
+        this.db.prepare("SELECT 1 FROM local_chats WHERE local_key = ?").get(chat.localKey) !==
+        undefined;
       if (targetExists) {
-        // The destination row already exists (e.g. an observer-created chat:<id>
-        // row that a bind is now folding a launch into). Any *other* row still
-        // holding this launch_id — the pending launch:<id> row — has had its link
-        // fields merged into `chat` upstream, so drop it: keeping it would collide
-        // on the unique launch_id index and wedge the reducer.
+        // The destination row already exists (a bind folding a launch into a
+        // chat row). Any OTHER row still holding this launch_id — the pending
+        // launch:<id> row — has had its link fields merged upstream, so drop it:
+        // keeping it would collide on the unique launch_id index.
         this.db
-          .prepare(
-            "DELETE FROM local_chats WHERE launch_id = ? AND local_key != ?",
-          )
+          .prepare("DELETE FROM local_chats WHERE launch_id = ? AND local_key != ?")
           .run(chat.launchId, chat.localKey);
       } else {
-        // No destination row yet: rekey the existing launch:<id> row to the new
-        // key so the upsert updates it in place (pending -> bound) rather than
-        // inserting a duplicate that would collide on launch_id.
+        // No destination row yet: rekey the existing launch:<id> row so the
+        // upsert updates it in place (pending → bound) rather than inserting a
+        // duplicate that would collide on launch_id.
         this.db
-          .prepare(
-            "UPDATE local_chats SET local_key = ? WHERE launch_id = ? AND local_key != ?",
-          )
+          .prepare("UPDATE local_chats SET local_key = ? WHERE launch_id = ? AND local_key != ?")
           .run(chat.localKey, chat.launchId, chat.localKey);
       }
     }
@@ -1017,30 +401,11 @@ export class ChatLifecycleStore {
     this.db
       .prepare(
         `INSERT INTO local_chats (
-          local_key,
-          project_id,
-          launch_id,
-          harness,
-          chat_id,
-          pending,
-          status,
-          title,
-          cwd,
-          host,
-          environment,
-          resume_kind,
-          resume_payload_json,
-          first_observed_at,
-          last_event_at,
-          last_status_at,
-          ended_at,
-          pinned,
-          pinned_at,
-          archived_at,
-          deleted_at,
-          updated_at,
-          observer_created
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          local_key, project_id, launch_id, harness, chat_id, pending, status,
+          title, cwd, host, environment, resume_kind, resume_payload_json,
+          first_observed_at, last_event_at, last_status_at, ended_at,
+          pinned, pinned_at, archived_at, deleted_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(local_key) DO UPDATE SET
           project_id = excluded.project_id,
           launch_id = excluded.launch_id,
@@ -1062,8 +427,7 @@ export class ChatLifecycleStore {
           pinned_at = excluded.pinned_at,
           archived_at = excluded.archived_at,
           deleted_at = excluded.deleted_at,
-          updated_at = excluded.updated_at,
-          observer_created = excluded.observer_created`,
+          updated_at = excluded.updated_at`,
       )
       .run(
         chat.localKey,
@@ -1088,201 +452,7 @@ export class ChatLifecycleStore {
         chat.archivedAt ?? null,
         chat.deletedAt ?? null,
         chat.updatedAt,
-        booleanInt(chat.observerCreated, false),
       );
-  }
-
-  private localKeyForEvent(event: ChatLifecycleEventRow): string | null {
-    if (event.chatId) {
-      return `chat:${event.harness}:${event.host}:${event.chatId}`;
-    }
-    if (event.launchId) return `launch:${event.launchId}`;
-    return null;
-  }
-
-  private getLocalChatByLaunchId(launchId: string): LocalChatRow | null {
-    const row = this.db
-      .prepare("SELECT * FROM local_chats WHERE launch_id = ?")
-      .get(launchId);
-    return row ? this.localChatFromRow(row) : null;
-  }
-
-  private findLocalChatForEvent(event: ChatLifecycleEventRow): LocalChatRow | null {
-    if (event.chatId) {
-      const byChat = this.getLocalChat(
-        `chat:${event.harness}:${event.host}:${event.chatId}`,
-      );
-      if (byChat) return byChat;
-    }
-    if (event.launchId) {
-      const byLaunch = this.getLocalChatByLaunchId(event.launchId);
-      if (byLaunch) return byLaunch;
-    }
-    const localKey = this.localKeyForEvent(event);
-    return localKey ? this.getLocalChat(localKey) : null;
-  }
-
-  private reduceEventToLocalChat(
-    event: ChatLifecycleEventRow,
-    now: number,
-  ): LocalChatInput | null {
-    const localKey = this.localKeyForEvent(event);
-    if (!localKey) return null;
-
-    // A bind event (chatId AND launchId) can straddle two rows: an observer-created
-    // `chat:<id>` row (status/observed state, no launch) and the pending
-    // `launch:<id>` row (the launch's projectId + resume payload, no chatId). Read
-    // both so those fields are inherited from whichever carries them; otherwise the
-    // pending row is orphaned. upsertLocalChatUnsafe then coalesces the two rows so
-    // only one owns the launch_id.
-    const chatRow = event.chatId
-      ? this.getLocalChat(`chat:${event.harness}:${event.host}:${event.chatId}`)
-      : null;
-    const launchRow = event.launchId
-      ? this.getLocalChatByLaunchId(event.launchId)
-      : null;
-    const existing = chatRow ?? launchRow ?? this.getLocalChat(localKey);
-
-    const environment =
-      optionalString(event.metadata.environment) ?? existing?.environment ?? null;
-    const title = normalizeChatTitle(
-      optionalString(event.metadata.title) ?? existing?.title,
-      event.harness,
-    );
-    // Route the event-derived status through the single ownership seam. In dark
-    // mode this is a passthrough of the event status (the observation is
-    // shadow-only), so behavior is unchanged — but the seam now genuinely lives
-    // on the production path instead of being a parallel helper.
-    const eventStatus = this.statusForEvent(event, existing?.status);
-    const status = resolveChatStatus({
-      eventStatus,
-      observedStatus: existing?.observedStatus ?? null,
-      observedExistence:
-        (existing?.observedExistence as ObservedExistence | null) ?? null,
-      preferObserver: false,
-    }).status;
-    const statusChanged = !existing || existing.status !== status;
-    const endedAt =
-      event.lifecycle === "session.ended"
-        ? event.observedAt
-        : existing?.endedAt ?? null;
-    const pending = event.chatId ? false : existing?.pending ?? true;
-    const chatId = event.chatId ?? existing?.chatId ?? null;
-
-    const projectId =
-      event.projectId ?? existing?.projectId ?? launchRow?.projectId ?? null;
-    const launchId =
-      event.launchId ?? existing?.launchId ?? launchRow?.launchId ?? null;
-
-    return {
-      localKey,
-      projectId,
-      launchId,
-      harness: event.harness,
-      chatId,
-      pending,
-      status,
-      title,
-      cwd: event.cwd || existing?.cwd || "",
-      host: event.host || existing?.host || "",
-      environment,
-      resumeKind: existing?.resumeKind ?? "open-chat-command",
-      resumePayload: {
-        ...(existing?.resumePayload ?? {}),
-        launchId,
-        chatId,
-        cwd: event.cwd || existing?.cwd || "",
-      },
-      firstObservedAt: Math.min(existing?.firstObservedAt ?? event.observedAt, event.observedAt),
-      lastEventAt: Math.max(existing?.lastEventAt ?? event.observedAt, event.observedAt),
-      lastStatusAt: statusChanged
-        ? event.observedAt
-        : existing?.lastStatusAt ?? event.observedAt,
-      endedAt,
-      pinned: existing?.pinned ?? false,
-      pinnedAt: existing?.pinnedAt ?? null,
-      archivedAt: existing?.archivedAt ?? null,
-      deletedAt: existing?.deletedAt ?? null,
-      updatedAt: now,
-    };
-  }
-
-  private statusForEvent(
-    event: ChatLifecycleEventRow,
-    fallback: ChatLifecycleStatus | undefined,
-  ): ChatLifecycleStatus {
-    if (event.status) return event.status;
-    if (event.lifecycle === "session.ended") return "idle";
-    if (event.lifecycle === "turn.needs_input") return "needs-input";
-    if (event.lifecycle === "turn.completed") return "waiting";
-    if (
-      event.lifecycle === "chat.created" ||
-      event.lifecycle === "chat.bound" ||
-      event.lifecycle === "turn.started" ||
-      event.lifecycle === "turn.resumed" ||
-      event.lifecycle === "session.started"
-    ) {
-      return "working";
-    }
-    return fallback ?? "waiting";
-  }
-
-  private sameReducedChat(existing: LocalChatRow, next: LocalChatInput): boolean {
-    return (
-      existing.localKey === next.localKey &&
-      existing.projectId === next.projectId &&
-      existing.launchId === next.launchId &&
-      existing.harness === next.harness &&
-      existing.chatId === next.chatId &&
-      existing.pending === next.pending &&
-      existing.status === next.status &&
-      existing.title === next.title &&
-      existing.cwd === next.cwd &&
-      existing.host === next.host &&
-      existing.environment === next.environment &&
-      existing.resumeKind === next.resumeKind &&
-      JSON.stringify(existing.resumePayload) ===
-        JSON.stringify(next.resumePayload ?? {}) &&
-      existing.firstObservedAt === next.firstObservedAt &&
-      existing.lastEventAt === next.lastEventAt &&
-      existing.lastStatusAt === next.lastStatusAt &&
-      existing.endedAt === next.endedAt &&
-      existing.pinned === (next.pinned ?? false) &&
-      existing.pinnedAt === (next.pinnedAt ?? null) &&
-      existing.archivedAt === (next.archivedAt ?? null) &&
-      existing.deletedAt === (next.deletedAt ?? null)
-    );
-  }
-
-  private eventFromRow(row: unknown): ChatLifecycleEventRow {
-    const value = row as Record<string, unknown>;
-    return {
-      seq: numberFromSqlite(value.seq),
-      eventId: String(value.event_id),
-      schemaVersion: numberFromSqlite(value.schema_version) as 1,
-      source: String(value.source) as ChatLifecycleSource,
-      producer: String(value.producer) as ChatLifecycleProducer,
-      harness: String(value.harness) as ChatLifecycleHarness,
-      providerEvent: String(value.provider_event),
-      lifecycle: String(value.lifecycle) as ChatLifecycleKind,
-      status: value.status === null ? null : (String(value.status) as ChatLifecycleStatus),
-      projectId: value.project_id === null ? null : String(value.project_id),
-      projectLocalPath:
-        value.project_local_path === null ? null : String(value.project_local_path),
-      chatId: value.chat_id === null ? null : String(value.chat_id),
-      launchId: value.launch_id === null ? null : String(value.launch_id),
-      turnId: value.turn_id === null ? null : String(value.turn_id),
-      cwd: String(value.cwd),
-      host: String(value.host),
-      observedAt: numberFromSqlite(value.observed_at),
-      rawPayloadHash:
-        value.raw_payload_hash === null ? null : String(value.raw_payload_hash),
-      rawPayloadRef:
-        value.raw_payload_ref === null ? null : String(value.raw_payload_ref),
-      metadata: jsonObject(String(value.metadata_json)),
-      reducedAt:
-        value.reduced_at === null ? null : numberFromSqlite(value.reduced_at),
-    };
   }
 
   private localChatFromRow(row: unknown): LocalChatRow {
@@ -1307,38 +477,12 @@ export class ChatLifecycleStore {
       endedAt: value.ended_at === null ? null : numberFromSqlite(value.ended_at),
       pinned: bool(value.pinned),
       pinnedAt: value.pinned_at === null ? null : numberFromSqlite(value.pinned_at),
-      archivedAt:
-        value.archived_at === null ? null : numberFromSqlite(value.archived_at),
-      deletedAt:
-        value.deleted_at === null ? null : numberFromSqlite(value.deleted_at),
+      archivedAt: value.archived_at === null ? null : numberFromSqlite(value.archived_at),
+      deletedAt: value.deleted_at === null ? null : numberFromSqlite(value.deleted_at),
       updatedAt: numberFromSqlite(value.updated_at),
-      observedStatus:
-        value.observed_status == null
-          ? null
-          : (String(value.observed_status) as ChatLifecycleStatus),
-      observedExistence:
-        value.observed_existence == null
-          ? null
-          : String(value.observed_existence),
-      observedActivity:
-        value.observed_activity == null
-          ? null
-          : String(value.observed_activity),
-      observedSource:
-        value.observed_source == null ? null : String(value.observed_source),
-      observedAt:
-        value.observed_at == null ? null : numberFromSqlite(value.observed_at),
-      observedEvidence:
-        value.observed_evidence_json == null
-          ? null
-          : jsonObject(String(value.observed_evidence_json)),
-      observerCreated: bool(value.observer_created),
       serverSyncedAt:
-        value.server_synced_at == null
-          ? null
-          : numberFromSqlite(value.server_synced_at),
-      serverChatId:
-        value.server_chat_id == null ? null : String(value.server_chat_id),
+        value.server_synced_at == null ? null : numberFromSqlite(value.server_synced_at),
+      serverChatId: value.server_chat_id == null ? null : String(value.server_chat_id),
     };
   }
 }

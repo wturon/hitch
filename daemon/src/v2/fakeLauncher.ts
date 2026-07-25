@@ -4,31 +4,33 @@
 //
 // A fake launcher is Launcher-shaped for a (harness, cmux) pair but never touches
 // cmux, a process, or the filesystem. It drives a scripted chat lifecycle into the
-// SAME chatLifecycleStore the reconciler + observer read, using the exact events
-// the real hooks emit (via DaemonLifecycleProducer). That lets the full reconcile
-// loop — pending → spawning → running → waiting_input → done — run on a CI box
-// with no cmux and no agent binary.
+// SAME chatLifecycleStore the reconciler reads, so the full reconcile loop —
+// pending → spawning → running → waiting_input → done — runs on a CI box with no
+// cmux and no agent binary.
 //
 // The lifecycle mirrors the real flow:
 //   - startNew: the reconciler's `onLinked` writes the bound `working` store row +
 //     posts the server chat + marks the assignment `spawning` (unchanged). We then
-//     schedule ONE `turn.completed` event after a short test-only delay, so the row
-//     folds to `waiting` and the reconciler observes `waiting_input` ("agent
-//     finished a pass"). This is the plan's exempted business timer — test-only.
-//   - close: emit `session.ended`, so the row gains `endedAt`, the server chat maps
-//     to `dead`, and the reconciler's close path settles the assignment to `done`.
+//     schedule ONE turn completion after a short test-only delay, so the row folds
+//     to `waiting` and the reconciler observes `waiting_input` ("agent finished a
+//     pass"). This is the plan's exempted business timer — test-only.
+//   - close: settle the row (status idle + endedAt), so the reconciler's close path
+//     settles the assignment to `done`.
 //
-// HEAL-PROOF BY CONSTRUCTION: a fake session has no Claude transcript on disk, so
-// the observer's dead-process heal skips it outright — see observer/index.ts
-// healDeadClaude, which does `if (!findClaudeTranscript(chat.chatId)) continue;`
-// before ever healing. No transcript, no thread, no pidfile → the observer never
-// discovers a fake session and never forces it to `session.ended` behind our back.
+// V3 NOTE: this used to script the lifecycle through `DaemonLifecycleProducer` →
+// the event ledger → the reducer. That whole path is gone (the daemon has no local
+// event ledger any more), so the scripted transitions now write the `local_chats`
+// row the reconciler reads DIRECTLY. Same observable loop, one layer fewer.
+//
+// HEAL-PROOF BY CONSTRUCTION: a fake session has no transcript, no thread and no
+// pidfile, so the chat observer never discovers it and can never contradict the
+// script behind our back.
 
 import { randomUUID } from "node:crypto";
 
-import { DaemonLifecycleProducer } from "../chatLifecycleProducers.js";
 import type {
   ChatLifecycleHarness,
+  ChatLifecycleStatus,
   ChatLifecycleStore,
 } from "../chatLifecycleStore.js";
 import { resolveLauncher } from "../launchers/registry.js";
@@ -106,14 +108,27 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
   const timers = new Set<NodeJS.Timeout>();
   let stopped = false;
 
-  function producerFor(projectId: string, cwd: string): DaemonLifecycleProducer {
-    return new DaemonLifecycleProducer({
-      store,
-      projectId,
-      projectLocalPath: cwd,
-      host,
-      now,
+  // Move an already-bound row to the next scripted state. Reads the row the
+  // reconciler wrote at `onLinked` and rewrites it — a no-op when the row isn't
+  // there (a torn-down daemon, or a close for a chat that never bound).
+  function advance(
+    harness: ChatLifecycleHarness,
+    sessionId: string,
+    patch: { status: ChatLifecycleStatus; endedAt?: number | null },
+  ): boolean {
+    const localKey = `chat:${harness}:${host}:${sessionId}`;
+    const row = store.getLocalChat(localKey);
+    if (!row) return false;
+    const at = now();
+    store.upsertLocalChat({
+      ...row,
+      status: patch.status,
+      lastEventAt: at,
+      lastStatusAt: at,
+      endedAt: patch.endedAt !== undefined ? patch.endedAt : row.endedAt,
+      updatedAt: at,
     });
+    return true;
   }
 
   // Run `fn` after the scripted delay unless we've been torn down. Guarded so a
@@ -146,8 +161,6 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
         const sessionId = randomUUID();
         await ctx.onLinked(sessionId);
 
-        const projectId = ctx.project.projectId;
-        const cwd = ctx.cwd ?? "";
         logger.info(
           `[hitch] fake-launch: ${harness} session ${sessionId.slice(0, 8)} bound (no real spawn)`,
         );
@@ -155,12 +168,7 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
         // The one scripted transition: after a short delay, a turn completes →
         // the row folds to `waiting` → the reconciler observes `waiting_input`.
         schedule(() => {
-          producerFor(projectId, cwd).turnCompleted({
-            harness,
-            chatId: sessionId,
-            cwd,
-            environment: "cmux",
-          });
+          if (!advance(harness, sessionId, { status: "waiting" })) return;
           logger.info(
             `[hitch] fake-launch: ${harness} ${sessionId.slice(0, 8)} turn completed → waiting_input`,
           );
@@ -170,21 +178,11 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
       },
 
       async close(ctx) {
-        // End the session so the row gains endedAt (server chat → dead). The
-        // reconciler's close path also PATCHes the assignment to `done`.
-        const localKey = `chat:${harness}:${host}:${ctx.sessionId}`;
-        const row = store.getLocalChat(localKey);
-        const projectId = row?.projectId ?? ctx.project.projectId;
-        const cwd = row?.cwd ?? "";
-        producerFor(projectId, cwd).sessionEnded({
-          harness,
-          chatId: ctx.sessionId,
-          cwd,
-          environment: "cmux",
-          pid: null,
-        });
+        // Settle the row (idle + endedAt) so the reconciler's close path PATCHes
+        // the assignment to `done`.
+        advance(harness, ctx.sessionId, { status: "idle", endedAt: now() });
         logger.info(
-          `[hitch] fake-launch: ${harness} ${ctx.sessionId.slice(0, 8)} closed → session.ended`,
+          `[hitch] fake-launch: ${harness} ${ctx.sessionId.slice(0, 8)} closed → session ended`,
         );
         return { result: `fake-closed:${ctx.sessionId}` };
       },

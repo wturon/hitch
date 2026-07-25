@@ -6,6 +6,8 @@ const execFileP = promisify(execFile);
 export interface ProcessInfo {
   pid: number;
   command: string;
+  /** Kernel start time as epoch ms, from `ps -o lstart`. null when unparseable. */
+  startedAt: number | null;
 }
 
 // kill(pid, 0): probes existence without signalling. ESRCH = dead; EPERM =
@@ -21,36 +23,54 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-// The process's wall-clock start time as `ps -o lstart` prints it
-// (e.g. "Tue Jun 30 12:56:19 2026"). This string is exactly the format Claude
-// writes into a pidfile's `procStart`, so a direct compare guards against PID
-// reuse: a recycled PID is a different process with a different start time.
-export async function processStart(pid: number): Promise<string | null> {
-  try {
-    const { stdout } = await execFileP("ps", ["-o", "lstart=", "-p", String(pid)]);
-    const trimmed = stdout.trim();
-    return trimmed || null;
-  } catch {
-    return null;
-  }
+// PID-reuse check on the start-time half of process identity. Deliberately
+// LENIENT: clock skew between how a harness records its own start and how `ps`
+// reports it is measured in seconds, while a recycled pid is a process that
+// started much later. So we only call it a mismatch when the two disagree by
+// more than `toleranceMs` (default 5 min). Unknown on either side → no opinion
+// (true), and the argv check stays the sharp instrument.
+export function startTimesAgree(
+  recorded: number | null,
+  observed: number | null,
+  toleranceMs = 5 * 60_000,
+): boolean {
+  if (recorded === null || observed === null) return true;
+  return Math.abs(recorded - observed) <= toleranceMs;
 }
 
-// Snapshot every process's full command line in one `ps` call (cheap, ~one per
-// reconcile tick). Used to verify a Claude PID is still a `claude` binary and to
-// enumerate live `codex` processes. `-ww` disables column truncation so long
-// argv survives.
+// `ps -o lstart=` prints e.g. "Fri Jul 25 09:14:02 2026" (local time, day may be
+// space-padded). Anchored so a command line that happens to start with a date
+// can't be mistaken for one.
+const PS_LINE =
+  /^(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/;
+
+// Snapshot every process's command line AND start time in one `ps` call (cheap,
+// ~one per tick). The start time is the second half of process identity:
+// (pid, start-time) is what makes PID reuse detectable. `-ww` disables column
+// truncation so long argv survives. A line whose lstart doesn't parse degrades
+// to command-only rather than being dropped.
 export async function snapshotProcesses(): Promise<ProcessInfo[]> {
   try {
-    const { stdout } = await execFileP("ps", ["-axww", "-o", "pid=,command="], {
+    const { stdout } = await execFileP("ps", ["-axww", "-o", "pid=,lstart=,command="], {
       maxBuffer: 8 * 1024 * 1024,
     });
     const out: ProcessInfo[] = [];
     for (const line of stdout.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
+      const full = trimmed.match(PS_LINE);
+      if (full) {
+        const started = Date.parse(full[2].replace(/\s+/g, " "));
+        out.push({
+          pid: Number(full[1]),
+          command: full[3],
+          startedAt: Number.isFinite(started) ? started : null,
+        });
+        continue;
+      }
       const match = trimmed.match(/^(\d+)\s+(.*)$/);
       if (!match) continue;
-      out.push({ pid: Number(match[1]), command: match[2] });
+      out.push({ pid: Number(match[1]), command: match[2], startedAt: null });
     }
     return out;
   } catch {
