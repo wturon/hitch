@@ -1,4 +1,4 @@
-// V2 reconciler core (M4 PR 3).
+// V2 reconciler core.
 //
 // The daemon is a pure reconciler (PRD): it diffs the server's DESIRED state
 // against machine GROUND TRUTH and executes spawn/close/observe, writing ONLY
@@ -10,24 +10,27 @@
 // and a reconnect re-reconciles from scratch. Passes are serialized (one at a
 // time) with a trailing re-run flag so a trigger mid-pass isn't lost.
 //
-// Single-creator rule: chats are DAEMON-created. The reconciler creates the
-// local chat-store row (so the harness hooks + observer fold status into it),
-// POSTs the server `chats` row, and links the assignment to it — all before the
-// harness actually launches, so a mid-flight restart re-diffs safely (the
-// observable state was already written).
+// NO LOCAL CHAT MODEL (docs/chat-tracking-redesign.md §6, phase D). The
+// reconciler used to create a chat row at spawn through POST /daemon/chats and
+// keep a parallel `local_chats` row it read observations back out of. Both are
+// gone. What replaced them:
 //
-// V1 is imported, never edited: cmux.ts / launchers wrap the real spawn/close;
-// chatLifecycleStore is the shared local truth (the same sqlite the hooks and
-// the observer write). The reconciler reads store rows the relay loop keeps
-// reduced and never reduces the event log itself (single reducer = the relay).
+//   - a chat is created by ONE writer, the snapshot PUT. At spawn the
+//     reconciler registers the launch with the ATTACHMENT layer
+//     (daemon/src/attachment/), which pre-registers claude's known session id
+//     as `existence: "pending"` in the very next snapshot and links the
+//     assignment to the row the server echoes back.
+//   - `deriveObserved` reads the SERVER chat's status + existence — the two
+//     things the snapshot already maintains — instead of a local row.
+//   - close resolves its target through the chat's `handle`, the nullable
+//     jsonb that replaced `cmux_ref`.
+//
+// V1 is imported, never edited: cmux.ts / launchers wrap the real spawn/close.
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
-import type {
-  ChatLifecycleStore,
-  ChatLifecycleStatus,
-} from "../chatLifecycleStore.js";
+import type { AttachmentLayer } from "../attachment/index.js";
 import { CmuxError } from "../cmux.js";
 import { resolveLauncher as registryResolveLauncher } from "../launchers/registry.js";
 import type { Environment, Harness, Launcher } from "../launchers/types.js";
@@ -61,8 +64,12 @@ interface WireAssignment {
 }
 interface WireChat {
   id: string;
-  cmuxRef: unknown;
+  harness: ServerHarness;
+  sessionId: string | null;
   status: ServerChatStatus;
+  existence: ServerExistence | null;
+  /** Attachment 2 — how to focus/close. Null for a chat we didn't launch. */
+  handle: unknown;
 }
 interface WireTask {
   id: string;
@@ -76,11 +83,6 @@ interface WireProject {
   repoPath: string | null;
 }
 
-// The cmux_ref jsonb we write. Matches z.json()'s recursive value type so the
-// typed hono client accepts it without a cast (mirrors chatSync's JsonObject).
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-type JsonObject = { [key: string]: JsonValue };
-
 // ─── Wire vocabulary (mirror of the server pgEnums) ──────────────────────────
 
 export type DesiredState = "running" | "stopped";
@@ -93,6 +95,7 @@ export type ObservedState =
   | "dead";
 export type ServerHarness = "claude" | "codex";
 export type ServerChatStatus = "busy" | "waiting_input" | "idle" | "dead";
+export type ServerExistence = "running" | "dormant" | "pending";
 
 export interface ReconcilerLogger {
   info: (message: string) => void;
@@ -101,15 +104,28 @@ export interface ReconcilerLogger {
 
 // ─── Pure decision logic (unit-tested in v2-reconciler-smoke) ────────────────
 
-// The action the reconciler takes for one assignment, given desired vs observed
-// and whether a chat is linked. Pure — the diff table lives here, testable
-// without a server or cmux.
-export type ReconcileDecision = "spawn" | "close" | "mark-done" | "observe" | "noop";
+// The action the reconciler takes for one assignment, given desired vs observed,
+// whether a chat is linked, and whether a launch for it is still in flight.
+// Pure — the diff table lives here, testable without a server or cmux.
+export type ReconcileDecision =
+  | "spawn"
+  | "close"
+  | "mark-done"
+  | "fail-launch"
+  | "observe"
+  | "noop";
 
 export interface AssignmentSnapshot {
   desiredState: DesiredState;
   observedState: ObservedState;
   hasChat: boolean;
+  /**
+   * A launch record for this assignment exists and hasn't been linked yet.
+   * Durable (the attachment layer keeps it on disk), which is what lets a
+   * restart tell "spawn in flight" from "spawn that never bound" — the two
+   * states the codex gap sits between.
+   */
+  launchPending: boolean;
 }
 
 export function decideAction(a: AssignmentSnapshot): ReconcileDecision {
@@ -124,35 +140,74 @@ export function decideAction(a: AssignmentSnapshot): ReconcileDecision {
 
   // desired = running
   if (a.observedState === "done" || a.observedState === "dead") return "noop";
-  // Not acted on yet and no chat → claim + spawn. (A pending row that somehow
-  // already carries a chat is observed, not re-spawned.)
-  if (a.observedState === "pending") return a.hasChat ? "observe" : "spawn";
+  // Not acted on yet and no chat → claim + spawn, UNLESS a launch is already in
+  // flight (a restart mid-spawn must never double-spawn). A pending row that
+  // somehow already carries a chat is observed, not re-spawned.
+  if (a.observedState === "pending") {
+    if (a.hasChat) return "observe";
+    return a.launchPending ? "noop" : "spawn";
+  }
+  // Spawned but never linked to a chat. Codex lives here legitimately: its
+  // thread doesn't exist until the first prompt, so there is nothing to link
+  // yet. Once the launch record ages out, though, it never bound — say so
+  // rather than sitting in `spawning` forever.
+  if (a.observedState === "spawning" && !a.hasChat) {
+    return a.launchPending ? "noop" : "fail-launch";
+  }
   // spawning | running | waiting_input: keep deriving observations from the chat.
   return a.hasChat ? "observe" : "noop";
 }
 
-// Map the linked chat's CURRENT local-store state to an observed_state, or null
-// when no transition should be forced. Mirrors the plan's state mapping:
-//   busy (working)                 → running
-//   waiting_input (waiting/needs)  → waiting_input   ("agent finished a pass")
-//   dead (endedAt set)             → done            (it spawned and ended)
-//   store row missing entirely     → dead            (launch never bound)
-// A live-idle chat (no endedAt, gone/dormant but unconfirmed) is ambiguous, so
-// it returns null — the reconciler waits for endedAt or a real status change
-// rather than declaring done prematurely.
+/**
+ * Map the linked SERVER chat's current state to an observed_state, or null when
+ * no transition should be forced.
+ *
+ * This is the phase-D replacement for reading a local `local_chats` row. The
+ * inputs are the two columns the snapshot maintains — `status` (derived by the
+ * server from the three axes) and `existence` (what the machine reports) — plus
+ * the assignment's CURRENT observed state, which is what lets a few honest
+ * distinctions be drawn without any local memory:
+ *
+ *   chat row gone            → dead   (nothing was ever bound)
+ *   status dead / no existence → dead from spawning (it never got going),
+ *                                else done (it ran and ended)
+ *   existence pending        → null   (we launched it; it hasn't bound yet)
+ *   existence dormant        → done for CLAUDE once we've seen it live; null
+ *                              otherwise (codex dormancy is a heuristic — see
+ *                              codexObserver.ts — and a false "ended" closes a
+ *                              live tab)
+ *   running + busy           → running
+ *   running + waiting_input  → waiting_input   (blocked on a human)
+ *   running + idle           → waiting_input   ("agent finished a pass"), but
+ *                              never straight out of `spawning`: a harness
+ *                              reads idle for a beat before its first prompt
+ *                              lands, and that is not a finished turn.
+ */
 export function deriveObserved(
-  chat: { status: ChatLifecycleStatus; endedAt: number | null } | null,
+  chat: {
+    status: ServerChatStatus;
+    existence: ServerExistence | null;
+    harness: ServerHarness;
+  } | null,
+  current: ObservedState,
 ): ObservedState | null {
   if (chat === null) return "dead";
-  if (chat.endedAt !== null) return "done";
-  switch (chat.status) {
-    case "working":
-      return "running";
-    case "needs-input":
-    case "waiting":
-      return "waiting_input";
-    case "idle":
+  const neverGotGoing = current === "pending" || current === "spawning";
+
+  if (chat.status === "dead" || chat.existence === null) {
+    return neverGotGoing ? "dead" : "done";
+  }
+
+  switch (chat.existence) {
+    case "pending":
       return null;
+    case "dormant":
+      if (chat.harness !== "claude") return null;
+      return current === "running" || current === "waiting_input" ? "done" : null;
+    case "running":
+      if (chat.status === "busy") return "running";
+      if (chat.status === "waiting_input") return "waiting_input";
+      return neverGotGoing ? null : "waiting_input";
   }
 }
 
@@ -199,7 +254,8 @@ export function buildDelegatePreamble(task: DelegateTask): string {
 
 export interface ReconcilerOptions {
   client: HitchClient;
-  store: ChatLifecycleStore;
+  /** The attachment layer: launch records, pre-registration, assignment links. */
+  attachments: AttachmentLayer;
   machineId: string;
   host: string;
   logger: ReconcilerLogger;
@@ -216,27 +272,14 @@ export interface ReconcilerOptions {
 
 const DEFAULT_TICK_MS = 30_000;
 
-// The free-form jsonb we stash on the server chat so the observation loop (and a
-// later focus relay) can re-address it. Carries the local key we look the store
-// row up by, plus the session id once known.
-interface CmuxRef {
-  localKey: string;
-  sessionId: string | null;
-  launchId: string | null;
-  cwd: string;
-  host: string;
-  environment: string;
-  resumeKind: string;
-}
-
-// Map the server harness enum to the store/launcher harness vocabulary.
-function storeHarness(harness: ServerHarness): Harness {
+// Map the server harness enum to the launcher harness vocabulary.
+function launcherHarness(harness: ServerHarness): Harness {
   return harness === "codex" ? "codex" : "claude-code";
 }
 
 export class Reconciler {
   private readonly client: HitchClient;
-  private readonly store: ChatLifecycleStore;
+  private readonly attachments: AttachmentLayer;
   private readonly machineId: string;
   private readonly host: string;
   private readonly logger: ReconcilerLogger;
@@ -250,13 +293,12 @@ export class Reconciler {
   private stopped = false;
   // Assignments with a spawn/close in flight this process lifetime. Guards
   // double-spawn between the claim and the "spawning" write landing on the
-  // server (a restart re-diffs safely because the observable state is written
-  // before the harness launches).
+  // server (a restart re-diffs safely off the durable launch record).
   private readonly inFlight = new Set<string>();
 
   constructor(options: ReconcilerOptions) {
     this.client = options.client;
-    this.store = options.store;
+    this.attachments = options.attachments;
     this.machineId = options.machineId;
     this.host = options.host;
     this.logger = options.logger;
@@ -309,8 +351,21 @@ export class Reconciler {
   private async reconcileOnce(reason: string): Promise<void> {
     const assignments = await this.fetchMachineAssignments();
     if (!assignments) return;
+    // Abandoned launches: report them, then let the fail-launch decision below
+    // settle whatever assignment they belonged to.
+    for (const assignmentId of this.attachments.sweep()) {
+      this.logger.info(`[hitch] launch for assignment ${assignmentId} expired without binding`);
+    }
     if (assignments.length === 0) return;
+    // A FAILED chat read is not an empty one: concluding `dead` from a network
+    // error would kill every live assignment on this machine. Skip the pass.
     const chatsById = await this.fetchMachineChats();
+    if (!chatsById) return;
+    // The other half of the link path (the first is the snapshot PUT's echo):
+    // resolve any assignment still waiting for its chat id.
+    await this.attachments.resolveLinks([...chatsById.values()]);
+    // Read the durable launch records ONCE for the whole pass.
+    const pendingLaunches = this.attachments.pendingLaunches();
 
     for (const a of assignments) {
       if (this.stopped) return;
@@ -318,6 +373,7 @@ export class Reconciler {
         desiredState: a.desiredState as DesiredState,
         observedState: a.observedState as ObservedState,
         hasChat: a.chatId != null,
+        launchPending: this.inFlight.has(a.id) || pendingLaunches.has(a.id),
       });
       switch (decision) {
         case "spawn":
@@ -327,7 +383,15 @@ export class Reconciler {
           this.claimAndClose(a, chatsById);
           break;
         case "mark-done":
+          this.attachments.forgetAssignment(a.id);
           await this.patchObservedIfChanged(a, "done");
+          break;
+        case "fail-launch":
+          this.logger.info(
+            `[hitch] assignment ${a.id} spawned but never bound to a chat — marking dead`,
+          );
+          this.attachments.forgetAssignment(a.id);
+          await this.patchObservedIfChanged(a, "dead");
           break;
         case "observe":
           await this.observe(a, chatsById);
@@ -358,21 +422,23 @@ export class Reconciler {
     }
   }
 
-  private async fetchMachineChats(): Promise<Map<string, WireChat>> {
-    const byId = new Map<string, WireChat>();
+  /** Null means the read FAILED (≠ "no chats"), so the caller skips the pass. */
+  private async fetchMachineChats(): Promise<Map<string, WireChat> | null> {
     try {
       const res = await this.client.daemon.chats.$get({
         query: { machine_id: this.machineId },
       });
       if (!res.ok) {
         this.logger.error?.(`[hitch] GET /daemon/chats failed (${res.status})`);
-        return byId;
+        return null;
       }
+      const byId = new Map<string, WireChat>();
       for (const chat of (await res.json()) as WireChat[]) byId.set(chat.id, chat);
+      return byId;
     } catch (error) {
       this.logger.error?.(`[hitch] GET /daemon/chats error: ${String(error)}`);
+      return null;
     }
-    return byId;
   }
 
   // ─── Spawn ─────────────────────────────────────────────────────────────────
@@ -388,6 +454,7 @@ export class Reconciler {
         );
         // Launch failure / cmux unreachable → dead (never bound), per the plan's
         // asymmetry (ended-after-spawn is done; launch failure is dead).
+        this.attachments.forgetAssignment(a.id);
         await this.patchObserved(a.id, "dead").catch(() => {});
       })
       .finally(() => this.inFlight.delete(a.id));
@@ -401,9 +468,11 @@ export class Reconciler {
     const cwd = repoPath && repoPath.length > 0 ? repoPath : homedir();
     // Decision 2: assignments.prompt verbatim, else the default preamble.
     const prompt =
-      a.prompt != null ? a.prompt : buildDelegatePreamble({ id: task.id, title: task.title, body: task.body });
+      a.prompt != null
+        ? a.prompt
+        : buildDelegatePreamble({ id: task.id, title: task.title, body: task.body });
     const serverHarness = (a.harness as ServerHarness) ?? "claude";
-    const harness = storeHarness(serverHarness);
+    const harness = launcherHarness(serverHarness);
     // Kickoff-only launch params. null/undefined → undefined so the launcher
     // uses the harness default (StartCtx.model/effort are optional). V2 always
     // spawns into cmux, which honors both, so no param-honoring gate is needed.
@@ -420,40 +489,34 @@ export class Reconciler {
       projectId: task.projectId ?? this.machineId,
       projectName: project?.name ?? title,
     };
-    const taskKey = `assignment:${a.id}`;
 
-    if (serverHarness === "codex") {
-      // Codex learns its thread id only mid-launch, so create+link UP FRONT
-      // keyed by the launch, then let the bind rekey the row when the hook fires.
-      const now = this.now();
-      const launchKey = `launch:${launchId}`;
-      this.upsertChatRow({
-        localKey: launchKey,
-        projectId: task.projectId,
-        launchId,
-        harness,
-        chatId: null,
-        pending: true,
-        title,
-        cwd,
-        resumePayload: { launchId, cwd },
-        now,
-      });
-      const serverChatId = await this.postChat({
-        projectId: task.projectId,
-        harness: serverHarness,
-        title,
-        cmuxRef: this.cmuxRef(launchKey, null, launchId, cwd),
-        now,
-      });
-      this.store.markChatServerSynced(launchKey, { serverChatId, syncedAt: now });
-      await this.patchAssignment(a.id, { chatId: serverChatId, observedState: "spawning" });
+    // 1. Record the launch BEFORE anything observable happens. Durable, so a
+    //    crash between here and the spawn re-diffs to "already in flight"
+    //    instead of spawning a second agent.
+    this.attachments.registerLaunch({
+      launchId,
+      assignmentId: a.id,
+      harness: serverHarness,
+      cwd,
+      projectId: task.projectId,
+      title,
+    });
+
+    try {
+      // 2. Write the observable state next, still before the harness runs.
+      await this.patchAssignment(a.id, { observedState: "spawning" });
       this.logger.info(
-        `[hitch] reconciler spawning codex for assignment ${a.id} (chat ${serverChatId})`,
+        `[hitch] reconciler spawning ${serverHarness} for assignment ${a.id} ` +
+          `(launch ${launchId.slice(0, 8)})`,
       );
+
+      // 3. Spawn. `onLinked` fires only for launchers that pin a session id up
+      //    front — claude (`--session-id`) and the fake launcher. Codex has no
+      //    id to pin: its thread is bound later, off the hook event that
+      //    carries the cmux surface (see daemon/src/attachment/).
       await launcher.startNew({
         launchId,
-        taskKey,
+        taskKey: `assignment:${a.id}`,
         prompt,
         cwd,
         title,
@@ -461,78 +524,18 @@ export class Reconciler {
         effort,
         project: projectRef,
         logger: this.logger,
-        onLinked: async (threadId) => {
-          const boundNow = this.now();
-          const chatKey = `chat:codex:${this.host}:${threadId}`;
-          // Upsert the bound row: upsertLocalChat rekeys the launch row (which
-          // still holds this launchId) to the chat key, preserving server_chat_id.
-          this.upsertChatRow({
-            localKey: chatKey,
-            projectId: task.projectId,
-            launchId,
-            harness,
-            chatId: threadId,
-            pending: false,
-            title,
-            cwd,
-            resumePayload: { launchId, chatId: threadId, cwd },
-            now: boundNow,
-          });
-          // Update the server chat's cmux_ref with the now-known thread id.
-          await this.client.daemon.chats[":id"]
-            .$patch({
-              param: { id: serverChatId },
-              json: { cmuxRef: this.cmuxRef(chatKey, threadId, launchId, cwd), status: "busy" },
-            })
-            .catch(() => {});
+        onLinked: async (sessionId) => {
+          this.attachments.bindSession(launchId, sessionId);
+          this.logger.info(
+            `[hitch] reconciler pre-registered ${serverHarness} session ` +
+              `${sessionId.slice(0, 8)} for assignment ${a.id}`,
+          );
         },
       });
-      return;
+    } catch (error) {
+      this.attachments.dropLaunch(launchId);
+      throw error;
     }
-
-    // Claude pins its session id up front (claude --session-id). The launcher
-    // fires onLinked with that id BEFORE the cmux send, so create+link there —
-    // if it throws, the launcher never spawns and we fall to `dead`.
-    await launcher.startNew({
-      launchId,
-      taskKey,
-      prompt,
-      cwd,
-      title,
-      model,
-      effort,
-      project: projectRef,
-      logger: this.logger,
-      onLinked: async (sessionId) => {
-        const now = this.now();
-        const localKey = `chat:claude-code:${this.host}:${sessionId}`;
-        this.upsertChatRow({
-          localKey,
-          projectId: task.projectId,
-          launchId: null,
-          harness,
-          chatId: sessionId,
-          pending: false,
-          title,
-          cwd,
-          resumePayload: { chatId: sessionId, cwd },
-          now,
-        });
-        const serverChatId = await this.postChat({
-          projectId: task.projectId,
-          harness: serverHarness,
-          title,
-          cmuxRef: this.cmuxRef(localKey, sessionId, null, cwd),
-          now,
-        });
-        this.store.markChatServerSynced(localKey, { serverChatId, syncedAt: now });
-        await this.patchAssignment(a.id, { chatId: serverChatId, observedState: "spawning" });
-        this.logger.info(
-          `[hitch] reconciler spawning claude for assignment ${a.id} ` +
-            `(chat ${serverChatId}, session ${sessionId.slice(0, 8)})`,
-        );
-      },
-    });
   }
 
   // ─── Close (Decision 3: execute desired=stopped) ──────────────────────────
@@ -542,15 +545,19 @@ export class Reconciler {
     this.inFlight.add(a.id);
     void this.close(a, chatsById)
       .catch((error) => {
-        this.logger.error?.(`[hitch] reconciler close failed for assignment ${a.id}: ${String(error)}`);
+        this.logger.error?.(
+          `[hitch] reconciler close failed for assignment ${a.id}: ${String(error)}`,
+        );
       })
       .finally(() => this.inFlight.delete(a.id));
   }
 
   private async close(a: WireAssignment, chatsById: Map<string, WireChat>): Promise<void> {
-    const row = this.resolveStoreRow(a, chatsById);
-    const sessionId = row?.chatId ?? this.sessionIdFromChat(a, chatsById);
-    const harness = storeHarness((a.harness as ServerHarness) ?? "claude");
+    const chat = a.chatId ? (chatsById.get(a.chatId) ?? null) : null;
+    // Attachment 2 (§4): the handle says how to get back to a chat. A chat with
+    // no handle is a complete, correct chat — it just isn't ours to close.
+    const sessionId = closeTarget(chat);
+    const harness = launcherHarness((a.harness as ServerHarness) ?? "claude");
     const launcher = this.resolveLauncher(harness, "cmux");
     if (sessionId && launcher?.close) {
       await launcher.close({
@@ -559,137 +566,33 @@ export class Reconciler {
       });
       this.logger.info(`[hitch] reconciler closed chat for assignment ${a.id}`);
     } else {
-      // Nothing bound to close (codex that never reported a thread, etc.) — the
-      // goal state (no live tab) already holds; just settle.
+      // Nothing bound to close (a codex launch that never reported a thread, a
+      // chat we only ever observed) — the goal state already holds; settle.
       this.logger.info(`[hitch] reconciler: no live chat to close for assignment ${a.id}`);
     }
+    this.attachments.forgetAssignment(a.id);
     await this.patchObserved(a.id, "done");
   }
 
   // ─── Observe (transition-only PATCHes) ────────────────────────────────────
 
   private async observe(a: WireAssignment, chatsById: Map<string, WireChat>): Promise<void> {
-    const serverChat = a.chatId ? chatsById.get(a.chatId) ?? null : null;
-    const row = this.resolveStoreRow(a, chatsById);
-    if (!row) {
-      // Store row missing. Only conclude `dead` when the server chat is also
-      // gone/dead — this guards the codex bind window where cmux_ref.localKey
-      // briefly lags the rekey and the launch row has already moved.
-      if (!serverChat || (serverChat.status as ServerChatStatus) === "dead") {
-        await this.patchObservedIfChanged(a, "dead");
-      }
-      return;
-    }
-    const derived = deriveObserved({ status: row.status, endedAt: row.endedAt });
-    const next = observationTransition(a.observedState as ObservedState, derived);
-    if (next) await this.patchObserved(a.id, next);
-  }
-
-  // ─── Store-row resolution ──────────────────────────────────────────────────
-
-  // The local chat-store row backing an assignment's chat. We reach it via the
-  // server chat's cmux_ref.localKey (persistent, and what chatSync keeps fresh),
-  // falling back to reconstructing the key from harness+host+sessionId.
-  private resolveStoreRow(a: WireAssignment, chatsById: Map<string, WireChat>) {
-    if (!a.chatId) return null;
-    const serverChat = chatsById.get(a.chatId);
-    if (!serverChat) return null;
-    const ref = (serverChat.cmuxRef ?? {}) as Partial<CmuxRef>;
-    if (typeof ref.localKey === "string") {
-      const byKey = this.store.getLocalChat(ref.localKey);
-      if (byKey) return byKey;
-    }
-    if (typeof ref.sessionId === "string") {
-      const harness = storeHarness((a.harness as ServerHarness) ?? "claude");
-      const byChat = this.store.getLocalChat(`chat:${harness}:${this.host}:${ref.sessionId}`);
-      if (byChat) return byChat;
-    }
-    return null;
-  }
-
-  private sessionIdFromChat(a: WireAssignment, chatsById: Map<string, WireChat>): string | null {
-    if (!a.chatId) return null;
-    const ref = (chatsById.get(a.chatId)?.cmuxRef ?? {}) as Partial<CmuxRef>;
-    return typeof ref.sessionId === "string" ? ref.sessionId : null;
-  }
-
-  // ─── Server + store helpers ────────────────────────────────────────────────
-
-  private cmuxRef(
-    localKey: string,
-    sessionId: string | null,
-    launchId: string | null,
-    cwd: string,
-  ): JsonObject {
-    return {
-      localKey,
-      sessionId,
-      launchId,
-      cwd,
-      host: this.host,
-      environment: "cmux",
-      resumeKind: "open-chat-command",
-    };
-  }
-
-  private upsertChatRow(input: {
-    localKey: string;
-    projectId: string | null;
-    launchId: string | null;
-    harness: Harness;
-    chatId: string | null;
-    pending: boolean;
-    title: string;
-    cwd: string;
-    resumePayload: Record<string, unknown>;
-    now: number;
-  }): void {
-    this.store.upsertLocalChat({
-      localKey: input.localKey,
-      projectId: input.projectId,
-      launchId: input.launchId,
-      harness: input.harness,
-      chatId: input.chatId,
-      pending: input.pending,
-      status: "working",
-      title: input.title,
-      cwd: input.cwd,
-      host: this.host,
-      environment: "cmux",
-      resumeKind: "open-chat-command",
-      resumePayload: input.resumePayload,
-      firstObservedAt: input.now,
-      lastEventAt: input.now,
-      lastStatusAt: input.now,
-      endedAt: null,
-      updatedAt: input.now,
-    });
-  }
-
-  private async postChat(input: {
-    projectId: string | null;
-    harness: ServerHarness;
-    title: string;
-    cmuxRef: JsonObject;
-    now: number;
-  }): Promise<string> {
-    const res = await this.client.daemon.chats.$post({
-      json: {
-        machineId: this.machineId,
-        projectId: input.projectId,
-        harness: input.harness,
-        title: input.title,
-        cmuxRef: input.cmuxRef,
-        status: "busy",
-        lastActivityAt: new Date(input.now).toISOString(),
+    const chat = a.chatId ? (chatsById.get(a.chatId) ?? null) : null;
+    const derived = deriveObserved(
+      chat && {
+        status: chat.status,
+        existence: chat.existence ?? null,
+        harness: (chat.harness ?? a.harness ?? "claude") as ServerHarness,
       },
-    });
-    if (!res.ok) {
-      throw new Error(`chat POST failed (${res.status}: ${await res.text().catch(() => "")})`);
-    }
-    const row = (await res.json()) as { id: string };
-    return row.id;
+      a.observedState as ObservedState,
+    );
+    const next = observationTransition(a.observedState as ObservedState, derived);
+    if (!next) return;
+    if (next === "done" || next === "dead") this.attachments.forgetAssignment(a.id);
+    await this.patchObserved(a.id, next);
   }
+
+  // ─── Server helpers ────────────────────────────────────────────────────────
 
   private async getTask(id: string): Promise<WireTask> {
     const res = await this.client.tasks[":id"].$get({ param: { id } });
@@ -721,4 +624,23 @@ export class Reconciler {
     if ((a.observedState as ObservedState) === next) return;
     await this.patchObserved(a.id, next);
   }
+}
+
+/**
+ * The session id to close, read off the chat's `handle`. Exported for the
+ * smoke: the rule is that a chat we did not launch has no handle and is
+ * therefore not ours to close (§4's accepted asymmetry — we see everything, we
+ * can return you to what we launched).
+ */
+export function closeTarget(
+  chat: { sessionId?: string | null; handle?: unknown } | null,
+): string | null {
+  if (!chat) return null;
+  const handle = chat.handle;
+  if (typeof handle !== "object" || handle === null || Array.isArray(handle)) return null;
+  const fromHandle = (handle as Record<string, unknown>).sessionId;
+  if (typeof fromHandle === "string" && fromHandle.trim()) return fromHandle;
+  // A handle with no session id still says "we launched this"; fall back to the
+  // chat's own session id, which is the same value by construction.
+  return typeof chat.sessionId === "string" && chat.sessionId.trim() ? chat.sessionId : null;
 }

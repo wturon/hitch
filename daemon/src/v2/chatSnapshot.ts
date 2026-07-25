@@ -33,6 +33,19 @@ export interface ChatSnapshotSinkResult {
   skipped: boolean;
   ok: boolean;
   status?: number;
+  /**
+   * The rows the server upserted, echoed back. This is how the attachment layer
+   * learns the server chat id for a session it launched — the job the deleted
+   * POST /daemon/chats used to do.
+   */
+  chats?: UpsertedChat[];
+}
+
+/** The subset of an echoed chat row the daemon reads. */
+export interface UpsertedChat {
+  id: string;
+  harness: string;
+  sessionId: string | null;
 }
 
 const DEFAULT_REFRESH_MS = 60_000;
@@ -52,6 +65,10 @@ function fingerprint(snapshot: ChatSnapshot): string {
       c: c.cwd,
       t: c.title ?? null,
       j: c.projectId,
+      // Attachments are state, not debug context: a chat that just acquired its
+      // task or handle MUST reach the server, even if its axes didn't move.
+      k: c.task ?? null,
+      d: c.handle ?? null,
       // `source`/`evidence` move constantly (mtime ages tick every second) and
       // are debug context, not state — excluded on purpose so a quiet machine
       // is genuinely quiet on the wire.
@@ -103,6 +120,7 @@ export class ChatSnapshotSink {
         dead?: number;
         events?: number;
         eventsDropped?: number;
+        chats?: UpsertedChat[];
       };
       this.lastFingerprint = print;
       this.lastSentAt = this.now();
@@ -112,7 +130,13 @@ export class ChatSnapshotSink {
             `${body.events ?? 0} events (${body.eventsDropped ?? 0} dropped)`,
         );
       }
-      return { sent: true, skipped: false, ok: true, status: res.status };
+      return {
+        sent: true,
+        skipped: false,
+        ok: true,
+        status: res.status,
+        chats: Array.isArray(body.chats) ? body.chats : [],
+      };
     } catch (error) {
       this.logger.error?.(`[hitch] chat snapshot error: ${String(error)}`);
       return { sent: true, skipped: false, ok: false };

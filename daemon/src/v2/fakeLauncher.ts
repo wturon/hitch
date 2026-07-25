@@ -3,38 +3,34 @@
 // through to the real registry, so an unset flag is byte-for-byte the real path).
 //
 // A fake launcher is Launcher-shaped for a (harness, cmux) pair but never touches
-// cmux, a process, or the filesystem. It drives a scripted chat lifecycle into the
-// SAME chatLifecycleStore the reconciler reads, so the full reconcile loop —
-// pending → spawning → running → waiting_input → done — runs on a CI box with no
-// cmux and no agent binary.
+// cmux, a process, or the filesystem. It drives a scripted chat lifecycle so the
+// full reconcile loop — pending → spawning → running → waiting_input → done —
+// runs on a CI box with no cmux and no agent binary.
 //
-// The lifecycle mirrors the real flow:
-//   - startNew: the reconciler's `onLinked` writes the bound `working` store row +
-//     posts the server chat + marks the assignment `spawning` (unchanged). We then
-//     schedule ONE turn completion after a short test-only delay, so the row folds
-//     to `waiting` and the reconciler observes `waiting_input` ("agent finished a
-//     pass"). This is the plan's exempted business timer — test-only.
-//   - close: settle the row (status idle + endedAt), so the reconciler's close path
-//     settles the assignment to `done`.
+// V3/phase-D NOTE: there is no local chat store to script into any more. A fake
+// chat is now a fake OBSERVATION: the launcher registers it with the attachment
+// layer and moves its axes, and it reaches the server through the same snapshot
+// PUT every real chat does. That means the loop it exercises is the real one end
+// to end — including the server's status function and its death sweep — instead
+// of stopping at a local row.
 //
-// V3 NOTE: this used to script the lifecycle through `DaemonLifecycleProducer` →
-// the event ledger → the reducer. That whole path is gone (the daemon has no local
-// event ledger any more), so the scripted transitions now write the `local_chats`
-// row the reconciler reads DIRECTLY. Same observable loop, one layer fewer.
+//   startNew → the reconciler's `onLinked` pre-registers the session; we flip it
+//              to running/working, then (after a test-only delay) to running/idle,
+//              which the server reads as `idle` and the reconciler maps to
+//              waiting_input — "the agent finished a pass".
+//   close    → release the chat. It leaves the snapshot, the server's sweep marks
+//              it dead, and the reconciler settles the assignment to done.
 //
-// HEAL-PROOF BY CONSTRUCTION: a fake session has no transcript, no thread and no
-// pidfile, so the chat observer never discovers it and can never contradict the
-// script behind our back.
+// STILL HEAL-PROOF: a fake session has no transcript, no thread and no pidfile,
+// so real observation never discovers it and can never contradict the script.
+// The only thing that can move these axes is this file.
 
 import { randomUUID } from "node:crypto";
 
-import type {
-  ChatLifecycleHarness,
-  ChatLifecycleStatus,
-  ChatLifecycleStore,
-} from "../chatLifecycleStore.js";
+import type { AttachmentLayer } from "../attachment/index.js";
 import { resolveLauncher } from "../launchers/registry.js";
 import type { Environment, Harness, Launcher } from "../launchers/types.js";
+import type { SnapshotHarness } from "../observer/types.js";
 
 // Delay from bind → turn.completed. Short by default so a headless loop lands
 // quickly; overridable for a slower/observable run.
@@ -46,11 +42,9 @@ export interface FakeLauncherLogger {
 }
 
 export interface FakeLauncherDeps {
-  store: ChatLifecycleStore;
-  host: string;
+  attachments: AttachmentLayer;
   logger: FakeLauncherLogger;
   env?: NodeJS.ProcessEnv;
-  now?: () => number;
 }
 
 // A resolver with the registry's exact shape, so it drops into the reconciler's
@@ -81,7 +75,8 @@ function fakeDelayMs(env: NodeJS.ProcessEnv): number {
 }
 
 // Shared cmux-family traits: same capability surface the real cmux launchers
-// advertise (pinsSessionId differs per harness, matching cmuxClaude/cmuxCodex).
+// advertise. Both fakes pin their session id (they mint it), which is the one
+// deliberate difference from real codex — see the header.
 function cmuxTraits(pinsSessionId: boolean): Launcher["traits"] {
   return {
     reopen: true,
@@ -95,44 +90,22 @@ function cmuxTraits(pinsSessionId: boolean): Launcher["traits"] {
   };
 }
 
+const wireHarness = (harness: Harness): SnapshotHarness =>
+  harness === "codex" ? "codex" : "claude";
+
 /**
  * Build the fake-launch controller. `resolve` is a launcher resolver the
  * reconciler uses in place of the registry; `stop` cancels pending timers.
  */
 export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchController {
   const env = deps.env ?? process.env;
-  const now = deps.now ?? Date.now;
   const delay = fakeDelayMs(env);
-  const { store, host, logger } = deps;
+  const { attachments, logger } = deps;
 
   const timers = new Set<NodeJS.Timeout>();
   let stopped = false;
 
-  // Move an already-bound row to the next scripted state. Reads the row the
-  // reconciler wrote at `onLinked` and rewrites it — a no-op when the row isn't
-  // there (a torn-down daemon, or a close for a chat that never bound).
-  function advance(
-    harness: ChatLifecycleHarness,
-    sessionId: string,
-    patch: { status: ChatLifecycleStatus; endedAt?: number | null },
-  ): boolean {
-    const localKey = `chat:${harness}:${host}:${sessionId}`;
-    const row = store.getLocalChat(localKey);
-    if (!row) return false;
-    const at = now();
-    store.upsertLocalChat({
-      ...row,
-      status: patch.status,
-      lastEventAt: at,
-      lastStatusAt: at,
-      endedAt: patch.endedAt !== undefined ? patch.endedAt : row.endedAt,
-      updatedAt: at,
-    });
-    return true;
-  }
-
-  // Run `fn` after the scripted delay unless we've been torn down. Guarded so a
-  // late-firing timer that races a store.close() can't throw into the loop.
+  // Run `fn` after the scripted delay unless we've been torn down.
   function schedule(fn: () => void): void {
     const timer = setTimeout(() => {
       timers.delete(timer);
@@ -146,29 +119,31 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
     timers.add(timer);
   }
 
-  function makeLauncher(harness: ChatLifecycleHarness): Launcher {
+  function makeLauncher(harness: Harness): Launcher {
+    const wire = wireHarness(harness);
     return {
       harness,
       environment: "cmux",
       traits: cmuxTraits(harness === "claude-code"),
 
       async startNew(ctx) {
-        // Mint an id and bind up front — mirrors the real cmux launchers, which
-        // call onLinked BEFORE the spawn. The reconciler's onLinked writes the
-        // `working` store row, POSTs the server chat, and marks the assignment
-        // `spawning`. (For codex the reconciler already created the launch row;
-        // onLinked rekeys it to the chat id and updates the server cmux_ref.)
+        // Mint an id and bind up front — mirrors the real cmux claude launcher,
+        // which calls onLinked BEFORE the spawn. The reconciler's onLinked
+        // pre-registers the session with the attachment layer, which is what
+        // puts it in the next snapshot.
         const sessionId = randomUUID();
         await ctx.onLinked(sessionId);
+        // …and immediately "discovered", working on its first turn.
+        attachments.simulate({ harness: wire, sessionId, existence: "running", activity: "working" });
 
         logger.info(
           `[hitch] fake-launch: ${harness} session ${sessionId.slice(0, 8)} bound (no real spawn)`,
         );
 
-        // The one scripted transition: after a short delay, a turn completes →
-        // the row folds to `waiting` → the reconciler observes `waiting_input`.
+        // The one scripted transition: a turn completes → running+idle → the
+        // server reads `idle` → the reconciler observes waiting_input.
         schedule(() => {
-          if (!advance(harness, sessionId, { status: "waiting" })) return;
+          if (!attachments.simulate({ harness: wire, sessionId, activity: "idle" })) return;
           logger.info(
             `[hitch] fake-launch: ${harness} ${sessionId.slice(0, 8)} turn completed → waiting_input`,
           );
@@ -178,9 +153,9 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
       },
 
       async close(ctx) {
-        // Settle the row (idle + endedAt) so the reconciler's close path PATCHes
-        // the assignment to `done`.
-        advance(harness, ctx.sessionId, { status: "idle", endedAt: now() });
+        // Stop reporting it. Absence from the snapshot IS death (§5 rule 4), so
+        // the server marks the chat dead exactly as it would for a real tab.
+        attachments.release(wire, ctx.sessionId);
         logger.info(
           `[hitch] fake-launch: ${harness} ${ctx.sessionId.slice(0, 8)} closed → session ended`,
         );
@@ -189,7 +164,7 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
     };
   }
 
-  const fakeByHarness: Record<ChatLifecycleHarness, Launcher> = {
+  const fakeByHarness: Record<string, Launcher> = {
     "claude-code": makeLauncher("claude-code"),
     codex: makeLauncher("codex"),
   };
@@ -201,8 +176,7 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
       if (environment && environment !== "cmux") {
         return resolveLauncher(harness, environment);
       }
-      const fake = fakeByHarness[harness as ChatLifecycleHarness];
-      return fake ?? resolveLauncher(harness, environment);
+      return fakeByHarness[harness] ?? resolveLauncher(harness, environment);
     },
     stop() {
       stopped = true;

@@ -4,8 +4,9 @@ import { createFocusHandler } from "../src/v2/focus.js";
 import type { HitchClient } from "../src/v2/serverClient.js";
 
 // The focus relay (M4 PR 6): a focus event carries the SERVER chat id; the
-// handler resolves the chat's cmux_ref (session id + cwd) and drives the
-// injected cmux focus. This smoke asserts that resolution — no server, no cmux.
+// handler resolves the chat's HANDLE — attachment 2, the nullable jsonb that
+// replaced cmux_ref — into a session id + cwd, and drives the injected cmux
+// focus. This smoke asserts that resolution: no server, no cmux.
 
 const MACHINE = "machine-1";
 
@@ -52,7 +53,9 @@ const logger = {
       {
         id: "chat-1",
         projectId: "proj-1",
-        cmuxRef: { sessionId: "session-abc", cwd: "/repo/path", localKey: "chat:claude-code:h:session-abc" },
+        sessionId: "session-abc",
+        cwd: "/repo/path",
+        handle: { kind: "cmux", sessionId: "session-abc", cwd: "/repo/path" },
       },
     ],
     projectsById: { "proj-1": { id: "proj-1", name: "My Project" } },
@@ -109,7 +112,9 @@ const logger = {
 {
   let called = false;
   const client = fakeClient({
-    chats: [{ id: "chat-2", projectId: null, cmuxRef: { localKey: "launch:x" } }],
+    chats: [
+      { id: "chat-2", projectId: null, sessionId: null, cwd: null, handle: { kind: "cmux" } },
+    ],
     projectsById: {},
   });
   const handler = createFocusHandler({
@@ -129,7 +134,10 @@ const logger = {
 {
   let called = false;
   const handler = createFocusHandler({
-    client: fakeClient({ chats: [{ id: "chat-1", projectId: null, cmuxRef: {} }], projectsById: {} }),
+    client: fakeClient({
+      chats: [{ id: "chat-1", projectId: null, sessionId: null, cwd: null, handle: {} }],
+      projectsById: {},
+    }),
     machineId: MACHINE,
     logger,
     focus: async () => {
@@ -139,6 +147,31 @@ const logger = {
   handler({ type: "event", event: "focus", payload: { chatId: "missing" } });
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(called, false, "chat not on this machine → focus skipped");
+}
+
+// ── a chat we only OBSERVED has no handle → not focusable from here ──────────
+// §4's accepted asymmetry, asserted: we see every chat on the machine, and we
+// can return you to the ones we launched. A discovered chat has a session id
+// and no handle, and that must NOT be resume-spawned behind the user's back.
+{
+  let called = false;
+  const handler = createFocusHandler({
+    client: fakeClient({
+      chats: [
+        { id: "chat-3", projectId: null, sessionId: "found-session", cwd: "/elsewhere", handle: null },
+      ],
+      projectsById: {},
+    }),
+    machineId: MACHINE,
+    logger,
+    focus: async () => {
+      called = true;
+    },
+  });
+  handler({ type: "event", event: "focus", payload: { chatId: "chat-3" } });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(called, false, "no handle → never focused, even with a known session");
+  assert.ok(logs.some((l) => l.includes("has no handle")), "and it says why");
 }
 
 console.log("v2-focus smoke: OK");

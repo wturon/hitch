@@ -27,8 +27,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-// Mirrors chatLifecycleStore.ts's appSupportDirFromEnv so the daemon reads the
-// SAME dir the desktop wrote secrets.json into.
+// The daemon's one app-support dir resolver: secrets.json, the hook spool,
+// cursors.json and the attachment layer's launch records all hang off it, and
+// it must resolve to the SAME dir the desktop wrote secrets.json into.
 export function appSupportDirFromEnv(env: NodeJS.ProcessEnv): string {
   if (env.HITCH_APP_SUPPORT_DIR) return resolve(env.HITCH_APP_SUPPORT_DIR);
   if (env.HITCH_CONFIG_PATH) return dirname(resolve(env.HITCH_CONFIG_PATH));

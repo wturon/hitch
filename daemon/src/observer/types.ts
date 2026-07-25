@@ -40,7 +40,9 @@ export type ObservedSource =
   | "claude-dormant" // transcript inside the window, no live process
   | "codex-rollout" // latest rollout turn + (mtime,size) freshness
   | "codex-sqlite" // state_5.sqlite catalog only (no log read)
-  | "carry-over"; // held one tick by the 2-miss debounce
+  | "carry-over" // held one tick by the 2-miss debounce
+  | "launch-pending" // pre-registered by the launcher, not yet discovered
+  | "fake-launch"; // HITCH_FAKE_LAUNCH scripted axes (test-only)
 
 // JSON, spelled out: the snapshot body is validated by zod on the server, and
 // the typed hono client insists the payload actually be JSON-shaped.
@@ -77,7 +79,37 @@ export interface ObservedChat {
   evidence: ObservationEvidence;
   /** Attachment: direct project id, resolved from cwd. Null for chats outside every project. */
   projectId: string | null;
+  /** Attachment 1 (§4): the assignment this chat serves. Null for found chats. */
+  task?: string | null;
+  /** Attachment 2 (§4): how to focus/close it. Always nullable. */
+  handle?: JsonObject | null;
   title?: string;
+}
+
+// ─── the attachment seam ─────────────────────────────────────────────────────
+//
+// Observation is blind to launches, cmux, tasks and focus (§4), but the chats
+// Hitch itself started still have to reach the snapshot with their attachments
+// on. So the observer takes this PLAIN DATA interface and calls it; the thing
+// that implements it (daemon/src/attachment/) knows about launchers, and the
+// observer never imports it. That is the whole trick, and the reason the
+// boundary can be checked mechanically.
+
+export interface ChatAttachment {
+  /** Assignment id, or null for a chat no assignment owns. */
+  task?: string | null;
+  handle?: JsonObject | null;
+  title?: string;
+  projectId?: string | null;
+}
+
+export interface AttachmentSource {
+  /** Chats the launcher registered that observation cannot see yet. */
+  injected: (now: number) => ObservedChat[];
+  /** "Observation now owns this session" — stop injecting it. */
+  observed: (harness: SnapshotHarness, sessionId: string) => void;
+  /** Attachment fields for an observed chat, if we launched it. */
+  lookup: (harness: SnapshotHarness, sessionId: string) => ChatAttachment | null;
 }
 
 export interface SnapshotWindow {

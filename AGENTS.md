@@ -24,13 +24,25 @@ app reads/writes it; a reconciler daemon executes the machine-side work.
   `src/observer/`: every tick it derives the WHOLE working set from the machine
   (Claude pidfiles, Codex's thread catalog, the process table) and PUTs it to
   `/daemon/machines/:id/chat-snapshot` — a chat missing from the snapshot is no
-  longer live, which is the entire heal path. It keeps **no chat model**: hooks
-  drop JSON files into `<appSupport>/events/` (drained and deleted), and
-  `cursors.json` is the only persistent local state, disposable by design. See
+  longer live, which is the entire heal path, and that PUT is the **only** writer
+  of a chat row anywhere. It keeps **no chat model**: hooks drop JSON files into
+  `<appSupport>/events/` (drained and deleted), and `cursors.json` +
+  `launches.json` are the only persistent local state, disposable by design.
+  `src/attachment/` is the one place that knows about launches: it pre-registers
+  a chat we started (claude's session id is known up front, codex's isn't), joins
+  a codex thread to its launch by cmux surface id, and links the assignment to
+  the chat row the snapshot echoes back. Observation must never import it, or
+  `launchers/`, or `cmux.ts` —
+  `npm -w @hitch/daemon run smoke:observer-boundary` enforces that. See
   `docs/chat-tracking-redesign.md`.
 - `desktop/` — Electron app. Renderer entry `src/renderer/main.tsx` mounts
   `src/renderer/v2/AppV2.tsx`; the main process (`src/main/`) holds auth (api key
   minted after sign-in) and the server WebSocket. Reads/writes the server only.
+  In dev, **⌘⌥I opens the Chat Inspector** (`src/renderer/inspector/`) — a second
+  window on the same bundle (`?view=inspector`) that renders the whole chat
+  pipeline as a pure server read. It is the instrument for debugging anything
+  above: read its health strip first, because a stale snapshot makes every row
+  below it fiction.
 - The server URL comes from `HITCH_SERVER_URL` in dev, or the baked
   `app-config.json` (Railway prod) in a packaged build.
 
@@ -65,13 +77,13 @@ to a scratch task you create and delete.
 
 The reconcile loop (delegate → chat → done) can be exercised with **no cmux and
 no agent binary** by running the daemon under `HITCH_FAKE_LAUNCH=1`: it swaps the
-real launchers for cmux-less stand-ins that script the chat lifecycle
-(bound→working, then a completed turn→`waiting_input`, then ended on close)
-straight into the reconciler's store rows. Point the store at a scratch dir with
-`HITCH_APP_SUPPORT_DIR` so it never touches the real `chat-lifecycle.sqlite`.
-Fake sessions write no transcript/pidfile/thread, so the chat observer never
-discovers them and can never contradict the script (heal-proof by
-construction). Knobs:
+real launchers for cmux-less stand-ins that script a chat's OBSERVATION AXES
+(running+working, then a completed turn → running+idle → `waiting_input`, then
+gone on close) into the attachment layer, so they ride the same snapshot PUT a
+real chat does and the server derives the same statuses. Point it at a scratch
+dir with `HITCH_APP_SUPPORT_DIR` so it never touches your real local state. Fake
+sessions write no transcript/pidfile/thread, so real discovery never sees them
+and nothing can contradict the script (heal-proof by construction). Knobs:
 `HITCH_FAKE_LAUNCH_DELAY_MS` (bind→turn delay), `HITCH_RECONCILE_MS`.
 
 ```sh

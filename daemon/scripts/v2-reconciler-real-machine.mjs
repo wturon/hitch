@@ -11,9 +11,11 @@
 // Prereqs:
 //   1. compose stack up:  docker compose up -d --build   (server on :3010)
 //   2. cmux running & reachable (its socket accepts this process tree)
-//   3. the "Hitch Dev" claude hook installed (desktop was run once) — the daemon
-//      runs with HITCH_ROOT=1 so it shares that store, and the hook's
-//      turn.completed event is what advances running → waiting_input.
+//   3. the "Hitch Dev" app-support dir in place (desktop was run once) — the
+//      daemon runs with HITCH_ROOT=1 so it drains the same hook spool. Hooks are
+//      a nudge, not a ledger: running → waiting_input is derived from the
+//      machine (claude's pidfile going idle), so the loop still completes with
+//      no hook installed, just a tick later.
 //
 // Run:  node daemon/scripts/v2-reconciler-real-machine.mjs
 //
@@ -134,8 +136,9 @@ try {
   check("1. signed up + minted api key", Boolean(apiKey));
 
   // Start the V2 daemon (it registers this machine). Shares the "Hitch Dev"
-  // store (HITCH_ROOT=1) so the installed claude hook's events land where the
-  // daemon reads. Fast reconcile tick so running→waiting_input is prompt.
+  // app-support dir (HITCH_ROOT=1) so the installed claude hook's spooled events
+  // land where the daemon drains. Fast reconcile tick so running→waiting_input
+  // is prompt.
   daemon = spawn("npx", ["tsx", "daemon/src/index.ts"], {
     cwd: REPO_ROOT,
     env: {
@@ -196,7 +199,8 @@ try {
   }, { timeoutMs: 45_000 });
   check("6. assignment reached running (linked chat busy)", true, `chat_id=${running.chatId}`);
 
-  // A server chat row was created by the daemon and linked.
+  // A server chat row exists for the launch (pre-registered through the
+  // snapshot, then taken over by discovery) and the assignment is linked to it.
   const chat = await api("GET", `/daemon/chats?machine_id=${machine.id}`).then((rows) =>
     rows.find((r) => r.id === running.chatId),
   );
@@ -208,8 +212,8 @@ try {
     (treeAfter.match(/surface:\d+/g) || []).length - (treeBefore.match(/surface:\d+/g) || []).length;
   check("8. a new cmux tab opened for the spawn", newSurfaces >= 1, `Δsurfaces=${newSurfaces}`);
 
-  // The claude turn finishes (one word) → the hook's turn.completed advances the
-  // store row → the reconciler PATCHes waiting_input.
+  // The claude turn finishes (one word) → the chat observes as running+idle →
+  // the server derives `idle` → the reconciler PATCHes waiting_input.
   await waitFor("observed=waiting_input", async () => {
     const a = await assignmentState(assignmentId);
     return a && a.observedState === "waiting_input" ? a : undefined;

@@ -6,10 +6,16 @@
 // just evaporates (the ~30s reconcile never re-derives it).
 //
 // Resolution: the payload carries the SERVER chat id. We look the chat up on the
-// server (its cmux_ref, written at spawn by the reconciler / chatSync) to recover
-// the cmux session id + cwd, then hand them to cmux.openChat, which
+// server and read its `handle` — attachment 2 (docs/chat-tracking-redesign.md
+// §4), the nullable jsonb the attachment layer stamps on a chat Hitch launched.
+// It gives us the cmux session id + cwd, which go to cmux.openChat, which
 // focus-else-resume-spawns the surface AND raises the app (activateApp) — the
 // same primitive V1 drives from its open-chat command path.
+//
+// A chat with NO handle is not focusable, and that is a product statement, not a
+// bug: we see every chat on the machine, and we can return you to the ones we
+// launched. Discovered chats are fully observable and deliberately not opened
+// from here (§4's accepted asymmetry).
 //
 // The cmux executor is injectable so fake-launch mode (HITCH_FAKE_LAUNCH=1) can
 // log instead of shelling to a cmux that isn't there — heal-proof headless e2e.
@@ -30,9 +36,9 @@ export interface FocusEventMessage {
   payload?: unknown;
 }
 
-// The cmux_ref jsonb the reconciler/chatSync stash on the server chat row. We
-// read only the fields focus needs.
-interface CmuxRefShape {
+// The `handle` jsonb the attachment layer stamps on a chat we launched. We read
+// only the fields focus needs.
+interface HandleShape {
   sessionId?: unknown;
   cwd?: unknown;
 }
@@ -40,7 +46,9 @@ interface CmuxRefShape {
 interface WireChat {
   id: string;
   projectId: string | null;
-  cmuxRef: unknown;
+  sessionId: string | null;
+  cwd: string | null;
+  handle: unknown;
 }
 
 interface WireProject {
@@ -104,8 +112,20 @@ export function createFocusHandler(
       logger.info(`[hitch] focus: chat ${chatId} not found on this machine`);
       return;
     }
-    const ref = (chat.cmuxRef ?? {}) as CmuxRefShape;
-    const sessionId = typeof ref.sessionId === "string" ? ref.sessionId : null;
+    const handle =
+      typeof chat.handle === "object" && chat.handle !== null && !Array.isArray(chat.handle)
+        ? (chat.handle as HandleShape)
+        : null;
+    if (!handle) {
+      logger.info(
+        `[hitch] focus: chat ${chatId} has no handle — observed here, not launched here`,
+      );
+      return;
+    }
+    const sessionId =
+      typeof handle.sessionId === "string" && handle.sessionId
+        ? handle.sessionId
+        : (chat.sessionId ?? null);
     if (!sessionId) {
       logger.info(`[hitch] focus: chat ${chatId} has no bound session yet — nothing to focus`);
       return;
@@ -113,7 +133,7 @@ export function createFocusHandler(
     const projectName = chat.projectId ? await fetchProjectName(chat.projectId) : "";
     await focus({
       sessionId,
-      cwd: typeof ref.cwd === "string" ? ref.cwd : undefined,
+      cwd: typeof handle.cwd === "string" ? handle.cwd : (chat.cwd ?? undefined),
       projectId: chat.projectId ?? machineId,
       projectName,
     });

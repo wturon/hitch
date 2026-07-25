@@ -186,30 +186,6 @@ export const machineHeartbeat = z.strictObject({
 
 export const chatListQuery = z.object({ machine_id: z.uuid() });
 
-// LEGACY (still live). The running daemon creates/patches chats one at a time
-// with a REQUIRED cmuxRef and a self-decided status. Both endpoints stay until
-// the daemon moves to the snapshot PUT below; `cmuxRef` is kept as the wire
-// name and mapped onto the renamed `handle` column in routes/daemon.ts.
-export const chatCreate = z.strictObject({
-  machineId: z.uuid(),
-  projectId: z.uuid().nullable().optional(),
-  harness: harnessSchema,
-  title: z.string(),
-  cmuxRef: z.json(),
-  status: chatStatusSchema,
-  lastActivityAt: isoDate().optional(),
-});
-
-export const chatUpdate = z.strictObject({
-  machineId: z.uuid().optional(),
-  projectId: z.uuid().nullable().optional(),
-  harness: harnessSchema.optional(),
-  title: z.string().optional(),
-  cmuxRef: z.json().optional(),
-  status: chatStatusSchema.optional(),
-  lastActivityAt: isoDate().optional(),
-});
-
 // --- chat snapshot (V3) ------------------------------------------------------
 // docs/chat-tracking-redesign.md §7. The whole working set every tick, each
 // chat carrying its own existence. Not strictObject: the daemon and server ship

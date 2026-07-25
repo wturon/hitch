@@ -6,10 +6,9 @@
 //   - Its own Chromium profile via --user-data-dir (separate Local Storage /
 //     IndexedDB / lock files), so it never collides with your open dev window.
 //   - Its own App Support dir via HITCH_APP_SUPPORT_DIR, pointed at a scratch
-//     temp dir. main.ts anchors EVERYTHING on this — secrets.json, the
-//     chat-lifecycle.sqlite store, and the daemon it spawns (which receives the
-//     same dir) — so an isolated instance never touches the real "Hitch"/"Hitch
-//     Dev" store.
+//     temp dir. main.ts anchors EVERYTHING on this — secrets.json, the hook
+//     spool, and the daemon it spawns (which receives the same dir) — so an
+//     isolated instance never touches the real "Hitch"/"Hitch Dev" state.
 //   - Its own CODEX_HOME / CLAUDE_CONFIG_DIR, also under the scratch dir. On
 //     startup main.ts installs (and may migrate/auto-heal) the per-harness
 //     lifecycle hook config in these dirs; without the override a check run would
@@ -66,8 +65,8 @@ export async function launchHitch({ profile = "default", fresh = true } = {}) {
     args: [".", `--user-data-dir=${userDataDir}`],
     env: {
       ...process.env,
-      // Everything main.ts writes (secrets.json, chat-lifecycle.sqlite) and the
-      // daemon it spawns are anchored on this scratch dir — full isolation.
+      // Everything main.ts writes (secrets.json, the hook spool) and the daemon
+      // it spawns are anchored on this scratch dir — full isolation.
       HITCH_APP_SUPPORT_DIR: stateDir,
       // Per-harness lifecycle-hook config the app installs on boot goes to
       // scratch dirs too, so a legacy/drifted global hook can't be mutated.

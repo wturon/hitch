@@ -16,10 +16,8 @@ import {
 } from "../db/schema.js";
 import {
   assignmentObservationUpdate,
-  chatCreate,
   chatListQuery,
   chatSnapshot,
-  chatUpdate,
   idParam,
   machineHeartbeat,
   machineRegister,
@@ -33,25 +31,6 @@ type SnapshotHarness = (typeof harnessEnum.enumValues)[number];
 // unique index (machine_id, harness, session_id) minus the machine, which is
 // already fixed by the route param. Nothing here may key on session id alone.
 const chatKey = (harness: string, sessionId: string) => harness + " " + sessionId;
-
-// BACK-COMPAT. `chats.cmux_ref` became the nullable `chats.handle`, but the
-// shipped daemon reads `cmuxRef` off every chat it gets back from these
-// endpoints (daemon/src/v2/reconciler.ts, focus.ts). The legacy routes keep
-// echoing it until that daemon is retired; the snapshot route below does not.
-const withCmuxRef = <T extends { handle: unknown }>(row: T) => ({ ...row, cmuxRef: row.handle });
-
-// TRANSITIONAL (delete with the legacy routes). The shipping daemon creates
-// chats through POST /daemon/chats while ALSO PUTting snapshots. The legacy
-// route has no session_id field of its own — but the ref it sends carries one,
-// and the snapshot upserts on (machine_id, harness, session_id). Left alone the
-// two writers make TWO rows for one chat. So the legacy routes lift the session
-// id out of the ref, which lands both writers on the same row via the unique
-// index. Nothing else about the legacy contract changes.
-function sessionIdFromRef(ref: unknown): string | null {
-  if (typeof ref !== "object" || ref === null || Array.isArray(ref)) return null;
-  const value = (ref as Record<string, unknown>).sessionId;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 // A relayed hook event whose kind starts with "block." is the ONLY thing that
 // writes chats.block. "block.clear" (and its synonyms) means "no longer
@@ -144,6 +123,11 @@ export const daemonRoutes = new Hono<AppEnv>()
       return c.json(row);
     },
   )
+  // The daemon's read of its own chats: the reconciler resolves an assignment's
+  // chat here, and focus reads its `handle`. READ-ONLY — the snapshot PUT below
+  // is the only writer of a chat row anywhere (the legacy POST/PATCH
+  // /daemon/chats pair, and the `cmuxRef` wire alias they carried, were deleted
+  // with the daemon's local chat model).
   .get("/chats", zValidator("query", chatListQuery), async (c) => {
     const { machine_id: machineId } = c.req.valid("query");
     const machine = await ownedMachine(c.var.db, c.var.userId, machineId);
@@ -153,88 +137,7 @@ export const daemonRoutes = new Hono<AppEnv>()
       .from(chats)
       .where(eq(chats.machineId, machineId))
       .orderBy(chats.lastActivityAt);
-    return c.json(rows.map(withCmuxRef));
-  })
-  .post("/chats", zValidator("json", chatCreate), async (c) => {
-    const { cmuxRef, ...rest } = c.req.valid("json");
-    const db = c.var.db;
-    const machine = await ownedMachine(db, c.var.userId, rest.machineId);
-    if (!machine) return c.json(notFound, 404);
-    if (rest.projectId != null) {
-      const project = await ownedProject(db, c.var.userId, rest.projectId);
-      if (!project) return c.json(notFound, 404);
-    }
-    const sessionId = sessionIdFromRef(cmuxRef);
-    // With a session id this is an UPSERT on the natural key, not an insert: a
-    // snapshot may already have created the row for this exact chat, and a
-    // second POST for the same session (a re-spawn) must update rather than
-    // violate the unique index. Without one it stays a plain insert — legacy
-    // rows have a NULL session_id, which postgres treats as distinct.
-    const [row] = sessionId
-      ? await db
-          .insert(chats)
-          .values({ ...rest, sessionId, handle: cmuxRef })
-          .onConflictDoUpdate({
-            target: [chats.machineId, chats.harness, chats.sessionId],
-            set: {
-              ...(rest.projectId !== undefined ? { projectId: rest.projectId } : {}),
-              title: rest.title,
-              status: rest.status,
-              handle: cmuxRef,
-              ...(rest.lastActivityAt !== undefined
-                ? { lastActivityAt: rest.lastActivityAt }
-                : {}),
-            },
-          })
-          .returning()
-      : await db
-          .insert(chats)
-          .values({ ...rest, handle: cmuxRef })
-          .returning();
-    return c.json(withCmuxRef(row), 201);
-  })
-  .patch("/chats/:id", zValidator("param", idParam), zValidator("json", chatUpdate), async (c) => {
-    const { id } = c.req.valid("param");
-    const { cmuxRef, ...patch } = c.req.valid("json");
-    const db = c.var.db;
-    const existing = await ownedChat(db, c.var.userId, id);
-    if (!existing) return c.json(notFound, 404);
-    if (patch.machineId !== undefined) {
-      const machine = await ownedMachine(db, c.var.userId, patch.machineId);
-      if (!machine) return c.json(notFound, 404);
-    }
-    if (patch.projectId != null) {
-      const project = await ownedProject(db, c.var.userId, patch.projectId);
-      if (!project) return c.json(notFound, 404);
-    }
-    const updates: Partial<typeof chats.$inferInsert> = {
-      ...patch,
-      ...(cmuxRef !== undefined ? { handle: cmuxRef } : {}),
-    };
-    // Same transitional convergence as POST above. A codex chat learns its
-    // thread id only mid-launch and PATCHes it in, so this is where that row
-    // acquires its session id. Guarded: if ANOTHER row already owns
-    // (machine, harness, session) we leave session_id alone rather than
-    // violating the unique index — worse (two rows) beats a 500.
-    const patchedSessionId = cmuxRef !== undefined ? sessionIdFromRef(cmuxRef) : null;
-    if (patchedSessionId && patchedSessionId !== existing.sessionId) {
-      const machineId = patch.machineId ?? existing.machineId;
-      const harness = patch.harness ?? existing.harness;
-      const [clash] = await db
-        .select({ id: chats.id })
-        .from(chats)
-        .where(
-          and(
-            eq(chats.machineId, machineId),
-            eq(chats.harness, harness),
-            eq(chats.sessionId, patchedSessionId),
-          ),
-        );
-      if (!clash || clash.id === id) updates.sessionId = patchedSessionId;
-    }
-    if (Object.keys(updates).length === 0) return c.json(withCmuxRef(existing));
-    const [row] = await db.update(chats).set(updates).where(eq(chats.id, id)).returning();
-    return c.json(withCmuxRef(row));
+    return c.json(rows);
   })
   // ─── V3 chat snapshot ──────────────────────────────────────────────────────
   // docs/chat-tracking-redesign.md §7. The daemon PUTs its WHOLE working set
