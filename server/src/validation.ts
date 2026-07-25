@@ -259,6 +259,11 @@ const chatSnapshotChat = z.object({
 
 const chatSnapshotEvent = z.object({
   sessionId: z.string().min(1),
+  // OPTIONAL, not required: §7's event object carries only a session id, and an
+  // older daemon must keep working. Supplied, it completes the natural key —
+  // without it the server resolves by session id alone and DROPS the event if
+  // more than one harness on this machine claims that id (never guesses).
+  harness: harnessSchema.optional(),
   kind: z.string().min(1),
   at: isoDate(),
   payload: z.json().optional(),

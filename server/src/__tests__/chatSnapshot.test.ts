@@ -412,6 +412,93 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     expect(survived.rows[0].n).toBe(4);
   });
 
+  it("attaches events by (harness, sessionId), and drops an ambiguous one rather than guessing", async () => {
+    const machine = await registerMachine(USER_A, "snapshot-event-key");
+    // The same session id under both harnesses — two distinct chats, per the
+    // unique index. Vanishingly unlikely in the field (different id
+    // generators), but the wire contract must not depend on that.
+    const claude = {
+      harness: "claude" as const,
+      sessionId: "collide",
+      existence: "running" as const,
+      activity: "working" as const,
+    };
+    const codex = { ...claude, harness: "codex" as const };
+
+    const res = await put(
+      USER_A,
+      machine.id,
+      snapshot([claude, codex], {
+        events: [
+          // Fully keyed → lands on the codex chat only.
+          {
+            sessionId: "collide",
+            harness: "codex",
+            kind: "block.permission",
+            at: new Date().toISOString(),
+            payload: { which: "codex" },
+          },
+          // No harness, two candidates → ambiguous, dropped.
+          { sessionId: "collide", kind: "block.question", at: new Date().toISOString() },
+          // Harness that has no such session → dropped, not silently retargeted.
+          {
+            sessionId: "collide",
+            harness: "claude",
+            kind: "turn.completed",
+            at: new Date().toISOString(),
+          },
+        ],
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await json(res);
+    expect(body.upserted).toBe(2);
+    // 1 landed (codex block), 1 ambiguous, 1 valid claude event — the claude
+    // chat exists, so that third event lands too.
+    expect(body.events).toBe(2);
+    expect(body.eventsDropped).toBe(1);
+
+    const rows = new Map(
+      (await chatsOf(USER_A, machine.id)).map((c) => [c.harness, c] as [string, any]),
+    );
+    // The block went to codex and ONLY codex.
+    expect(rows.get("codex").block).toBe("permission");
+    expect(rows.get("codex").status).toBe("waiting_input");
+    expect(rows.get("claude").block).toBeNull();
+    expect(rows.get("claude").status).toBe("busy");
+
+    // Each chat's event tail holds only its own events.
+    const codexEvents = await pool.query(
+      "select kind, payload from chat_events where chat_id = $1",
+      [rows.get("codex").id],
+    );
+    expect(codexEvents.rows).toEqual([{ kind: "block.permission", payload: { which: "codex" } }]);
+    const claudeEvents = await pool.query("select kind from chat_events where chat_id = $1", [
+      rows.get("claude").id,
+    ]);
+    expect(claudeEvents.rows.map((r) => r.kind)).toEqual(["turn.completed"]);
+
+    // With only ONE harness holding the id, a harness-less event resolves
+    // unambiguously — an older daemon keeps working.
+    const machine2 = await registerMachine(USER_A, "snapshot-event-key-solo");
+    expect(
+      (
+        await put(
+          USER_A,
+          machine2.id,
+          snapshot([claude], {
+            events: [
+              { sessionId: "collide", kind: "block.question", at: new Date().toISOString() },
+            ],
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    const solo = (await chatsOf(USER_A, machine2.id))[0];
+    expect(solo.harness).toBe("claude");
+    expect(solo.block).toBe("question");
+  });
+
   it("attaches a project via `task` (assignment id) and rejects unowned ids", async () => {
     const machine = await registerMachine(USER_A, "snapshot-attach");
     const project = await json(

@@ -5,7 +5,15 @@ import { Hono } from "hono";
 import { requireAuth } from "../auth.js";
 import { deriveChatStatus, type ChatBlock } from "../chatStatus.js";
 import type { AppEnv, Db } from "../context.js";
-import { assignments, chatEvents, chats, machines, projects, tasks } from "../db/schema.js";
+import {
+  assignments,
+  chatEvents,
+  chats,
+  harness as harnessEnum,
+  machines,
+  projects,
+  tasks,
+} from "../db/schema.js";
 import {
   assignmentObservationUpdate,
   chatCreate,
@@ -19,6 +27,12 @@ import {
 import { notFound, ownedAssignment, ownedChat, ownedMachine, ownedProject } from "./helpers.js";
 
 type ChatRow = typeof chats.$inferSelect;
+type SnapshotHarness = (typeof harnessEnum.enumValues)[number];
+
+// The natural key, in the one form the whole handler agrees on: it is the
+// unique index (machine_id, harness, session_id) minus the machine, which is
+// already fixed by the route param. Nothing here may key on session id alone.
+const chatKey = (harness: string, sessionId: string) => harness + " " + sessionId;
 
 // BACK-COMPAT. `chats.cmux_ref` became the nullable `chats.handle`, but the
 // shipped daemon reads `cmuxRef` off every chat it gets back from these
@@ -185,7 +199,7 @@ export const daemonRoutes = new Hono<AppEnv>()
       // fight over the same row — reject rather than let last-write-wins hide it.
       const keys = new Set<string>();
       for (const chat of body.chats) {
-        const key = `${chat.harness} ${chat.sessionId}`;
+        const key = chatKey(chat.harness, chat.sessionId);
         if (keys.has(key)) {
           return c.json({ error: `duplicate chat in snapshot: ${chat.harness}/${chat.sessionId}` }, 400);
         }
@@ -220,27 +234,65 @@ export const daemonRoutes = new Hono<AppEnv>()
         .select()
         .from(chats)
         .where(and(eq(chats.machineId, machineId), or(...preConds)));
-      const priorByKey = new Map(priorRows.map((r) => [`${r.harness} ${r.sessionId}`, r]));
+      const priorByKey = new Map(
+        priorRows.map((r) => [chatKey(r.harness, r.sessionId ?? ""), r] as const),
+      );
 
-      // Pre-scan the relayed events: the LAST block.* event per session (by its
-      // producer timestamp) is the block we persist, so the whole tick is one
-      // write per chat instead of an upsert followed by a patch.
-      const blockBySession = new Map<string, { at: Date; block: ChatBlock | null }>();
-      for (const event of body.events) {
+      // Which harnesses on this machine answer to a given session id — from the
+      // snapshot and from what we already had. Normally exactly one; two only
+      // if Claude and Codex ever mint the same id.
+      const harnessesBySession = new Map<string, Set<string>>();
+      const rememberHarness = (harness: string, sessionId: string | null) => {
+        if (!sessionId) return;
+        const seen = harnessesBySession.get(sessionId) ?? new Set<string>();
+        seen.add(harness);
+        harnessesBySession.set(sessionId, seen);
+      };
+      for (const chat of body.chats) rememberHarness(chat.harness, chat.sessionId);
+      for (const row of priorRows) rememberHarness(row.harness, row.sessionId);
+
+      // Resolve every relayed event to a chat key ONCE — the block pre-scan and
+      // the chat_events insert must land an event on the same chat, and both
+      // use the full natural key, never the session id alone.
+      //
+      // `harness` on an event is optional (an older daemon omits it). Without
+      // it we resolve by session id, and if more than one harness claims that
+      // id the event is DROPPED rather than attached to a guess.
+      const resolveEventKey = (event: {
+        harness?: SnapshotHarness;
+        sessionId: string;
+      }): string | null => {
+        const candidates = harnessesBySession.get(event.sessionId);
+        if (!candidates || candidates.size === 0) return null;
+        if (event.harness !== undefined) {
+          return candidates.has(event.harness) ? chatKey(event.harness, event.sessionId) : null;
+        }
+        if (candidates.size > 1) return null; // ambiguous — never guess
+        const [only] = candidates;
+        return chatKey(only, event.sessionId);
+      };
+      const resolvedEvents = body.events.map((event) => ({ event, key: resolveEventKey(event) }));
+
+      // The LAST block.* event per chat (by its producer timestamp) is the block
+      // we persist, so the whole tick is one write per chat instead of an upsert
+      // followed by a patch.
+      const blockByKey = new Map<string, { at: Date; block: ChatBlock | null }>();
+      for (const { event, key } of resolvedEvents) {
+        if (key === null) continue;
         const block = blockFromEventKind(event.kind);
         if (block === undefined) continue;
-        const seen = blockBySession.get(event.sessionId);
-        if (!seen || event.at >= seen.at) blockBySession.set(event.sessionId, { at: event.at, block });
+        const seen = blockByKey.get(key);
+        if (!seen || event.at >= seen.at) blockByKey.set(key, { at: event.at, block });
       }
 
       const result = await db.transaction(async (tx) => {
         const upserted: ChatRow[] = [];
 
         for (const chat of body.chats) {
-          const prior = priorByKey.get(`${chat.harness} ${chat.sessionId}`);
+          const prior = priorByKey.get(chatKey(chat.harness, chat.sessionId));
           // Block precedence: relayed event > the daemon's reported belief >
           // whatever we already had. Events own this axis (§3).
-          const relayed = blockBySession.get(chat.sessionId);
+          const relayed = blockByKey.get(chatKey(chat.harness, chat.sessionId));
           const block =
             relayed !== undefined
               ? relayed.block
@@ -310,13 +362,14 @@ export const daemonRoutes = new Hono<AppEnv>()
         // Relayed events land verbatim. Resolve by session id against the rows
         // we just wrote, then against what we already had; an event for a chat
         // we've never seen has no row to hang off and is dropped (counted).
-        const chatIdBySession = new Map<string, string>();
-        for (const row of priorRows) if (row.sessionId) chatIdBySession.set(row.sessionId, row.id);
-        for (const row of upserted) if (row.sessionId) chatIdBySession.set(row.sessionId, row.id);
+        const chatIdByKey = new Map<string, string>();
+        for (const row of [...priorRows, ...upserted]) {
+          if (row.sessionId) chatIdByKey.set(chatKey(row.harness, row.sessionId), row.id);
+        }
         const eventValues = [];
         let eventsDropped = 0;
-        for (const event of body.events) {
-          const chatId = chatIdBySession.get(event.sessionId);
+        for (const { event, key } of resolvedEvents) {
+          const chatId = key === null ? undefined : chatIdByKey.get(key);
           if (!chatId) {
             eventsDropped++;
             continue;
