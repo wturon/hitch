@@ -64,7 +64,7 @@ try {
   const backlogTitles = async () =>
     (
       await page
-        .locator("[data-testid=v2-backlog] [data-testid=v2-task-row]")
+        .locator("[data-testid=v2-loose] [data-testid=v2-task-row]")
         .allInnerTexts()
     ).map((t) => t.split("\n")[0]);
   const doneTitles = async () =>

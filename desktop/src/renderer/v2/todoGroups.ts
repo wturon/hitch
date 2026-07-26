@@ -60,7 +60,7 @@ function completedEpoch(raw: string | null): number | null {
 // use a raw string compare, NOT localeCompare (locale collation can disagree
 // with the index math). Ties (two clients minting the same key) break by id;
 // uuidv7 is creation-ordered, so the tie order is stable and roughly temporal.
-const bySortOrder = (a: TaskRow, b: TaskRow) =>
+export const bySortOrder = (a: TaskRow, b: TaskRow) =>
   a.sortOrder < b.sortOrder
     ? -1
     : a.sortOrder > b.sortOrder
@@ -75,7 +75,7 @@ const bySortOrder = (a: TaskRow, b: TaskRow) =>
 // bottom. Exact ties (and the unparseable block) break by id DESC — uuidv7's
 // creation order — so the list is a total order and never jumps between
 // refetches.
-const byCompletedDesc = (a: TaskRow, b: TaskRow) => {
+export const byCompletedDesc = (a: TaskRow, b: TaskRow) => {
   const diff = (completedEpoch(b.completedAt) ?? 0) - (completedEpoch(a.completedAt) ?? 0);
   if (diff !== 0) return diff;
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
@@ -117,6 +117,43 @@ export function taskAttention(
     case "spawning":
     case "running":
       return "working";
+    case "dead":
+      return null;
+  }
+}
+
+// ─── The harness chip's state (sections v1) ──────────────────────────────────
+
+// What the row's agent chip shows. `null` = no chip at all (an empty slot):
+// either nothing was ever delegated, or the launch died and there is nothing
+// to open. Deliberately three states and not five — the chip is the ONLY
+// status instrument on the row now, so it stays readable at 22px.
+export type HarnessChipState = "idle" | "working" | "needs-you";
+
+/**
+ * The chip state for a task's latest assignment. Same input as `taskAttention`
+ * — this is what that mapping becomes once status paints a row instead of
+ * moving it.
+ *
+ * Note `done ∧ reviewed → "idle"` rather than null: the chat still exists and
+ * cmux can bring it back, so the chip stays as the way in. Only `dead` (the
+ * launch never produced a chat) and "never delegated" have nothing to open.
+ */
+export function harnessChipState(
+  latest: Pick<AttentionAssignment, "observedState" | "reviewedAt"> | null | undefined,
+): HarnessChipState | null {
+  if (!latest) return null;
+  switch (latest.observedState) {
+    case "pending":
+    case "spawning":
+    case "running":
+      return "working";
+    case "waiting_input":
+      return "needs-you";
+    case "done":
+      // The agent finished and nobody has looked yet — the state V1's chip
+      // never had, folded in here rather than earning its own row control.
+      return latest.reviewedAt == null ? "needs-you" : "idle";
     case "dead":
       return null;
   }

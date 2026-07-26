@@ -71,7 +71,7 @@ try {
     page.locator('[aria-label="Editor"][contenteditable="true"]');
   const titleInput = () => page.locator('[aria-label="Task title"]');
   const backlogRows = () =>
-    page.locator("[data-testid=v2-backlog] [data-testid=v2-task-row]");
+    page.locator("[data-testid=v2-loose] [data-testid=v2-task-row]");
   const taskRow = (name) =>
     page.locator("[data-testid=v2-task-row]", { hasText: name });
   const backlogTitles = async () =>

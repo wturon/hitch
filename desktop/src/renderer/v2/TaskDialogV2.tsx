@@ -88,9 +88,13 @@ export interface TaskDialogV2Props {
   // resolved by the shell from the tasks list query so external writes keep
   // flowing in. `undefined` in capture mode until the ⌘⏎ POST commits.
   row: TaskDialogRow | undefined;
-  // The current backlog in list order, so a capture's sortOrder prepends
-  // before the head.
+  // The DESTINATION container in list order, so a capture's sortOrder prepends
+  // before its head. Which container that is was decided when the dialog
+  // opened (which add-row was clicked) — see taskDialogState.
   backlog: ReadonlyArray<{ sortOrder: string }>;
+  // Where a capture will be filed: null = loose. Ignored in edit mode (the
+  // task already has a placement, and the dialog never moves one).
+  captureSectionId: string | null;
   // The ⋯ menu's actions (PR 4), resolved by the shell against the live row;
   // undefined until the task exists on the server (fresh capture pre-⌘⏎).
   actions?: TaskDialogActions;
@@ -155,6 +159,7 @@ export function TaskDialogV2(props: TaskDialogV2Props) {
               projectId={props.projectId}
               existing={existing}
               backlog={props.backlog}
+              captureSectionId={props.captureSectionId}
               actions={state.mode === "edit" ? props.actions : undefined}
               tags={state.mode === "edit" ? props.tags : undefined}
               onClose={props.onClose}
@@ -177,6 +182,7 @@ interface TaskBodyV2Props {
   projectId: string;
   existing?: TaskDialogRow;
   backlog: ReadonlyArray<{ sortOrder: string }>;
+  captureSectionId: string | null;
   actions?: TaskDialogActions;
   tags?: DialogTagLaneV2Props;
   onClose: () => void;
@@ -189,6 +195,7 @@ function TaskBodyV2({
   projectId,
   existing,
   backlog,
+  captureSectionId,
   actions,
   tags,
   onClose,
@@ -318,6 +325,7 @@ function TaskBodyV2({
         : await client.tasks.$post({
             json: {
               projectId,
+              sectionId: captureSectionId,
               title,
               body,
               sortOrder: captureSortOrder(backlogRef.current),
@@ -362,7 +370,7 @@ function TaskBodyV2({
       setStage("capture");
       saveCaptureDraft(projectId, body);
     }
-  }, [beginGrow, client, onCommitted, projectId, queryClient, setCommitted]);
+  }, [beginGrow, captureSectionId, client, onCommitted, projectId, queryClient, setCommitted]);
 
   // File paste/drop → materialize the row early + upload (V1 Decision 3, over
   // server rows). The POST stays here — it owns the provisional title, the
@@ -386,6 +394,7 @@ function TaskBodyV2({
       const response = await client.tasks.$post({
         json: {
           projectId,
+          sectionId: captureSectionId,
           title,
           body,
           sortOrder: captureSortOrder(backlogRef.current),

@@ -5,7 +5,25 @@ import { describe, expect, it } from "vitest";
 import { generateKeyBetween } from "fractional-indexing";
 
 import { captureSortOrder } from "../capture";
-import { reorderSortOrder, uncheckSortOrder } from "../listMutations";
+import { sortOrderAtIndex, uncheckSortOrder } from "../listMutations";
+
+/**
+ * A drag, exactly as TodosViewV2 issues one: drop the row out of the list, ask
+ * for a key at its destination index, and pick the run-escape bias from the
+ * direction of travel. Tested through this wrapper rather than against
+ * `sortOrderAtIndex` directly so the assertions below cover the call the app
+ * actually makes.
+ */
+const reorderSortOrder = (
+  list: ReadonlyArray<{ sortOrder: string }>,
+  from: number,
+  to: number,
+): string | null => {
+  const n = list.length;
+  if (from === to || from < 0 || to < 0 || from >= n || to >= n) return null;
+  const siblings = list.filter((_, i) => i !== from);
+  return sortOrderAtIndex(siblings, to, from < to ? "after" : "before");
+};
 
 describe("uncheckSortOrder", () => {
   it("mints the first key for an empty backlog", () => {
@@ -76,5 +94,94 @@ describe("reorderSortOrder", () => {
     expect(reorderSortOrder(backlog, -1, 2)).toBeNull();
     expect(reorderSortOrder(backlog, 0, 4)).toBeNull();
     expect(reorderSortOrder([], 0, 0)).toBeNull();
+  });
+});
+
+describe("sortOrderAtIndex — duplicate keys", () => {
+  // Duplicate keys within one container are ordinary data: every container
+  // mints its first key independently ("a0"), and `on delete set null` then
+  // merges two key spaces into one list.
+  const RUN = ["a0", "a1", "a1", "a2", "a3"];
+  const rows = (keys: string[]) =>
+    keys.map((sortOrder, i) => ({ id: `t${i}`, sortOrder }));
+
+  // Apply a computed key and re-sort, so assertions read as "where did it land"
+  // rather than "what string came out" — and so a key that changes NOTHING
+  // shows up as the no-op it is.
+  const land = (keys: string[], from: number, to: number) => {
+    const list = rows(keys);
+    const key = reorderSortOrder(list, from, to);
+    expect(key).not.toBeNull();
+    return list
+      .map((row, i) => (i === from ? { ...row, sortOrder: key! } : row))
+      .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0))
+      .map((row) => row.id);
+  };
+
+  it("splits an ordinary gap", () => {
+    const key = sortOrderAtIndex([{ sortOrder: "a1" }, { sortOrder: "a3" }], 1);
+    expect(key > "a1" && key < "a3").toBe(true);
+  });
+
+  it("appends past the end", () => {
+    expect(sortOrderAtIndex([{ sortOrder: "a1" }], 1) > "a1").toBe(true);
+  });
+
+  it("never mints a key an existing row already holds", () => {
+    // Naively dropping the upper bound here returns "a1" — which this list
+    // already contains, twice.
+    expect(() => generateKeyBetween("a1", "a1")).toThrow();
+    const list = rows(RUN);
+    for (let i = 0; i <= list.length; i++) {
+      for (const bias of ["before", "after"] as const) {
+        const key = sortOrderAtIndex(list, i, bias);
+        expect(list.some((row) => row.sortOrder === key)).toBe(false);
+      }
+    }
+  });
+
+  // A run of equal keys admits no key BETWEEN its members, so a move landing
+  // inside one can't be pixel-exact — it lands at the near end of the run. What
+  // it must never do is fail to move: widening the wrong way returns the key
+  // the row already holds, and the drag reads as broken.
+  it("moves DOWN into a run of equal keys instead of silently no-opping", () => {
+    const after = land(RUN, 0, 1);
+    expect(after).not.toEqual(["t0", "t1", "t2", "t3", "t4"]);
+    expect(after.indexOf("t0")).toBeGreaterThan(after.indexOf("t1"));
+  });
+
+  it("moves UP into a run of equal keys", () => {
+    const after = land(RUN, 3, 2);
+    expect(after).not.toEqual(["t0", "t1", "t2", "t3", "t4"]);
+    expect(after.indexOf("t3")).toBeLessThan(after.indexOf("t2"));
+  });
+
+  it("converges — repeated inserts at a duplicate pair never collide", () => {
+    const list = [{ sortOrder: "a0" }, { sortOrder: "a0" }, { sortOrder: "a1" }];
+    for (let i = 0; i < 5; i++) {
+      const key = sortOrderAtIndex(list, 1);
+      expect(list.some((row) => row.sortOrder === key)).toBe(false);
+      list.push({ sortOrder: key });
+      list.sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
+    }
+  });
+
+  it("clamps an out-of-range index to the ends, not to nothing", () => {
+    // Without the clamp both of these read past the array, get prev=next=null
+    // and mint "a0" — which this list already holds. Asserting only that it
+    // doesn't throw would pass against exactly that bug.
+    const list = rows(RUN);
+    expect(sortOrderAtIndex(list, 99) > "a3").toBe(true);
+    expect(sortOrderAtIndex(list, -3) < "a0").toBe(true);
+    expect(typeof sortOrderAtIndex([], 0)).toBe("string");
+  });
+
+  it("places a cross-container arrival among duplicates without colliding", () => {
+    // A drop from another section reads its index out of the live drag
+    // ordering, then asks for a key at that index — the same call, so the same
+    // guarantee.
+    const list = rows(RUN);
+    const key = sortOrderAtIndex(list, 2, "before");
+    expect(list.some((row) => row.sortOrder === key)).toBe(false);
   });
 });

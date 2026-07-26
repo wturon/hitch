@@ -16,7 +16,7 @@
 // row shape and the Convex `Id<"projects">` brand.
 
 import { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter } from "@/lib/tagFilter";
-import type { TaskGroups, TaskRow } from "./todoGroups";
+import type { PlacedTask, SectionedTasks } from "./sectionGroups";
 
 export { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter };
 
@@ -29,21 +29,30 @@ export function taskMatchesTagFilter(tagNames: string[], f: TagFilter): boolean 
   return f.tags.every((t) => tagNames.includes(t));
 }
 
-// Project the grouped rows through the active filter. Inactive filter → the
-// groups pass through unchanged (same object). Non-matching rows drop out,
-// which naturally empties groups the view then hides entirely.
-export function filterTaskGroups<T extends TaskRow>(
-  groups: TaskGroups<T>,
+// Project the SECTIONED rows through the active filter (the successor to
+// filterTaskGroups now that placement, not status, decides layout). Inactive
+// filter → the same object back, untouched.
+//
+// EVERY section survives, including ones the filter empties. Hiding those is a
+// view decision and it lives in the view, because it depends on something this
+// function has no business knowing: a collapsed section still has to surface
+// the agents inside it, and dropping the bucket here would delete the only
+// place those chips can appear — letting a filter plus a collapse hide an agent
+// that needs you, which is the exact hole the chips exist to close.
+export function filterSectionedTasks<T extends PlacedTask>(
+  grouped: SectionedTasks<T>,
   f: TagFilter,
   namesOf: (task: T) => string[],
-): TaskGroups<T> {
-  if (!isTagFilterActive(f)) return groups;
+): SectionedTasks<T> {
+  if (!isTagFilterActive(f)) return grouped;
   const keep = (list: T[]) => list.filter((t) => taskMatchesTagFilter(namesOf(t), f));
   return {
-    needsYou: keep(groups.needsYou),
-    working: keep(groups.working),
-    backlog: keep(groups.backlog),
-    done: keep(groups.done),
+    loose: keep(grouped.loose),
+    sections: grouped.sections.map((bucket) => ({
+      section: bucket.section,
+      tasks: keep(bucket.tasks),
+    })),
+    done: keep(grouped.done),
   };
 }
 

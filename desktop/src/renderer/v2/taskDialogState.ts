@@ -25,14 +25,21 @@
 // live query row.
 export type TaskDialogState =
   | { mode: "closed" }
-  | { mode: "capture"; session: number }
+  // `sectionId` is where the capture will be FILED: null for the loose
+  // container (the global `C` shortcut and the top add-row), or the section
+  // whose own add-row was clicked. It is fixed at open time — capture never
+  // asks you to make a filing decision mid-typing.
+  | { mode: "capture"; session: number; sectionId: string | null }
   | { mode: "edit"; session: number; taskId: string };
 
 export const closedTaskDialog: TaskDialogState = { mode: "closed" };
 
-// A fresh capture (the add-row / `C`).
-export function captureState(session: number): TaskDialogState {
-  return { mode: "capture", session };
+// A fresh capture (an add-row / `C`).
+export function captureState(
+  session: number,
+  sectionId: string | null = null,
+): TaskDialogState {
+  return { mode: "capture", session, sectionId };
 }
 
 // Open an existing task (list row click).
