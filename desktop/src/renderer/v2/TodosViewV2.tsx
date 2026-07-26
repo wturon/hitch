@@ -9,8 +9,10 @@ import {
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  closestCenter,
   DndContext,
   PointerSensor,
+  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -63,7 +65,7 @@ import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import type { ServerHarness } from "./delegation";
 import { HarnessChipSlot, StaticHarnessChip } from "./HarnessChip";
-import { reorderSortOrder } from "./listMutations";
+import { insertSortOrder, reorderSortOrder } from "./listMutations";
 import { loadCollapsedSections, saveCollapsedSections } from "./sectionCollapse";
 import { deriveSectionedTasks, type SectionBucket } from "./sectionGroups";
 import {
@@ -446,6 +448,37 @@ function SectionNameInput({
       }}
       className="min-w-0 flex-1 bg-transparent text-[13.5px] font-semibold leading-5 outline-none placeholder:font-normal placeholder:text-muted-foreground"
     />
+  );
+}
+
+// A container's own drop target, so a row can be dropped into a section with
+// no rows in it — SortableContext only registers the items it has, so an empty
+// section is invisible to the drag without this. The id is namespaced to stay
+// distinguishable from a task's uuid in onDragEnd.
+const DROP_ID_PREFIX = "container:";
+const dropId = (sectionId: string | null) => `${DROP_ID_PREFIX}${sectionId ?? "loose"}`;
+
+function DroppableContainer({
+  sectionId,
+  children,
+}: {
+  sectionId: string | null;
+  children: ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: dropId(sectionId) });
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "flex min-h-[8px] flex-col rounded-lg transition-colors",
+        // A section you're hovering over lights up faintly — the only cue that
+        // a cross-section drop is live. No border, no outline: this is a hint,
+        // not a dialog.
+        isOver && "bg-muted/40",
+      )}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -886,8 +919,16 @@ export function TodosViewV2({
   onAddTask: (sectionId: string | null) => void;
   onToggleDone: (task: TaskItem, done: boolean) => void;
   onReorderTask: (taskId: string, sortOrder: string) => void;
-  /** File a task into a section (null = loose) — the Move to ▸ submenu. */
-  onMoveTask: (task: TaskItem, sectionId: string | null) => void;
+  /**
+   * File a task into a section (null = loose). The menu omits `sortOrder` and
+   * gets a prepend; a drag passes the key it computed from where the row
+   * actually landed.
+   */
+  onMoveTask: (
+    task: TaskItem,
+    sectionId: string | null,
+    sortOrder?: string,
+  ) => void;
   onDeleteTask: (task: TaskItem) => void;
 }) {
   const [showAllDone, setShowAllDone] = useState(false);
@@ -1038,17 +1079,59 @@ export function TodosViewV2({
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
   );
 
-  // Reorder within one container. `tasks` is that container's list in the order
-  // on screen, so the fractional index is computed between the drop's actual
-  // neighbours — one task's PATCH, never a whole-list rewrite (listMutations).
-  function onDragEnd(event: DragEndEvent, tasks: TaskItem[]) {
+  // ONE drag context spans every container, which is what makes a drop into
+  // another section possible at all — a DndContext per section would trap each
+  // row in the one it started in.
+  //
+  // Two outcomes, and the difference is where the row LANDED, not where it
+  // came from:
+  //   • same container → reorder: a key between the drop's neighbours, one
+  //     PATCH, no placement change (listMutations.reorderSortOrder).
+  //   • different container → move: sectionId AND a key computed in the
+  //     destination, one PATCH (insertSortOrder). The dragged row takes the
+  //     place of the row it was dropped on; a drop on empty space appends.
+  function onDragEnd(event: DragEndEvent) {
     const { active: dragged, over } = event;
-    if (!over || dragged.id === over.id) return;
-    const ids = tasks.map((task) => task.id);
-    const from = ids.indexOf(String(dragged.id));
-    const to = ids.indexOf(String(over.id));
-    const sortOrder = reorderSortOrder(tasks, from, to);
-    if (sortOrder !== null) onReorderTask(String(dragged.id), sortOrder);
+    if (!over) return;
+    const draggedId = String(dragged.id);
+    const overId = String(over.id);
+    if (draggedId === overId) return;
+
+    const source = containers.find((c) => c.tasks.some((t) => t.id === draggedId));
+    const task = source?.tasks.find((t) => t.id === draggedId);
+    if (!source || !task) return;
+
+    // `over` is either a task row or a container's own droppable (its empty
+    // space, which is the only way to reach an empty section).
+    const destination = overId.startsWith(DROP_ID_PREFIX)
+      ? containers.find(
+          (c) => dropId(c.section?.id ?? null) === overId && !c.collapsed,
+        )
+      : containers.find((c) => c.tasks.some((t) => t.id === overId));
+    if (!destination) return;
+
+    const sourceId = source.section?.id ?? null;
+    const destinationId = destination.section?.id ?? null;
+
+    if (sourceId === destinationId) {
+      const ids = source.tasks.map((t) => t.id);
+      const sortOrder = reorderSortOrder(
+        source.tasks,
+        ids.indexOf(draggedId),
+        ids.indexOf(overId),
+      );
+      if (sortOrder !== null) onReorderTask(draggedId, sortOrder);
+      return;
+    }
+
+    onMoveTask(
+      task,
+      destinationId,
+      insertSortOrder(
+        destination.tasks,
+        overId.startsWith(DROP_ID_PREFIX) ? null : overId,
+      ),
+    );
   }
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1329,7 +1412,12 @@ export function TodosViewV2({
             this and the ↑↓ index walk `containers`, so they cannot drift.
             Drag-reorder and the capture add-row hide while a filter is active
             — the visible order is a projection then, not the real one (V1). */}
-        {containers.map((container) => {
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={onDragEnd}
+        >
+          {containers.map((container) => {
           const sectionId = container.section?.id ?? null;
           const key = sectionId ?? "loose";
           return (
@@ -1386,10 +1474,7 @@ export function TodosViewV2({
                       />
                     ))
                   ) : (
-                    <DndContext
-                      sensors={sensors}
-                      onDragEnd={(event) => onDragEnd(event, container.tasks)}
-                    >
+                    <DroppableContainer sectionId={sectionId}>
                       <SortableContext
                         items={container.tasks.map((task) => task.id)}
                         strategy={verticalListSortingStrategy}
@@ -1406,13 +1491,14 @@ export function TodosViewV2({
                           />
                         ))}
                       </SortableContext>
-                    </DndContext>
+                    </DroppableContainer>
                   )}
                 </>
               )}
             </section>
           );
-        })}
+          })}
+        </DndContext>
 
         {/* Hidden while filtering — the list is a projection then, and adding
             structure to a projection is how you file something somewhere you

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { generateKeyBetween } from "fractional-indexing";
 
 import { captureSortOrder } from "../capture";
-import { reorderSortOrder, uncheckSortOrder } from "../listMutations";
+import { insertSortOrder, reorderSortOrder, uncheckSortOrder } from "../listMutations";
 
 describe("uncheckSortOrder", () => {
   it("mints the first key for an empty backlog", () => {
@@ -76,5 +76,42 @@ describe("reorderSortOrder", () => {
     expect(reorderSortOrder(backlog, -1, 2)).toBeNull();
     expect(reorderSortOrder(backlog, 0, 4)).toBeNull();
     expect(reorderSortOrder([], 0, 0)).toBeNull();
+  });
+});
+
+describe("insertSortOrder", () => {
+  const dest = [
+    { id: "a", sortOrder: "a1" },
+    { id: "b", sortOrder: "a2" },
+    { id: "c", sortOrder: "a3" },
+  ];
+
+  // Assert on WHERE the row lands, not on the key string.
+  const landing = (over: string | null) => {
+    const key = insertSortOrder(dest, over);
+    return [...dest, { id: "moved", sortOrder: key }]
+      .sort((x, y) => (x.sortOrder < y.sortOrder ? -1 : 1))
+      .map((t) => t.id);
+  };
+
+  it("takes the place of the row it was dropped on, pushing it down", () => {
+    expect(landing("b")).toEqual(["a", "moved", "b", "c"]);
+  });
+
+  it("lands first when dropped on the head", () => {
+    expect(landing("a")).toEqual(["moved", "a", "b", "c"]);
+  });
+
+  it("appends when dropped on the container's empty space", () => {
+    expect(landing(null)).toEqual(["a", "b", "c", "moved"]);
+  });
+
+  it("appends when the row it was dropped on has since vanished", () => {
+    expect(landing("gone")).toEqual(["a", "b", "c", "moved"]);
+  });
+
+  it("handles a drop into an empty section", () => {
+    expect(typeof insertSortOrder([], null)).toBe("string");
+    expect(typeof insertSortOrder([], "anything")).toBe("string");
   });
 });

@@ -48,11 +48,12 @@ export interface TaskMutations {
   /** A drag-reorder drop: PATCH the one moved row's precomputed sortOrder. */
   reorderTask(taskId: string, sortOrder: string): void;
   /**
-   * File a task into a section (null = loose), landing it at the TOP of the
-   * destination. A move is an act of attention — the row belongs where you'll
-   * see it, not at the bottom of wherever it went.
+   * File a task into a section (null = loose). Without `sortOrder` it lands at
+   * the TOP of the destination — a move by menu is an act of attention, and the
+   * row belongs where you'll see it. A drag passes the key it computed from
+   * where the row was actually dropped.
    */
-  moveTask(task: MutableTask, sectionId: string | null): void;
+  moveTask(task: MutableTask, sectionId: string | null, sortOrder?: string): void;
   /**
    * Delete with undo: hide the row and start the pending-delete window
    * (pendingDelete.ts — the DELETE fires only when the toast's undo window
@@ -224,14 +225,16 @@ export function useTaskMutations(
       if (done) markDone(task);
       else markOpen(task);
     },
-    moveTask: (task, sectionId) => {
+    moveTask: (task, sectionId, sortOrder) => {
       const current = task.sectionId ?? null;
-      if (current === sectionId) return;
-      const sortOrder = uncheckSortOrder(currentContainer(sectionId));
+      // A drag supplies a key even for a same-container drop; only a MENU move
+      // to where the task already is has nothing to do.
+      if (current === sectionId && sortOrder === undefined) return;
+      const key = sortOrder ?? uncheckSortOrder(currentContainer(sectionId));
       patchTask.mutate({
         taskId: task.id,
-        patch: { sectionId, sortOrder },
-        optimistic: { sectionId, sortOrder },
+        patch: { sectionId, sortOrder: key },
+        optimistic: { sectionId, sortOrder: key },
       });
     },
     reorderTask: (taskId, sortOrder) => {
