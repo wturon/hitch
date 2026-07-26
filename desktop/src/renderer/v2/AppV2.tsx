@@ -697,8 +697,8 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
   // per-row mount would unmount the open dialog underneath the user.
   const [settingsProject, setSettingsProject] = useState<ProjectItem | null>(null);
   const saveProjectSettings = useCallback(
-    async (patch: { name: string; repoPath: string | null }) => {
-      if (!settingsProject) return;
+    async (patch: { name?: string; repoPath?: string | null }) => {
+      if (!settingsProject || Object.keys(patch).length === 0) return;
       const response = await client.projects[":id"].$patch({
         param: { id: settingsProject.id },
         json: patch,

@@ -33,6 +33,12 @@ process.on("unhandledRejection", (e) => console.warn("late:", String(e)));
 // hangs at `spawning` with nothing in this script's log to explain it.
 process.env.HITCH_DISABLE_APP_DAEMON = "1";
 
+// Normalized AND written back: the Electron app this script launches reads the
+// server URL from the environment too. Resolving it only locally would poll one
+// server while the app talked to none, surfacing as "Sign in never appeared".
+const SERVER_URL = (process.env.HITCH_SERVER_URL ?? "http://localhost:3010").replace(/\/+$/, "");
+process.env.HITCH_SERVER_URL = SERVER_URL;
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../..");
 const SHOTS = join(HERE, "shots");
@@ -40,14 +46,17 @@ mkdirSync(SHOTS, { recursive: true });
 const LOG = join(SHOTS, "v2-project-cwd.log");
 writeFileSync(LOG, "");
 
-const SERVER_URL = process.env.HITCH_SERVER_URL ?? "http://localhost:3010";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => {
   console.log(m);
   appendFileSync(LOG, `${m}\n`);
 };
-const compose = (args) =>
-  spawnSync("docker", ["compose", ...args], { cwd: REPO_ROOT, stdio: "inherit" });
+const compose = (args) => {
+  const res = spawnSync("docker", ["compose", ...args], { cwd: REPO_ROOT, stdio: "inherit" });
+  // Fail loudly: a broken `up` otherwise degrades into a 60s health-poll
+  // timeout that reads like the server is slow rather than absent.
+  if (res.status !== 0) throw new Error(`docker compose ${args.join(" ")} → ${res.status}`);
+};
 
 let passed = 0;
 let failed = 0;
@@ -143,9 +152,15 @@ try {
   const home = homedir();
   const dialog = page.locator("[role=dialog]", { hasText: "Project settings" });
   // innerText, not a text= locator: a path starts with "/" and Playwright reads
-  // that as a regex.
-  const dialogText = await dialog.innerText();
-  check("4. the empty state names the home-folder fallback", dialogText.includes(home), home);
+  // that as a regex. Polled, because the home path arrives over IPC a beat
+  // after the dialog paints — asserting immediately would be a race that
+  // happens to pass.
+  const namesHome = await waitFor(
+    "the dialog to show the home path",
+    async () => ((await dialog.innerText()).includes(home) ? true : undefined),
+    { timeoutMs: 10_000 },
+  ).catch(() => false);
+  check("4. the empty state names the home-folder fallback", namesHome === true, home);
   await shot("v2-project-cwd-01-empty");
 
   const pathInput = dialog.locator("input.font-mono");
@@ -208,13 +223,15 @@ try {
     desiredState: "running",
   });
 
-  await waitFor(
+  // Match a COMPLETE line: stdout arrives in chunks, and a boundary mid-path
+  // would otherwise let the assertion below compare a truncated cwd.
+  const cwdLines = (text) =>
+    [...text.matchAll(/fake-launch:.*cwd=(.+)\n/g)].map((m) => m[1].trim());
+  const spawnedCwd = await waitFor(
     "fake launch logs its cwd",
-    async () => (daemonOut.includes("fake-launch:") && daemonOut.includes("cwd=") ? true : undefined),
+    async () => cwdLines(daemonOut).at(-1),
     { timeoutMs: 30_000 },
   );
-  const cwdLine = daemonOut.split("\n").find((l) => l.includes("fake-launch:") && l.includes("cwd="));
-  const spawnedCwd = cwdLine?.split("cwd=")[1]?.trim();
   check(
     "8. the agent spawned in the project's working directory",
     spawnedCwd === projectDir,
@@ -258,13 +275,9 @@ try {
   });
   const secondCwd = await waitFor(
     "second fake launch",
-    async () => {
-      const line = daemonOut
-        .slice(before)
-        .split("\n")
-        .find((l) => l.includes("fake-launch:") && l.includes("cwd="));
-      return line ? line.split("cwd=")[1].trim() : undefined;
-    },
+    // Sliced from where the first launch ended, so this can't read the stale
+    // line and "pass" by re-reading the previous spawn.
+    async () => cwdLines(daemonOut.slice(before)).at(-1),
     { timeoutMs: 30_000 },
   );
   check("11. with no working directory, agents fall back to home", secondCwd === home, secondCwd);
@@ -273,13 +286,19 @@ try {
   log(`FAIL  ${String(error?.stack ?? error)}`);
 } finally {
   await cleanupApp().catch(() => {});
-  if (daemon) daemon.kill("SIGTERM");
+  // SIGINT, matching the sibling: the child is `npx`, and SIGTERM can leave the
+  // tsx grandchild running.
+  if (daemon) daemon.kill("SIGINT");
   for (const dir of [scratch, projectDir]) {
     if (dir) rmSync(dir, { recursive: true, force: true });
   }
   if (process.env.SKIP_COMPOSE !== "1") {
     log("→ docker compose down -v");
-    compose(["down", "-v"]);
+    try {
+      compose(["down", "-v"]);
+    } catch (e) {
+      log(`(compose down failed: ${String(e)})`);
+    }
   }
   log(`\nlog: ${LOG}`);
   log(`${passed}/${passed + failed} checks passed.`);

@@ -52,9 +52,10 @@ export function ProjectSettingsDialog({
   project: ProjectSettingsTarget | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  // Persists the patch. Throwing surfaces the message and keeps the dialog open
-  // so the edit isn't lost.
-  onSave: (patch: { name: string; repoPath: string | null }) => Promise<void>;
+  // Persists the CHANGED fields only (an untouched field is absent, so a
+  // concurrent edit to it survives). Throwing surfaces the message and keeps
+  // the dialog open so the edit isn't lost.
+  onSave: (patch: { name?: string; repoPath?: string | null }) => Promise<void>;
 }) {
   const nameId = useId();
   const pathId = useId();
@@ -66,13 +67,23 @@ export function ProjectSettingsDialog({
   const [missing, setMissing] = useState(false);
 
   // Re-seed from the project each time the dialog opens, so a cancelled edit
-  // never leaks into the next one.
+  // never leaks into the next one — including `missing`, which otherwise shows
+  // a stale "no such folder" warning over a project whose saved path is fine.
+  //
+  // Keyed on project.ID, not the object: `project` comes from a react-query
+  // list that hands back a new object identity on every refetch, and this app
+  // refetches projects on every WS invalidation. Depending on the object would
+  // reset the fields mid-edit, wiping whatever the user had typed.
+  const projectId = project?.id ?? null;
   useEffect(() => {
     if (!open || !project) return;
     setName(project.name);
     setRepoPath(project.repoPath ?? "");
     setError(null);
-  }, [open, project]);
+    setMissing(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above: seeding
+    // must happen per project, not per object identity.
+  }, [open, projectId]);
 
   // The real fallback path, shown rather than described — "your home folder" is
   // vaguer than the path itself, and this is the value the daemon will use.
@@ -90,7 +101,11 @@ export function ProjectSettingsDialog({
   // one. Browsing always yields a real directory, so this only fires on typing.
   useEffect(() => {
     const path = repoPath.trim();
-    if (!path) {
+    // Non-absolute paths are rejected on save, and checking them here would
+    // LIE: a relative path is resolved against this process's cwd, not the
+    // daemon's, so `desktop` would report "exists" for a path that resolves
+    // somewhere else entirely at spawn time.
+    if (!path || !path.startsWith("/")) {
       setMissing(false);
       return;
     }
@@ -110,20 +125,55 @@ export function ProjectSettingsDialog({
   }, [repoPath]);
 
   async function browse() {
-    const chosen = await bridge()?.chooseDirectory?.(repoPath.trim() || undefined);
-    if (chosen) setRepoPath(chosen);
+    try {
+      const chosen = await bridge()?.chooseDirectory?.(repoPath.trim() || undefined);
+      if (chosen) setRepoPath(chosen);
+    } catch {
+      // The picker can reject (e.g. the window went away). Say so rather than
+      // leaving a button that appears to do nothing.
+      setError("Couldn't open the folder picker.");
+    }
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedName = name.trim();
+    const trimmedPath = repoPath.trim();
     if (!trimmedName || saving) return;
+
+    // Inbox is identified BY NAME (it's ensured on boot, pinned first, and the
+    // default selection), and a project named Inbox is rendered as the inbox —
+    // which has no settings menu. Renaming into it would strand this project
+    // with no way back from the UI.
+    if (trimmedName.toLowerCase() === "inbox" && project?.name !== trimmedName) {
+      setError("“Inbox” is reserved. Pick another name.");
+      return;
+    }
+    // A path that isn't absolute can never work, so this BLOCKS rather than
+    // warns (unlike a merely-missing folder). The daemon hands the cwd to a
+    // shell single-quoted, so `~` is never expanded — `cd '~/code/x'` just
+    // fails and the agent never starts. A relative path is worse than useless:
+    // it silently resolves against whatever the daemon's cwd happens to be.
+    if (trimmedPath && !trimmedPath.startsWith("/")) {
+      setError(
+        "Use a full path starting with “/”. “~” isn't expanded, and a relative path resolves somewhere unpredictable.",
+      );
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {
+      // Only what actually changed. The dialog holds a snapshot taken when it
+      // opened, so sending both fields would revert a concurrent edit to the
+      // one the user didn't touch.
+      const patch: { name?: string; repoPath?: string | null } = {};
+      if (trimmedName !== project?.name) patch.name = trimmedName;
       // Empty → null, not "": null is "unset" everywhere else in this column,
       // and the daemon's fallback tests for a blank string anyway.
-      await onSave({ name: trimmedName, repoPath: repoPath.trim() || null });
+      const nextPath = trimmedPath || null;
+      if (nextPath !== (project?.repoPath ?? null)) patch.repoPath = nextPath;
+      await onSave(patch);
       onOpenChange(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save project");
@@ -194,8 +244,8 @@ export function ProjectSettingsDialog({
             </div>
             {missing && (
               <p className="text-xs text-muted-foreground">
-                No such folder on this Mac. Saving anyway is fine if it exists on
-                the machine you delegate to.
+                No such folder on this Mac. That's fine if it exists on the
+                machine you delegate to — otherwise the agent won't start.
               </p>
             )}
           </div>
