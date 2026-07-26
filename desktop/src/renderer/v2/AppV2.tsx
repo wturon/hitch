@@ -18,6 +18,13 @@ import {
 } from "lucide-react";
 
 import { CreateProjectDialog } from "@/components/CreateProjectDialog";
+import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   CommandPalette,
   type PaletteProject,
@@ -218,20 +225,22 @@ function ProjectRowV2({
   project,
   selected,
   onSelect,
+  onOpenSettings,
 }: {
   project: ProjectItem;
   selected: boolean;
   onSelect: (projectId: string) => void;
+  onOpenSettings: (project: ProjectItem) => void;
 }) {
   const isInbox = project.name === INBOX_NAME;
-  return (
+  const row = (
     <button
       type="button"
       data-testid="v2-project-row"
       aria-current={selected}
       onClick={() => onSelect(project.id)}
       className={cn(
-        "flex min-h-9 items-center gap-2 rounded-lg py-1.5 pr-1.5 pl-2 text-left transition-colors",
+        "flex min-h-9 w-full items-center gap-2 rounded-lg py-1.5 pr-1.5 pl-2 text-left transition-colors",
         selected
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : "text-sidebar-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
@@ -250,6 +259,22 @@ function ProjectRowV2({
         {project.name}
       </span>
     </button>
+  );
+
+  // Inbox has no settings: it's ensured on boot by name, so renaming it would
+  // orphan it and it isn't a checkout anywhere.
+  if (isInbox) return row;
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger className="block">{row}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={() => onOpenSettings(project)}>
+          <SettingsIcon className="size-3.5" />
+          Project settings…
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -324,6 +349,7 @@ function SidebarV2({
   serverUrl,
   onSelectProject,
   onCreateProject,
+  onOpenProjectSettings,
   onShowSettings,
   onSignOut,
 }: {
@@ -334,6 +360,7 @@ function SidebarV2({
   serverUrl: string;
   onSelectProject: (projectId: string) => void;
   onCreateProject: (name: string) => Promise<void>;
+  onOpenProjectSettings: (project: ProjectItem) => void;
   onShowSettings: () => void;
   onSignOut: () => void;
 }) {
@@ -382,6 +409,7 @@ function SidebarV2({
               project={project}
               selected={project.id === selectedProjectId}
               onSelect={onSelectProject}
+              onOpenSettings={onOpenProjectSettings}
             />
           ))
         )}
@@ -662,6 +690,30 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
     },
   });
 
+  // --- Project settings (name + the working directory agents start in) ------
+  //
+  // One dialog mount driven by which project is being edited, rather than a
+  // dialog per row — the rail re-renders on every project query settle, and a
+  // per-row mount would unmount the open dialog underneath the user.
+  const [settingsProject, setSettingsProject] = useState<ProjectItem | null>(null);
+  const saveProjectSettings = useCallback(
+    async (patch: { name: string; repoPath: string | null }) => {
+      if (!settingsProject) return;
+      const response = await client.projects[":id"].$patch({
+        param: { id: settingsProject.id },
+        json: patch,
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to save project (${response.status})`);
+      }
+      // The daemon re-reads repo_path off the server's `projects` invalidation
+      // broadcast, so a saved path takes effect on the next spawn without a
+      // daemon restart.
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    [client, queryClient, settingsProject],
+  );
+
   // --- Rail collapse (V1's exact behavior, same storage key) ----------------
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
@@ -696,6 +748,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
         onCreateProject={async (name) => {
           await createProject.mutateAsync(name);
         }}
+        onOpenProjectSettings={setSettingsProject}
         onShowSettings={() => setShowSettings(true)}
         onSignOut={() => void signOut()}
       />
@@ -786,6 +839,14 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
           await createProject.mutateAsync(name);
         }}
         initialName={createProjectName ?? undefined}
+      />
+      <ProjectSettingsDialog
+        project={settingsProject}
+        open={settingsProject !== null}
+        onOpenChange={(next) => {
+          if (!next) setSettingsProject(null);
+        }}
+        onSave={saveProjectSettings}
       />
       <GlobalSettingsDialog
         open={showSettings}

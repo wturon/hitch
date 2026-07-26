@@ -136,8 +136,14 @@ export function createFakeLaunchers(deps: FakeLauncherDeps): FakeLaunchControlle
         // …and immediately "discovered", working on its first turn.
         attachments.simulate({ harness: wire, sessionId, existence: "running", activity: "working" });
 
+        // The cwd is logged because it's the one spawn input with no other
+        // observable trace — a real launch shows it by opening a terminal in
+        // that directory, but a fake one would silently accept a wrong value.
+        // It's how the delegate acceptance checks a project's working
+        // directory actually reaches the launcher.
         logger.info(
-          `[hitch] fake-launch: ${harness} session ${sessionId.slice(0, 8)} bound (no real spawn)`,
+          `[hitch] fake-launch: ${harness} session ${sessionId.slice(0, 8)} bound ` +
+            `(no real spawn) cwd=${ctx.cwd}`,
         );
 
         // The one scripted transition: a turn completes → running+idle → the

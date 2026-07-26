@@ -10,6 +10,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -20,6 +21,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   ipcMain,
   nativeImage,
   nativeTheme,
@@ -2087,6 +2089,36 @@ ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>
   setStartingPrompts(prompts),
 );
+// Where agents start for a project. The renderer can't run a native folder
+// picker or read $HOME, so both live here. `defaultPath` opens the picker where
+// the project already points, so re-picking doesn't start from scratch.
+ipcMain.handle("dialog:choose-directory", async (_event, defaultPath: unknown) => {
+  const options: Electron.OpenDialogOptions = {
+    title: "Choose the project folder",
+    defaultPath:
+      typeof defaultPath === "string" && defaultPath.trim()
+        ? defaultPath.trim()
+        : undefined,
+    properties: ["openDirectory", "createDirectory"],
+  };
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+ipcMain.handle("app:home-dir", () => homedir());
+// Does a typed working directory actually exist here? Used to WARN, not block:
+// the path is stored on the project, and the machine that eventually runs the
+// agent may not be this one.
+ipcMain.handle("app:directory-exists", (_event, path: unknown) => {
+  if (typeof path !== "string" || !path.trim()) return true;
+  try {
+    return statSync(path.trim()).isDirectory();
+  } catch {
+    return false;
+  }
+});
+
 ipcMain.handle("cmux:enable-automation", () => enableCmuxAutomation());
 ipcMain.handle("cmux:open-app", () => openCmuxApp());
 
