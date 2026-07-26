@@ -270,7 +270,10 @@ function SectionHeader({
   const [renaming, setRenaming] = useState(false);
 
   return (
-    <div className="group/section relative flex h-8 items-center gap-2 border-b border-border pr-1 pl-2.5">
+    <div
+      data-testid="v2-section-header"
+      className="group/section relative flex h-8 items-center gap-2 border-b border-border pr-1 pl-2.5"
+    >
       <button
         type="button"
         onClick={onToggle}

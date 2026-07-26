@@ -158,6 +158,8 @@ export function HarnessChipSlot({
     <span className="relative flex h-7 shrink-0 items-center justify-end">
       <button
         type="button"
+        data-testid="v2-harness-chip"
+        data-chip-state={state}
         // The row opens the task; the chip opens the CHAT. Both are legitimate
         // targets in the same 42px, so the chip has to claim its own clicks.
         onPointerDown={(e) => e.stopPropagation()}
