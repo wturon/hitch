@@ -8,7 +8,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { deriveTaskGroups } from "../todoGroups";
 import {
   EMPTY_TAG_FILTER,
-  filterTaskGroups,
   loadTagFilter,
   saveTagFilter,
   tagFacetCounts,
@@ -44,40 +43,6 @@ const task = (id: string, status: "open" | "done", names: string[]) => ({
   names,
 });
 const namesOf = (t: { names: string[] }) => t.names;
-
-describe("filterTaskGroups", () => {
-  const rows = [
-    task("a", "open", ["bug"]),
-    task("b", "open", ["bug", "urgent"]),
-    task("c", "open", []),
-    task("d", "done", ["bug", "urgent"]),
-  ];
-  const groups = deriveTaskGroups(rows);
-
-  it("returns the SAME object when the filter is inactive", () => {
-    expect(filterTaskGroups(groups, EMPTY_TAG_FILTER, namesOf)).toBe(groups);
-  });
-
-  it("projects every group through the AND filter (done included)", () => {
-    const filtered = filterTaskGroups(
-      groups,
-      { tags: ["bug", "urgent"], untagged: false },
-      namesOf,
-    );
-    expect(filtered.backlog.map((t) => t.id)).toEqual(["b"]);
-    expect(filtered.done.map((t) => t.id)).toEqual(["d"]);
-  });
-
-  it("untagged keeps only zero-tag rows", () => {
-    const filtered = filterTaskGroups(
-      groups,
-      { tags: [], untagged: true },
-      namesOf,
-    );
-    expect(filtered.backlog.map((t) => t.id)).toEqual(["c"]);
-    expect(filtered.done).toEqual([]);
-  });
-});
 
 describe("tagFacetCounts", () => {
   const universe = [["bug"], ["bug", "urgent"], [], ["bug", "urgent"]];

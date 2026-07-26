@@ -122,6 +122,43 @@ export function taskAttention(
   }
 }
 
+// ─── The harness chip's state (sections v1) ──────────────────────────────────
+
+// What the row's agent chip shows. `null` = no chip at all (an empty slot):
+// either nothing was ever delegated, or the launch died and there is nothing
+// to open. Deliberately three states and not five — the chip is the ONLY
+// status instrument on the row now, so it stays readable at 22px.
+export type HarnessChipState = "idle" | "working" | "needs-you";
+
+/**
+ * The chip state for a task's latest assignment. Same input as `taskAttention`
+ * — this is what that mapping becomes once status paints a row instead of
+ * moving it.
+ *
+ * Note `done ∧ reviewed → "idle"` rather than null: the chat still exists and
+ * cmux can bring it back, so the chip stays as the way in. Only `dead` (the
+ * launch never produced a chat) and "never delegated" have nothing to open.
+ */
+export function harnessChipState(
+  latest: Pick<AttentionAssignment, "observedState" | "reviewedAt"> | null | undefined,
+): HarnessChipState | null {
+  if (!latest) return null;
+  switch (latest.observedState) {
+    case "pending":
+    case "spawning":
+    case "running":
+      return "working";
+    case "waiting_input":
+      return "needs-you";
+    case "done":
+      // The agent finished and nobody has looked yet — the state V1's chip
+      // never had, folded in here rather than earning its own row control.
+      return latest.reviewedAt == null ? "needs-you" : "idle";
+    case "dead":
+      return null;
+  }
+}
+
 // Join assignments to tasks: the latest (by created_at) assignment per task id.
 // The daemon only ever acts on a task's most-recent assignment, so the latest
 // is the one whose observed state drives attention (older rows are history).

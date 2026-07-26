@@ -157,8 +157,9 @@ add rows are.
 
 1. **Losing NEEDS YOU as a destination.** Everything now rests on the chip being findable at the
    right edge of a long list — that's the unproven part, and the reason PR 2 is separable and
-   revertible on purpose. The sidebar's per-project amber count is the backstop that survives either
-   way.
+   revertible on purpose. Note there is **no backstop**: V2's sidebar has no per-project attention
+   count (that was V1/Paper chrome, never ported), so inside a collapsed section the chip is the
+   only signal. Hence collapsed headers surfacing their live chips.
 2. **Keyboard nav is index-based.** `data-idx` over a flat list; sections make that list
    discontiguous. Highest-bug-density area — worth its own tests.
 3. **Sort-order scope.** Two functions assume one flat backlog per project. Missing one gives

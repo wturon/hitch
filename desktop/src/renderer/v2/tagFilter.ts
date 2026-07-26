@@ -17,7 +17,6 @@
 
 import { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter } from "@/lib/tagFilter";
 import type { PlacedTask, SectionedTasks } from "./sectionGroups";
-import type { TaskGroups, TaskRow } from "./todoGroups";
 
 export { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter };
 
@@ -28,24 +27,6 @@ export function taskMatchesTagFilter(tagNames: string[], f: TagFilter): boolean 
   if (f.untagged) return tagNames.length === 0;
   if (f.tags.length === 0) return true;
   return f.tags.every((t) => tagNames.includes(t));
-}
-
-// Project the grouped rows through the active filter. Inactive filter → the
-// groups pass through unchanged (same object). Non-matching rows drop out,
-// which naturally empties groups the view then hides entirely.
-export function filterTaskGroups<T extends TaskRow>(
-  groups: TaskGroups<T>,
-  f: TagFilter,
-  namesOf: (task: T) => string[],
-): TaskGroups<T> {
-  if (!isTagFilterActive(f)) return groups;
-  const keep = (list: T[]) => list.filter((t) => taskMatchesTagFilter(namesOf(t), f));
-  return {
-    needsYou: keep(groups.needsYou),
-    working: keep(groups.working),
-    backlog: keep(groups.backlog),
-    done: keep(groups.done),
-  };
 }
 
 // Project the SECTIONED rows through the active filter (the successor to

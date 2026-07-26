@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveTaskGroups,
+  harnessChipState,
   latestAssignmentByTaskId,
   taskAttention,
   type AttentionAssignment,
@@ -267,5 +268,43 @@ describe("deriveTaskGroups with attention", () => {
     expect(groups.needsYou).toHaveLength(0);
     expect(groups.working).toHaveLength(0);
     expect(groups.backlog.map((x) => x.title)).toEqual(["open"]);
+  });
+});
+
+describe("harnessChipState", () => {
+  it("shows nothing when the task has never been delegated", () => {
+    expect(harnessChipState(null)).toBeNull();
+    expect(harnessChipState(undefined)).toBeNull();
+  });
+
+  it("maps every in-flight state to one working chip", () => {
+    // The row used to distinguish "Spawning…" from "Working"; the chip
+    // deliberately does not — at 22px they are the same fact.
+    for (const observedState of ["pending", "spawning", "running"] as const) {
+      expect(harnessChipState({ observedState, reviewedAt: null })).toBe("working");
+    }
+  });
+
+  it("maps waiting_input → needs-you", () => {
+    expect(harnessChipState({ observedState: "waiting_input", reviewedAt: null })).toBe(
+      "needs-you",
+    );
+  });
+
+  it("treats a finished-but-unreviewed agent as needing you", () => {
+    // The state V1's chip never had: it was the row's "Mark reviewed" button.
+    expect(harnessChipState({ observedState: "done", reviewedAt: null })).toBe(
+      "needs-you",
+    );
+  });
+
+  it("falls back to idle once reviewed — the chat is still openable", () => {
+    expect(
+      harnessChipState({ observedState: "done", reviewedAt: "2026-07-26T00:00:00Z" }),
+    ).toBe("idle");
+  });
+
+  it("shows nothing for a dead launch — there is no chat to open", () => {
+    expect(harnessChipState({ observedState: "dead", reviewedAt: null })).toBeNull();
   });
 });

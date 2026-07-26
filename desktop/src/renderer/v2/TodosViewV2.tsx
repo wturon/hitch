@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
@@ -15,9 +23,10 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   CircleCheckIcon,
   CircleIcon,
-  LoaderCircle,
   PlusIcon,
   SquareArrowOutUpRightIcon,
   TagIcon,
@@ -40,9 +49,13 @@ import {
 import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
+import type { ServerHarness } from "./delegation";
+import { HarnessChipSlot, StaticHarnessChip } from "./HarnessChip";
 import { reorderSortOrder } from "./listMutations";
+import { loadCollapsedSections, saveCollapsedSections } from "./sectionCollapse";
+import { deriveSectionedTasks, type SectionBucket } from "./sectionGroups";
 import {
-  filterTaskGroups,
+  filterSectionedTasks,
   isTagFilterActive,
   loadTagFilter,
   saveTagFilter,
@@ -51,24 +64,32 @@ import {
   type TagFilter,
 } from "./tagFilter";
 import {
-  deriveTaskGroups,
+  harnessChipState,
   latestAssignmentByTaskId,
-  taskAttention,
-  type AttentionAssignment,
-  type AttentionKind,
+  type HarnessChipState,
 } from "./todoGroups";
-import { useAllAssignments } from "./useAssignments";
+import { useAllAssignments, type AssignmentRow } from "./useAssignments";
+import { useSections } from "./useSections";
 import type { TagActions } from "./useTagMutations";
 
-// The V2 Todos surface (M2 PR 2 read path + PR 4 list mutations): the selected
-// project's tasks from the Hono server, grouped by attention exactly like V1's
-// TodosView — BACKLOG in manual (sortOrder) order, DONE collapsed below — with
-// V1's full row interaction set ported onto server rows:
+// The V2 Todos surface: the selected project's tasks from the Hono server, laid
+// out by USER PLACEMENT — loose tasks first, then the project's sections in
+// order, DONE collapsed at the bottom (sectionGroups.ts).
 //
-//   • checkbox → check/uncheck (unchecking returns the row to the TOP of the
-//     backlog), optimistic via the shell's useTaskMutations;
-//   • whole-row drag reorder within BACKLOG (dnd-kit, single-row sortOrder
-//     PATCH computed between the drop's neighbors);
+// Sections v1 replaced the NEEDS YOU / WORKING / BACKLOG attention groups this
+// view shipped with. Those made a row's POSITION a function of its agent's
+// state, so rows relocated on their own; sections and derived groups are two
+// competing vertical axes and only one can win. Status still shows — it moved
+// into the row's harness chip (HarnessChip.tsx), which is now the single
+// instrument for everything an agent is doing. `deriveTaskGroups` survives in
+// todoGroups.ts for DONE ordering and for AppV2's prepend maths.
+//
+// V1's full row interaction set is unchanged on server rows:
+//
+//   • checkbox → check/uncheck (unchecking returns the row to the TOP of its
+//     own container), optimistic via the shell's useTaskMutations;
+//   • whole-row drag reorder, within a container and across them (dnd-kit,
+//     single-row PATCH computed between the drop's neighbors);
 //   • right-click context menu (V1's structure minus the V1-only entries —
 //     copy-path/detach/archive have no V2 counterpart) with V1's Tags ▸
 //     assign submenu (PR 5), routed through the shell's single
@@ -179,54 +200,73 @@ type RowActions = {
   onToggleDone: (task: TaskItem, done: boolean) => void;
   onDelete: (task: TaskItem) => void;
   // Ack an attention item (done ∧ unreviewed): PATCH reviewed_at, which drops
-  // the row out of NEEDS YOU.
+  // the chip from amber back to idle. It lived on the row as a "Mark reviewed"
+  // button until sections v1 consolidated every agent affordance into the chip;
+  // the context menu keeps it one gesture away rather than deleting it.
   onAck: (assignmentId: string) => void;
 };
 
-// A NEEDS-YOU / WORKING row's attention badge, resolved from its latest
-// assignment. Monochrome except the amber NEEDS-YOU treatment (the existing
-// dot + amber text), matching DelegateBar's chip doctrine. The `review` case
-// (done, not yet acked) is the only one with an affordance — an Ack button that
-// clears reviewed_at; `input` and `working` are read-only status (opening the
-// chat is the response to needs-input).
-function AttentionControl({
-  kind,
-  onAck,
+// Everything the row needs to draw its agent chip, resolved from the task's
+// latest assignment. `state === null` renders the empty slot.
+type RowChip = {
+  state: HarnessChipState | null;
+  harness: ServerHarness | null;
+  chatId: string | null;
+  machineId: string | null;
+  /** The ackable assignment (done ∧ unreviewed), else null. */
+  ackableId: string | null;
+};
+
+// A section's header: hanging disclosure caret, the user's name RENDERED AS
+// TYPED, its open count, and a hairline underneath. Deliberately quieter than
+// the GroupHeader above — that one labels four constants of ours and can shout;
+// this one is someone else's words, and uppercasing them is the same category
+// of edit as rewriting capture text.
+//
+// A COLLAPSED section shows the chips of the agents inside it. Collapsing is
+// how a long project gets short, and the design fails if collapsing can hide an
+// agent that needs you — V2's sidebar has no attention count to fall back on.
+// It reuses the chip rather than minting a second status vocabulary.
+function SectionHeader({
+  name,
+  count,
+  collapsed,
+  onToggle,
+  hiddenChips,
 }: {
-  kind: AttentionKind;
-  onAck: () => void;
+  name: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  /** Rendered only while collapsed: the live agents this section is hiding. */
+  hiddenChips?: ReactNode;
 }) {
-  if (kind === "working") {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] font-medium text-muted-foreground">
-        <LoaderCircle className="size-3 animate-spin" aria-hidden />
-        Working
-      </span>
-    );
-  }
-  if (kind === "input") {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] font-medium text-amber-700 dark:text-amber-500/90">
-        <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
-        Needs input
-      </span>
-    );
-  }
-  // review: the agent finished — ack to clear it from the queue.
   return (
-    <button
-      type="button"
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        e.stopPropagation();
-        onAck();
-      }}
-      aria-label="Mark reviewed"
-      className="inline-flex h-6.5 shrink-0 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-50 px-2 text-[12px] font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-500/90 dark:hover:bg-amber-500/15"
-    >
-      <CircleCheckIcon className="size-3.5" aria-hidden />
-      Mark reviewed
-    </button>
+    <div className="group/section relative flex items-center gap-2 border-b border-border py-1 pr-2 pl-2.5">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? `Expand ${name}` : `Collapse ${name}`}
+        className="absolute -left-3.5 flex size-3.5 items-center justify-center rounded text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        {collapsed ? (
+          <ChevronRightIcon className="size-3.5" />
+        ) : (
+          <ChevronDownIcon className="size-3.5" />
+        )}
+      </button>
+      <span className="min-w-0 truncate text-[13.5px] font-semibold leading-5">
+        {name}
+      </span>
+      {count > 0 && (
+        <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">
+          {count}
+        </span>
+      )}
+      <span className="flex-1" />
+      {collapsed && hiddenChips}
+    </div>
   );
 }
 
@@ -261,7 +301,7 @@ function TaskRow({
   done,
   tag,
   actions,
-  attention,
+  chip,
   drag,
   nav,
 }: {
@@ -271,9 +311,9 @@ function TaskRow({
   // single useTagMutations instance (same handlers as the dialog's tag lane).
   tag: TagActions;
   actions: RowActions;
-  // Present only for NEEDS YOU / WORKING rows: the attention badge + (for the
-  // ackable done case) the assignment to ack.
-  attention?: { kind: AttentionKind; assignmentId: string | null };
+  // The row's agent instrument. Always present (an empty slot when there's no
+  // agent) so chips and tag pills form a column down the list.
+  chip: RowChip;
   // Present only for BACKLOG rows, which are drag-reorderable — dnd-kit's
   // sortable node/transform on the whole row (V1's whole-row drag). The
   // checkbox stops pointerdown so a drag can't start from it, and
@@ -334,15 +374,12 @@ function TaskRow({
           >
             {task.title}
           </span>
-          {attention && (
-            <AttentionControl
-              kind={attention.kind}
-              onAck={() => {
-                if (attention.assignmentId) actions.onAck(attention.assignmentId);
-              }}
-            />
-          )}
           <TagPillGroup tags={tag.namesOf(task)} colorOf={tag.colorOf} dimmed={done} />
+          <HarnessChipSlot
+            harness={chip.harness}
+            state={chip.state}
+            target={{ chatId: chip.chatId, machineId: chip.machineId }}
+          />
         </div>
       </ContextMenuTrigger>
       {/* V1's row menu minus its V1-only entries: Copy task path / Detach
@@ -357,6 +394,16 @@ function TaskRow({
           {done ? <CircleIcon /> : <CircleCheckIcon />}
           {done ? "Mark not done" : "Mark done"}
         </ContextMenuItem>
+        {/* The agent finished and you haven't looked yet — the one attention
+            case with something to DO besides opening the chat. It used to be a
+            button on the row; the chip took the row's agent slot, so it lives
+            here rather than disappearing. */}
+        {chip.ackableId !== null && (
+          <ContextMenuItem onClick={() => actions.onAck(chip.ackableId!)}>
+            <CircleCheckIcon />
+            Mark reviewed
+          </ContextMenuItem>
+        )}
         <ContextMenuSeparator />
         <TagsSubmenu task={task} tag={tag} />
         <ContextMenuSeparator />
@@ -376,11 +423,13 @@ function SortableTaskRow({
   task,
   tag,
   actions,
+  chip,
   nav,
 }: {
   task: TaskItem;
   tag: TagActions;
   actions: RowActions;
+  chip: RowChip;
   nav?: RowNav;
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
@@ -391,6 +440,7 @@ function SortableTaskRow({
       done={false}
       tag={tag}
       actions={actions}
+      chip={chip}
       nav={nav}
       drag={{
         setNodeRef,
@@ -410,7 +460,18 @@ function SortableTaskRow({
 // V1's AddTodoRow chrome, now a navigable item in the ↑↓ list (and inert for
 // Backspace/`e`, since it's not a task). The `C` hint mirrors the global
 // capture shortcut wired in AppV2.
-function AddTaskRow({ onAdd, nav }: { onAdd: () => void; nav?: RowNav }) {
+function AddTaskRow({
+  onAdd,
+  nav,
+  // The `C` hint belongs to the GLOBAL capture shortcut, which always lands
+  // loose — so only the loose add-row claims it. A section's add-row is the
+  // same affordance without the keystroke.
+  hint = false,
+}: {
+  onAdd: () => void;
+  nav?: RowNav;
+  hint?: boolean;
+}) {
   return (
     <button
       type="button"
@@ -431,10 +492,67 @@ function AddTaskRow({ onAdd, nav }: { onAdd: () => void; nav?: RowNav }) {
       <span className="flex-1 text-[13.5px] leading-[18px] text-neutral-400 dark:text-neutral-500">
         Add a todo…
       </span>
-      <kbd className="font-mono text-[10.5px] text-neutral-300 dark:text-neutral-600">
-        C
-      </kbd>
+      {hint && (
+        <kbd className="font-mono text-[10.5px] text-neutral-300 dark:text-neutral-600">
+          C
+        </kbd>
+      )}
     </button>
+  );
+}
+
+// The agents a COLLAPSED section is hiding, shown in its header.
+//
+// Collapsing is how a long project gets short, and V2's sidebar carries no
+// per-project attention count — so without this, folding a section away can
+// silently hide an agent that needs you. Rendered inert (no hover expansion,
+// no click target): it is a signal to open the section, not a second way to
+// reach the chat.
+//
+// Capped, because a section with eleven running agents should read as "busy",
+// not as eleven circles. `needs-you` sorts ahead of `working` so the one that
+// wants a human is never the one that gets truncated.
+const COLLAPSED_CHIP_LIMIT = 3;
+
+function CollapsedSectionChips({
+  tasks,
+  chipOf,
+}: {
+  tasks: TaskItem[];
+  chipOf: (taskId: string) => RowChip;
+}) {
+  const live = tasks
+    .map((task) => ({ id: task.id, chip: chipOf(task.id) }))
+    .filter(
+      (entry): entry is { id: string; chip: RowChip & { state: HarnessChipState; harness: ServerHarness } } =>
+        (entry.chip.state === "needs-you" || entry.chip.state === "working") &&
+        entry.chip.harness !== null,
+    )
+    .sort(
+      (a, b) =>
+        (a.chip.state === "needs-you" ? 0 : 1) - (b.chip.state === "needs-you" ? 0 : 1),
+    );
+  if (live.length === 0) return null;
+  const shown = live.slice(0, COLLAPSED_CHIP_LIMIT);
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {shown.map((entry) => (
+        <StaticHarnessChip
+          key={entry.id}
+          harness={entry.chip.harness}
+          state={entry.chip.state}
+        />
+      ))}
+      {live.length > shown.length && (
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          +{live.length - shown.length}
+        </span>
+      )}
+      <span className="sr-only">
+        {live.filter((e) => e.chip.state === "needs-you").length} needing you,{" "}
+        {live.filter((e) => e.chip.state === "working").length} working
+      </span>
+    </span>
   );
 }
 
@@ -511,12 +629,42 @@ export function TodosViewV2({
     queryFn: () => fetchTasks(client, projectId),
   });
 
+  // The project's sections — the list's user-created structure. A project with
+  // none renders exactly as it did before sections existed: one uninterrupted
+  // list. Nothing to migrate, no empty state to design.
+  const sections = useSections(client, projectId);
+  const sectionRows = useMemo(() => sections.data ?? [], [sections.data]);
+
+  // Collapse is per machine, not per project row (sectionCollapse.ts). Reload
+  // on project change so switching restores that project's own state rather
+  // than leaking the previous one — same shape as the tag filter below.
+  const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(() =>
+    loadCollapsedSections(projectId),
+  );
+  useEffect(() => {
+    setCollapsedIds(loadCollapsedSections(projectId));
+  }, [projectId]);
+  const toggleCollapsed = useCallback(
+    (sectionId: string) => {
+      setCollapsedIds((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(sectionId)) next.add(sectionId);
+        saveCollapsedSections(projectId, next);
+        return next;
+      });
+    },
+    [projectId],
+  );
+
   // The attention join (M4 PR 6): every user assignment, keyed to match the
   // ["assignments"] WS invalidation so the chips advance live as the daemon
   // writes observed_state. Joined to tasks by task_id below.
   const assignments = useAllAssignments(client);
+  // NOT cast down to AttentionAssignment: the chip needs the row's harness (to
+  // pick a brand mark) and its chatId/machineId (to address the focus event),
+  // and the join is generic precisely so callers keep their full row type.
   const latestByTask = useMemo(
-    () => latestAssignmentByTaskId((assignments.data ?? []) as AttentionAssignment[]),
+    () => latestAssignmentByTaskId(assignments.data ?? []),
     [assignments.data],
   );
 
@@ -533,8 +681,12 @@ export function TodosViewV2({
     },
     onMutate: async (assignmentId) => {
       await queryClient.cancelQueries({ queryKey: ["assignments"] });
-      const previous = queryClient.getQueryData<AttentionAssignment[]>(["assignments"]);
-      queryClient.setQueryData<AttentionAssignment[]>(["assignments"], (old) =>
+      // The FULL row type, not the narrow AttentionAssignment: the chip reads
+      // harness/chatId/machineId out of this same cache entry, so typing the
+      // optimistic write narrowly would invite a rewrite that quietly drops
+      // them and blanks every chip until the next refetch.
+      const previous = queryClient.getQueryData<AssignmentRow[]>(["assignments"]);
+      queryClient.setQueryData<AssignmentRow[]>(["assignments"], (old) =>
         old?.map((a) =>
           a.id === assignmentId ? { ...a, reviewedAt: new Date().toISOString() } : a,
         ),
@@ -587,14 +739,14 @@ export function TodosViewV2({
 
   // Derive once (unfiltered) for the facet counts + the truly-empty check,
   // then project through the active filter for what actually renders (V1's
-  // exact split).
-  const allGroups = useMemo(
-    () => deriveTaskGroups(visibleTasks, latestByTask),
-    [visibleTasks, latestByTask],
+  // exact split, now over placement instead of attention).
+  const allGrouped = useMemo(
+    () => deriveSectionedTasks(visibleTasks, sectionRows),
+    [visibleTasks, sectionRows],
   );
-  const groups = useMemo(
-    () => filterTaskGroups(allGroups, filter, tag.namesOf),
-    [allGroups, filter, tag.namesOf],
+  const grouped = useMemo(
+    () => filterSectionedTasks(allGrouped, filter, tag.namesOf),
+    [allGrouped, filter, tag.namesOf],
   );
   const facetCounts = useMemo(
     () => tagFacetCounts(visibleTasks.map(tag.namesOf), filter),
@@ -607,37 +759,87 @@ export function TodosViewV2({
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
   );
-  const backlogIds = groups.backlog.map((task) => task.id);
-  function onBacklogDragEnd(event: DragEndEvent) {
+
+  // Reorder within one container. `tasks` is that container's list in the order
+  // on screen, so the fractional index is computed between the drop's actual
+  // neighbours — one task's PATCH, never a whole-list rewrite (listMutations).
+  function onDragEnd(event: DragEndEvent, tasks: TaskItem[]) {
     const { active: dragged, over } = event;
     if (!over || dragged.id === over.id) return;
-    const from = backlogIds.indexOf(String(dragged.id));
-    const to = backlogIds.indexOf(String(over.id));
-    // One task's fractional index between the drop's neighbors — never a
-    // whole-list rewrite (listMutations.ts).
-    const sortOrder = reorderSortOrder(groups.backlog, from, to);
+    const ids = tasks.map((task) => task.id);
+    const from = ids.indexOf(String(dragged.id));
+    const to = ids.indexOf(String(over.id));
+    const sortOrder = reorderSortOrder(tasks, from, to);
     if (sortOrder !== null) onReorderTask(String(dragged.id), sortOrder);
   }
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const doneVisible = showAllDone ? grouped.done : grouped.done.slice(0, DONE_PREVIEW);
+
+  // ─── The render plan ───────────────────────────────────────────────────────
+  // ONE ordered list of containers that BOTH the markup and the keyboard-nav
+  // index walk. The nav index is positional (data-idx over a flat list), so the
+  // only safe way to keep ↑↓ agreeing with what's on screen is for the two to
+  // read the same array — a second hand-maintained ordering is how this drifts.
+  //
+  // A collapsed section contributes a header and nothing else: its rows aren't
+  // rendered, so they must not be navigable either.
+  type Container = {
+    /** null = the loose container (no header, always first). */
+    section: SectionBucket<TaskItem>["section"] | null;
+    tasks: TaskItem[];
+    collapsed: boolean;
+    /** Full open count, ignoring the filter — what the header displays. */
+    total: number;
+  };
+  const containers: Container[] = useMemo(() => {
+    const totalById = new Map(
+      allGrouped.sections.map((b) => [b.section.id, b.tasks.length] as const),
+    );
+    return [
+      {
+        section: null,
+        tasks: grouped.loose,
+        collapsed: false,
+        total: allGrouped.loose.length,
+      },
+      ...grouped.sections.map((bucket) => ({
+        section: bucket.section,
+        tasks: bucket.tasks,
+        collapsed: collapsedIds.has(bucket.section.id),
+        total: totalById.get(bucket.section.id) ?? bucket.tasks.length,
+      })),
+    ];
+  }, [grouped, allGrouped, collapsedIds]);
+
   // ─── Keyboard nav (V1's, ported onto server rows) ──────────────────────────
   // The flat ↑↓ order = every VISIBLE row, top-to-bottom, matching render
-  // order. The BACKLOG add affordance is a real navigable item; collapsed DONE
-  // overflow is deliberately out because it is not shown. Ids are unique, so
-  // an id→index map drives each row's highlight.
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const doneVisible = showAllDone ? groups.done : groups.done.slice(0, DONE_PREVIEW);
+  // order. Each container's add affordance is a real navigable item; section
+  // headers are NOT (they're structure, and ↑↓ through a list of todos should
+  // walk todos). Collapsed DONE overflow stays out because it isn't shown.
   const navItems = useMemo(
     () =>
       [
-        ...groups.needsYou.map((task) => ({ kind: "task" as const, task })),
-        ...groups.working.map((task) => ({ kind: "task" as const, task })),
-        // The capture affordance is hidden while a filter is active (V1), so
-        // it drops out of the ↑↓ order too.
-        ...(filterActive ? [] : [{ kind: "add" as const }]),
-        ...groups.backlog.map((task) => ({ kind: "task" as const, task })),
+        ...containers.flatMap((container) =>
+          container.collapsed
+            ? []
+            : [
+                // The capture affordance is hidden while a filter is active
+                // (V1), so it drops out of the ↑↓ order too.
+                ...(filterActive
+                  ? []
+                  : [
+                      {
+                        kind: "add" as const,
+                        sectionId: container.section?.id ?? null,
+                      },
+                    ]),
+                ...container.tasks.map((task) => ({ kind: "task" as const, task })),
+              ],
+        ),
         ...doneVisible.map((task) => ({ kind: "task" as const, task })),
       ],
-    [groups.needsYou, groups.working, groups.backlog, doneVisible, filterActive],
+    [containers, doneVisible, filterActive],
   );
   const navIndexById = useMemo(
     () =>
@@ -759,14 +961,15 @@ export function TodosViewV2({
     if (i === undefined) return undefined;
     return { selected: selected === i, itemProps: toRowItemProps(i) };
   };
-  const addNavIndex = navItems.findIndex((item) => item.kind === "add");
-  const addNav: RowNav | undefined =
-    addNavIndex === -1
-      ? undefined
-      : {
-          selected: selected === addNavIndex,
-          itemProps: toRowItemProps(addNavIndex),
-        };
+  // Each container has its OWN add-row, so the nav lookup is by container
+  // rather than "the one add item".
+  const addNav = (sectionId: string | null): RowNav | undefined => {
+    const i = navItems.findIndex(
+      (item) => item.kind === "add" && item.sectionId === sectionId,
+    );
+    if (i === -1) return undefined;
+    return { selected: selected === i, itemProps: toRowItemProps(i) };
+  };
 
   if (tasks.isPending) {
     return (
@@ -783,21 +986,18 @@ export function TodosViewV2({
     );
   }
 
+  // A project with nothing in it at all — distinct from every state below,
+  // including a project that only has empty sections.
   const isEmpty =
-    allGroups.needsYou.length +
-      allGroups.working.length +
-      allGroups.backlog.length +
-      allGroups.done.length ===
+    allGrouped.loose.length +
+      allGrouped.done.length +
+      allGrouped.sections.reduce((n, b) => n + b.tasks.length, 0) ===
     0;
   // Filtered down to nothing (distinct from an empty project).
   const noFilterMatches =
     filterActive &&
-    groups.needsYou.length +
-      groups.working.length +
-      groups.backlog.length +
-      groups.done.length ===
-      0;
-  const hiddenDone = groups.done.length - doneVisible.length;
+    grouped.loose.length + grouped.sections.length + grouped.done.length === 0;
+  const hiddenDone = grouped.done.length - doneVisible.length;
 
   const actions: RowActions = {
     onOpen: onOpenTask,
@@ -806,14 +1006,22 @@ export function TodosViewV2({
     onAck: (assignmentId) => ackAssignment.mutate(assignmentId),
   };
 
-  // The attention badge for a NEEDS YOU / WORKING row: its latest assignment's
-  // kind + id (for the ack case).
-  const attentionOf = (
-    taskId: string,
-  ): { kind: AttentionKind; assignmentId: string | null } | undefined => {
+  // Everything the row's chip needs, resolved from the task's latest
+  // assignment. This is the ONLY place a task's agent state reaches the list
+  // now — there is no second badge, no group membership, nothing else.
+  const chipOf = (taskId: string): RowChip => {
     const latest = latestByTask.get(taskId);
-    const kind = taskAttention(latest);
-    return kind ? { kind, assignmentId: latest?.id ?? null } : undefined;
+    const state = harnessChipState(latest);
+    return {
+      state,
+      harness: latest?.harness ?? null,
+      chatId: latest?.chatId ?? null,
+      machineId: latest?.machineId ?? null,
+      ackableId:
+        latest && latest.observedState === "done" && latest.reviewedAt == null
+          ? latest.id
+          : null,
+    };
   };
 
   return (
@@ -835,84 +1043,81 @@ export function TodosViewV2({
           />
         )}
 
-        {/* Attention groups (M4 PR 6): NEEDS YOU (waiting_input ∪ done∧unacked)
-            and WORKING (pending|spawning|running), joined to assignments by
-            task_id. Each row carries its attention badge; the ackable done case
-            gets a Mark-reviewed button. */}
-        {groups.needsYou.length > 0 && (
-          <section className="flex flex-col" data-testid="v2-needs-you">
-            <GroupHeader label="NEEDS YOU" amber />
-            {groups.needsYou.map((task) => (
-              <TaskRow
-                key={task.id}
-                task={task}
-                done={false}
-                tag={tag}
-                actions={actions}
-                attention={attentionOf(task.id)}
-                nav={rowNav(task.id)}
-              />
-            ))}
-          </section>
-        )}
-        {groups.working.length > 0 && (
-          <section className="flex flex-col" data-testid="v2-working">
-            <GroupHeader label="WORKING" />
-            {groups.working.map((task) => (
-              <TaskRow
-                key={task.id}
-                task={task}
-                done={false}
-                tag={tag}
-                actions={actions}
-                attention={attentionOf(task.id)}
-                nav={rowNav(task.id)}
-              />
-            ))}
-          </section>
-        )}
-
-        {/* BACKLOG. Unfiltered it always shows — it hosts the capture add-row,
-            so its header never vanishes (mirroring V1, empty state included).
-            While a filter is active the capture row and drag-reorder are
-            hidden (V1: the visible order is a filtered projection) and the
-            whole section collapses when nothing matches. */}
-        {filterActive ? (
-          groups.backlog.length > 0 && (
-            <section className="flex flex-col" data-testid="v2-backlog">
-              <GroupHeader label="BACKLOG" />
-              {groups.backlog.map((task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  done={false}
-                  tag={tag}
-                  actions={actions}
-                  nav={rowNav(task.id)}
+        {/* Loose tasks first (no header), then each section in order. Both
+            this and the ↑↓ index walk `containers`, so they cannot drift.
+            Drag-reorder and the capture add-row hide while a filter is active
+            — the visible order is a projection then, not the real one (V1). */}
+        {containers.map((container) => {
+          const sectionId = container.section?.id ?? null;
+          const key = sectionId ?? "loose";
+          return (
+            <section
+              className="flex flex-col"
+              key={key}
+              data-testid={sectionId ? "v2-section" : "v2-loose"}
+              data-section-id={sectionId ?? undefined}
+            >
+              {container.section && (
+                <SectionHeader
+                  name={container.section.name}
+                  count={container.total}
+                  collapsed={container.collapsed}
+                  onToggle={() => toggleCollapsed(container.section!.id)}
+                  hiddenChips={
+                    <CollapsedSectionChips tasks={container.tasks} chipOf={chipOf} />
+                  }
                 />
-              ))}
+              )}
+              {!container.collapsed && (
+                <>
+                  {!filterActive && (
+                    <AddTaskRow
+                      onAdd={onAddTask}
+                      nav={addNav(sectionId)}
+                      hint={sectionId === null}
+                    />
+                  )}
+                  {filterActive ? (
+                    container.tasks.map((task) => (
+                      <TaskRow
+                        key={task.id}
+                        task={task}
+                        done={false}
+                        tag={tag}
+                        actions={actions}
+                        chip={chipOf(task.id)}
+                        nav={rowNav(task.id)}
+                      />
+                    ))
+                  ) : (
+                    <DndContext
+                      sensors={sensors}
+                      onDragEnd={(event) => onDragEnd(event, container.tasks)}
+                    >
+                      <SortableContext
+                        items={container.tasks.map((task) => task.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {container.tasks.map((task) => (
+                          <SortableTaskRow
+                            key={task.id}
+                            task={task}
+                            tag={tag}
+                            actions={actions}
+                            chip={chipOf(task.id)}
+                            nav={rowNav(task.id)}
+                          />
+                        ))}
+                      </SortableContext>
+                    </DndContext>
+                  )}
+                </>
+              )}
             </section>
-          )
-        ) : (
-          <section className="flex flex-col" data-testid="v2-backlog">
-            <GroupHeader label="BACKLOG" />
-            <AddTaskRow onAdd={onAddTask} nav={addNav} />
-            <DndContext sensors={sensors} onDragEnd={onBacklogDragEnd}>
-              <SortableContext items={backlogIds} strategy={verticalListSortingStrategy}>
-                {groups.backlog.map((task) => (
-                  <SortableTaskRow
-                    key={task.id}
-                    task={task}
-                    tag={tag}
-                    actions={actions}
-                    nav={rowNav(task.id)}
-                  />
-                ))}
-              </SortableContext>
-            </DndContext>
-            {isEmpty && <EmptyHint />}
-          </section>
-        )}
+          );
+        })}
+
+        {isEmpty && <EmptyHint />}
 
         {noFilterMatches && (
           <p className="px-2.5 py-8 text-center text-[13px] text-muted-foreground">
@@ -920,7 +1125,10 @@ export function TodosViewV2({
           </p>
         )}
 
-        {groups.done.length > 0 && (
+        {/* DONE stays ONE list for the whole project, out of the sections and
+            below them: a completed task is a receipt, not structure, and
+            splitting the receipt per section fragments it for no gain. */}
+        {grouped.done.length > 0 && (
           <section className="flex flex-col" data-testid="v2-done">
             <GroupHeader label="DONE" />
             {doneVisible.map((task) => (
@@ -930,6 +1138,7 @@ export function TodosViewV2({
                 done
                 tag={tag}
                 actions={actions}
+                chip={chipOf(task.id)}
                 nav={rowNav(task.id)}
               />
             ))}
