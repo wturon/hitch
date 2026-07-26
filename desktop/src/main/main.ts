@@ -154,6 +154,12 @@ const PRODUCER = ${JSON.stringify(harness === "codex" ? "codex-hook" : "claude-c
 
 const EVENT_PLAN_BY_HARNESS = {
   codex: {
+    // Codex fires SessionStart at session CREATION, before any prompt, and its
+    // payload carries session_id (== the thread id \`codex exec --json\` reports
+    // as thread.started). That is how a Codex chat becomes attachable the moment
+    // it exists rather than on its first turn — see launchId below.
+    SessionStart: { lifecycle: "session.started", status: null },
+    sessionStart: { providerEvent: "SessionStart", lifecycle: "session.started", status: null },
     UserPromptSubmit: { lifecycle: "turn.started", status: "working" },
     userPromptSubmit: { providerEvent: "UserPromptSubmit", lifecycle: "turn.started", status: "working" },
     PreToolUse: { lifecycle: "turn.resumed", status: "working" },
@@ -214,20 +220,12 @@ function chatId(payload) {
 
 function metadata(payload, providerEvent) {
   const out = {};
-  // cmux injects CMUX_SURFACE_ID into every pane it runs, so its presence means
-  // this Codex session is running inside cmux — no HITCH_CHAT_ENVIRONMENT needed
-  // on the launch command. (Claude's environment is known to the daemon at
-  // launch via --session-id, so it doesn't rely on this.)
-  //
-  // The surface id is REPORTED, never interpreted: it is the join key the
-  // daemon's attachment layer (daemon/src/attachment/) matches against the
-  // launch record it stamped before running this Codex. The hook used to do
-  // that match itself, reading and rewriting a claims file from a short-lived
-  // process racing the daemon. It now writes one field and exits.
-  if (HARNESS === "codex" && process.env.CMUX_SURFACE_ID) {
-    out.environment = "cmux";
-    out.surfaceId = process.env.CMUX_SURFACE_ID;
-  }
+  // NOTHING about the surrounding environment is read here. This hook used to
+  // report CMUX_SURFACE_ID as the codex join key, which made chat IDENTITY a
+  // function of the terminal the chat happened to be running in — so a chat
+  // outside cmux could never be attached, and cmux's pane model leaked into the
+  // chat model. The join key is now HITCH_LAUNCH_ID (see launchId below): our
+  // own nonce, on our own process, portable to any environment.
   if (typeof payload.tool_name === "string") out.toolName = payload.tool_name;
   if (typeof payload.toolName === "string") out.toolName = payload.toolName;
   if (typeof payload.notification_type === "string") {
@@ -296,10 +294,23 @@ function normalize(payload) {
     projectId: null,
     projectLocalPath: null,
     chatId: id,
-    // Codex has no --session-id to pin. The launch is correlated by the daemon,
-    // out of band, from the cmux surface id in the metadata below — never here,
-    // and never from an env var on the command.
-    launchId: null,
+    // THE JOIN KEY. Codex has no \`--session-id\` to pin (verified absent on
+    // codex-cli 0.145.0), so we cannot decide a chat's identity up front the way
+    // we do for Claude. Instead the daemon mints a launch nonce, exports it as
+    // HITCH_LAUNCH_ID on the Codex command, and Codex passes its own environment
+    // down to every hook process — so this line pairs OUR id with THEIR
+    // session_id, on the one process that can hold both.
+    //
+    // Deterministic by construction: a chat we didn't launch has no nonce and is
+    // simply never attached (correct — it isn't ours), and two concurrent
+    // launches carry different nonces. Nothing is matched by cwd, timestamp,
+    // prompt text, "newest thread", or terminal pane.
+    //
+    // It rides on EVERY event, not just SessionStart, so a lost spool write is
+    // repaired by the next hook that fires instead of stranding the assignment.
+    launchId: typeof process.env.HITCH_LAUNCH_ID === "string" && process.env.HITCH_LAUNCH_ID.trim()
+      ? process.env.HITCH_LAUNCH_ID.trim()
+      : null,
     turnId: turnId(payload),
     cwd: resolve(cwd),
     host: hostname(),
@@ -710,6 +721,11 @@ interface HookEvent {
 function hookEvents(harness: Harness): HookEvent[] {
   if (harness === "codex") {
     return [
+      // SessionStart is what makes a Codex chat attachable at birth: it is the
+      // earliest event carrying session_id, and it fires before the thread lands
+      // in Codex's own catalog (observer/index.ts notes state_5.sqlite is only
+      // written a moment after the first prompt).
+      { event: "SessionStart" },
       { event: "UserPromptSubmit" },
       { event: "PermissionRequest" },
       { event: "PreToolUse" },
@@ -1008,6 +1024,7 @@ function globalCodexHookStatus(): HarnessHookStatus {
       tomlHasHook = content.includes(command);
       tomlWired =
         content.includes(command) &&
+        content.includes("[[hooks.SessionStart]]") &&
         content.includes("[[hooks.UserPromptSubmit]]") &&
         content.includes("[[hooks.PermissionRequest]]") &&
         content.includes("[[hooks.PreToolUse]]") &&

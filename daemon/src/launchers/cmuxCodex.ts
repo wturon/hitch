@@ -1,11 +1,17 @@
 // Codex CLI running in cmux. New sessions are linked deterministically through
-// Hitch's Codex hook: the daemon stamps the cmux SURFACE id onto the launch
-// record before spawning Codex, the hook reports the surface it fired under, and
-// the attachment layer joins the two when Codex first reports its thread
-// (daemon/src/attachment/). Surface ids are unique per pane, so the join is
-// exact — more than one candidate is never guessed at.
+// Hitch's Codex hook: the daemon exports a launch nonce (HITCH_LAUNCH_ID) on the
+// Codex command, Codex passes its environment down to its hook processes, and
+// the hook reports that nonce alongside Codex's own session id — which is where
+// the attachment layer joins them (daemon/src/attachment/).
+//
+// This replaced a cmux SURFACE-id join. The surface was unique per pane and the
+// match was exact, but it made chat identity a function of the ENVIRONMENT the
+// chat ran in: a Codex chat outside cmux could never be attached, and cmux's
+// pane model leaked into the chat model. The nonce is ours, travels on our own
+// process, and works in any terminal — cmux is now only asked where to DISPLAY a
+// chat, never which chat it is.
 
-import { recordCmuxLaunch, stampCmuxSurface } from "../attachment/launches.js";
+import { recordCmuxLaunch } from "../attachment/launches.js";
 import { closeChat, openChat, startCommand } from "../cmux.js";
 import { codexBin } from "../codex.js";
 import type { Launcher } from "./types.js";
@@ -33,17 +39,24 @@ function codexBaseArgv(input: {
   return argv;
 }
 
-// No `env HITCH_LAUNCH_ID=… HITCH_CHAT_ENVIRONMENT=cmux` prefix: the hook infers
-// the cmux environment from CMUX_SURFACE_ID (cmux injects it per pane) and
-// correlates the launch via the surface-keyed claim (the surface is stamped onto
-// the claim before this command runs), so the command is just plain Codex.
+// `HITCH_LAUNCH_ID=<nonce> codex …` — the join key, set as a shell assignment
+// prefix on the command line cmux types into the pane. Three things make that
+// safe: cmux `send`s this as literal shell text (daemon/src/cmux.ts placeChat),
+// it detects Codex through its own PATH shim rather than by parsing our string,
+// and Codex exports its environment to every hook process it spawns.
+//
+// No `HITCH_CHAT_ENVIRONMENT=cmux`: the environment belongs to the launch record
+// the daemon already holds, not to the harness's environment block.
 export function codexStartCommand(input: {
   cwd?: string;
   prompt: string;
   model?: string;
   effort?: string;
+  launchId?: string;
 }): string {
-  return command([...codexBaseArgv(input), input.prompt]);
+  const argv = [...codexBaseArgv(input), input.prompt];
+  const line = command(argv);
+  return input.launchId ? `HITCH_LAUNCH_ID=${shellQuote(input.launchId)} ${line}` : line;
 }
 
 function codexResumeArgv(input: {
@@ -107,6 +120,10 @@ export const cmuxCodexLauncher: Launcher = {
 
   async startNew(ctx) {
     recordCmuxLaunch({ launchId: ctx.launchId, harness: "codex" });
+    // No `beforeCommand`: nothing needs the surface id before Codex runs any
+    // more, so this drops back to cmux's atomic `new-workspace --command` form
+    // (the path Claude and resume already take) instead of the
+    // create-then-send split that existed only to stamp a surface.
     const result = await startCommand({
       taskKey: ctx.taskKey,
       cwd: ctx.cwd,
@@ -115,16 +132,8 @@ export const cmuxCodexLauncher: Launcher = {
         prompt: ctx.prompt,
         model: ctx.model,
         effort: ctx.effort,
+        launchId: ctx.launchId,
       }),
-      // Stamp the surface onto the launch record BEFORE Codex runs (not after,
-      // via onPlaced). Codex's hook can fire UserPromptSubmit before a
-      // post-launch stamp lands, and the join is made on that first event, so a
-      // miss is unrecoverable — the join key must exist up front. Both writes
-      // are synchronous, so concurrent launches each stamp their own surface
-      // without racing.
-      beforeCommand: (surfaceId) => {
-        stampCmuxSurface({ launchId: ctx.launchId, surfaceId });
-      },
       projectId: ctx.project.projectId,
       projectName: ctx.project.projectName,
     });

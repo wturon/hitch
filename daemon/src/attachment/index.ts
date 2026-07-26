@@ -205,19 +205,22 @@ export class AttachmentLayer implements AttachmentSource {
 
   /**
    * Drained spool events, straight from the observer. The ONLY thing we take
-   * from them is the codex surface→launch join; everything else about an event
+   * from them is the codex nonce→launch join; everything else about an event
    * belongs to observation, which relays them untouched.
+   *
+   * `event.launchId` is the HITCH_LAUNCH_ID we exported on the Codex command,
+   * handed back to us by Codex's own hook process. An event without one is a
+   * chat Hitch did not launch — correctly unattached, never guessed at.
    */
   onSpooledEvents(events: SpooledEvent[]): void {
     for (const event of events) {
       if (wireHarness(event.harness) !== "codex") continue;
-      const surfaceId = event.metadata.surfaceId;
-      if (typeof surfaceId !== "string" || !surfaceId) continue;
+      if (!event.launchId) continue;
       const k = key("codex", event.chatId);
       if (this.chats.has(k)) continue; // already bound — nothing to resolve
 
       const now = this.now();
-      const claimed = this.launches.claimBySurface(surfaceId, event.chatId, now);
+      const claimed = this.launches.claimByLaunchId(event.launchId, event.chatId, now);
       const record = claimed ?? this.launches.forSession(event.chatId, now);
       if (!record) continue;
       // Observation will discover the thread on its own; all we add is the
@@ -225,7 +228,7 @@ export class AttachmentLayer implements AttachmentSource {
       this.adopt(record, event.chatId, null);
       this.logger.info(
         `[hitch] attachment: codex thread ${event.chatId.slice(0, 8)} bound to ` +
-          `assignment ${record.assignmentId ?? "none"} (surface ${surfaceId})`,
+          `assignment ${record.assignmentId ?? "none"} (launch ${event.launchId.slice(0, 8)})`,
       );
       this.onChange("codex-bound");
     }

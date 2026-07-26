@@ -397,17 +397,58 @@ the sensors (the "rewrite" fork above), which deleted the prune question and the
   `launches.json` are the only local state. What replaced each piece:
   - **`daemon/src/attachment/`** — the layer §4 asks for, alongside the
     launchers. It owns the durable launch records, claude pre-registration, the
-    codex surface→thread join (moved out of the hook template in
-    `desktop/src/main/main.ts`, which now only *reports* `CMUX_SURFACE_ID`), and
-    the assignment→chat link.
+    codex nonce→thread join, and the assignment→chat link.
   - **Spawn.** Claude's session id is known up front, so the chat is
     pre-registered through the SNAPSHOT with `existence: "pending"` — this is
     where `pending` starts being produced — and the server's upsert on
     `(machine, harness, session)` means discovery lands on that same row moments
-    later. Codex gets NO row at spawn: its thread doesn't exist until the first
-    prompt, so the assignment reads `spawning` with no chat until the hook
-    event arrives. Honest, and bounded by the launch record's 10-minute TTL,
-    past which the assignment is marked `dead` rather than wedging.
+    later. Codex gets NO row at spawn: its thread doesn't exist yet, so the
+    assignment reads `spawning` with no chat until the hook event arrives.
+    Honest, and bounded by the launch record's 10-minute TTL, past which the
+    assignment is marked `dead` rather than wedging.
+
+### The codex join: a launch nonce, not a pane (2026-07-26)
+
+Codex has no `--session-id` to pin (verified absent on codex-cli 0.145.0), so
+its thread id can only be learned after the fact. The first implementation
+learned it from the cmux **surface id**: stamp the pane onto the launch record
+before the command runs, have the hook report `CMUX_SURFACE_ID`, join the two.
+
+That was deterministic but wrong in shape. It made a chat's IDENTITY a function
+of the environment the chat happened to be running in — a codex chat outside
+cmux could never be attached at all, and a terminal's pane model sat in the
+identity path, which is exactly the coupling §4 exists to prevent.
+
+**The join key is now `HITCH_LAUNCH_ID`** — the launchId the reconciler already
+mints, exported on the codex command as a shell assignment prefix. Codex hands
+its process environment to every hook process it spawns, so the hook reports our
+nonce next to codex's own `session_id`, and the daemon's join is a lookup by
+primary key. Three properties follow by construction:
+
+- a chat Hitch didn't launch carries no nonce and is never attached (correct —
+  it isn't ours), so no cwd/timestamp/newest-thread heuristic is needed;
+- concurrent launches carry different nonces and cannot collide;
+- the same join works in cmux, an editor, a bare shell, or anything added later.
+
+cmux is now asked only *where to display* a chat, never *which chat it is*.
+
+Codex's **`SessionStart`** hook was added to the codex plan at the same time. It
+fires at session creation carrying `session_id`, which is earlier than codex's
+own catalog (`state_5.sqlite` is only written a moment after the first prompt) —
+so the pending window shrinks from "until the user types" to "until the session
+boots". The nonce rides on every codex event, not just `SessionStart`, so a lost
+spool write is repaired by the next hook rather than stranding the assignment.
+
+**Deferred backstop.** Identity currently depends on hooks; if every hook were
+lost the chat is still observed but never attached, and that is surfaced rather
+than guessed at. A hooks-free repair exists and is verified: `ps eww -p <pid>`
+exposes a codex process's environment (the nonce) and `lsof -p <pid>` its open
+rollout file, whose filename contains the thread id — an exact pid→(nonce,
+thread) join. Both batch across pids in one call, and the FD stays open while the
+session is idle. If built, `pid→thread` belongs to the OBSERVER (machine truth,
+and it upgrades `liveness.ts`'s "corroboration, not chat identity") while
+`pid→nonce` stays in ATTACHMENT — the observer must never learn what a Hitch
+launch is.
   - **`deriveObserved`** reads the server chat's `status` + `existence` instead
     of a local row; **close/focus** resolve through the chat's `handle`.
   - **Legacy routes gone.** `POST/PATCH /daemon/chats`, the `cmuxRef` wire alias

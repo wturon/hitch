@@ -697,8 +697,13 @@ export interface StartCommandSpec {
   sessionId?: string;
   cwd?: string;
   // Fired with the surface id once the surface exists but before the command
-  // runs (see PlaceSpec.beforeCommand). Codex uses it to bind its launch to the
-  // surface ahead of the agent's first hook event, closing the relink race.
+  // runs (see PlaceSpec.beforeCommand).
+  //
+  // CURRENTLY UNUSED. Codex used to stamp its launch record with this surface
+  // id and join on it when the hook fired. That join is gone — chat identity
+  // must not depend on the environment a chat runs in — so nothing passes this
+  // today. Kept as plumbing because it is the only pre-launch seam cmux offers;
+  // delete it if nothing claims it.
   beforeCommand?: (surfaceId: string) => void | Promise<void>;
   // Identifies the project workspace to consolidate this chat into.
   projectId: string;

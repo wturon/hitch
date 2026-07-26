@@ -11,17 +11,22 @@
 //   claude — the session id is known before the process starts
 //            (`claude --session-id`), so the record carries it from the start
 //            and the chat is pre-registered as `pending` in the snapshot.
-//   codex  — there is no id to pin. The record is stamped with the cmux
-//            surface id BEFORE the command runs, and the hook's
-//            `CMUX_SURFACE_ID` joins on it when Codex reports its thread.
-//            Surface ids are unique per pane, so the join is deterministic:
-//            more than one candidate is NEVER guessed at.
+//   codex  — there is no id to pin (`--session-id` does not exist on the Codex
+//            CLI). The launchId itself is exported as HITCH_LAUNCH_ID on the
+//            Codex command; Codex hands its environment to every hook process,
+//            so the hook reports OUR nonce next to Codex's own session id and
+//            the join is a direct lookup by primary key.
+//
+// The codex join used to key on the cmux SURFACE id, stamped here before launch.
+// That was deterministic but environment-bound — it could only ever attach chats
+// running inside cmux, and it put a terminal's pane model in the identity path.
+// The nonce is ours and travels with our own process, so the same join works in
+// cmux, an editor, a bare shell, or whatever we support next.
 //
 // This file used to be split in two — `daemon/src/codexCmuxLaunchClaims.ts`
 // (the writer) and ~90 lines inlined in the hook template in
-// `desktop/src/main/main.ts` (the matcher). The hook now records only the
-// surface id it was launched under; the match happens here, in one process,
-// which also removes the two-writer race on the file.
+// `desktop/src/main/main.ts` (the matcher). The match happens here, in one
+// process, which also removes the two-writer race on the file.
 //
 // Durable on purpose: a daemon restart between "we launched it" and "it bound"
 // must not lose the assignment→chat link, and must not re-spawn.
@@ -46,11 +51,9 @@ export interface LaunchRecord {
   projectId?: string | null;
   title?: string | null;
   cwd?: string | null;
-  /** cmux pane id — the codex join key, stamped before the command runs. */
-  surfaceId?: string;
   /** The harness's own session/thread id, once known. */
   sessionId?: string;
-  /** When a surface claim was consumed. A claimed record is never re-matched. */
+  /** When the codex nonce claim was consumed. A claimed record is never re-matched. */
   claimedAt?: number;
   /** When the assignment was linked to its server chat row. */
   linkedAt?: number;
@@ -107,44 +110,30 @@ export class LaunchStore {
     this.write(records);
   }
 
-  /** Stamp the cmux surface onto a launch. No-op when the launch is unknown. */
-  stampSurface(launchId: string, surfaceId: string, now = Date.now()): void {
-    const records = this.list(now);
-    const index = records.findIndex((r) => r.launchId === launchId);
-    if (index < 0) return;
-    records[index] = { ...records[index], surfaceId };
-    this.write(records);
-  }
-
   /**
-   * The deterministic surface-id join, moved verbatim out of the hook template.
+   * The codex join: bind a launch to the session id the hook reported under our
+   * own nonce. A lookup by primary key, not a search — the nonce came back from
+   * the process we set it on, so there is nothing to disambiguate and nothing to
+   * guess. An unknown or expired nonce claims nothing.
    *
-   * A candidate must be fresh, unclaimed, a cmux launch, and carry exactly the
-   * surface id the hook fired under (case-insensitively). If the number of
-   * candidates is anything other than ONE we return null and never guess —
-   * each launch owns a distinct pane, so concurrent launches resolve
-   * independently and two identical-prompt launches can no longer collide.
+   * Idempotent by design. The nonce rides on EVERY codex hook event, so the
+   * second and later events for a chat re-present a launch already claimed;
+   * those return the record unchanged rather than rewriting the file per turn.
    */
-  claimBySurface(surfaceId: string, sessionId: string, now = Date.now()): LaunchRecord | null {
-    if (!surfaceId || !sessionId) return null;
-    const wanted = surfaceId.toLowerCase();
+  claimByLaunchId(launchId: string, sessionId: string, now = Date.now()): LaunchRecord | null {
+    if (!launchId || !sessionId) return null;
     const all = this.readAll();
     const records = all.filter((r) => now - r.createdAt <= LAUNCH_TTL_MS);
-    const matches = records.filter(
-      (r) =>
-        r.claimedAt === undefined &&
-        r.environment === "cmux" &&
-        typeof r.surfaceId === "string" &&
-        r.surfaceId.toLowerCase() === wanted,
-    );
-    if (matches.length !== 1) {
+    const match = records.find((r) => r.launchId === launchId);
+    if (!match || (match.sessionId !== undefined && match.sessionId !== sessionId)) {
       // Persist the pruning if we dropped any, and ONLY then — this runs on
       // every codex hook event on the machine, including ones for chats we
       // never launched, and it must not write a file per turn.
       if (records.length !== all.length) this.write(records);
       return null;
     }
-    const claimed: LaunchRecord = { ...matches[0], claimedAt: now, sessionId };
+    if (match.claimedAt !== undefined) return match;
+    const claimed: LaunchRecord = { ...match, claimedAt: now, sessionId };
     this.write(records.map((r) => (r.launchId === claimed.launchId ? claimed : r)));
     return claimed;
   }
@@ -195,10 +184,11 @@ export class LaunchStore {
   }
 }
 
-// ─── launcher-facing helpers ────────────────────────────────────────────────
+// ─── launcher-facing helper ─────────────────────────────────────────────────
 // `daemon/src/launchers/cmuxCodex.ts` has no injected state, so it reaches the
-// store through these two. Same contract the old
-// record/updateCodexCmuxLaunchClaim pair had.
+// store through this. `stampCmuxSurface` used to live beside it and is gone with
+// the surface-id join — the launcher now carries the nonce on the command
+// itself, so there is nothing to write back out of band.
 
 export function recordCmuxLaunch(input: {
   launchId?: string;
@@ -212,11 +202,3 @@ export function recordCmuxLaunch(input: {
   });
 }
 
-export function stampCmuxSurface(input: {
-  launchId?: string;
-  surfaceId?: string | null;
-  env?: NodeJS.ProcessEnv;
-}): void {
-  if (!input.launchId || !input.surfaceId) return;
-  new LaunchStore({ env: input.env }).stampSurface(input.launchId, input.surfaceId);
-}
