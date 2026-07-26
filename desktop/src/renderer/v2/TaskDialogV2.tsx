@@ -370,7 +370,7 @@ function TaskBodyV2({
       setStage("capture");
       saveCaptureDraft(projectId, body);
     }
-  }, [beginGrow, client, onCommitted, projectId, queryClient, setCommitted]);
+  }, [beginGrow, captureSectionId, client, onCommitted, projectId, queryClient, setCommitted]);
 
   // File paste/drop → materialize the row early + upload (V1 Decision 3, over
   // server rows). The POST stays here — it owns the provisional title, the

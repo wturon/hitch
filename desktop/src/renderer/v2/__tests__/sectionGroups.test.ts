@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveSectionedTasks,
+  sortSections,
   tasksInContainer,
   type PlacedTask,
   type SectionRow,
@@ -178,5 +179,21 @@ describe("filterSectionedTasks", () => {
     expect(filtered.loose.map((t) => t.id)).toEqual(["loose-hit"]);
     expect(filtered.sections.map((b) => b.section.id)).toEqual(["s1"]);
     expect(filtered.done.map((t) => t.id)).toEqual(["done-hit"]);
+  });
+});
+
+describe("sortSections", () => {
+  it("orders by sortOrder regardless of the array it arrived in", () => {
+    // GET /sections orders on a `text` column under the database's collation,
+    // and an optimistic reorder rewrites sortOrder WITHOUT moving the row — so
+    // the array the client holds is not reliably in list order.
+    const rows = [section("c", "a3"), section("a", "a1"), section("b", "a2")];
+    expect(sortSections(rows).map((s) => s.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("does not mutate the input", () => {
+    const rows = [section("b", "a2"), section("a", "a1")];
+    sortSections(rows);
+    expect(rows.map((s) => s.id)).toEqual(["b", "a"]);
   });
 });

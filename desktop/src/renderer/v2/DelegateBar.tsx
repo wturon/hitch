@@ -32,7 +32,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getHitchServerBridge } from "@/lib/server/bridge";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import {
@@ -50,6 +49,7 @@ import {
   type ServerHarness,
 } from "./delegation";
 import { useAssignments, useMachines } from "./useAssignments";
+import { useOpenChat } from "./useOpenChat";
 import {
   useDelegationComposerV2,
   type DelegateStartParams,
@@ -201,21 +201,10 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
     }
   }, [client, queryClient, latest]);
 
-  // Open chat (M4 PR 6): relay a focus EVENT to the assignment's machine — the
-  // ephemeral half of the two-forms model (PRD). client → main-held WS → server
-  // relay → daemon → cmux openChat + activateApp. Fire-and-forget: an
-  // undelivered event just evaporates (~30s reconcile never touches focus).
-  // Enabled once the daemon has linked a chat (chatId set at spawn).
-  const canOpenChat = latest?.chatId != null && latest?.machineId != null;
-  const openChat = useCallback(() => {
-    if (!latest?.chatId || !latest.machineId) return;
-    void getHitchServerBridge()?.wsSend({
-      type: "event",
-      event: "focus",
-      machineId: latest.machineId,
-      payload: { chatId: latest.chatId },
-    });
-  }, [latest]);
+  // Open chat: the shared focus relay (useOpenChat), which the todo row's
+  // harness chip also calls. Both surfaces mean the same thing by "open the
+  // chat", so there is one payload shape and one enablement rule.
+  const { canOpen: canOpenChat, openChat } = useOpenChat(latest ?? null);
 
   const bandClass =
     "flex flex-col gap-2.5 rounded-b-xl border-t border-t-[#E8E8E8] bg-[#F9F9F9] px-5 pt-3 pb-3.5 dark:border-t-border dark:bg-muted/40";

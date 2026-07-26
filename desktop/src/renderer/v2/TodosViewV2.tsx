@@ -15,7 +15,9 @@ import {
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragOverEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -65,9 +67,13 @@ import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import type { ServerHarness } from "./delegation";
 import { HarnessChipSlot, StaticHarnessChip } from "./HarnessChip";
-import { insertSortOrder, reorderSortOrder } from "./listMutations";
+import { insertSortOrder, keyBetween, reorderSortOrder } from "./listMutations";
 import { loadCollapsedSections, saveCollapsedSections } from "./sectionCollapse";
-import { deriveSectionedTasks, type SectionBucket } from "./sectionGroups";
+import {
+  deriveSectionedTasks,
+  sortSections,
+  type SectionBucket,
+} from "./sectionGroups";
 import {
   filterSectionedTasks,
   isTagFilterActive,
@@ -251,6 +257,7 @@ type RowChip = {
 function SectionHeader({
   name,
   count,
+  matching,
   collapsed,
   onToggle,
   onRename,
@@ -258,7 +265,10 @@ function SectionHeader({
   hiddenChips,
 }: {
   name: string;
+  /** The section's full open count, ignoring any filter. */
   count: number;
+  /** How many survive the active filter; undefined when none is active. */
+  matching?: number;
   collapsed: boolean;
   onToggle: () => void;
   onRename: (next: string) => void;
@@ -317,7 +327,7 @@ function SectionHeader({
           )}
           <span className="flex-1" />
           {collapsed && hiddenChips}
-          <span className="shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover/section:opacity-100">
+          <span className="pointer-events-none shrink-0 opacity-0 transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover/section:pointer-events-auto group-hover/section:opacity-100">
             {menu(() => setRenaming(true))}
           </span>
         </>
@@ -386,12 +396,15 @@ function SectionMenu({
           className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
           onClick={() => {
             // Deleting a section never deletes work — the FK is
-            // `on delete set null` — so the confirm says where the todos GO
-            // rather than asking "are you sure".
+            // `on delete set null` — so the confirm says what happens to the
+            // todos rather than asking "are you sure". It does NOT promise a
+            // position: DELETE only nulls section_id and leaves sort_order
+            // alone, so they rejoin the loose list wherever their keys put
+            // them, which is often near the bottom.
             const fate =
               taskCount === 0
                 ? ""
-                : `\n\nIts ${taskCount} ${taskCount === 1 ? "todo moves" : "todos move"} back to the top of the project.`;
+                : `\n\nIts ${taskCount} ${taskCount === 1 ? "todo stays" : "todos stay"} in the project, unfiled.`;
             if (window.confirm(`Delete the section “${section.name}”?${fate}`)) {
               mutations.deleteSection(section.id);
             }
@@ -460,6 +473,25 @@ function SectionNameInput({
 // distinguishable from a task's uuid in onDragEnd.
 const DROP_ID_PREFIX = "container:";
 const dropId = (sectionId: string | null) => `${DROP_ID_PREFIX}${sectionId ?? "loose"}`;
+const isDropId = (id: string) => id.startsWith(DROP_ID_PREFIX);
+
+// closestCenter, but a ROW always beats the container it sits in.
+//
+// A container droppable spans all of its rows, so its centre sits at the
+// container's vertical midpoint — and plain closestCenter hands it back
+// whenever the pointer is in the ~20px band around that midpoint, even though
+// a row is directly under the cursor. That made a mid-list drop mean "you
+// dropped it below everything" (it appends), and a same-container drop there
+// resolve to an id that isn't in the list at all.
+//
+// The container droppable exists for ONE case: a section with no rows, which a
+// SortableContext can't see because it has no items. So it only wins when
+// nothing else collides.
+const preferRows: CollisionDetection = (args) => {
+  const collisions = closestCenter(args);
+  const rows = collisions.filter((c) => !isDropId(String(c.id)));
+  return rows.length > 0 ? rows : collisions;
+};
 
 function DroppableContainer({
   sectionId,
@@ -596,6 +628,7 @@ function TaskRow({
   actions,
   chip,
   sections,
+  dropBefore,
   drag,
   nav,
 }: {
@@ -610,6 +643,8 @@ function TaskRow({
   chip: RowChip;
   /** The project's sections, for the Move to ▸ submenu. */
   sections: ReadonlyArray<{ id: string; name: string }>;
+  /** A row being dragged in from ANOTHER container would land above this one. */
+  dropBefore?: boolean;
   // Present only for BACKLOG rows, which are drag-reorderable — dnd-kit's
   // sortable node/transform on the whole row (V1's whole-row drag). The
   // checkbox stops pointerdown so a drag can't start from it, and
@@ -654,6 +689,10 @@ function TaskRow({
             // a hair of shadow — no new chrome, no handle. Quiet. (V1)
             drag?.dragging &&
               "relative z-10 bg-background shadow-sm ring-1 ring-border/70",
+            // Where a drag from another section would land. A hairline, drawn
+            // in the row's own padding so nothing reflows mid-drag.
+            dropBefore &&
+              "relative before:absolute before:inset-x-2.5 before:-top-px before:h-0.5 before:rounded-full before:bg-foreground/40",
           )}
         >
           <TaskCheckbox
@@ -723,6 +762,7 @@ function SortableTaskRow({
   chip,
   sections,
   nav,
+  dropBefore,
 }: {
   task: TaskItem;
   tag: TagActions;
@@ -730,6 +770,7 @@ function SortableTaskRow({
   chip: RowChip;
   sections: ReadonlyArray<{ id: string; name: string }>;
   nav?: RowNav;
+  dropBefore?: boolean;
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
     useSortable({ id: task.id });
@@ -742,6 +783,7 @@ function SortableTaskRow({
       chip={chip}
       sections={sections}
       nav={nav}
+      dropBefore={dropBefore}
       drag={{
         setNodeRef,
         style: {
@@ -948,10 +990,19 @@ export function TodosViewV2({
   // none renders exactly as it did before sections existed: one uninterrupted
   // list. Nothing to migrate, no empty state to design.
   const sections = useSections(client, projectId);
-  const sectionRows = useMemo(() => sections.data ?? [], [sections.data]);
+  // SORTED here, not taken as given. Two reasons the raw array can be out of
+  // order: an optimistic reorder rewrites a row's sortOrder in place without
+  // moving it, and the server's ORDER BY runs on a `text` column whose
+  // collation is the database's, not ours (base62 keys mix case, where a
+  // locale collation and byte order disagree). The rendered order already goes
+  // through the fold's own comparator; the reorder maths reads THIS, so both
+  // agree — otherwise "move down" twice silently no-ops the second time and
+  // "move up" greys out on a section that plainly can move up.
+  const sectionRows = useMemo(
+    () => sortSections(sections.data ?? []),
+    [sections.data],
+  );
   const sectionMutations = useSectionMutations(client, projectId);
-  // Position in the project's own order — what the step-reorder maths needs.
-  // GET /sections already returns them ordered by sort_order.
   const sectionIndexById = useMemo(
     () => new Map(sectionRows.map((section, i) => [section.id, i] as const)),
     [sectionRows],
@@ -1093,7 +1144,14 @@ export function TodosViewV2({
   //   • different container → move: sectionId AND a key computed in the
   //     destination, one PATCH (insertSortOrder). The dragged row takes the
   //     place of the row it was dropped on; a drop on empty space appends.
+  function onDragOver(event: DragOverEvent) {
+    setDragging((prev) =>
+      prev ? { ...prev, overId: event.over ? String(event.over.id) : null } : prev,
+    );
+  }
+
   function onDragEnd(event: DragEndEvent) {
+    setDragging(null);
     const { active: dragged, over } = event;
     if (!over) return;
     const draggedId = String(dragged.id);
@@ -1106,7 +1164,7 @@ export function TodosViewV2({
 
     // `over` is either a task row or a container's own droppable (its empty
     // space, which is the only way to reach an empty section).
-    const destination = overId.startsWith(DROP_ID_PREFIX)
+    const destination = isDropId(overId)
       ? containers.find(
           (c) => dropId(c.section?.id ?? null) === overId && !c.collapsed,
         )
@@ -1117,6 +1175,16 @@ export function TodosViewV2({
     const destinationId = destination.section?.id ?? null;
 
     if (sourceId === destinationId) {
+      // Dropped on the container's own space rather than on a row: that reads
+      // as "below everything", so send it to the end. Without this the index
+      // lookup returns -1, reorderSortOrder declines, and the drop vanishes
+      // with the row snapping back and nothing said.
+      if (isDropId(overId)) {
+        const last = source.tasks.at(-1);
+        if (!last || last.id === draggedId) return;
+        onReorderTask(draggedId, keyBetween(last.sortOrder, null));
+        return;
+      }
       const ids = source.tasks.map((t) => t.id);
       const sortOrder = reorderSortOrder(
         source.tasks,
@@ -1130,10 +1198,7 @@ export function TodosViewV2({
     onMoveTask(
       task,
       destinationId,
-      insertSortOrder(
-        destination.tasks,
-        overId.startsWith(DROP_ID_PREFIX) ? null : overId,
-      ),
+      insertSortOrder(destination.tasks, isDropId(overId) ? null : overId),
     );
   }
 
@@ -1155,10 +1220,14 @@ export function TodosViewV2({
     collapsed: boolean;
     /** Full open count, ignoring the filter — what the header displays. */
     total: number;
+    /** Every open task filed here, ignoring the filter — for the chips a
+     *  collapsed header surfaces. Filtering those would let a needs-you agent
+     *  hide behind a collapsed section AND a tag filter at once. */
+    allTasks: TaskItem[];
   };
   const containers: Container[] = useMemo(() => {
-    const totalById = new Map(
-      allGrouped.sections.map((b) => [b.section.id, b.tasks.length] as const),
+    const unfilteredById = new Map(
+      allGrouped.sections.map((b) => [b.section.id, b.tasks] as const),
     );
     return [
       {
@@ -1166,15 +1235,40 @@ export function TodosViewV2({
         tasks: grouped.loose,
         collapsed: false,
         total: allGrouped.loose.length,
+        allTasks: allGrouped.loose,
       },
-      ...grouped.sections.map((bucket) => ({
-        section: bucket.section,
-        tasks: bucket.tasks,
-        collapsed: collapsedIds.has(bucket.section.id),
-        total: totalById.get(bucket.section.id) ?? bucket.tasks.length,
-      })),
+      ...grouped.sections.map((bucket) => {
+        const allTasks = unfilteredById.get(bucket.section.id) ?? bucket.tasks;
+        return {
+          section: bucket.section,
+          tasks: bucket.tasks,
+          collapsed: collapsedIds.has(bucket.section.id),
+          total: allTasks.length,
+          allTasks,
+        };
+      }),
     ];
   }, [grouped, allGrouped, collapsedIds]);
+
+  // Where a CROSS-container drag would land, so the list can say so before the
+  // drop. Within a container, SortableContext already animates a gap open; when
+  // the row comes from somewhere else it can't — SortableContext only shifts
+  // items belonging to its own context — so without this the user drags blind
+  // over the destination and finds out where it went afterwards.
+  const [dragging, setDragging] = useState<{
+    activeId: string;
+    overId: string | null;
+  } | null>(null);
+  // The row a foreign drag would land above, or null. Compared by container so
+  // an in-container drag (which animates properly) shows no line.
+  const dropBeforeId = useMemo(() => {
+    if (!dragging?.overId || isDropId(dragging.overId)) return null;
+    const from = containers.find((c) => c.tasks.some((t) => t.id === dragging.activeId));
+    const to = containers.find((c) => c.tasks.some((t) => t.id === dragging.overId));
+    if (!from || !to || from.section?.id === to.section?.id) return null;
+    return dragging.overId;
+  }, [dragging, containers]);
+
 
   // ─── Keyboard nav (V1's, ported onto server rows) ──────────────────────────
   // The flat ↑↓ order = every VISIBLE row, top-to-bottom, matching render
@@ -1335,17 +1429,25 @@ export function TodosViewV2({
     return { selected: selected === i, itemProps: toRowItemProps(i) };
   };
 
-  if (tasks.isPending) {
+  // Sections gate the render exactly as tasks do. They are two independent
+  // queries, and letting tasks win the race renders the whole project as one
+  // flat loose list for a frame — cosmetically a jump, but worse than that:
+  // any capture, drag or uncheck in that window computes its key against the
+  // wrong container, because the sections cache is empty too.
+  if (tasks.isPending || sections.isPending) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
         Loading tasks…
       </div>
     );
   }
-  if (tasks.isError) {
+  // A failed sections fetch must NOT degrade to "this project has no sections":
+  // that silently unfiles every task on screen and invites a duplicate section
+  // to be created next to the ones it couldn't load.
+  if (tasks.isError || sections.isError) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-destructive">
-        {String(tasks.error)}
+        {String(tasks.error ?? sections.error)}
       </div>
     );
   }
@@ -1417,8 +1519,13 @@ export function TodosViewV2({
             — the visible order is a projection then, not the real one (V1). */}
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCenter}
+          collisionDetection={preferRows}
+          onDragStart={(event) =>
+            setDragging({ activeId: String(event.active.id), overId: null })
+          }
+          onDragOver={onDragOver}
           onDragEnd={onDragEnd}
+          onDragCancel={() => setDragging(null)}
         >
           {containers.map((container) => {
           const sectionId = container.section?.id ?? null;
@@ -1434,6 +1541,7 @@ export function TodosViewV2({
                 <SectionHeader
                   name={container.section.name}
                   count={container.total}
+                  matching={filterActive ? container.tasks.length : undefined}
                   collapsed={container.collapsed}
                   onToggle={() => toggleCollapsed(container.section!.id)}
                   onRename={(next) =>
@@ -1450,7 +1558,7 @@ export function TodosViewV2({
                     />
                   )}
                   hiddenChips={
-                    <CollapsedSectionChips tasks={container.tasks} chipOf={chipOf} />
+                    <CollapsedSectionChips tasks={container.allTasks} chipOf={chipOf} />
                   }
                 />
               )}
@@ -1491,6 +1599,7 @@ export function TodosViewV2({
                             chip={chipOf(task.id)}
                             sections={sectionRows}
                             nav={rowNav(task.id)}
+                            dropBefore={dropBeforeId === task.id}
                           />
                         ))}
                       </SortableContext>

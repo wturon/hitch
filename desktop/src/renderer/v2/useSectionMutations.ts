@@ -1,6 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { generateKeyBetween } from "fractional-indexing";
 
+import { keyBetween } from "./listMutations";
+
 import type { HitchClient } from "@/lib/server/client";
 import type { SectionItem } from "./useSections";
 
@@ -53,13 +55,13 @@ export function stepSectionSortOrder(
   if (direction === "up") {
     if (index === 0) return null;
     // Between the two rows above it (or before the head).
-    return generateKeyBetween(
+    return keyBetween(
       sections[index - 2]?.sortOrder ?? null,
       sections[index - 1].sortOrder,
     );
   }
   if (index === sections.length - 1) return null;
-  return generateKeyBetween(
+  return keyBetween(
     sections[index + 1].sortOrder,
     sections[index + 2]?.sortOrder ?? null,
   );

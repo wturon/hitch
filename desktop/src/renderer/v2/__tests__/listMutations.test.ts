@@ -5,7 +5,12 @@ import { describe, expect, it } from "vitest";
 import { generateKeyBetween } from "fractional-indexing";
 
 import { captureSortOrder } from "../capture";
-import { insertSortOrder, reorderSortOrder, uncheckSortOrder } from "../listMutations";
+import {
+  insertSortOrder,
+  keyBetween,
+  reorderSortOrder,
+  uncheckSortOrder,
+} from "../listMutations";
 
 describe("uncheckSortOrder", () => {
   it("mints the first key for an empty backlog", () => {
@@ -113,5 +118,35 @@ describe("insertSortOrder", () => {
   it("handles a drop into an empty section", () => {
     expect(typeof insertSortOrder([], null)).toBe("string");
     expect(typeof insertSortOrder([], "anything")).toBe("string");
+  });
+});
+
+describe("keyBetween — degenerate neighbour pairs", () => {
+  it("splits an ordinary pair like generateKeyBetween", () => {
+    expect(keyBetween("a1", "a3")).toBe(generateKeyBetween("a1", "a3"));
+  });
+
+  it("does not throw on EQUAL neighbours, and lands after them", () => {
+    // Reachable data, not a hypothetical: every container mints its first key
+    // independently, so a loose task and a task filed into a section can both
+    // hold "a0" — and `on delete set null` then merges those key spaces.
+    expect(() => generateKeyBetween("a0", "a0")).toThrow();
+    const key = keyBetween("a0", "a0");
+    expect(key > "a0").toBe(true);
+  });
+
+  it("does not throw on an inverted pair", () => {
+    const key = keyBetween("a3", "a1");
+    expect(typeof key).toBe("string");
+  });
+
+  it("keeps a drag over duplicate keys from throwing", () => {
+    const rows = [
+      { id: "dup-a", sortOrder: "a0" },
+      { id: "dup-b", sortOrder: "a0" },
+      { id: "tail", sortOrder: "Zz" },
+    ];
+    expect(() => reorderSortOrder(rows, 2, 1)).not.toThrow();
+    expect(() => insertSortOrder(rows, "dup-b")).not.toThrow();
   });
 });

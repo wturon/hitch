@@ -46,7 +46,13 @@ export interface SectionedTasks<T> {
 // Sections sort like tasks do: plain lexicographic compare on the ASCII
 // fractional index (never localeCompare — locale collation can disagree with
 // the index math), ties broken by uuidv7 id so the order is total and stable.
-const bySectionOrder = (a: SectionRow, b: SectionRow) =>
+//
+// Exported because the fold is not the only consumer: the reorder maths has to
+// index into the SAME order the list renders, and `GET /sections` can't be
+// trusted to supply it — its ORDER BY runs on a `text` column under the
+// database's collation, and base62 keys mix case, exactly where a locale
+// collation and byte order part company.
+export const bySectionOrder = (a: SectionRow, b: SectionRow) =>
   a.sortOrder < b.sortOrder
     ? -1
     : a.sortOrder > b.sortOrder
@@ -56,6 +62,11 @@ const bySectionOrder = (a: SectionRow, b: SectionRow) =>
         : a.id > b.id
           ? 1
           : 0;
+
+/** The project's sections in list order. Never mutates the input. */
+export function sortSections<T extends SectionRow>(sections: readonly T[]): T[] {
+  return [...sections].sort(bySectionOrder);
+}
 
 /**
  * Fold a project's tasks into loose + per-section buckets + done. Generic so
@@ -76,7 +87,7 @@ export function deriveSectionedTasks<T extends PlacedTask>(
   tasks: readonly T[],
   sections: readonly SectionRow[],
 ): SectionedTasks<T> {
-  const ordered = [...sections].sort(bySectionOrder);
+  const ordered = sortSections(sections);
   const buckets = new Map<string, T[]>(ordered.map((s) => [s.id, []]));
 
   const loose: T[] = [];

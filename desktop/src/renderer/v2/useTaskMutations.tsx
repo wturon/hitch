@@ -170,8 +170,14 @@ export function useTaskMutations(
   // snapshot), so e.g. two quick unchecks each prepend before the head the
   // previous one just wrote.
   const cachedTasks = () => queryClient.getQueryData<MutableTask[]>(listKey) ?? [];
+  // The key shape must match useSections EXACTLY, `undefined` included: React
+  // Query's hash drops undefined values but keeps null, so `{projectId: null}`
+  // and `{projectId: undefined}` are different cache entries.
   const cachedSections = () =>
-    queryClient.getQueryData<SectionRow[]>(["sections", { projectId }]) ?? [];
+    queryClient.getQueryData<SectionRow[]>([
+      "sections",
+      { projectId: projectId ?? undefined },
+    ]) ?? [];
 
   // The open rows of ONE container, in list order — what a prepend computes
   // against. Order is only ever compared within a container now, so "the top"

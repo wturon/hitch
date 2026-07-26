@@ -8,6 +8,34 @@ import { generateKeyBetween } from "fractional-indexing";
 // model — V2's schema keys order into the rows themselves).
 
 /**
+ * `generateKeyBetween`, but tolerant of a DEGENERATE neighbour pair.
+ *
+ * Sections made duplicate keys reachable within one container, which the
+ * library treats as a programming error: it swaps an out-of-order pair but
+ * THROWS on an equal one. Every container mints its first key independently
+ * (`generateKeyBetween(null, null)` = "a0"), so a task filed into a section and
+ * a task captured loose can hold the same key — and then `on delete set null`
+ * merges those two key spaces into one list. The duplicate is legal data the
+ * moment a section is deleted, or the moment another client deletes one and our
+ * orphan fallback renders those tasks loose.
+ *
+ * A throw here lands inside dnd-kit's async drag-end handler, where nothing
+ * catches it: the drop is silently discarded and every later drop near the pair
+ * fails the same way, with nothing on screen to explain it.
+ *
+ * So when the pair can't be split, we drop the upper bound and land the row
+ * immediately AFTER `prev` — which is also after its duplicate, since they're
+ * equal. Deterministic, never throws, and puts the row adjacent to where it was
+ * aimed.
+ */
+export function keyBetween(prev: string | null, next: string | null): string {
+  if (prev !== null && next !== null && prev >= next) {
+    return generateKeyBetween(prev, null);
+  }
+  return generateKeyBetween(prev, next);
+}
+
+/**
  * The sortOrder for a task returning to the TOP of the backlog — a key BEFORE
  * the current head. Unchecking re-pins the row first (V1's decision: an
  * accidental check must come back where you'll see it, not sink to wherever
@@ -35,8 +63,8 @@ export function insertSortOrder(
   overTaskId: string | null,
 ): string {
   const index = overTaskId === null ? -1 : dest.findIndex((t) => t.id === overTaskId);
-  if (index === -1) return generateKeyBetween(dest.at(-1)?.sortOrder ?? null, null);
-  return generateKeyBetween(dest[index - 1]?.sortOrder ?? null, dest[index].sortOrder);
+  if (index === -1) return keyBetween(dest.at(-1)?.sortOrder ?? null, null);
+  return keyBetween(dest[index - 1]?.sortOrder ?? null, dest[index].sortOrder);
 }
 
 /**
@@ -57,5 +85,5 @@ export function reorderSortOrder(
   // moving down lands after backlog[to]; moving up lands before backlog[to].
   const prev = from < to ? backlog[to] : backlog[to - 1];
   const next = from < to ? backlog[to + 1] : backlog[to];
-  return generateKeyBetween(prev?.sortOrder ?? null, next?.sortOrder ?? null);
+  return keyBetween(prev?.sortOrder ?? null, next?.sortOrder ?? null);
 }
