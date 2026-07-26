@@ -162,9 +162,14 @@ currently written against a single flat backlog:
 Multi-container dnd-kit, following the library's own guidance: one `DndContext` over every container,
 a `SortableContext` per section, the whole `<section>` as a droppable ("add a droppable zone around
 each sortable context", which is also what makes an empty section reachable), and — the load-bearing
-part — **`onDragOver` inserts the row into the destination while the drag is still in flight**. Where
-it lands is then its INDEX in a list the library maintains, and the drop is one PATCH carrying
-`sectionId` + a `sortOrder` computed at that index.
+part — **`onDragOver` inserts the row into the destination while the drag is still in flight**, so
+the destination opens a real gap and the row is genuinely in that context.
+
+The drop then reads the LIVE `over`, not the index `onDragOver` inserted at. Those diverge:
+`onDragOver` only fires when the row crosses a container boundary, while `SortableContext` keeps
+previewing against the pointer — so the insertion index freezes on entry and the gap you're watching
+walks away from it. Reading `over` at drop time is what keeps the write and the preview describing
+the same position.
 
 Collision detection is `pointerWithin` and nothing else. Every more tolerant algorithm returns every
 droppable sorted by distance with **no cutoff**, so `over` is never null and a drag can't be

@@ -277,6 +277,14 @@ try {
     await page.mouse.down();
     await page.mouse.move(box.x + box.width / 2, grabY + 8, { steps: 3 });
     await page.mouse.move(targetBox.x, targetBox.y, { steps: 10 });
+    // Settle, then land exactly: auto-scroll can move the target during the
+    // approach, and a stale aim silently tests a different band.
+    await sleep(250);
+    if (target.settle) {
+      const fresh = await target.settle();
+      await page.mouse.move(fresh.x, fresh.y, { steps: 2 });
+      await sleep(150);
+    }
     await page.mouse.up();
   }
   const sectionOf = async (title) =>
@@ -378,6 +386,68 @@ try {
     `${nudgeBefore.join(" | ")} → ${nudgeAfter.join(" | ")}`,
   );
 
+  // Cross-section PLACEMENT, not just membership. Every drag check before this
+  // asserted only that a task changed sections — which is why a bug that wrote
+  // the wrong POSITION on every cross-section drop sailed through all of them.
+  // Enter the destination at its first row, then keep moving to its LAST row
+  // and release: the row must end up last, where the gap was.
+  const placeBefore = await titlesIn();
+  const looseRow = page
+    .locator("[data-testid=v2-loose] [data-testid=v2-task-row]")
+    .first();
+  const looseTitle = (await looseRow.innerText()).split("\n")[0].trim();
+  const firstDest = await blockers
+    .locator("[data-testid=v2-task-row]", { hasText: placeBefore[0] })
+    .boundingBox();
+  const lastDest = await blockers
+    .locator("[data-testid=v2-task-row]", { hasText: placeBefore.at(-1) })
+    .boundingBox();
+  // Remember the row's ORIGINAL placement: a check that borrows a fixture has
+  // to put it back exactly, or it silently rewrites the world the later checks
+  // were written against.
+  const looseOriginal = (await api("GET", `/tasks?project_id=${project.id}`)).find(
+    (t) => t.title === looseTitle,
+  );
+  const looseBox = await looseRow.boundingBox();
+  await page.mouse.move(1, 1);
+  await sleep(150);
+  await page.mouse.move(looseBox.x + looseBox.width / 2, looseBox.y + looseBox.height / 2, {
+    steps: 4,
+  });
+  await page.mouse.down();
+  await page.mouse.move(looseBox.x + looseBox.width / 2, looseBox.y + looseBox.height / 2 + 10, {
+    steps: 3,
+  });
+  // Enter at the TOP row of the destination…
+  await page.mouse.move(firstDest.x + firstDest.width / 2, firstDest.y + firstDest.height / 2, {
+    steps: 8,
+  });
+  await sleep(250);
+  // …then travel to its LAST row and let go there.
+  await page.mouse.move(lastDest.x + lastDest.width / 2, lastDest.y + lastDest.height / 2, {
+    steps: 8,
+  });
+  await sleep(250);
+  await page.mouse.up();
+  const placed = await waitFor("the cross-section drop to land", async () => {
+    const titles = await titlesIn();
+    return titles.includes(looseTitle) ? titles : undefined;
+  }).catch(() => []);
+  check(
+    "14. a cross-section drop lands where the gap was, not where it entered",
+    placed.at(-1) === looseTitle,
+    `${placeBefore.join(" | ")} + ${looseTitle} → ${placed.join(" | ")}`,
+  );
+  await api("PATCH", `/tasks/${looseOriginal.id}`, {
+    sectionId: looseOriginal.sectionId,
+    sortOrder: looseOriginal.sortOrder,
+  });
+  await waitFor("the borrowed row to return to loose", async () =>
+    (await list
+      .locator("[data-testid=v2-loose] [data-testid=v2-task-row]", { hasText: looseTitle })
+      .count()) === 1 || undefined,
+  );
+
   // Drag a row somewhere droppable-free and let go — how anyone abandons a
   // drag. A collision strategy with a distance fallback (closestCenter,
   // closestCorners, rectIntersection-by-distance) returns EVERY droppable
@@ -403,7 +473,7 @@ try {
   await sleep(2000);
   const abortAfter = await titlesIn();
   check(
-    "14. releasing a drag away from the list changes nothing",
+    "15. releasing a drag away from the list changes nothing",
     abortAfter.join("|") === abortBefore.join("|"),
     `${abortBefore.join(" | ")} → ${abortAfter.join(" | ")}`,
   );
@@ -432,6 +502,9 @@ try {
     el.scrollTop = 0;
   });
   await sleep(300);
+  const headerLocEarly = blockers.locator("[data-testid=v2-section-header]");
+  const headerVisible = () =>
+    headerLocEarly.waitFor({ state: "visible", timeout: 10_000 });
   const scrollTarget = filler[0].title;
   const scrollRow = page.locator("[data-testid=v2-task-row]", { hasText: scrollTarget });
   await scrollRow.scrollIntoViewIfNeeded();
@@ -446,25 +519,36 @@ try {
   // Scroll UNDER the drag — DOWNWARD (scrollTop increasing), which is the sign
   // that makes a scroll-blind comparison read "below the last row". Scrolling
   // the other way makes the same bug produce the right answer by accident.
+  // Bounded so the destination stays on screen: scrolling past it turns this
+  // into a test of nothing, and boundingBox() waits forever on an element that
+  // has left the viewport.
   await list.evaluate((el) => {
-    el.scrollTop += 120;
+    el.scrollTop = Math.min(el.scrollTop + 90, el.scrollHeight - el.clientHeight);
   });
   await sleep(300);
-  const movedHeader = await blockers
-    .locator("[data-testid=v2-section-header]")
-    .boundingBox();
-  await page.mouse.move(
-    movedHeader.x + movedHeader.width / 2,
-    movedHeader.y + movedHeader.height / 2,
-    { steps: 10 },
-  );
+  await headerVisible();
+  const headerLoc = blockers.locator("[data-testid=v2-section-header]");
+  const approach = await headerLoc.boundingBox();
+  await page.mouse.move(approach.x + approach.width / 2, approach.y + approach.height / 2, {
+    steps: 10,
+  });
+  // Re-measure and correct immediately before releasing. dnd-kit auto-scrolls
+  // while the pointer is near the list's edges, so a target measured before a
+  // 10-step approach has moved by the time the approach lands — the drop then
+  // tests a different band than the check describes.
+  await sleep(250);
+  const settled = await headerLoc.boundingBox();
+  await page.mouse.move(settled.x + settled.width / 2, settled.y + settled.height / 2, {
+    steps: 2,
+  });
+  await sleep(150);
   await page.mouse.up();
   const scrolledOrder = await waitFor("the scrolled drop to land", async () => {
     const titles = await titlesIn();
     return titles.includes(scrollTarget) ? titles : undefined;
   }).catch(() => []);
   check(
-    "15. a drop on a header still means TOP after the list scrolls mid-drag",
+    "16. a drop on a header still means TOP after the list scrolls mid-drag",
     scrolledOrder[0] === scrollTarget,
     scrolledOrder.slice(0, 4).join(" | "),
   );
@@ -492,12 +576,20 @@ try {
   await waitFor("the solo section to hold exactly one row", async () =>
     (await soloEl.locator("[data-testid=v2-task-row]").count()) === 1 || undefined,
   );
-  const soloAddRow = await soloEl.locator("[data-testid=v2-add-task]").boundingBox();
+  const soloAddRowLoc = soloEl.locator("[data-testid=v2-add-task]");
+  const soloAddRow = await soloAddRowLoc.boundingBox();
   // Aim at the BOTTOM of its add-row: below the container's midpoint, above its
   // only row. Intent is unambiguous; a midpoint test answers "bottom".
   await dragTo(
     page.locator("[data-testid=v2-task-row]", { hasText: first }),
-    { x: soloAddRow.x + soloAddRow.width / 2, y: soloAddRow.y + soloAddRow.height - 3 },
+    {
+      x: soloAddRow.x + soloAddRow.width / 2,
+      y: soloAddRow.y + soloAddRow.height - 3,
+      settle: async () => {
+        const b = await soloAddRowLoc.boundingBox();
+        return { x: b.x + b.width / 2, y: b.y + b.height - 3 };
+      },
+    },
   );
   const soloOrder = await waitFor("both rows to be in the solo section", async () => {
     const titles = (
@@ -506,7 +598,7 @@ try {
     return titles.length === 2 ? titles : undefined;
   }).catch(() => []);
   check(
-    "16. dropping above a ONE-row section's row lands above it, not below",
+    "17. dropping above a ONE-row section's row lands above it, not below",
     soloOrder[0] === first,
     soloOrder.join(" | "),
   );
@@ -529,8 +621,8 @@ try {
   await waitFor("the section to collapse", async () =>
     (await sectionEl.locator("[data-testid=v2-task-row]").count()) === 0 || undefined,
   );
-  check("17. collapsing hides its rows");
-  check("18. and the header still reports the count", (await header.innerText()).includes("2"));
+  check("18. collapsing hides its rows");
+  check("19. and the header still reports the count", (await header.innerText()).includes("2"));
   await shot("v2-sections-02-collapsed");
   await header.getByRole("button", { name: /Expand/ }).click();
 
@@ -544,7 +636,7 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.find((s) => s.id === created.id && s.name === "Renamed section");
   });
-  check("19. ⋯ → Rename persisted", renamed.name === "Renamed section");
+  check("20. ⋯ → Rename persisted", renamed.name === "Renamed section");
 
   // ── delete keeps the todos ───────────────────────────────────────────────
   page.once("dialog", (d) => d.accept());
@@ -556,18 +648,18 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.every((s) => s.id !== created.id) || undefined;
   });
-  check("20. ⋯ → Delete section removed it");
+  check("21. ⋯ → Delete section removed it");
 
   const survivors = await api("GET", `/tasks?project_id=${project.id}`);
   check(
-    "21. its todos SURVIVED and fell back to loose",
+    "22. its todos SURVIVED and fell back to loose",
     survivors.length === 4 && survivors.every((t) => t.sectionId === null),
     `${survivors.length} tasks, sectionIds=${[...new Set(survivors.map((t) => t.sectionId))]}`,
   );
   await waitFor("all four rows to render loose", async () =>
     (await list.locator("[data-testid=v2-loose] [data-testid=v2-task-row]").count()) === 4 || undefined,
   );
-  check("22. and the list shows all four again");
+  check("23. and the list shows all four again");
 
   // ── the chip carries agent status ────────────────────────────────────────
   scratch = mkdtempSync(join(tmpdir(), "hitch-sections-daemon-"));
@@ -616,11 +708,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("23. a delegated row grows a WORKING chip");
+  check("24. a delegated row grows a WORKING chip");
   await shot("v2-sections-03-chip-working");
 
   check(
-    "24. and the row carries no status TEXT any more",
+    "25. and the row carries no status TEXT any more",
     !/Working|Needs input|Mark reviewed/.test(await alphaRow.innerText()),
     JSON.stringify(await alphaRow.innerText()),
   );
@@ -632,11 +724,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("25. the chip advances to NEEDS-YOU when the turn completes");
+  check("26. the chip advances to NEEDS-YOU when the turn completes");
   await shot("v2-sections-04-chip-needs-you");
 
   check(
-    "26. rows without an agent still render a chip-less slot",
+    "27. rows without an agent still render a chip-less slot",
     (await list.locator("[data-testid=v2-harness-chip]").count()) === 1,
   );
 } catch (error) {

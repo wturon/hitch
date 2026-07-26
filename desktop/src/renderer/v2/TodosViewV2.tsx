@@ -1240,36 +1240,51 @@ export function TodosViewV2({
     const task = home?.tasks.find((t) => t.id === activeId);
     if (!home || !task) return;
     const homeKey = containerKey(home.section?.id ?? null);
-    const destKey = keyHolding(order, activeId);
-    if (destKey === null) return;
+    // The destination is whatever the drop was OVER — not where the live
+    // ordering thinks the row is. onDragOver only fires when `over` changes,
+    // and a pointerup in the same frame as the last change never gets one, so
+    // the ordering can be a step behind at exactly the moment it's read.
+    const destKey = keyOfOver(order, overId) ?? keyHolding(order, activeId);
+    const destination =
+      destKey === null
+        ? undefined
+        : containers.find((c) => containerKey(c.section?.id ?? null) === destKey);
+    if (destKey === null || !destination) return;
 
-    // Crossed containers, or dropped on a container's own space: onDragOver
-    // already put the row where it belongs, so its index in the live ordering
-    // IS the answer.
-    if (destKey !== homeKey || isDropId(overId)) {
-      const destIds = order[destKey] ?? [];
-      const index = destIds.indexOf(activeId);
-      if (index < 0) return;
-      const rest = destIds
-        .filter((id) => id !== activeId)
+    const ids = order[destKey] ?? [];
+    const rowsOf = (list: string[]) =>
+      list
         .map((id) => taskById.get(id))
         .filter((t): t is TaskItem => t !== undefined);
-      const sortOrder = sortOrderAtIndex(rest, index, "before");
-      if (destKey === homeKey) onReorderTask(activeId, sortOrder);
-      else onMoveTask(task, destKey === LOOSE_KEY ? null : destKey, sortOrder);
-      return;
-    }
+    const from = ids.indexOf(activeId);
 
-    // Stayed put and landed on a row: an ordinary reorder, between the drop's
-    // neighbours.
-    if (activeId === overId) return;
-    const ids = home.tasks.map((t) => t.id);
-    const sortOrder = reorderSortOrder(
-      home.tasks,
-      ids.indexOf(activeId),
-      ids.indexOf(overId),
-    );
-    if (sortOrder !== null) onReorderTask(activeId, sortOrder);
+    // Where it lands, decided by the LIVE `over` — never by the index
+    // onDragOver happened to insert at. That distinction is the bug this
+    // replaced: onDragOver only fires on a container CHANGE, so its index froze
+    // on entry while SortableContext kept previewing against the pointer. The
+    // gap you watched and the row you'd write drifted further apart the longer
+    // you moved inside the destination.
+    let sortOrder: string | null;
+    if (isDropId(overId)) {
+      // The container's own band, which sits above its rows: the top.
+      const rest = rowsOf(ids.filter((id) => id !== activeId));
+      sortOrder = rest.length === 0 && destKey === homeKey ? null : sortOrderAtIndex(rest, 0);
+    } else if (from >= 0) {
+      // Already previewed in this list — arrayMove over the list AS RENDERED,
+      // which is exactly what SortableContext drew.
+      const to = ids.indexOf(overId);
+      sortOrder = to < 0 ? null : reorderSortOrder(rowsOf(ids), from, to);
+    } else {
+      // Never previewed here (the missed-transition case above): take the
+      // hovered row's place, pushing it down.
+      const rest = rowsOf(ids);
+      const at = rest.findIndex((t) => t.id === overId);
+      sortOrder = at < 0 ? null : sortOrderAtIndex(rest, at, "before");
+    }
+    if (sortOrder === null) return;
+
+    if (destKey === homeKey) onReorderTask(activeId, sortOrder);
+    else onMoveTask(task, destKey === LOOSE_KEY ? null : destKey, sortOrder);
   }
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1393,7 +1408,7 @@ export function TodosViewV2({
         ),
         ...doneVisible.map((task) => ({ kind: "task" as const, task })),
       ],
-    [containers, doneVisible, filterActive],
+    [displayed, doneVisible, filterActive],
   );
   const navIndexById = useMemo(
     () =>
