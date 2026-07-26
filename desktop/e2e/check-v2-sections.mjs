@@ -172,14 +172,27 @@ try {
   await shot("v2-sections-01-created");
 
   // ── file a task into it via Move to ▸ ────────────────────────────────────
-  await page.locator("[data-testid=v2-task-row]", { hasText: "Beta task" }).click({ button: "right" });
-  // Submenus open on hover; a click alone races the open animation.
-  const moveTo = page.getByRole("menuitem", { name: "Move to" });
-  await moveTo.waitFor({ timeout: 10_000 });
-  await moveTo.hover();
-  const target = page.getByRole("menuitem", { name: "Launch blockers", exact: true });
-  await target.waitFor({ timeout: 10_000 });
-  await target.click();
+  // Base UI submenus open on hover and close again the moment the pointer
+  // strays, which under a synthetic mouse is a coin flip — so re-open the whole
+  // menu and try again rather than trusting one pass.
+  async function moveViaMenu(rowTitle, sectionName) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await page.keyboard.press("Escape");
+      await sleep(200);
+      await page
+        .locator("[data-testid=v2-task-row]", { hasText: rowTitle })
+        .click({ button: "right" });
+      const moveTo = page.getByRole("menuitem", { name: "Move to" });
+      if (!(await moveTo.waitFor({ timeout: 5000 }).then(() => true, () => false))) continue;
+      await moveTo.hover();
+      const item = page.getByRole("menuitem", { name: sectionName, exact: true });
+      if (!(await item.waitFor({ timeout: 3000 }).then(() => true, () => false))) continue;
+      await sleep(300);
+      if (await item.click({ force: true, timeout: 5000 }).then(() => true, () => false)) return;
+    }
+    throw new Error(`could not move "${rowTitle}" into "${sectionName}" via the menu`);
+  }
+  await moveViaMenu("Beta task", "Launch blockers");
   const moved = await waitFor("Beta task to be filed", async () => {
     const row = (await api("GET", `/tasks?project_id=${project.id}`)).find(
       (t) => t.title === "Beta task",
@@ -240,19 +253,29 @@ try {
 
   // Press, one short move to clear PointerSensor's 4px activation distance,
   // then one long move: dnd-kit only recomputes collisions on movement.
-  async function dragTo(source, targetBox) {
+  // `target` is either absolute {x, y} or {dy} — a delta from the source's own
+  // centre, resolved AFTER the source is re-measured. Absolute coordinates
+  // captured before the call go stale the moment a prior drop re-renders the
+  // list, and a stale target silently performs a different gesture than the one
+  // the check describes.
+  async function dragTo(source, target) {
     // Park the pointer away first, then approach: the row arms its drag from a
     // pointerdown, and pressing on a spot the pointer is already sitting on
     // (having never entered the row) doesn't reliably produce one.
     await page.mouse.move(1, 1);
     await sleep(150);
     const box = await source.boundingBox();
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+    // WHERE on the row you grab matters, not just how far you drag: dnd-kit
+    // resolves `over` from the pointer, so grabbing near a row's top edge means
+    // a few pixels of travel already puts the pointer outside it. `grabDy` is
+    // an offset from the row's TOP; the default is its centre.
+    const grabY = box.y + (target.grabDy ?? box.height / 2);
+    const targetBox =
+      target.dy === undefined ? target : { x: box.x + box.width / 2, y: grabY + target.dy };
+    await page.mouse.move(box.x + box.width / 2, grabY, { steps: 4 });
     await sleep(150);
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 12, {
-      steps: 3,
-    });
+    await page.mouse.move(box.x + box.width / 2, grabY + 8, { steps: 3 });
     await page.mouse.move(targetBox.x, targetBox.y, { steps: 10 });
     await page.mouse.up();
   }
@@ -326,6 +349,29 @@ try {
     `before=${before.join(" | ")} after=${(await titlesIn()).join(" | ")}`,
   );
 
+  // A SMALL upward nudge on a section's FIRST row. The pointer clears the row's
+  // top edge and lands in the add-row band, so the drop resolves to the
+  // container — but the row itself is barely moved. Measuring the dragged
+  // rect instead of the pointer reads that as "you dragged less than half a
+  // row, so you meant the bottom" and relocates the top row to the END of its
+  // own section, from a 12px gesture with no undo.
+  const nudgeBefore = await titlesIn();
+  // Grabbed 6px below the row's top and nudged up 12: the POINTER is 6px above
+  // the row (so the drop resolves to the container's band) while the row has
+  // moved barely a quarter of its own height. Grabbing at the centre instead
+  // would make the two thresholds coincide and the check prove nothing.
+  await dragTo(
+    blockers.locator("[data-testid=v2-task-row]", { hasText: nudgeBefore[0] }),
+    { grabDy: 6, dy: -12 },
+  );
+  await sleep(2500);
+  const nudgeAfter = await titlesIn();
+  check(
+    "13. a small nudge on the first row does NOT fling it to the bottom",
+    nudgeAfter[0] === nudgeBefore[0],
+    `${nudgeBefore.join(" | ")} → ${nudgeAfter.join(" | ")}`,
+  );
+
   // The same gesture against a ONE-ROW section — the case a container-midpoint
   // test gets backwards, because the band above a single row extends past the
   // container's own midpoint.
@@ -358,7 +404,7 @@ try {
     return titles.length === 2 ? titles : undefined;
   }).catch(() => []);
   check(
-    "13. dropping above a ONE-row section's row lands above it, not below",
+    "14. dropping above a ONE-row section's row lands above it, not below",
     soloOrder[0] === first,
     soloOrder.join(" | "),
   );
@@ -381,8 +427,8 @@ try {
   await waitFor("the section to collapse", async () =>
     (await sectionEl.locator("[data-testid=v2-task-row]").count()) === 0 || undefined,
   );
-  check("14. collapsing hides its rows");
-  check("15. and the header still reports the count", (await header.innerText()).includes("2"));
+  check("15. collapsing hides its rows");
+  check("16. and the header still reports the count", (await header.innerText()).includes("2"));
   await shot("v2-sections-02-collapsed");
   await header.getByRole("button", { name: /Expand/ }).click();
 
@@ -396,7 +442,7 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.find((s) => s.id === created.id && s.name === "Renamed section");
   });
-  check("16. ⋯ → Rename persisted", renamed.name === "Renamed section");
+  check("17. ⋯ → Rename persisted", renamed.name === "Renamed section");
 
   // ── delete keeps the todos ───────────────────────────────────────────────
   page.once("dialog", (d) => d.accept());
@@ -408,18 +454,18 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.every((s) => s.id !== created.id) || undefined;
   });
-  check("17. ⋯ → Delete section removed it");
+  check("18. ⋯ → Delete section removed it");
 
   const survivors = await api("GET", `/tasks?project_id=${project.id}`);
   check(
-    "18. its todos SURVIVED and fell back to loose",
+    "19. its todos SURVIVED and fell back to loose",
     survivors.length === 4 && survivors.every((t) => t.sectionId === null),
     `${survivors.length} tasks, sectionIds=${[...new Set(survivors.map((t) => t.sectionId))]}`,
   );
   await waitFor("all four rows to render loose", async () =>
     (await list.locator("[data-testid=v2-loose] [data-testid=v2-task-row]").count()) === 4 || undefined,
   );
-  check("19. and the list shows all four again");
+  check("20. and the list shows all four again");
 
   // ── the chip carries agent status ────────────────────────────────────────
   scratch = mkdtempSync(join(tmpdir(), "hitch-sections-daemon-"));
@@ -468,11 +514,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("20. a delegated row grows a WORKING chip");
+  check("21. a delegated row grows a WORKING chip");
   await shot("v2-sections-03-chip-working");
 
   check(
-    "21. and the row carries no status TEXT any more",
+    "22. and the row carries no status TEXT any more",
     !/Working|Needs input|Mark reviewed/.test(await alphaRow.innerText()),
     JSON.stringify(await alphaRow.innerText()),
   );
@@ -484,11 +530,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("22. the chip advances to NEEDS-YOU when the turn completes");
+  check("23. the chip advances to NEEDS-YOU when the turn completes");
   await shot("v2-sections-04-chip-needs-you");
 
   check(
-    "23. rows without an agent still render a chip-less slot",
+    "24. rows without an agent still render a chip-less slot",
     (await list.locator("[data-testid=v2-harness-chip]").count()) === 1,
   );
 } catch (error) {

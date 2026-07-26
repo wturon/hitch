@@ -3,7 +3,9 @@
 > Written 2026-07-26 against `af480cc`. Design record: the Paper scratchpad boards S1/S2
 > (2026-07-17, "sections direction"), plus the mock at
 > https://claude.ai/code/artifact/a19f0ff6-b3a1-4f47-b3f3-eea015318d5e.
-> Parent: docs/v2-prd.md. Status: **proposed, not started.**
+> Parent: docs/v2-prd.md. Status: **BUILT** — PR #122. Where the code settled
+> somewhere other than this document first proposed, the document has been
+> corrected rather than the code; those places are called out inline.
 
 ## The problem
 
@@ -45,7 +47,7 @@ This is not a new primitive. M1 built the whole model and no UI ever used it:
 | --- | --- |
 | Where does a task live? | Exactly one section, or none. `section_id null` = **loose**, rendered first with no header. |
 | What moves a task? | Only the user. Not status, not an agent, not automation. |
-| Where does capture land? | Loose, at the top — the same prepend math as today. Filing is a separate, deliberate gesture. |
+| Where does capture land? | In the container whose add-row you used, at its top. The global `C` shortcut always files loose. (Revised: this spec first said capture is *always* loose. Every container having its own add-row makes the destination a property of which row you clicked, so capture still never asks a question mid-typing.) |
 | What happens to DONE? | Unchanged: one global group at the bottom, 3-item preview. Completed work is a receipt, not structure. |
 | Is collapse state synced? | No. `localStorage`, per project, like `tagFilter`. It's a per-machine view preference. |
 | Do sections nest? | No. Subtasks stay parked (Will, 2026-07-17). |
@@ -94,14 +96,22 @@ that needs you — but this reuses the chip rather than minting a second status 
 - **Per-section add row** — existing `AddTaskRow` chrome, no `C` hint (that's the global capture).
 - **`+ New section`** at the bottom, quiet, between hairlines.
 - **Drag between sections** — whole-row drag exactly like backlog reorder today, now across
-  containers. Origin holds a ghost, destination opens a gap.
+  containers. A drop on a row takes that row's place; a drop on the section itself lands at whichever
+  end of its list you dropped nearer. (Revised: this spec said the destination "opens a gap".
+  `SortableContext` only displaces items in its own context, so it cannot — a hairline above the row
+  the drop would land on carries that signal instead.)
 - **`Move to ▸`** on the row context menu, from the same `ContextMenuSub` the Tags submenu uses;
   `No section` first, then the sections, check on the current one. This is the only route that works
-  from the keyboard.
+  from the keyboard, and the only one that reaches a collapsed section.
 - **Section `···` menu** — Rename / Move up / Move down / Delete section. Delete confirms with what
-  actually happens: *"Its 14 todos move back to the top of the project."*
-- **Filtering** — sections with no match hide entirely; matching sections show `3 of 6`. Add-rows and
-  drag stay hidden while a filter is active (unchanged).
+  actually happens: *"Its 14 todos stay in the project, unfiled."* (Revised: this spec first promised
+  they "move back to the top of the project". `DELETE /sections/:id` only nulls `section_id` and
+  leaves `sort_order` alone, so they rejoin the loose list wherever their keys put them — often near
+  the bottom. Promising a position we don't deliver is worse than describing the one we do.)
+- **Filtering** — a section with no match hides, *unless* it is collapsed and holding a live agent:
+  its header is then the only place that agent can appear, and hiding it would reopen the hole the
+  collapsed chips exist to close. Matching sections show `3 of 6`. Add-rows and drag stay hidden
+  while a filter is active (unchanged).
 - **A project with no sections** renders as one uninterrupted list — today's screen minus the status
   groups. Nothing to migrate, no backfill, no empty state to design.
 

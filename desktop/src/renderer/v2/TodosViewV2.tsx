@@ -1057,16 +1057,19 @@ export function TodosViewV2({
     // nothing here and would paint a drop hairline on an unrelated row.
     setDragging(null);
   }, [projectId]);
+  // The write lives here, not in the setState updater (React may invoke an
+  // updater twice, and a state updater has no business touching localStorage)
+  // and not in an effect keyed on [projectId, collapsedIds] — that ordering
+  // fires once with the OUTGOING project's set and the INCOMING project's id,
+  // saving one project's collapse state under another's key.
   const toggleCollapsed = useCallback(
     (sectionId: string) => {
-      setCollapsedIds((prev) => {
-        const next = new Set(prev);
-        if (!next.delete(sectionId)) next.add(sectionId);
-        saveCollapsedSections(projectId, next);
-        return next;
-      });
+      const next = new Set(collapsedIds);
+      if (!next.delete(sectionId)) next.add(sectionId);
+      setCollapsedIds(next);
+      saveCollapsedSections(projectId, next);
     },
-    [projectId],
+    [collapsedIds, projectId],
   );
 
   // The attention join (M4 PR 6): every user assignment, keyed to match the
@@ -1201,19 +1204,37 @@ export function TodosViewV2({
   // container's midpoint. The band above the rows is a fixed ~72px (header +
   // add-row) while the container grows 42px per row, so a midpoint test is
   // wrong for exactly the sections where it's easiest to be sloppy: with one
-  // row, the lower third of "Add a todo…" already sits below the midpoint and
-  // reads as "bottom". Measuring the rows themselves has no such threshold.
+  // row, the lower third of "Add a todo…" already sits below the midpoint.
+  //
+  // And it compares the POINTER, not the dragged row's rect. The rect is a
+  // phantom: dnd-kit's `translated` is the row's home position plus the drag
+  // delta, and while the pointer is over a container band the row isn't
+  // displaced at all (SortableContext computes overIndex = -1 for a non-item
+  // `over`, which disables its transform). So a rect-midpoint test asks
+  // "have you dragged more than half a row's height" — independent of where
+  // you grabbed — while `over` flips to the container the moment the POINTER
+  // clears the row's top edge. Between those two thresholds a 12px nudge on a
+  // section's first row silently relocated it to the bottom of that section.
   function droppedAboveRows(event: DragEndEvent): boolean {
-    const active = event.active.rect.current.translated;
     const overId = event.over ? String(event.over.id) : null;
-    if (!active || !overId) return false;
+    if (!overId) return false;
+    // `data-drop-id` is a container: prefix + a server uuid, so it needs no
+    // escaping — and it can only reach here past isDropId().
     const firstRow = scrollRef.current?.querySelector<HTMLElement>(
       `[data-drop-id="${overId}"] [data-testid="v2-task-row"]`,
     );
     // No rows to be above or below (an empty section): the two answers are the
     // same list position, so either is right.
     if (!firstRow) return false;
-    return active.top + active.height / 2 < firstRow.getBoundingClientRect().top;
+    const boundary = firstRow.getBoundingClientRect().top;
+    const activator = event.activatorEvent as Partial<PointerEvent> | undefined;
+    if (typeof activator?.clientY === "number") {
+      return activator.clientY + event.delta.y < boundary;
+    }
+    // No pointer to read (a sensor we don't configure today): fall back to the
+    // rect rather than guessing a side.
+    const active = event.active.rect.current.translated;
+    return active ? active.top + active.height / 2 < boundary : false;
   }
 
   function onDragEnd(event: DragEndEvent) {
