@@ -22,11 +22,15 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  ArrowDownIcon,
+  ArrowUpIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleCheckIcon,
   CircleIcon,
+  MoreHorizontalIcon,
+  PencilIcon,
   PlusIcon,
   SquareArrowOutUpRightIcon,
   TagIcon,
@@ -46,6 +50,13 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "@/components/ui/menu";
 import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
@@ -70,6 +81,11 @@ import {
 } from "./todoGroups";
 import { useAllAssignments, type AssignmentRow } from "./useAssignments";
 import { useSections } from "./useSections";
+import {
+  stepSectionSortOrder,
+  useSectionMutations,
+  type SectionMutations,
+} from "./useSectionMutations";
 import type { TagActions } from "./useTagMutations";
 
 // The V2 Todos surface: the selected project's tasks from the Hono server, laid
@@ -232,17 +248,24 @@ function SectionHeader({
   count,
   collapsed,
   onToggle,
+  onRename,
+  menu,
   hiddenChips,
 }: {
   name: string;
   count: number;
   collapsed: boolean;
   onToggle: () => void;
+  onRename: (next: string) => void;
+  /** Given the header's own "start renaming" action, so Rename can live in it. */
+  menu: (startRename: () => void) => ReactNode;
   /** Rendered only while collapsed: the live agents this section is hiding. */
   hiddenChips?: ReactNode;
 }) {
+  const [renaming, setRenaming] = useState(false);
+
   return (
-    <div className="group/section relative flex items-center gap-2 border-b border-border py-1 pr-2 pl-2.5">
+    <div className="group/section relative flex h-8 items-center gap-2 border-b border-border pr-1 pl-2.5">
       <button
         type="button"
         onClick={onToggle}
@@ -256,17 +279,203 @@ function SectionHeader({
           <ChevronDownIcon className="size-3.5" />
         )}
       </button>
-      <span className="min-w-0 truncate text-[13.5px] font-semibold leading-5">
-        {name}
-      </span>
-      {count > 0 && (
-        <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">
-          {count}
-        </span>
+
+      {renaming ? (
+        <SectionNameInput
+          initial={name}
+          onCommit={(next) => {
+            setRenaming(false);
+            // An unchanged or emptied name is a cancel, not a write: the server
+            // rejects an empty name, and there is nothing to say about a rename
+            // that renames nothing.
+            if (next && next !== name) onRename(next);
+          }}
+          onCancel={() => setRenaming(false)}
+        />
+      ) : (
+        <>
+          {/* Double-click to rename mirrors every other list app; the ⋯ menu
+              carries the discoverable version of the same action. */}
+          <span
+            className="min-w-0 truncate text-[13.5px] font-semibold leading-5"
+            onDoubleClick={() => setRenaming(true)}
+          >
+            {name}
+          </span>
+          {count > 0 && (
+            <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">
+              {count}
+            </span>
+          )}
+          <span className="flex-1" />
+          {collapsed && hiddenChips}
+          <span className="shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover/section:opacity-100">
+            {menu(() => setRenaming(true))}
+          </span>
+        </>
       )}
-      <span className="flex-1" />
-      {collapsed && hiddenChips}
     </div>
+  );
+}
+
+// A section's ⋯ menu. Reorder is one step at a time rather than a drag: a
+// project has a handful of sections, and two menu items beat a second drag
+// system with its own hit targets and failure modes.
+function SectionMenu({
+  section,
+  index,
+  sections,
+  taskCount,
+  mutations,
+  onStartRename,
+}: {
+  section: { id: string; name: string };
+  /** Position in the project's section list, for the step-reorder maths. */
+  index: number;
+  sections: ReadonlyArray<{ sortOrder: string }>;
+  taskCount: number;
+  mutations: SectionMutations;
+  onStartRename: () => void;
+}) {
+  const step = (direction: "up" | "down") => {
+    const sortOrder = stepSectionSortOrder(sections, index, direction);
+    if (sortOrder !== null) mutations.reorderSection(section.id, sortOrder);
+  };
+  return (
+    <Menu>
+      <MenuTrigger
+        render={
+          <button
+            type="button"
+            aria-label={`Section options for ${section.name}`}
+            className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          />
+        }
+      >
+        <MoreHorizontalIcon className="size-3.5" />
+      </MenuTrigger>
+      <MenuContent>
+        <MenuItem onClick={onStartRename}>
+          <PencilIcon />
+          Rename
+        </MenuItem>
+        <MenuSeparator />
+        <MenuItem disabled={index <= 0} onClick={() => step("up")}>
+          <ArrowUpIcon />
+          Move up
+        </MenuItem>
+        <MenuItem
+          disabled={index < 0 || index >= sections.length - 1}
+          onClick={() => step("down")}
+        >
+          <ArrowDownIcon />
+          Move down
+        </MenuItem>
+        <MenuSeparator />
+        <MenuItem
+          // ui/menu has no `variant` prop (ui/context-menu does); same tokens,
+          // spelled out.
+          className="text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
+          onClick={() => {
+            // Deleting a section never deletes work — the FK is
+            // `on delete set null` — so the confirm says where the todos GO
+            // rather than asking "are you sure".
+            const fate =
+              taskCount === 0
+                ? ""
+                : `\n\nIts ${taskCount} ${taskCount === 1 ? "todo moves" : "todos move"} back to the top of the project.`;
+            if (window.confirm(`Delete the section “${section.name}”?${fate}`)) {
+              mutations.deleteSection(section.id);
+            }
+          }}
+        >
+          <Trash2Icon />
+          Delete section
+        </MenuItem>
+      </MenuContent>
+    </Menu>
+  );
+}
+
+// The inline name field, shared by rename and by "+ New section" — one set of
+// commit rules for both, since they are the same gesture at different ends of
+// the list. Enter commits, Escape cancels, blur commits (a click elsewhere is
+// not a discard: losing typed text to a stray click is the rudest thing a text
+// field can do).
+function SectionNameInput({
+  initial,
+  placeholder,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  placeholder?: string;
+  /** Receives the TRIMMED value; "" means there is nothing to write. */
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  // Escape must not also commit through the blur that follows it.
+  const cancelled = useRef(false);
+  return (
+    <input
+      autoFocus
+      value={value}
+      placeholder={placeholder}
+      aria-label="Section name"
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={() => {
+        if (cancelled.current) return;
+        onCommit(value.trim());
+      }}
+      onKeyDown={(e) => {
+        // The list's own ↑↓/Backspace/`e` shortcuts must not fire while
+        // someone is typing a name into it.
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onCommit(value.trim());
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancelled.current = true;
+          onCancel();
+        }
+      }}
+      className="min-w-0 flex-1 bg-transparent text-[13.5px] font-semibold leading-5 outline-none placeholder:font-normal placeholder:text-muted-foreground"
+    />
+  );
+}
+
+// "+ New section" — a quiet affordance between hairlines at the bottom of the
+// list, which becomes the name field in place when clicked.
+function NewSectionRow({ onCreate }: { onCreate: (name: string) => void }) {
+  const [naming, setNaming] = useState(false);
+  if (naming) {
+    return (
+      <div className="mt-4 flex h-8 items-center border-b border-border pl-2.5">
+        <SectionNameInput
+          initial=""
+          placeholder="Section name"
+          onCommit={(name) => {
+            setNaming(false);
+            if (name) onCreate(name);
+          }}
+          onCancel={() => setNaming(false)}
+        />
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid="v2-new-section"
+      onClick={() => setNaming(true)}
+      className="mt-4 flex items-center gap-2.5 px-2.5 py-2 text-[12px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover/list:opacity-100"
+    >
+      <span className="h-px flex-1 bg-border" aria-hidden />
+      <span className="shrink-0">+ New section</span>
+      <span className="h-px flex-1 bg-border" aria-hidden />
+    </button>
   );
 }
 
@@ -634,6 +843,13 @@ export function TodosViewV2({
   // list. Nothing to migrate, no empty state to design.
   const sections = useSections(client, projectId);
   const sectionRows = useMemo(() => sections.data ?? [], [sections.data]);
+  const sectionMutations = useSectionMutations(client, projectId);
+  // Position in the project's own order — what the step-reorder maths needs.
+  // GET /sections already returns them ordered by sort_order.
+  const sectionIndexById = useMemo(
+    () => new Map(sectionRows.map((section, i) => [section.id, i] as const)),
+    [sectionRows],
+  );
 
   // Collapse is per machine, not per project row (sectionCollapse.ts). Reload
   // on project change so switching restores that project's own state rather
@@ -1030,7 +1246,10 @@ export function TodosViewV2({
       className="flex min-h-0 flex-1 flex-col overflow-y-auto"
       data-testid="v2-todos"
     >
-      <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-6 pt-7 pb-16">
+      {/* group/list: the "+ New section" affordance stays invisible until the
+          pointer is somewhere in the list, so an untouched project shows no
+          structural chrome at all. */}
+      <div className="group/list mx-auto flex w-full max-w-[720px] flex-col gap-4 px-6 pt-7 pb-16">
         {(hasAnyTags || filterActive) && (
           <TagFilterBar
             options={tag.options}
@@ -1063,6 +1282,19 @@ export function TodosViewV2({
                   count={container.total}
                   collapsed={container.collapsed}
                   onToggle={() => toggleCollapsed(container.section!.id)}
+                  onRename={(next) =>
+                    sectionMutations.renameSection(container.section!.id, next)
+                  }
+                  menu={(startRename) => (
+                    <SectionMenu
+                      section={container.section!}
+                      index={sectionIndexById.get(container.section!.id) ?? -1}
+                      sections={sectionRows}
+                      taskCount={container.total}
+                      mutations={sectionMutations}
+                      onStartRename={startRename}
+                    />
+                  )}
                   hiddenChips={
                     <CollapsedSectionChips tasks={container.tasks} chipOf={chipOf} />
                   }
@@ -1116,6 +1348,11 @@ export function TodosViewV2({
             </section>
           );
         })}
+
+        {/* Hidden while filtering — the list is a projection then, and adding
+            structure to a projection is how you file something somewhere you
+            didn't mean. */}
+        {!filterActive && <NewSectionRow onCreate={sectionMutations.createSection} />}
 
         {isEmpty && <EmptyHint />}
 
