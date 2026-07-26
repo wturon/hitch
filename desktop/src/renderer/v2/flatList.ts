@@ -11,8 +11,13 @@
 //
 // That buys the one property the container design could never hold onto:
 // `verticalListSortingStrategy` animates the gap, `arrayMove` computes the
-// result, and both are the SAME operation on the SAME array. The preview and
-// the write cannot disagree, because there is only one answer being computed.
+// result, and both are the SAME operation on the SAME array. The section and
+// the index this returns are therefore always the ones on screen.
+//
+// One caveat, and it lives downstream in listMutations rather than here: a run
+// of EQUAL sortOrder keys admits no key between its members, so a drop landing
+// inside one is placed at the near end of the run instead of exactly in the
+// gap. Off by a position, never off by a section.
 //
 // It also deletes, rather than fixes, everything the multi-container version
 // needed: per-container droppables, an `onDragOver` that splices the row into
@@ -61,8 +66,12 @@ export type Placement = { sectionId: string | null; index: number };
  * "unfile it" without a droppable existing for it.
  *
  * A collapsed section contributes its header and none of its rows: the rows
- * aren't on screen, so they can't be drop targets, but the header still is —
- * dropping on it files into the section you can't see, at the top.
+ * aren't on screen, so they can't be drop targets, but the header still is.
+ * A header is a BOUNDARY, so which side of it the row lands on is which side
+ * the gap opened — approach a collapsed header from above and the row files
+ * into the section you can't see, at the top; drag up onto it from below and
+ * the row lands above it, in the container before. `Move to ▸` is the route
+ * that doesn't depend on approach direction.
  */
 export function buildSlots(containers: readonly SlotSource[]): Slot[] {
   const slots: Slot[] = [];

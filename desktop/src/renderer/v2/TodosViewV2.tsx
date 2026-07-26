@@ -477,10 +477,12 @@ function SectionNameInput({
 function DropSlot({
   id,
   disabled,
+  className,
   children,
 }: {
   id: string;
   disabled: boolean;
+  className?: string;
   children: ReactNode;
 }) {
   const { setNodeRef, transform, transition } = useSortable({
@@ -490,6 +492,7 @@ function DropSlot({
   return (
     <div
       ref={setNodeRef}
+      className={className}
       style={{ transform: CSS.Transform.toString(transform), transition }}
     >
       {children}
@@ -1137,7 +1140,12 @@ export function TodosViewV2({
   );
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const doneVisible = showAllDone ? grouped.done : grouped.done.slice(0, DONE_PREVIEW);
+  // Memoised because `navItems` depends on it: a fresh array each render would
+  // rebuild the ↑↓ index (and the id→index map) on every keystroke.
+  const doneVisible = useMemo(
+    () => (showAllDone ? grouped.done : grouped.done.slice(0, DONE_PREVIEW)),
+    [grouped.done, showAllDone],
+  );
 
   // ─── The render plan ───────────────────────────────────────────────────────
   // ONE ordered list of containers that BOTH the markup and the keyboard-nav
@@ -1601,6 +1609,21 @@ export function TodosViewV2({
                   {container.section && (
                     <DropSlot
                       id={headerSlotId(container.section.id)}
+                      // Reach UP over the 22px of separation above this header
+                      // (the previous section's pb-1.5 plus the column's
+                      // gap-4) without moving it: -mt pulls the box up, pt
+                      // pushes the content back down. That strip was the last
+                      // place in the list where the pointer could find no drop
+                      // target at all — a band you drag through on the way to
+                      // every section boundary, where the preview gap closed
+                      // and a release did nothing. It now behaves exactly as
+                      // the header does, because it IS the header.
+                      //
+                      // It also fixes the gap the sorting strategy measures:
+                      // with the header's rect abutting the row above it,
+                      // `getItemGap` no longer adds 22px of separation to
+                      // every displacement that crosses a section boundary.
+                      className="-mt-[22px] pt-[22px]"
                       // Filtering turns the order into a projection, so drag is
                       // off entirely and nothing in the list is a drop target.
                       disabled={filterActive}

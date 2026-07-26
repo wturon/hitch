@@ -176,14 +176,22 @@ arrayMove(slots, from, to) → walk down → { sectionId, index } → sortOrderA
 ```
 
 — and `arrayMove` over those slots is *precisely* what `verticalListSortingStrategy` just animated.
-The gap you watched open and the position written are the same computation on the same array, so
-they cannot disagree. That is the entire design.
+The gap you watched open and the `{sectionId, index}` written are the same computation on the same
+array, so they cannot disagree. That is the entire design.
+
+The one residual imprecision is downstream, in `sortOrderAtIndex`: a run of **equal** `sortOrder`
+keys admits no key between its members, so a drop landing inside one is placed at the near end of the
+run rather than exactly in the gap. Equal keys are ordinary data here — every container mints its
+first key independently as `"a0"`, and `on delete set null` merges two key spaces — so this is a real
+case, not a theoretical one. It is off by a position, never off by a section, and never silently
+inert (the guard that would make it a no-op is what `bias` exists to prevent).
 
 Consequences that fall out rather than being coded:
 
 - **An empty section** needs no droppable of its own; its header and add-row are already slots.
-- **A collapsed section** contributes only its header, so a drop there is index 0 — the top of what's
-  hidden inside.
+- **A collapsed section** contributes only its header, so a drop *into* it is index 0 — the top of
+  what's hidden inside. Being a header, it only means "into" from above; from below it means the
+  container before it. `Move to ▸` is the direction-independent route.
 - **A header is the section's boundary.** Approach it from above and the row lands in the section;
   drag up onto it from inside and the row lands above it, unfiled. Both are what the screen shows
   while you do it, because the header physically moves out of the way in the direction that makes
@@ -195,8 +203,14 @@ Collision detection is `pointerWithin` and nothing else. Every more tolerant alg
 droppable sorted by distance with **no cutoff**, so `over` is never null and a drag can't be
 abandoned. (`rectIntersection` does have a cutoff, but a 672px-wide row still overlaps the column
 from halfway across the window.) One hit test suffices only because the list has no holes in it —
-which is why the add-row is a slot rather than a 40px dead band under every header. A pointer-less
-sensor gets no collisions; none is configured.
+which is why the add-row is a slot rather than a 40px dead band under every header, and why each
+section header's droppable reaches 22px up over the separation above it (`-mt-[22px] pt-[22px]`) —
+that strip is the natural aim for "put this at the end of the section above". A pointer-less sensor
+gets no collisions; none is configured.
+
+What remains undroppable is everything *below* the last section: `+ New section`, DONE, and the
+bottom padding are outside the `DndContext`. Releasing there does nothing, and the preview gap
+visibly closes on the way in, so it reads as "not a target" rather than as a wrong answer.
 
 A `<DragOverlay>` renders the row under the cursor (a plain `TaskRow`, never the sortable one — the
 pitfall the docs call out). With an overlay `useSortable` stops transforming the drag source, so the

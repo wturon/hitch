@@ -400,6 +400,42 @@ try {
   );
   await sleep(400);
 
+  // The separation ABOVE a section header — the previous section's bottom
+  // padding plus the column's gap — renders nothing, and it is the strip you
+  // drag through on the way to every section boundary. It must not be a hole:
+  // the header's droppable reaches up over it, so a release there behaves
+  // exactly as a release on the header does. Without that reach the preview gap
+  // closes as you enter the band and a drop there is silently inert, which
+  // reads as a broken drag rather than as "not a target".
+  const bandTitle = (await titlesIn())[0];
+  const bandHeader = await page
+    .locator(`[data-testid=v2-section][data-section-id="${empty.id}"]`)
+    .locator("[data-testid=v2-section-header]")
+    .boundingBox();
+  await dragTo(blockers.locator("[data-testid=v2-task-row]", { hasText: bandTitle }), {
+    x: bandHeader.x + bandHeader.width / 2,
+    // 6px ABOVE the header's own top edge: inside the separation, outside
+    // anything that draws.
+    y: bandHeader.y - 6,
+  });
+  const banded = await waitFor("the row to land in the section below the strip", async () =>
+    (await sectionOf(bandTitle)) === empty.id || undefined,
+  ).catch(() => false);
+  check(
+    "12c. the strip above a header is not a dead band — it drops like the header",
+    banded === true,
+    `${bandTitle} → sectionId=${await sectionOf(bandTitle)}`,
+  );
+  // Put it back; the counts below are written against this section.
+  const bandId = (await api("GET", `/tasks?project_id=${project.id}`)).find(
+    (t) => t.title === bandTitle,
+  ).id;
+  await api("PATCH", `/tasks/${bandId}`, { sectionId: created.id });
+  await waitFor("the row to return to the section", async () =>
+    (await titlesIn()).includes(bandTitle) || undefined,
+  );
+  await sleep(400);
+
   // A SMALL upward nudge on a section's FIRST row. The pointer clears the row's
   // top edge and lands in the add-row band — a real drop target now — while the
   // row itself has barely moved. It must resolve to "first in this section",
