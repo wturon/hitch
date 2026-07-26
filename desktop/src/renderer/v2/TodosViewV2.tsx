@@ -1227,12 +1227,11 @@ export function TodosViewV2({
     // same list position, so either is right.
     if (!firstRow) return false;
     const boundary = firstRow.getBoundingClientRect().top;
-    const activator = event.activatorEvent as Partial<PointerEvent> | undefined;
-    if (typeof activator?.clientY === "number") {
-      return activator.clientY + event.delta.y < boundary;
-    }
-    // No pointer to read (a sensor we don't configure today): fall back to the
-    // rect rather than guessing a side.
+    const pointerY = pointerYRef.current;
+    if (pointerY !== null) return pointerY < boundary;
+    // Only reachable from a sensor that reports no pointer — none is configured
+    // today. It carries the same scroll-frame caveat as `delta` does, so adding
+    // a KeyboardSensor means revisiting this line, not just trusting it.
     const active = event.active.rect.current.translated;
     return active ? active.top + active.height / 2 < boundary : false;
   }
@@ -1380,6 +1379,32 @@ export function TodosViewV2({
     if (!from || !to || from.section?.id === to.section?.id) return null;
     return dragging.overId;
   }, [dragging, containers]);
+
+  // The live pointer, in viewport coordinates. Tracked ourselves because
+  // dnd-kit's `delta` is SCROLL-ADJUSTED — it carries `translate + (scrollTop
+  // now − scrollTop at drag start)` — while `activatorEvent.clientY` is frozen
+  // at drag start and `getBoundingClientRect()` is live. Adding those two puts
+  // the left side of the comparison in a different frame from the right the
+  // moment the list scrolls, and the list is a scroll container with dnd-kit's
+  // auto-scroll on: dragging into the bottom 20% scrolls it under you, no user
+  // gesture required. A ~56px error is all it takes to read a drop on a
+  // section's header as a drop past its last row.
+  const pointerYRef = useRef<number | null>(null);
+  const isDragging = dragging !== null;
+  useEffect(() => {
+    if (!isDragging) return;
+    const track = (event: PointerEvent) => {
+      pointerYRef.current = event.clientY;
+    };
+    // pointerup as well as pointermove: it is the event that ENDS the drag, so
+    // it carries the position the drop actually happened at.
+    window.addEventListener("pointermove", track, { passive: true });
+    window.addEventListener("pointerup", track, { passive: true });
+    return () => {
+      window.removeEventListener("pointermove", track);
+      window.removeEventListener("pointerup", track);
+    };
+  }, [isDragging]);
 
 
   // ─── Keyboard nav (V1's, ported onto server rows) ──────────────────────────
@@ -1653,9 +1678,12 @@ export function TodosViewV2({
         <DndContext
           sensors={sensors}
           collisionDetection={preferRows}
-          onDragStart={(event) =>
-            setDragging({ activeId: String(event.active.id), overId: null })
-          }
+          onDragStart={(event) => {
+            const activator = event.activatorEvent as Partial<PointerEvent>;
+            pointerYRef.current =
+              typeof activator?.clientY === "number" ? activator.clientY : null;
+            setDragging({ activeId: String(event.active.id), overId: null });
+          }}
           onDragOver={onDragOver}
           onDragEnd={onDragEnd}
           onDragCancel={() => setDragging(null)}

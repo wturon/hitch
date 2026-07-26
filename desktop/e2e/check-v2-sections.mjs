@@ -364,13 +364,85 @@ try {
     blockers.locator("[data-testid=v2-task-row]", { hasText: nudgeBefore[0] }),
     { grabDy: 6, dy: -12 },
   );
-  await sleep(2500);
+  // Poll rather than sleep: a slow round trip on a bare sleep reads as "nothing
+  // moved", which is exactly what this check calls a PASS.
+  await waitFor("the nudge to settle", async () => {
+    const now = await titlesIn();
+    return now.length === nudgeBefore.length ? now : undefined;
+  }).catch(() => []);
+  await sleep(1200);
   const nudgeAfter = await titlesIn();
   check(
     "13. a small nudge on the first row does NOT fling it to the bottom",
     nudgeAfter[0] === nudgeBefore[0],
     `${nudgeBefore.join(" | ")} → ${nudgeAfter.join(" | ")}`,
   );
+
+  // The same drop, with the list SCROLLING mid-drag. dnd-kit's `delta` is
+  // scroll-adjusted while a frozen activator coordinate and a live
+  // getBoundingClientRect are not, so any code that adds those two reads a drop
+  // on a header as a drop past the last row once the list has moved under the
+  // pointer. Auto-scroll does this on its own near the list's edges — no user
+  // gesture needed — so it is not an exotic path.
+  const filler = [];
+  for (let i = 0; i < 22; i++) {
+    filler.push(
+      await api("POST", "/tasks", {
+        projectId: project.id,
+        title: `Filler ${String(i).padStart(2, "0")}`,
+        body: "",
+        sortOrder: `b${String(i).padStart(2, "0")}`,
+      }),
+    );
+  }
+  await waitFor("the list to grow past one screen", async () =>
+    (await list.evaluate((el) => el.scrollHeight > el.clientHeight + 200)) || undefined,
+  );
+  await list.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await sleep(300);
+  const scrollTarget = filler[0].title;
+  const scrollRow = page.locator("[data-testid=v2-task-row]", { hasText: scrollTarget });
+  await scrollRow.scrollIntoViewIfNeeded();
+  await sleep(300);
+  const grabBox = await scrollRow.boundingBox();
+  await page.mouse.move(1, 1);
+  await sleep(150);
+  await page.mouse.move(grabBox.x + grabBox.width / 2, grabBox.y + 6, { steps: 4 });
+  await sleep(150);
+  await page.mouse.down();
+  await page.mouse.move(grabBox.x + grabBox.width / 2, grabBox.y + 14, { steps: 3 });
+  // Scroll UNDER the drag — DOWNWARD (scrollTop increasing), which is the sign
+  // that makes a scroll-blind comparison read "below the last row". Scrolling
+  // the other way makes the same bug produce the right answer by accident.
+  await list.evaluate((el) => {
+    el.scrollTop += 120;
+  });
+  await sleep(300);
+  const movedHeader = await blockers
+    .locator("[data-testid=v2-section-header]")
+    .boundingBox();
+  await page.mouse.move(
+    movedHeader.x + movedHeader.width / 2,
+    movedHeader.y + movedHeader.height / 2,
+    { steps: 10 },
+  );
+  await page.mouse.up();
+  const scrolledOrder = await waitFor("the scrolled drop to land", async () => {
+    const titles = await titlesIn();
+    return titles.includes(scrollTarget) ? titles : undefined;
+  }).catch(() => []);
+  check(
+    "14. a drop on a header still means TOP after the list scrolls mid-drag",
+    scrolledOrder[0] === scrollTarget,
+    scrolledOrder.slice(0, 4).join(" | "),
+  );
+  for (const task of filler) await api("DELETE", `/tasks/${task.id}`);
+  await list.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await sleep(400);
 
   // The same gesture against a ONE-ROW section — the case a container-midpoint
   // test gets backwards, because the band above a single row extends past the
@@ -404,7 +476,7 @@ try {
     return titles.length === 2 ? titles : undefined;
   }).catch(() => []);
   check(
-    "14. dropping above a ONE-row section's row lands above it, not below",
+    "15. dropping above a ONE-row section's row lands above it, not below",
     soloOrder[0] === first,
     soloOrder.join(" | "),
   );
@@ -427,8 +499,8 @@ try {
   await waitFor("the section to collapse", async () =>
     (await sectionEl.locator("[data-testid=v2-task-row]").count()) === 0 || undefined,
   );
-  check("15. collapsing hides its rows");
-  check("16. and the header still reports the count", (await header.innerText()).includes("2"));
+  check("16. collapsing hides its rows");
+  check("17. and the header still reports the count", (await header.innerText()).includes("2"));
   await shot("v2-sections-02-collapsed");
   await header.getByRole("button", { name: /Expand/ }).click();
 
@@ -442,7 +514,7 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.find((s) => s.id === created.id && s.name === "Renamed section");
   });
-  check("17. ⋯ → Rename persisted", renamed.name === "Renamed section");
+  check("18. ⋯ → Rename persisted", renamed.name === "Renamed section");
 
   // ── delete keeps the todos ───────────────────────────────────────────────
   page.once("dialog", (d) => d.accept());
@@ -454,18 +526,18 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.every((s) => s.id !== created.id) || undefined;
   });
-  check("18. ⋯ → Delete section removed it");
+  check("19. ⋯ → Delete section removed it");
 
   const survivors = await api("GET", `/tasks?project_id=${project.id}`);
   check(
-    "19. its todos SURVIVED and fell back to loose",
+    "20. its todos SURVIVED and fell back to loose",
     survivors.length === 4 && survivors.every((t) => t.sectionId === null),
     `${survivors.length} tasks, sectionIds=${[...new Set(survivors.map((t) => t.sectionId))]}`,
   );
   await waitFor("all four rows to render loose", async () =>
     (await list.locator("[data-testid=v2-loose] [data-testid=v2-task-row]").count()) === 4 || undefined,
   );
-  check("20. and the list shows all four again");
+  check("21. and the list shows all four again");
 
   // ── the chip carries agent status ────────────────────────────────────────
   scratch = mkdtempSync(join(tmpdir(), "hitch-sections-daemon-"));
@@ -514,11 +586,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("21. a delegated row grows a WORKING chip");
+  check("22. a delegated row grows a WORKING chip");
   await shot("v2-sections-03-chip-working");
 
   check(
-    "22. and the row carries no status TEXT any more",
+    "23. and the row carries no status TEXT any more",
     !/Working|Needs input|Mark reviewed/.test(await alphaRow.innerText()),
     JSON.stringify(await alphaRow.innerText()),
   );
@@ -530,11 +602,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("23. the chip advances to NEEDS-YOU when the turn completes");
+  check("24. the chip advances to NEEDS-YOU when the turn completes");
   await shot("v2-sections-04-chip-needs-you");
 
   check(
-    "24. rows without an agent still render a chip-less slot",
+    "25. rows without an agent still render a chip-less slot",
     (await list.locator("[data-testid=v2-harness-chip]").count()) === 1,
   );
 } catch (error) {

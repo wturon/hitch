@@ -152,16 +152,26 @@ two inputs change:
 fallback-worded confirm, reorder via the `···` menu. Optimistic like `useTaskMutations`.
 
 ### PR 4 — placement
-`Move to ▸` submenu; per-section add rows; capture stays loose. Two sort-order rules need
-redefining, both currently written against a single flat backlog:
-- `captureSortOrder(backlog)` → prepend within the **target container** (loose).
+`Move to ▸` submenu; per-section add rows; capture files into the container whose add-row was used
+(the global `C` still lands loose — see the model table). Two sort-order rules need redefining, both
+currently written against a single flat backlog:
+- `captureSortOrder(backlog)` → prepend within the **target container**.
 - `uncheckSortOrder(backlog)` → return to the top of **its own section**, not the project's.
 
 ### PR 5 — drag + keyboard
-Multi-container dnd-kit (`SortableContext` per section, `onDragOver` for cross-container moves;
-a cross-section drop is one PATCH carrying both `sectionId` and `sortOrder`). Rebuild the
-`useListKeyboardNav` flat index in render order — section headers are **not** navigable; per-section
-add rows are.
+Multi-container dnd-kit: one `DndContext` over every container, a `SortableContext` per section, and
+the whole `<section>` as a droppable so the header and add-row aren't a dead band. A cross-section
+drop is one PATCH carrying both `sectionId` and `sortOrder`. `onDragOver` only paints the drop
+hairline — the move itself happens in `onDragEnd`. Rebuild the `useListKeyboardNav` flat index in
+render order — section headers are **not** navigable; per-section add rows are.
+
+Two things about the drop maths are worth carrying forward, because both shipped wrong first:
+- A drop that resolves to a CONTAINER means the end of its list you dropped nearer, decided against
+  the **first row's top edge** — not the container's midpoint, which inverts for one-row sections.
+- The comparison uses a **live pointer coordinate**, tracked with our own `pointermove` listener.
+  dnd-kit's `delta` is scroll-adjusted and `activatorEvent` is frozen at drag start, so combining
+  them puts the two sides of the comparison in different frames as soon as auto-scroll moves the
+  list under the pointer.
 
 ## Risks
 
