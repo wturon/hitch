@@ -3,6 +3,10 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { FolderOpenIcon } from "lucide-react";
 
+import {
+  isReservedProjectName,
+  RESERVED_NAME_MESSAGE,
+} from "@/lib/projects";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -81,8 +85,9 @@ export function ProjectSettingsDialog({
     setRepoPath(project.repoPath ?? "");
     setError(null);
     setMissing(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above: seeding
-    // must happen per project, not per object identity.
+    // Deps are [open, projectId] on purpose — `project` is deliberately read
+    // without being depended on. Seeding must happen per PROJECT, not per
+    // object identity.
   }, [open, projectId]);
 
   // The real fallback path, shown rather than described — "your home folder" is
@@ -141,12 +146,17 @@ export function ProjectSettingsDialog({
     const trimmedPath = repoPath.trim();
     if (!trimmedName || saving) return;
 
-    // Inbox is identified BY NAME (it's ensured on boot, pinned first, and the
-    // default selection), and a project named Inbox is rendered as the inbox —
-    // which has no settings menu. Renaming into it would strand this project
-    // with no way back from the UI.
-    if (trimmedName.toLowerCase() === "inbox" && project?.name !== trimmedName) {
-      setError("“Inbox” is reserved. Pick another name.");
+    // Compare against the stored name TRIMMED: a project literally named
+    // "Inbox " (trailing space) renders as an ordinary project, so it has a
+    // settings menu — but treating the trim as a rename would trip the reserved
+    // check below and leave it unable to save even a path-only change.
+    const nameChanged = trimmedName !== (project?.name ?? "").trim();
+
+    // See lib/projects.ts: renaming INTO the reserved name would render this
+    // project as the inbox, which has no settings menu — stranding it with no
+    // way back from the UI.
+    if (nameChanged && isReservedProjectName(trimmedName)) {
+      setError(RESERVED_NAME_MESSAGE);
       return;
     }
     // A path that isn't absolute can never work, so this BLOCKS rather than
@@ -168,7 +178,7 @@ export function ProjectSettingsDialog({
       // opened, so sending both fields would revert a concurrent edit to the
       // one the user didn't touch.
       const patch: { name?: string; repoPath?: string | null } = {};
-      if (trimmedName !== project?.name) patch.name = trimmedName;
+      if (nameChanged) patch.name = trimmedName;
       // Empty → null, not "": null is "unset" everywhere else in this column,
       // and the daemon's fallback tests for a blank string anyway.
       const nextPath = trimmedPath || null;

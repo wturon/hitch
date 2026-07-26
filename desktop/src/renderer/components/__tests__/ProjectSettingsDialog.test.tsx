@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+import { CreateProjectDialog } from "../CreateProjectDialog";
 import { ProjectSettingsDialog } from "../ProjectSettingsDialog";
 
 const HOME = "/Users/tester";
@@ -230,5 +231,65 @@ describe("saving", () => {
     await waitFor(() =>
       expect(screen.getByText(/Couldn't open the folder picker/i)).toBeTruthy(),
     );
+  });
+});
+
+// The reserved name has to hold at BOTH doors that set one. Guarding only the
+// settings dialog left the New-project dialog (also reachable from ⌘K) able to
+// create a second "Inbox", which renders as an inbox — losing the context menu
+// that is the only route to its own settings, permanently.
+describe("CreateProjectDialog and the reserved name", () => {
+  it("refuses to create a second Inbox", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CreateProjectDialog open onOpenChange={vi.fn()} creating={false} onCreate={onCreate} />,
+    );
+    const field = screen.getByPlaceholderText("Project name");
+    for (const reserved of ["Inbox", "inbox", "  INBOX  "]) {
+      fireEvent.change(field, { target: { value: reserved } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+      });
+    }
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(screen.getByText(/reserved/i)).toBeTruthy();
+  });
+
+  it("still creates any other project", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CreateProjectDialog open onOpenChange={vi.fn()} creating={false} onCreate={onCreate} />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("Project name"), {
+      target: { value: "Inboxes and Outboxes" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+    });
+    expect(onCreate).toHaveBeenCalledWith("Inboxes and Outboxes");
+  });
+});
+
+// A project literally named "Inbox " (trailing space) renders as an ordinary
+// project, so it HAS a settings menu — but comparing the trimmed name against
+// the untrimmed stored one read as a rename into the reserved name, leaving it
+// unable to save even a path-only change.
+describe("a project whose stored name only differs by whitespace", () => {
+  it("can still save a working directory", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ProjectSettingsDialog
+        project={{ id: "p3", name: "Inbox ", repoPath: null }}
+        open
+        onOpenChange={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    await waitFor(() => expect(nameInput().value).toBe("Inbox "));
+    fireEvent.change(pathInput(), { target: { value: "/code/thing" } });
+    await act(async () => save());
+    // Path only — the name was never really changed, so it isn't renamed (which
+    // would have stranded it) and isn't rejected either.
+    expect(onSave).toHaveBeenCalledWith({ repoPath: "/code/thing" });
   });
 });

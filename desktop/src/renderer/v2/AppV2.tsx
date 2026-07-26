@@ -17,6 +17,9 @@ import {
   SettingsIcon,
 } from "lucide-react";
 
+// INBOX_NAME is shared with the dialogs that can set a project name — see
+// lib/projects.ts for why it's reserved.
+import { INBOX_NAME } from "@/lib/projects";
 import { CreateProjectDialog } from "@/components/CreateProjectDialog";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
 import {
@@ -73,7 +76,7 @@ import { useTaskMutations } from "./useTaskMutations";
 // Inbox: on boot a project named "Inbox" is ensured (created if missing),
 // pinned first in the rail, and is the default selection.
 
-const INBOX_NAME = "Inbox";
+
 // Same key as V1's rail so the collapse preference carries across modes.
 const SIDEBAR_COLLAPSED_KEY = "hitch:sidebar:collapsed";
 const SELECTED_PROJECT_KEY = "hitch:v2:selected-project";
