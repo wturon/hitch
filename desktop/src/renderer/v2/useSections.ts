@@ -8,10 +8,14 @@ import type { HitchClient } from "@/lib/server/client";
 // invalidation reaches it by prefix: queryKeys.ts already maps the `sections`
 // table onto ["sections"], and migration 0001 already installs the NOTIFY
 // trigger. Both have been in place since M1 with nothing reading them.
-export function useSections(client: HitchClient, projectId: string) {
+// `projectId` is nullable so the shell can call this before a project is
+// selected: an empty string would be sent as a query param and rejected as a
+// malformed uuid, on a loop.
+export function useSections(client: HitchClient, projectId: string | null) {
   return useQuery({
-    queryKey: ["sections", { projectId }],
-    queryFn: () => fetchSections(client, projectId),
+    queryKey: ["sections", { projectId: projectId ?? undefined }],
+    queryFn: () => fetchSections(client, projectId!),
+    enabled: projectId !== null,
   });
 }
 

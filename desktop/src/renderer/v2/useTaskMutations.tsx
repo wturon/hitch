@@ -5,11 +5,12 @@ import type { HitchClient } from "@/lib/server/client";
 import { showUndoableToast } from "@/lib/undoToast";
 import { assignmentsToStopOnDone, type StoppableAssignment } from "./delegation";
 import { uncheckSortOrder } from "./listMutations";
+import { tasksInContainer, type PlacedTask, type SectionRow } from "./sectionGroups";
 import {
   createPendingDeleteStore,
   PENDING_DELETE_TOAST_MS,
 } from "./pendingDelete";
-import { deriveTaskGroups, type TaskRow } from "./todoGroups";
+import type { TaskRow } from "./todoGroups";
 
 // The V2 list mutations (M2 PR 4): check/uncheck, drag reorder, delete with
 // undo — every server write the list makes, owned by ONE hook instance in the
@@ -25,13 +26,14 @@ import { deriveTaskGroups, type TaskRow } from "./todoGroups";
 
 // What the mutations need from a cached task row — a structural subset of the
 // GET /tasks response (spreads keep the fields we don't model, e.g. tagIds).
-export interface MutableTask extends TaskRow {
+export interface MutableTask extends TaskRow, PlacedTask {
   title: string;
 }
 
 interface TaskPatch {
   status?: "open" | "done";
   sortOrder?: string;
+  sectionId?: string | null;
 }
 
 export interface TaskMutations {
@@ -45,6 +47,12 @@ export interface TaskMutations {
   toggleDone(task: MutableTask, done: boolean): void;
   /** A drag-reorder drop: PATCH the one moved row's precomputed sortOrder. */
   reorderTask(taskId: string, sortOrder: string): void;
+  /**
+   * File a task into a section (null = loose), landing it at the TOP of the
+   * destination. A move is an act of attention — the row belongs where you'll
+   * see it, not at the bottom of wherever it went.
+   */
+  moveTask(task: MutableTask, sectionId: string | null): void;
   /**
    * Delete with undo: hide the row and start the pending-delete window
    * (pendingDelete.ts — the DELETE fires only when the toast's undo window
@@ -160,16 +168,21 @@ export function useTaskMutations(
   // Mutation handlers read the CURRENT cache at call time (never a render
   // snapshot), so e.g. two quick unchecks each prepend before the head the
   // previous one just wrote.
-  const currentBacklog = () =>
-    deriveTaskGroups(
-      queryClient.getQueryData<MutableTask[]>(listKey) ?? [],
-    ).backlog;
+  const cachedTasks = () => queryClient.getQueryData<MutableTask[]>(listKey) ?? [];
+  const cachedSections = () =>
+    queryClient.getQueryData<SectionRow[]>(["sections", { projectId }]) ?? [];
+
+  // The open rows of ONE container, in list order — what a prepend computes
+  // against. Order is only ever compared within a container now, so "the top"
+  // means the top of the section the row actually lives in.
+  const currentContainer = (sectionId: string | null) =>
+    tasksInContainer(cachedTasks(), cachedSections(), sectionId);
 
   function markOpen(task: MutableTask) {
-    // Back to the TOP of the backlog — the row must come back where you'll
-    // see it. The task itself is in DONE, so the cached backlog is already
-    // "the backlog without it".
-    const sortOrder = uncheckSortOrder(currentBacklog());
+    // Back to the TOP of its OWN section — the row must come back where you'll
+    // see it. The task itself is in DONE, so the cached container is already
+    // "that container without it".
+    const sortOrder = uncheckSortOrder(currentContainer(task.sectionId ?? null));
     patchTask.mutate({
       taskId: task.id,
       patch: { status: "open", sortOrder },
@@ -210,6 +223,16 @@ export function useTaskMutations(
       if (!projectId) return;
       if (done) markDone(task);
       else markOpen(task);
+    },
+    moveTask: (task, sectionId) => {
+      const current = task.sectionId ?? null;
+      if (current === sectionId) return;
+      const sortOrder = uncheckSortOrder(currentContainer(sectionId));
+      patchTask.mutate({
+        taskId: task.id,
+        patch: { sectionId, sortOrder },
+        optimistic: { sectionId, sortOrder },
+      });
     },
     reorderTask: (taskId, sortOrder) => {
       if (!projectId) return;

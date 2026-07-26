@@ -56,8 +56,10 @@ import {
   reconcileTaskDialog,
   type TaskDialogState,
 } from "./taskDialogState";
+import { tasksInContainer } from "./sectionGroups";
 import { deriveTaskGroups } from "./todoGroups";
 import { fetchTasks, TodosViewV2 } from "./TodosViewV2";
+import { useSections } from "./useSections";
 import { useTagMutations } from "./useTagMutations";
 import { useTaskMutations } from "./useTaskMutations";
 
@@ -515,8 +517,8 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
   // click). It's the dialog body's React key; a capture→edit commit keeps the
   // same token, so that transition does not remount (see taskDialogState).
   const sessionRef = useRef(0);
-  const openCapture = useCallback(() => {
-    setTaskDialog(captureState(++sessionRef.current));
+  const openCapture = useCallback((sectionId: string | null = null) => {
+    setTaskDialog(captureState(++sessionRef.current, sectionId));
   }, []);
   const openTask = useCallback((taskId: string) => {
     setTaskDialog(editTaskState(++sessionRef.current, taskId));
@@ -554,13 +556,29 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
             !taskMutations.pendingDeleteIds.has(task.id),
         )
       : undefined;
-  // One grouping fold shared by the dialog's backlog-prepend maths and the
-  // ⌘K palette's task list — both read the same query, so this derives once.
+  // One grouping fold shared by the dialog's prepend maths and the ⌘K
+  // palette's task list — both read the same query, so this derives once.
   const taskGroups = useMemo(
     () => deriveTaskGroups(dialogTasks.data ?? []),
     [dialogTasks.data],
   );
-  const dialogBacklog = taskGroups.backlog;
+  // A capture prepends within the container it was opened INTO — the loose
+  // list for `C` and the top add-row, that section for a section's own add-row.
+  // Order is only compared within a container, so prepending against the whole
+  // project would put a section's new task above rows it doesn't share an
+  // ordering with. Shares useSections' cache entry with the list (same key).
+  const captureSectionId =
+    taskDialog.mode === "capture" ? taskDialog.sectionId : null;
+  const dialogSections = useSections(client, selectedProject?.id ?? null);
+  const dialogBacklog = useMemo(
+    () =>
+      tasksInContainer(
+        dialogTasks.data ?? [],
+        dialogSections.data ?? [],
+        captureSectionId,
+      ),
+    [dialogTasks.data, dialogSections.data, captureSectionId],
+  );
   // Close-on-vanish: once tasks have loaded, if the edited row is gone
   // (deleted from another client) drop the dialog AND reset the union.
   useEffect(() => {
@@ -783,6 +801,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
               tag={tagActions}
               onOpenTask={openTask}
               onAddTask={openCapture}
+              onMoveTask={taskMutations.moveTask}
               onToggleDone={taskMutations.toggleDone}
               onReorderTask={taskMutations.reorderTask}
               onDeleteTask={taskMutations.deleteTaskWithUndo}
@@ -804,6 +823,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
           projectId={selectedProject.id}
           row={dialogRow}
           backlog={dialogBacklog}
+          captureSectionId={captureSectionId}
           actions={dialogActions}
           tags={dialogTags}
           onClose={closeTaskDialog}

@@ -29,6 +29,7 @@ import {
   ChevronRightIcon,
   CircleCheckIcon,
   CircleIcon,
+  FolderInputIcon,
   MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
@@ -220,6 +221,8 @@ type RowActions = {
   // button until sections v1 consolidated every agent affordance into the chip;
   // the context menu keeps it one gesture away rather than deleting it.
   onAck: (assignmentId: string) => void;
+  /** File the task into a section (null = loose), at the top of it. */
+  onMove: (task: TaskItem, sectionId: string | null) => void;
 };
 
 // Everything the row needs to draw its agent chip, resolved from the task's
@@ -484,6 +487,51 @@ function NewSectionRow({ onCreate }: { onCreate: (name: string) => void }) {
 // toggles the server's tags on/off for this task and creates+assigns a new
 // one when the query matches nothing. TagCombobox and the submenu kit ARE the
 // V1 modules, imported.
+// The row's right-click "Move to ▸": file this task into a section, or back out
+// to loose. Drag does the same thing with a mouse; this is the version that
+// works from the keyboard, and the only one that reaches a collapsed section.
+//
+// The task lands at the TOP of its destination — the same prepend an uncheck
+// and a capture use. A move is an act of attention, so the moved row should be
+// where you'll see it, not buried at the bottom of wherever it went.
+function MoveToSubmenu({
+  task,
+  sections,
+  onMove,
+}: {
+  task: TaskItem;
+  sections: ReadonlyArray<{ id: string; name: string }>;
+  onMove: (task: TaskItem, sectionId: string | null) => void;
+}) {
+  const current = task.sectionId ?? null;
+  return (
+    <ContextMenuSub>
+      <ContextMenuSubTrigger>
+        <FolderInputIcon />
+        Move to
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent>
+        <ContextMenuItem
+          disabled={current === null}
+          onClick={() => onMove(task, null)}
+        >
+          No section
+        </ContextMenuItem>
+        {sections.length > 0 && <ContextMenuSeparator />}
+        {sections.map((section) => (
+          <ContextMenuItem
+            key={section.id}
+            disabled={current === section.id}
+            onClick={() => onMove(task, section.id)}
+          >
+            {section.name}
+          </ContextMenuItem>
+        ))}
+      </ContextMenuSubContent>
+    </ContextMenuSub>
+  );
+}
+
 function TagsSubmenu({ task, tag }: { task: TaskItem; tag: TagActions }) {
   return (
     <ContextMenuSub>
@@ -511,6 +559,7 @@ function TaskRow({
   tag,
   actions,
   chip,
+  sections,
   drag,
   nav,
 }: {
@@ -523,6 +572,8 @@ function TaskRow({
   // The row's agent instrument. Always present (an empty slot when there's no
   // agent) so chips and tag pills form a column down the list.
   chip: RowChip;
+  /** The project's sections, for the Move to ▸ submenu. */
+  sections: ReadonlyArray<{ id: string; name: string }>;
   // Present only for BACKLOG rows, which are drag-reorderable — dnd-kit's
   // sortable node/transform on the whole row (V1's whole-row drag). The
   // checkbox stops pointerdown so a drag can't start from it, and
@@ -614,6 +665,7 @@ function TaskRow({
           </ContextMenuItem>
         )}
         <ContextMenuSeparator />
+        <MoveToSubmenu task={task} sections={sections} onMove={actions.onMove} />
         <TagsSubmenu task={task} tag={tag} />
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onClick={() => actions.onDelete(task)}>
@@ -633,12 +685,14 @@ function SortableTaskRow({
   tag,
   actions,
   chip,
+  sections,
   nav,
 }: {
   task: TaskItem;
   tag: TagActions;
   actions: RowActions;
   chip: RowChip;
+  sections: ReadonlyArray<{ id: string; name: string }>;
   nav?: RowNav;
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
@@ -650,6 +704,7 @@ function SortableTaskRow({
       tag={tag}
       actions={actions}
       chip={chip}
+      sections={sections}
       nav={nav}
       drag={{
         setNodeRef,
@@ -808,6 +863,7 @@ export function TodosViewV2({
   onAddTask,
   onToggleDone,
   onReorderTask,
+  onMoveTask,
   onDeleteTask,
 }: {
   client: HitchClient;
@@ -822,10 +878,16 @@ export function TodosViewV2({
   pendingDeleteIds: ReadonlySet<string>;
   /** Open a task in the dialog. */
   onOpenTask: (taskId: string) => void;
-  /** Open the capture card (the add-row affordance; `C` lives in AppV2). */
-  onAddTask: () => void;
+  /**
+   * Open the capture card, filed into `sectionId` (null = loose). Every
+   * container has its own add-row, so the destination is chosen by WHICH row
+   * you clicked rather than by anything the capture card asks you.
+   */
+  onAddTask: (sectionId: string | null) => void;
   onToggleDone: (task: TaskItem, done: boolean) => void;
   onReorderTask: (taskId: string, sortOrder: string) => void;
+  /** File a task into a section (null = loose) — the Move to ▸ submenu. */
+  onMoveTask: (task: TaskItem, sectionId: string | null) => void;
   onDeleteTask: (task: TaskItem) => void;
 }) {
   const [showAllDone, setShowAllDone] = useState(false);
@@ -1085,7 +1147,7 @@ export function TodosViewV2({
     onActivate: (i) => {
       const item = navItems[i];
       if (!item) return;
-      if (item.kind === "add") onAddTask();
+      if (item.kind === "add") onAddTask(item.sectionId);
       else onOpenTask(item.task.id);
     },
     onKeyDown: (e, ctx) => {
@@ -1220,6 +1282,7 @@ export function TodosViewV2({
     onToggleDone,
     onDelete: onDeleteTask,
     onAck: (assignmentId) => ackAssignment.mutate(assignmentId),
+    onMove: onMoveTask,
   };
 
   // Everything the row's chip needs, resolved from the task's latest
@@ -1304,7 +1367,7 @@ export function TodosViewV2({
                 <>
                   {!filterActive && (
                     <AddTaskRow
-                      onAdd={onAddTask}
+                      onAdd={() => onAddTask(sectionId)}
                       nav={addNav(sectionId)}
                       hint={sectionId === null}
                     />
@@ -1318,6 +1381,7 @@ export function TodosViewV2({
                         tag={tag}
                         actions={actions}
                         chip={chipOf(task.id)}
+                        sections={sectionRows}
                         nav={rowNav(task.id)}
                       />
                     ))
@@ -1337,6 +1401,7 @@ export function TodosViewV2({
                             tag={tag}
                             actions={actions}
                             chip={chipOf(task.id)}
+                            sections={sectionRows}
                             nav={rowNav(task.id)}
                           />
                         ))}
@@ -1376,6 +1441,7 @@ export function TodosViewV2({
                 tag={tag}
                 actions={actions}
                 chip={chipOf(task.id)}
+                sections={sectionRows}
                 nav={rowNav(task.id)}
               />
             ))}
