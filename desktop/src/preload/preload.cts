@@ -97,6 +97,13 @@ export interface HitchDaemonApi {
   ) => Promise<Record<string, string>>;
   getStartingPrompts: () => Promise<StartingPrompt[]>;
   setStartingPrompts: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
+  // Native folder picker for a project's working directory. Resolves to null
+  // when the user cancels.
+  chooseDirectory: (defaultPath?: string) => Promise<string | null>;
+  // $HOME — where agents start when a project has no working directory set.
+  getHomeDir: () => Promise<string>;
+  // True for a blank path (nothing to check) or a real directory on THIS Mac.
+  directoryExists: (path: string) => Promise<boolean>;
   enableCmuxAutomation: () => Promise<EnableCmuxResult>;
   openCmuxApp: () => Promise<string>;
   getUpdaterStatus: () => Promise<UpdaterStatus>;
@@ -180,6 +187,10 @@ const api: HitchDaemonApi = {
   getStartingPrompts: () => ipcRenderer.invoke("config:get-starting-prompts"),
   setStartingPrompts: (prompts) =>
     ipcRenderer.invoke("config:set-starting-prompts", prompts),
+  chooseDirectory: (defaultPath) =>
+    ipcRenderer.invoke("dialog:choose-directory", defaultPath),
+  getHomeDir: () => ipcRenderer.invoke("app:home-dir"),
+  directoryExists: (path) => ipcRenderer.invoke("app:directory-exists", path),
   enableCmuxAutomation: () => ipcRenderer.invoke("cmux:enable-automation"),
   openCmuxApp: () => ipcRenderer.invoke("cmux:open-app"),
   getUpdaterStatus: () => ipcRenderer.invoke("updater:get-status"),

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 
+import { isReservedProjectName, RESERVED_NAME_MESSAGE } from "@/lib/projects";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,17 +31,29 @@ export function CreateProjectDialog({
   initialName?: string;
 }) {
   const [name, setName] = useState(initialName ?? "");
+  const [error, setError] = useState<string | null>(null);
 
   // Re-seed the field each time the dialog opens (the palette may carry a fresh
   // query); also clears it after a create closes the dialog.
   useEffect(() => {
-    if (open) setName(initialName ?? "");
+    if (open) {
+      setName(initialName ?? "");
+      setError(null);
+    }
   }, [open, initialName]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
+    // The other door to a stranded project (see lib/projects.ts). A second
+    // "Inbox" renders as an inbox, which has no context menu — so it loses the
+    // only route to its own settings, permanently.
+    if (isReservedProjectName(trimmed)) {
+      setError(RESERVED_NAME_MESSAGE);
+      return;
+    }
+    setError(null);
     await onCreate(trimmed);
     setName("");
     onOpenChange(false);
@@ -67,6 +80,7 @@ export function CreateProjectDialog({
             placeholder="Project name"
             className="h-9 rounded-md border bg-background px-3 text-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
           />
+          {error && <p className="text-xs text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="submit" disabled={creating || !name.trim()}>
               {creating ? "Creating…" : "Create project"}
