@@ -413,17 +413,21 @@ function ComposeControls({
   const chip = "h-7 gap-1.5 border-0 px-1.5 font-normal hover:bg-black/5";
 
   // A failed delegate used to be swallowed by `void composer.start()`: the
-  // click did nothing, said nothing, and logged nothing. Surface it — a server
-  // that rejects the POST (an older desktop against a newer server, say) is
-  // exactly the case where silence is worst.
-  const [error, setError] = useState<string | null>(null);
+  // click did nothing, said nothing, and logged nothing. The message lives on
+  // the composer so the ⌘⏎ path reports too; catching here only keeps the
+  // rethrow from becoming an unhandled rejection.
   const onDelegateClick = useCallback(() => {
-    setError(null);
     void composer.start().catch((e: unknown) => {
       console.error("Failed to delegate", e);
-      setError(e instanceof Error ? e.message : "Failed to delegate");
     });
   }, [composer]);
+
+  // Why Delegate is greyed out. Machine availability first (it's the blocking
+  // one), then a blank prompt — which is otherwise a dead button with no
+  // explanation, since the textarea is collapsed by default.
+  const blockedReason =
+    disabledReason ??
+    (composer.canSubmit ? null : "Write a prompt to delegate.");
 
   return (
     <>
@@ -610,10 +614,12 @@ function ComposeControls({
         </button>
       </div>
 
-      {disabledReason && (
-        <p className="text-[12px] text-muted-foreground">{disabledReason}</p>
+      {blockedReason && (
+        <p className="text-[12px] text-muted-foreground">{blockedReason}</p>
       )}
-      {error && <p className="text-[12px] text-destructive">{error}</p>}
+      {composer.error && (
+        <p className="text-[12px] text-destructive">{composer.error}</p>
+      )}
     </>
   );
 }

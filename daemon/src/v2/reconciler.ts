@@ -449,7 +449,10 @@ export class Reconciler {
     // rather than spawn an agent with an empty prompt: a visible dead
     // assignment beats a confused agent sitting in a tab, and re-inventing a
     // preamble here is exactly the duplication this change removed.
-    if (a.prompt == null) {
+    // BLANK counts, not just null: the server never stores an empty prompt (it
+    // falls back to the default template), so an empty one here means the same
+    // broken-row condition and would spawn an agent with no instructions.
+    if (a.prompt == null || a.prompt.trim() === "") {
       throw new Error(
         `assignment ${a.id} has no prompt — the server did not resolve one ` +
           `(is it running a build older than the daemon?)`,

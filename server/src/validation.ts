@@ -166,9 +166,9 @@ export const assignmentCreate = z.strictObject({
   // The server deploys to Railway independently of the electron-updater'd
   // desktop, so between the two there's a window where a client still sends the
   // pre-composed `prompt`. strictObject would 400 that, and the delegate button
-  // would just stop working. Accepting it here is safe rather than a resolution
-  // bypass: an old client's text contains no variables, so resolving it is a
-  // no-op that reproduces the old behavior exactly.
+  // would just stop working. It is stored VERBATIM (never resolved — see the
+  // route), which reproduces the old behavior exactly and is not a resolution
+  // bypass: that text was already final when the old client sent it.
   prompt: z.string().optional(),
   // Kickoff-only launch params (mirror the nullable schema columns). Optional
   // AND nullable: omitting them, or passing null, means "harness default" — the

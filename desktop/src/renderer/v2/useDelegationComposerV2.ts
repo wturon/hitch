@@ -69,6 +69,10 @@ export interface DelegationComposerV2 {
   // (a blank instruction still got the preamble); now the textarea IS the whole
   // prompt, so clearing it would launch an agent with nothing to do.
   canSubmit: boolean;
+  // The last failed delegate, for display. Lives HERE rather than in the bar so
+  // both paths report: ⌘⏎ fires start() from a keydown handler with nowhere to
+  // catch, and used to fail in total silence.
+  error: string | null;
   // Fire the delegation: guards re-entry via the phase latch, calls onStart,
   // remembers the harness on success, unlatches (and rethrows) on failure.
   start: () => Promise<void>;
@@ -99,6 +103,7 @@ export function useDelegationComposerV2({
   const [promptId, setPromptId] = useState(BUILTIN_STARTING_PROMPTS[0].id);
   const [prompt, setPrompt] = useState(BUILTIN_STARTING_PROMPTS[0].body);
   const [phase, setPhase] = useState<ComposerPhase>("idle");
+  const [error, setError] = useState<string | null>(null);
 
   // Load the user's custom prompts once (the bar remounts per task via the
   // dialog session key, so a mount-time load also refreshes after a settings
@@ -160,14 +165,18 @@ export function useDelegationComposerV2({
   const start = useCallback(async () => {
     if (phase !== "idle" || !canStart || prompt.trim() === "") return;
     setPhase("sending");
+    setError(null);
     try {
       await onStart({ harness, model, effort, promptTemplate: prompt });
       // Remember this exact combination for the next surface's composer.
       saveLastAgent({ harness, model, effort });
       setPhase("submitted");
     } catch (error) {
-      // The launch never left — unlatch so the user can retry.
+      // The launch never left — unlatch so the user can retry, and record WHY.
+      // Still rethrown: callers that want to react to a failed delegate can,
+      // and the display is a side effect rather than a swallow.
       setPhase("idle");
+      setError(error instanceof Error ? error.message : "Failed to delegate");
       throw error;
     }
   }, [phase, canStart, harness, model, effort, prompt, onStart]);
@@ -189,7 +198,9 @@ export function useDelegationComposerV2({
       }
       e.preventDefault();
       e.stopPropagation();
-      void start();
+      // The rejection is already captured in `error` for display; catching here
+      // only stops it becoming an unhandled promise rejection.
+      void start().catch(() => {});
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -209,6 +220,7 @@ export function useDelegationComposerV2({
     setPrompt,
     choosePreset,
     canSubmit,
+    error,
     start,
   };
 }

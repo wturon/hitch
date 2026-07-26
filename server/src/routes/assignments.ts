@@ -47,17 +47,25 @@ export const assignmentRoutes = new Hono<AppEnv>()
     // Resolve the template ONCE, here, against the task as it stands right now.
     // assignments.prompt is a record of what was sent, so later edits to the
     // task never rewrite the prompt an agent was actually given.
+    //
+    // Blank (not just absent) counts as "nothing was chosen" on BOTH fields —
+    // `??` alone would store "" and launch an agent with no instructions.
     const { promptTemplate, prompt: legacyPrompt, ...rest } = body;
-    // ?? would let an explicit "" through as a prompt; a blank template means
-    // "nothing was chosen", which is the default's job. `legacyPrompt` is the
-    // transition shim for older desktop builds (see validation.ts).
-    const template =
-      promptTemplate?.trim() ? promptTemplate : (legacyPrompt ?? DEFAULT_PROMPT_TEMPLATE);
-    const prompt = resolvePromptTemplate(template, {
-      id: task.id,
-      title: task.title,
-      body: task.body,
-    });
+    const template = promptTemplate?.trim() ? promptTemplate : null;
+    const legacy = legacyPrompt?.trim() ? legacyPrompt : null;
+    // A legacy prompt is used VERBATIM, never resolved. Old clients composed
+    // the final text themselves — inlining the task body into it — so resolving
+    // it again would expand any variable name the BODY happens to mention,
+    // duplicating the task inside its own prompt. (Tasks about this feature are
+    // exactly the ones whose bodies say "$TASK_BODY".)
+    const prompt =
+      legacy && !template
+        ? legacy
+        : resolvePromptTemplate(template ?? DEFAULT_PROMPT_TEMPLATE, {
+            id: task.id,
+            title: task.title,
+            body: task.body,
+          });
     const [row] = await db.insert(assignments).values({ ...rest, prompt }).returning();
     return c.json(row, 201);
   })

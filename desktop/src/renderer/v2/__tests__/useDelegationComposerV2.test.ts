@@ -238,3 +238,38 @@ describe("blank prompts can't be delegated", () => {
     expect(result.current.canSubmit).toBe(false);
   });
 });
+
+// ⌘⏎ fires start() from a window keydown handler — there is nowhere for the
+// caller to catch, so a failed delegate there used to be totally silent (and an
+// unhandled rejection). The message lives on the composer for that reason.
+describe("failed delegates are reported, not swallowed", () => {
+  it("records the error message and clears it on the next attempt", async () => {
+    const onStart = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Failed to delegate (400)"))
+      .mockResolvedValueOnce(undefined);
+    const { result } = render(onStart);
+    expect(result.current.error).toBeNull();
+
+    await act(async () => {
+      await expect(result.current.start()).rejects.toThrow();
+    });
+    expect(result.current.error).toBe("Failed to delegate (400)");
+
+    // A retry clears the stale message rather than leaving it under a success.
+    await act(async () => {
+      await result.current.start();
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.phase).toBe("submitted");
+  });
+
+  it("falls back to a generic message for a non-Error rejection", async () => {
+    const onStart = vi.fn().mockRejectedValue("nope");
+    const { result } = render(onStart);
+    await act(async () => {
+      await expect(result.current.start()).rejects.toBeTruthy();
+    });
+    expect(result.current.error).toBe("Failed to delegate");
+  });
+});

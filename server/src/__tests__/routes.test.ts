@@ -342,8 +342,49 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
         prompt: "Already composed by an old build.",
       });
       expect(res.status).toBe(201);
-      // Resolving variable-free text is a no-op, so the old behavior is exact.
+      // Stored VERBATIM — an old client's text was already final.
       expect((await json(res)).prompt).toBe("Already composed by an old build.");
+    });
+
+    // The old client inlined the task BODY into the text it sent. Resolving
+    // that again would expand any variable name the body happens to mention,
+    // duplicating the task inside its own prompt — and the tasks most likely to
+    // say "$TASK_BODY" are the ones about this very feature.
+    it("never re-resolves a legacy prompt whose text mentions a variable", async () => {
+      const project = await createProject(USER_A, "Legacy variable project");
+      const task = await createTask(USER_A, project.id, {
+        title: "Prompt templates",
+        body: "Support $TASK_BODY and $TASK_TITLE variables.",
+      });
+      const machine = await registerMachine(USER_A, "legacy-variable-machine");
+
+      const composed = `You're picking up "Prompt templates".\n\n${task.body}`;
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        prompt: composed,
+      });
+      expect(res.status).toBe(201);
+      expect((await json(res)).prompt).toBe(composed);
+    });
+
+    // `??` on the legacy field would store "" and launch an agent with nothing.
+    it("treats a blank legacy prompt as absent too", async () => {
+      const project = await createProject(USER_A, "Blank legacy project");
+      const task = await createTask(USER_A, project.id, { title: "Blank legacy" });
+      const machine = await registerMachine(USER_A, "blank-legacy-machine");
+
+      for (const prompt of ["", "  \n "]) {
+        const res = await api(USER_A, "POST", "/assignments", {
+          taskId: task.id,
+          machineId: machine.id,
+          harness: "claude",
+          prompt,
+        });
+        expect(res.status).toBe(201);
+        expect((await json(res)).prompt).toContain('"Blank legacy"');
+      }
     });
 
     // A cleared textarea means "nothing chosen", not "launch with nothing" —
