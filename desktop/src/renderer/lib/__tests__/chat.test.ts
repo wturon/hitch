@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { PROMPT_TEMPLATE_FRAMING } from "@hitch/shared";
 
 import {
   MODELS_BY_HARNESS,
   defaultModel,
   defaultReasoning,
+  loadCustomPrompts,
   modelLabel,
+  promptDescription,
   reasoningOptions,
 } from "../chat";
 
@@ -34,5 +39,92 @@ describe("Codex model catalog", () => {
       "xhigh",
       "max",
     ]);
+  });
+});
+
+// Prompts saved before templates existed are instruction-only and assumed a
+// preamble would be prepended. Nothing is prepended now, so left alone they'd
+// launch an agent with NO task context — silently. That's the failure this
+// migration exists to prevent.
+describe("legacy custom-prompt migration", () => {
+  function withBridge(stored: Array<{ id: string; name: string; body: string }>) {
+    const setStartingPrompts = vi.fn().mockImplementation((p) => Promise.resolve(p));
+    (window as unknown as { hitchDaemon?: unknown }).hitchDaemon = {
+      getStartingPrompts: vi.fn().mockResolvedValue(stored),
+      setStartingPrompts,
+    };
+    return setStartingPrompts;
+  }
+
+  afterEach(() => {
+    delete (window as unknown as { hitchDaemon?: unknown }).hitchDaemon;
+    vi.restoreAllMocks();
+  });
+
+  it("puts the framing back on a variable-free prompt, and persists it", async () => {
+    const persist = withBridge([{ id: "c1", name: "Mine", body: "Write tests." }]);
+    const [migrated] = await loadCustomPrompts();
+
+    expect(migrated.body).toBe(`${PROMPT_TEMPLATE_FRAMING}\n\nWrite tests.`);
+    expect(migrated.body).toContain("$TASK_BODY");
+    // The user's own words survive verbatim at the end.
+    expect(migrated.body.endsWith("Write tests.")).toBe(true);
+    expect(persist).toHaveBeenCalledOnce();
+  });
+
+  it("leaves an already-templated prompt alone and writes nothing", async () => {
+    const body = "Do $TASK_TITLE my way.";
+    const persist = withBridge([{ id: "c2", name: "Templated", body }]);
+    const [prompt] = await loadCustomPrompts();
+
+    expect(prompt.body).toBe(body);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("does not invent a prompt for an empty body", async () => {
+    const persist = withBridge([{ id: "c3", name: "Blank", body: "" }]);
+    const [prompt] = await loadCustomPrompts();
+
+    expect(prompt.body).toBe("");
+    expect(persist).not.toHaveBeenCalled();
+  });
+});
+
+// Every template opens with the same framing, so describing a prompt by its
+// first characters describes all of them identically — the settings list and
+// the delegate bar both rely on this picking out what DIFFERS.
+describe("promptDescription", () => {
+  const describe_ = (body: string) => promptDescription({ id: "x", name: "x", body });
+
+  it("prefers an authored description", () => {
+    expect(
+      promptDescription({ id: "x", name: "x", body: "ignored", description: " Real " }),
+    ).toBe("Real");
+  });
+
+  it("strips an exact framing prefix", () => {
+    expect(describe_(`${PROMPT_TEMPLATE_FRAMING}\n\nGo wild.`)).toBe("Go wild.");
+  });
+
+  // The exact-prefix path alone wasn't enough: change one word of the framing —
+  // or delete the CLI line, which the seeded draft invites — and two different
+  // prompts described identically again.
+  it("still finds the instruction when the framing has been edited", () => {
+    const edited = PROMPT_TEMPLATE_FRAMING.replace("picking up", "working on");
+    expect(describe_(`${edited}\n\nWrite tests.`)).toBe("Write tests.");
+
+    const trimmed = PROMPT_TEMPLATE_FRAMING.split("\n").slice(0, -1).join("\n");
+    expect(describe_(`${trimmed}\n\nShip it.`)).toBe("Ship it.");
+  });
+
+  it("describes nothing for a framing-only draft or an empty body", () => {
+    expect(describe_(`${PROMPT_TEMPLATE_FRAMING}\n\n`)).toBe("");
+    expect(describe_("")).toBe("");
+    expect(describe_("   \n  ")).toBe("");
+  });
+
+  it("squashes whitespace and truncates long text", () => {
+    expect(describe_("do\n\n  this   thing")).toBe("this thing");
+    expect(describe_("x".repeat(100)).endsWith("…")).toBe(true);
   });
 });

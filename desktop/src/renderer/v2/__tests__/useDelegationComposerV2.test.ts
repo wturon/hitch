@@ -22,7 +22,7 @@ function render(
     harness: string;
     model: string;
     effort: string;
-    prompt: string;
+    promptTemplate: string;
   }) => Promise<void> | void,
   canStart = true,
 ) {
@@ -93,7 +93,7 @@ describe("agent selection", () => {
 });
 
 describe("choosePreset", () => {
-  it("refills the instruction text from the picked preset", () => {
+  it("refills the prompt text from the picked preset", () => {
     const second = BUILTIN_STARTING_PROMPTS[1];
     const { result } = render(vi.fn());
     act(() => result.current.choosePreset(second.id));
@@ -126,7 +126,8 @@ describe("start", () => {
       harness: "codex",
       model,
       effort,
-      prompt: BUILTIN_STARTING_PROMPTS[0].body,
+      // The WHOLE template goes over the wire — the bar composes nothing.
+      promptTemplate: BUILTIN_STARTING_PROMPTS[0].body,
     });
     expect(result.current.phase).toBe("submitted");
     // The full triple is persisted as a JSON blob now.
@@ -210,5 +211,125 @@ describe("custom prompts bridge", () => {
     } finally {
       delete (window as unknown as { hitchDaemon?: unknown }).hitchDaemon;
     }
+  });
+});
+
+// An empty prompt used to be impossible: a blank instruction still got the
+// preamble. Now the textarea IS the whole prompt, so clearing it would launch
+// an agent with nothing to do.
+describe("blank prompts can't be delegated", () => {
+  it("blocks start() and reports canSubmit=false when the prompt is empty", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const { result } = render(onStart);
+    expect(result.current.canSubmit).toBe(true);
+
+    act(() => result.current.setPrompt("   \n  "));
+    expect(result.current.canSubmit).toBe(false);
+    await act(async () => {
+      await result.current.start();
+    });
+    expect(onStart).not.toHaveBeenCalled();
+    // Not latched — the user can type something and try again.
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("canSubmit is false when the consumer says we can't start at all", () => {
+    const { result } = render(vi.fn(), false);
+    expect(result.current.canSubmit).toBe(false);
+  });
+});
+
+// ⌘⏎ fires start() from a window keydown handler — there is nowhere for the
+// caller to catch, so a failed delegate there used to be totally silent (and an
+// unhandled rejection). The message lives on the composer for that reason.
+describe("failed delegates are reported, not swallowed", () => {
+  it("records the error message and clears it on the next attempt", async () => {
+    const onStart = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Failed to delegate (400)"))
+      .mockResolvedValueOnce(undefined);
+    const { result } = render(onStart);
+    expect(result.current.error).toBeNull();
+
+    await act(async () => {
+      await expect(result.current.start()).rejects.toThrow();
+    });
+    expect(result.current.error).toBe("Failed to delegate (400)");
+
+    // A retry clears the stale message rather than leaving it under a success.
+    await act(async () => {
+      await result.current.start();
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.phase).toBe("submitted");
+  });
+
+  it("falls back to a generic message for a non-Error rejection", async () => {
+    const onStart = vi.fn().mockRejectedValue("nope");
+    const { result } = render(onStart);
+    await act(async () => {
+      await expect(result.current.start()).rejects.toBeTruthy();
+    });
+    expect(result.current.error).toBe("Failed to delegate");
+  });
+});
+
+// The REAL ⌘⏎ path: start() fired from a window keydown listener, where the
+// caller has nowhere to catch. Every other test here drives start() directly
+// (keyboardArmed: false), i.e. the click path — which is exactly why this
+// failure mode survived two rounds of review.
+describe("the ⌘⏎ path", () => {
+  function renderArmed(onStart: (params: unknown) => Promise<void> | void) {
+    return renderHook(() =>
+      useDelegationComposerV2({ canStart: true, keyboardArmed: true, onStart }),
+    );
+  }
+
+  const pressCmdEnter = () =>
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+    );
+
+  it("delegates on ⌘⏎", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const { result } = renderArmed(onStart);
+    await act(async () => {
+      pressCmdEnter();
+    });
+    await waitFor(() => expect(result.current.phase).toBe("submitted"));
+    expect(onStart).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces a failure instead of failing silently", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onStart = vi.fn().mockRejectedValue(new Error("Failed to delegate (400)"));
+    const { result } = renderArmed(onStart);
+    await act(async () => {
+      pressCmdEnter();
+    });
+    await waitFor(() =>
+      expect(result.current.error).toBe("Failed to delegate (400)"),
+    );
+    // Unlatched, so the user can fix whatever it was and retry.
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("clears a stale error even when the attempt is blocked", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onStart = vi.fn().mockRejectedValue(new Error("boom"));
+    const { result } = renderArmed(onStart);
+    await act(async () => {
+      pressCmdEnter();
+    });
+    await waitFor(() => expect(result.current.error).toBe("boom"));
+
+    // Blank the prompt: the next attempt is refused, and the old message must
+    // not linger under the "write a prompt" hint.
+    act(() => result.current.setPrompt("  "));
+    await act(async () => {
+      pressCmdEnter();
+    });
+    expect(result.current.error).toBeNull();
+    expect(onStart).toHaveBeenCalledOnce();
   });
 });

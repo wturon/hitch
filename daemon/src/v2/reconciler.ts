@@ -222,34 +222,6 @@ export function observationTransition(
   return derived === current ? null : derived;
 }
 
-// ─── Prompt preamble (Decision 2) ────────────────────────────────────────────
-//
-// Ported VERBATIM from desktop/src/renderer/v2/delegation.ts (buildDelegatePreamble)
-// so the two sides agree on wording: when the client stamped assignments.prompt
-// the daemon uses it as-is; when prompt is null the daemon builds THIS preamble.
-// Keep the wording identical to the desktop builder.
-
-export interface DelegateTask {
-  id: string;
-  title: string;
-  body: string;
-}
-
-export function buildDelegatePreamble(task: DelegateTask): string {
-  const hasBody = task.body.trim() !== "";
-  return [
-    `You're picking up the Hitch task "${task.title}".`,
-    "",
-    "Here is the full task description, verbatim:",
-    "",
-    hasBody ? task.body : "(No description was written.)",
-    "",
-    `Task id: ${task.id}`,
-    "If the `hitch` CLI is installed, you can use it to read this task, add" +
-      " comments, and mark it complete — run `hitch --help` to see how.",
-  ].join("\n");
-}
-
 // ─── Reconciler ──────────────────────────────────────────────────────────────
 
 export interface ReconcilerOptions {
@@ -466,11 +438,27 @@ export class Reconciler {
     const repoPath = project?.repoPath?.trim();
     // Decision 4: spawn cwd = project.repoPath ?? homedir().
     const cwd = repoPath && repoPath.length > 0 ? repoPath : homedir();
-    // Decision 2: assignments.prompt verbatim, else the default preamble.
-    const prompt =
-      a.prompt != null
-        ? a.prompt
-        : buildDelegatePreamble({ id: task.id, title: task.title, body: task.body });
+    // assignments.prompt VERBATIM — the daemon never composes a prompt. The
+    // server resolves the template when the assignment is created (see
+    // server/src/prompt.ts), so this column is the exact text the user approved
+    // in the delegate bar.
+    //
+    // Null means the row predates server-side resolution, or a NEW daemon is
+    // talking to an OLD server (the daemon ships inside the desktop app and
+    // updates on its own schedule — deploy the server first). Fail the launch
+    // rather than spawn an agent with an empty prompt: a visible dead
+    // assignment beats a confused agent sitting in a tab, and re-inventing a
+    // preamble here is exactly the duplication this change removed.
+    // BLANK counts, not just null: the server never stores an empty prompt (it
+    // falls back to the default template), so an empty one here means the same
+    // broken-row condition and would spawn an agent with no instructions.
+    if (a.prompt == null || a.prompt.trim() === "") {
+      throw new Error(
+        `assignment ${a.id} has no prompt — the server did not resolve one ` +
+          `(is it running a build older than the daemon?)`,
+      );
+    }
+    const prompt = a.prompt;
     const serverHarness = (a.harness as ServerHarness) ?? "claude";
     const harness = launcherHarness(serverHarness);
     // Kickoff-only launch params. null/undefined → undefined so the launcher

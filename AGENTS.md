@@ -30,7 +30,8 @@ app reads/writes it; a reconciler daemon executes the machine-side work.
   `launches.json` are the only persistent local state, disposable by design.
   `src/attachment/` is the one place that knows about launches: it pre-registers
   a chat we started (claude's session id is known up front, codex's isn't), joins
-  a codex thread to its launch by cmux surface id, and links the assignment to
+  a codex thread to its launch by the `HITCH_LAUNCH_ID` nonce its hooks echo back
+  (never by anything cmux-shaped), and links the assignment to
   the chat row the snapshot echoes back. Observation must never import it, or
   `launchers/`, or `cmux.ts` —
   `npm -w @hitch/daemon run smoke:observer-boundary` enforces that. See

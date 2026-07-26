@@ -594,8 +594,7 @@ function TaskBodyV2({
           <DelegateBar
             client={client}
             taskId={committedId}
-            title={doc.title}
-            body={doc.body}
+            flushTask={doc.flush}
           />
         )}
       </div>

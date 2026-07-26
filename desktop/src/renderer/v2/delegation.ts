@@ -1,8 +1,9 @@
 // Pure delegation logic for the V2 delegate bar (M4 PR 5, option L). No React,
 // no HTTP, no DOM beyond a guarded localStorage read — everything here is
 // unit-testable in isolation, exactly like todoGroups/tagFilter. The bar's
-// three states, the observed-state → chip mapping, machine staleness, and the
-// machine-facing prompt preamble all derive from these functions.
+// three states, the observed-state → chip mapping and machine staleness all
+// derive from these functions. Prompt composition does NOT live here any more —
+// see the note below.
 //
 // Harness note: the V2 server enum is `claude | codex` (schema.ts), NOT V1's
 // `claude-code | codex`. The delegate bar speaks the server's language; the V1
@@ -287,47 +288,18 @@ export function machineAvailability<T extends MachineLike>(
   return { usable, disabledReason: null, hidePicker: all.length === 1 };
 }
 
-// ─── Prompt composition (Decision 2) ─────────────────────────────────────────
-
-export interface DelegateTask {
-  id: string;
-  title: string;
-  body: string;
-}
-
-// The machine-facing preamble stamped ahead of the chosen prompt. It orients a
-// fresh agent to the task without assuming any Hitch machinery: the title, the
-// body VERBATIM (capture text is sacred — embedded byte-for-byte, never
-// transformed), the task id, and one line noting the optional `hitch` CLI. Will
-// may tweak the wording; the shape (title, verbatim body, id, CLI line) is the
-// contract the unit test pins.
-export function buildDelegatePreamble(task: DelegateTask): string {
-  const hasBody = task.body.trim() !== "";
-  return [
-    `You're picking up the Hitch task "${task.title}".`,
-    "",
-    "Here is the full task description, verbatim:",
-    "",
-    hasBody ? task.body : "(No description was written.)",
-    "",
-    `Task id: ${task.id}`,
-    "If the `hitch` CLI is installed, you can use it to read this task, add" +
-      " comments, and mark it complete — run `hitch --help` to see how.",
-  ].join("\n");
-}
-
-// The final prompt stamped VERBATIM into assignments.prompt: the preamble
-// followed by the user's chosen prompt text (a preset body or their one-off
-// edit). A blank prompt collapses to just the preamble. The preamble is always
-// present, so the composed result is never empty — callers may still treat an
-// empty return as "no prompt", but in practice one never occurs.
-export function composeDelegatePrompt(
-  task: DelegateTask,
-  promptText: string,
-): string {
-  const preamble = buildDelegatePreamble(task);
-  return promptText.trim() === "" ? preamble : `${preamble}\n\n${promptText}`;
-}
+// ─── Prompt composition ──────────────────────────────────────────────────────
+//
+// There is none, on purpose. The delegate bar POSTs its textarea contents as
+// `promptTemplate` and the SERVER substitutes $TASK_TITLE / $TASK_BODY /
+// $TASK_ID (server/src/prompt.ts). Nothing is added between what the user reads
+// and what the agent receives.
+//
+// This replaced a buildDelegatePreamble/composeDelegatePrompt pair that silently
+// prepended the task title, the whole body, the id, and a `hitch` CLI line to
+// whatever was in the textarea — so the field labelled "instructions" showed a
+// small fraction of the real prompt, and the rest was unreadable and
+// unoverridable. See docs/v2-prd.md.
 
 // ─── Last-agent seed (V2-local) ──────────────────────────────────────────────
 

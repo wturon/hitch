@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { requireAuth } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { assignments, projects, tasks } from "../db/schema.js";
+import { DEFAULT_PROMPT_TEMPLATE, resolvePromptTemplate } from "../prompt.js";
 import { assignmentClientUpdate, assignmentCreate, assignmentListQuery, idParam } from "../validation.js";
 import { notFound, ownedAssignment, ownedMachine, ownedTask } from "./helpers.js";
 
@@ -43,7 +44,33 @@ export const assignmentRoutes = new Hono<AppEnv>()
     if (!task) return c.json(notFound, 404);
     const machine = await ownedMachine(db, c.var.userId, body.machineId);
     if (!machine) return c.json(notFound, 404);
-    const [row] = await db.insert(assignments).values(body).returning();
+    // Resolve the template ONCE, here, against the task as it stands right now.
+    // assignments.prompt is a record of what was sent, so later edits to the
+    // task never rewrite the prompt an agent was actually given.
+    //
+    // Blank (not just absent) counts as "nothing was chosen" on BOTH fields —
+    // `??` alone would store "" and launch an agent with no instructions.
+    const { promptTemplate, prompt: legacyPrompt, ...rest } = body;
+    const template = promptTemplate?.trim() ? promptTemplate : null;
+    const legacy = legacyPrompt?.trim() ? legacyPrompt : null;
+    // A legacy prompt is used VERBATIM, never resolved. Old clients composed
+    // the final text themselves — inlining the task body into it — so resolving
+    // it again would expand any variable name the BODY happens to mention,
+    // duplicating the task inside its own prompt. (Tasks about this feature are
+    // exactly the ones whose bodies say "$TASK_BODY".)
+    const taskValues = { id: task.id, title: task.title, body: task.body };
+    const resolved =
+      legacy && !template
+        ? legacy
+        : resolvePromptTemplate(template ?? DEFAULT_PROMPT_TEMPLATE, taskValues);
+    // A non-blank template can still RESOLVE to blank — `$TASK_TITLE` alone,
+    // against a whitespace title (titles are min(1), not min(1) non-blank).
+    // Checking the output rather than the input is what actually keeps the
+    // never-store-an-empty-prompt promise the daemon relies on.
+    const prompt = resolved.trim()
+      ? resolved
+      : resolvePromptTemplate(DEFAULT_PROMPT_TEMPLATE, taskValues);
+    const [row] = await db.insert(assignments).values({ ...rest, prompt }).returning();
     return c.json(row, 201);
   })
   .get("/:id", zValidator("param", idParam), async (c) => {

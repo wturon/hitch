@@ -78,6 +78,19 @@ export {
   type ChatStatus,
 } from "./chatStatus.js";
 
+// Prompt templates (shared/ re-exports these). The resolver is exported so the
+// desktop can BUILD templates from the same framing the server resolves — not
+// so clients can resolve their own: POST /assignments is the only resolution
+// point, and its output is what lands in assignments.prompt.
+export {
+  DEFAULT_PROMPT_TEMPLATE,
+  EMPTY_BODY_PLACEHOLDER,
+  PROMPT_TEMPLATE_FRAMING,
+  PROMPT_VARIABLES,
+  resolvePromptTemplate,
+  type PromptTask,
+} from "./prompt.js";
+
 // Row types for consumers (shared/ re-exports these).
 export type {
   Assignment,

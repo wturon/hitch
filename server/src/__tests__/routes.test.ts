@@ -238,7 +238,7 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
         taskId: task.id,
         machineId: machine.id,
         harness: "claude",
-        prompt: "do the thing",
+        promptTemplate: "do the thing",
       });
       expect(createRes.status).toBe(201);
       const assignment = await json(createRes);
@@ -276,6 +276,173 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       });
       expect(stopRes.status).toBe(200);
       expect((await json(stopRes)).desiredState).toBe("stopped");
+    });
+  });
+
+  describe("prompt templates", () => {
+    it("resolves the template once at creation and stores the result", async () => {
+      const project = await createProject(USER_A, "Prompt project");
+      const task = await createTask(USER_A, project.id, {
+        title: "Fix the login bug",
+        body: "Repro: sign in twice.",
+      });
+      const machine = await registerMachine(USER_A, "prompt-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        promptTemplate: 'Task "$TASK_TITLE" ($TASK_ID):\n$TASK_BODY',
+      });
+      expect(res.status).toBe(201);
+      const assignment = await json(res);
+      expect(assignment.prompt).toBe(
+        `Task "Fix the login bug" (${task.id}):\nRepro: sign in twice.`,
+      );
+
+      // IMMUTABLE RECORD: editing the task afterwards must not rewrite the
+      // prompt an agent was already given.
+      await api(USER_A, "PATCH", `/tasks/${task.id}`, { title: "Renamed" });
+      const after = await json(await api(USER_A, "GET", `/assignments/${assignment.id}`));
+      expect(after.prompt).toContain("Fix the login bug");
+      expect(after.prompt).not.toContain("Renamed");
+    });
+
+    it("omitting a template falls back to the default one, still resolved", async () => {
+      const project = await createProject(USER_A, "Default prompt project");
+      const task = await createTask(USER_A, project.id, { title: "Untemplated" });
+      const machine = await registerMachine(USER_A, "default-prompt-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+      });
+      expect(res.status).toBe(201);
+      const assignment = await json(res);
+      expect(assignment.prompt).toContain('"Untemplated"');
+      expect(assignment.prompt).toContain(`Task id: ${task.id}`);
+      // The daemon launches this verbatim, so an unsubstituted variable would
+      // reach the agent as raw text.
+      expect(assignment.prompt).not.toContain("$TASK_");
+    });
+
+    // TRANSITION SHIM: the server deploys ahead of the desktop, so a client
+    // still sending the pre-composed `prompt` must keep working rather than
+    // hitting a 400 on a button that then appears to do nothing.
+    it("still accepts an old client's pre-composed `prompt`", async () => {
+      const project = await createProject(USER_A, "Legacy prompt project");
+      const task = await createTask(USER_A, project.id);
+      const machine = await registerMachine(USER_A, "legacy-prompt-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        prompt: "Already composed by an old build.",
+      });
+      expect(res.status).toBe(201);
+      // Stored VERBATIM — an old client's text was already final.
+      expect((await json(res)).prompt).toBe("Already composed by an old build.");
+    });
+
+    // The old client inlined the task BODY into the text it sent. Resolving
+    // that again would expand any variable name the body happens to mention,
+    // duplicating the task inside its own prompt — and the tasks most likely to
+    // say "$TASK_BODY" are the ones about this very feature.
+    it("never re-resolves a legacy prompt whose text mentions a variable", async () => {
+      const project = await createProject(USER_A, "Legacy variable project");
+      const task = await createTask(USER_A, project.id, {
+        title: "Prompt templates",
+        body: "Support $TASK_BODY and $TASK_TITLE variables.",
+      });
+      const machine = await registerMachine(USER_A, "legacy-variable-machine");
+
+      const composed = `You're picking up "Prompt templates".\n\n${task.body}`;
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        prompt: composed,
+      });
+      expect(res.status).toBe(201);
+      expect((await json(res)).prompt).toBe(composed);
+    });
+
+    // Both fields present: a new client's template wins outright and the legacy
+    // text is DROPPED, not resolved. (A client sending both is a client
+    // mid-upgrade; the template is the one it actually meant.)
+    it("prefers promptTemplate over a legacy prompt, and never resolves the legacy one", async () => {
+      const project = await createProject(USER_A, "Both fields project");
+      const task = await createTask(USER_A, project.id, { title: "Both" });
+      const machine = await registerMachine(USER_A, "both-fields-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        promptTemplate: "template wins: $TASK_TITLE",
+        prompt: "legacy $TASK_TITLE should not appear",
+      });
+      expect(res.status).toBe(201);
+      expect((await json(res)).prompt).toBe("template wins: Both");
+    });
+
+    // A non-blank template can still RESOLVE to blank. The daemon refuses to
+    // launch a blank prompt, so the server must not be able to store one.
+    it("falls back to the default when a template resolves to nothing", async () => {
+      const project = await createProject(USER_A, "Resolves blank project");
+      // min(1) admits a whitespace title.
+      const task = await createTask(USER_A, project.id, { title: " " });
+      const machine = await registerMachine(USER_A, "resolves-blank-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        promptTemplate: "$TASK_TITLE",
+      });
+      expect(res.status).toBe(201);
+      const assignment = await json(res);
+      expect(assignment.prompt.trim()).not.toBe("");
+      expect(assignment.prompt).toContain(`Task id: ${task.id}`);
+    });
+
+    // `??` on the legacy field would store "" and launch an agent with nothing.
+    it("treats a blank legacy prompt as absent too", async () => {
+      const project = await createProject(USER_A, "Blank legacy project");
+      const task = await createTask(USER_A, project.id, { title: "Blank legacy" });
+      const machine = await registerMachine(USER_A, "blank-legacy-machine");
+
+      for (const prompt of ["", "  \n "]) {
+        const res = await api(USER_A, "POST", "/assignments", {
+          taskId: task.id,
+          machineId: machine.id,
+          harness: "claude",
+          prompt,
+        });
+        expect(res.status).toBe(201);
+        expect((await json(res)).prompt).toContain('"Blank legacy"');
+      }
+    });
+
+    // A cleared textarea means "nothing chosen", not "launch with nothing" —
+    // `??` alone would let "" straight through to the agent.
+    it("treats a blank template as absent and uses the default", async () => {
+      const project = await createProject(USER_A, "Blank prompt project");
+      const task = await createTask(USER_A, project.id, { title: "Blank" });
+      const machine = await registerMachine(USER_A, "blank-prompt-machine");
+
+      for (const promptTemplate of ["", "   \n  "]) {
+        const res = await api(USER_A, "POST", "/assignments", {
+          taskId: task.id,
+          machineId: machine.id,
+          harness: "claude",
+          promptTemplate,
+        });
+        expect(res.status).toBe(201);
+        expect((await json(res)).prompt).toContain('"Blank"');
+      }
     });
   });
 

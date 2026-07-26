@@ -188,7 +188,7 @@ try {
     desiredState: "running",
   });
   assignmentId = assignment.id;
-  check(`4. posted assignment (desired=running, ${HARNESS}, prompt=null → daemon preamble)`);
+  check(`4. posted assignment (desired=running, ${HARNESS}, no template → server default)`);
 
   await waitFor("observed=spawning", async () => {
     const a = await assignmentState(assignmentId);

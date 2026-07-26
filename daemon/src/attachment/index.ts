@@ -20,8 +20,10 @@
 //      process a moment later it lands on the same row. Codex has no id to pin
 //      (§ "the asymmetry" below), so nothing is pre-registered for it.
 //   2. BINDING. A codex thread id first appears on a hook event. The hook
-//      records the cmux surface it fired under; we join that against the
-//      launch record and thereby learn which assignment the thread serves.
+//      echoes back the `HITCH_LAUNCH_ID` nonce we exported on the codex
+//      command; we join that against the launch record and thereby learn which
+//      assignment the thread serves. (This used to key on the cmux surface the
+//      hook fired under — see launches.ts for why that had to go.)
 //   3. LINKING. The snapshot PUT returns the chat rows it upserted; we PATCH
 //      the assignment's `chat_id` with the row that matches the session we
 //      launched. That replaces the legacy POST /daemon/chats, which was the

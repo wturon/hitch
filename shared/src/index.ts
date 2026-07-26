@@ -36,6 +36,20 @@ export type {
   ChatStatus,
 } from "@hitch/server";
 
+// Prompt templates (server/src/prompt.ts). A delegation prompt is a template
+// whose $TASK_TITLE / $TASK_BODY / $TASK_ID are substituted by the SERVER when
+// the assignment is created — POST /assignments is the only resolution point.
+// These are exported so clients can compose and display templates against the
+// same framing text, never so they can resolve one themselves.
+export {
+  DEFAULT_PROMPT_TEMPLATE,
+  EMPTY_BODY_PLACEHOLDER,
+  PROMPT_TEMPLATE_FRAMING,
+  PROMPT_VARIABLES,
+  resolvePromptTemplate,
+} from "@hitch/server";
+export type { PromptTask } from "@hitch/server";
+
 // WS wire protocol for the /ws endpoint (invalidation broadcast + ephemeral
 // event relay). Connect with `new WebSocket(baseUrl.replace(/^http/, "ws") +
 // "/ws")`, authed by the same cookie / x-api-key headers as HTTP.

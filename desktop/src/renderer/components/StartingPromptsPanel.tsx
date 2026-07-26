@@ -3,10 +3,13 @@
 import { useEffect, useId, useState } from "react";
 import { LockIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 
+import { PROMPT_TEMPLATE_FRAMING } from "@hitch/shared";
+
 import { Button } from "@/components/ui/button";
 import {
   BUILTIN_STARTING_PROMPTS,
   loadCustomPrompts,
+  promptDescription,
   saveCustomPrompts,
   type StartingPrompt,
 } from "@/lib/chat";
@@ -18,11 +21,15 @@ interface EditorDraft {
   isNew: boolean;
 }
 
+// Seeded with the shared framing rather than blank: a prompt is the WHOLE text
+// the agent gets now, so an empty box would quietly produce a prompt with no
+// task in it. Starting from the framing makes the variables discoverable by
+// example and leaves only the instruction to write.
 function newDraft(): EditorDraft {
   return {
     id: crypto.randomUUID(),
     name: "",
-    body: "",
+    body: `${PROMPT_TEMPLATE_FRAMING}\n\n`,
     isNew: true,
   };
 }
@@ -30,9 +37,13 @@ function newDraft(): EditorDraft {
 // Manage the kickoff prompts shown in the task delegation dropdown. Two groups:
 // the curated built-ins (shipped with the app, locked, shown read-only) and the
 // user's own prompts (the editable list persisted here). In the dropdown the
-// built-ins come first and "Ship it" is the default selection. Edits here are the
-// only ones that persist — tweaks made in the delegation dialog are one-off and
-// never write back.
+// built-ins come first and "Do the task." is the default selection. Edits here
+// are the only ones that persist — tweaks made in the delegation dialog are
+// one-off and never write back.
+//
+// A prompt is the WHOLE text an agent receives; nothing is prepended at launch.
+// It refers to the task through $TASK_TITLE / $TASK_BODY / $TASK_ID, which the
+// server substitutes when the assignment is created.
 export function StartingPromptsPanel() {
   const [prompts, setPrompts] = useState<StartingPrompt[]>([]);
   const [editor, setEditor] = useState<EditorDraft | null>(null);
@@ -176,8 +187,11 @@ function PromptRow({
     <div className="flex items-center gap-3 rounded-lg border bg-card px-3.5 py-3">
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{prompt.name}</p>
+        {/* promptDescription, not the raw body: every template opens with the
+            same framing, so the first 70 characters of two different prompts
+            are byte-identical. Describe what DIFFERS. */}
         <p className="truncate font-mono text-xs text-muted-foreground">
-          {prompt.body || "No instructions"}
+          {promptDescription(prompt) || "No instructions"}
         </p>
       </div>
       {locked ? (
@@ -255,13 +269,14 @@ function PromptEditor({
           Prompt
         </label>
         <p className="text-xs leading-5 text-muted-foreground">
-          The task's title and description are always sent to the agent first —
-          write only what it should DO with the task.
+          This is the whole prompt — nothing else is added. Use{" "}
+          <code>$TASK_TITLE</code>, <code>$TASK_BODY</code> and{" "}
+          <code>$TASK_ID</code> to pull in the task.
         </p>
         <textarea
           id={bodyId}
           value={draft.body}
-          rows={4}
+          rows={10}
           spellCheck={false}
           placeholder="What should the agent do?"
           onChange={(e) => onChange({ ...draft, body: e.target.value })}

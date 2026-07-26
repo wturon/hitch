@@ -157,6 +157,18 @@ export const assignmentCreate = z.strictObject({
   taskId: z.uuid(),
   machineId: z.uuid(),
   harness: harnessSchema,
+  // A TEMPLATE, not the final prompt: the server substitutes $TASK_TITLE /
+  // $TASK_BODY / $TASK_ID and stores the result in assignments.prompt. Omitting
+  // it uses DEFAULT_PROMPT_TEMPLATE.
+  promptTemplate: z.string().optional(),
+  // TRANSITION SHIM — delete once no old desktop build is in use.
+  //
+  // The server deploys to Railway independently of the electron-updater'd
+  // desktop, so between the two there's a window where a client still sends the
+  // pre-composed `prompt`. strictObject would 400 that, and the delegate button
+  // would just stop working. It is stored VERBATIM (never resolved — see the
+  // route), which reproduces the old behavior exactly and is not a resolution
+  // bypass: that text was already final when the old client sent it.
   prompt: z.string().optional(),
   // Kickoff-only launch params (mirror the nullable schema columns). Optional
   // AND nullable: omitting them, or passing null, means "harness default" — the

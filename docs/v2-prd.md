@@ -283,3 +283,26 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   toggle promised `.hitch/{path}`). Chose the always-include contract: removed `includeTaskRef` + the
   dead `taskRefPreamble`/`buildStartPrompt` + the stale toggle/preview, and rewrote the "refine-task"
   built-in to drive edits via `hitch tasks edit <task-id>` instead of a `.hitch/tasks` file.
+- 2026-07-26 — **Prompt templates: what you see is what the agent gets.** The delegate bar used to
+  show a textarea labelled "instructions" while `composeDelegatePrompt` silently prepended a
+  preamble (title + whole body + id + `hitch` CLI line) at POST time — so the visible field was a
+  small fraction of the real prompt, and the hidden part could be neither read nor overridden. Two
+  builders of that preamble existed (desktop + a hand-synced copy in the reconciler, used whenever
+  `assignments.prompt` was null, i.e. every CLI/automation launch — a prompt no user ever saw).
+  Now: a prompt is a **template**, and the textarea holds all of it. `$TASK_TITLE`, `$TASK_BODY`
+  and `$TASK_ID` are the only variables (deliberately few); templates keep the box short WITHOUT
+  hiding anything, since the task body is already on screen above the bar. `POST /assignments`
+  takes `promptTemplate` and the SERVER resolves it once, against the task as it stands, storing
+  the result in `assignments.prompt` — one resolver for every creator (desktop/CLI/automations),
+  and an immutable record of what was actually sent (editing the task later never rewrites a
+  launched prompt). Resolution is single-pass with a function replacer, so variable syntax or `$&`
+  inside a task body is data, never template. The daemon's copy is **deleted**; it now launches
+  `assignments.prompt` verbatim and composes nothing (`smoke:v2-reconciler` pins that it can't
+  regrow). The four built-in presets are unchanged in intent — each is now framing + its own
+  instruction stanza. Legacy custom prompts (instruction-only, no variables) are migrated in place
+  on load, since silently launching with no task context is the worst failure mode here. The old
+  `prompt` field on create is still accepted as a **transition shim** (the server deploys to Railway
+  independently of the electron-updater'd desktop, and a 400 there would silently kill the delegate
+  button on older builds) — but it is stored VERBATIM, never resolved: an old client had already
+  inlined the task body, so re-resolving would expand any variable name the body itself mentions.
+  Delete the shim once no old build is in use.

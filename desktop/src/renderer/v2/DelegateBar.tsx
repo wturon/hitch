@@ -36,7 +36,6 @@ import { getHitchServerBridge } from "@/lib/server/bridge";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import {
-  composeDelegatePrompt,
   deriveBarState,
   machineAvailability,
   modelLabelFor,
@@ -63,7 +62,7 @@ import {
 //                  the last delegation), machine picker (hidden with exactly one
 //                  machine, disabled-with-hint when none/all stale), a
 //                  starting-prompt preset dropdown + a collapsed editable
-//                  instruction textarea, and ⌘⏎ = delegate-with-defaults.
+//                  prompt textarea, and ⌘⏎ = delegate-with-defaults.
 //   active       — a live assignment (latest, observed_state ∉ {done,dead}): a
 //                  status chip (Spawning… / Working / Needs you), an Open chat
 //                  seam (disabled this PR — focus lands in PR 6), and Stop.
@@ -71,17 +70,27 @@ import {
 //                  subtly, then the compose affordance again (history is
 //                  preserved server-side; no history UI this PR).
 //
-// Prompt composition (Decision 2): the final prompt POSTed is the machine-facing
-// preamble (task title + body verbatim + id + `hitch` CLI line) followed by the
-// chosen instruction — stamped VERBATIM into assignments.prompt.
+// Prompt honesty: the textarea holds the WHOLE prompt as a template, and it is
+// POSTed as `promptTemplate` untouched. Nothing is prepended, appended, or
+// rewritten between here and the agent — the server's only edit is substituting
+// $TASK_TITLE / $TASK_BODY / $TASK_ID, which is why the box can stay short
+// without hiding anything.
+// The bar no longer takes the task's title/body: it used to splice them into a
+// preamble here, but the prompt is a template now and the server substitutes
+// them from the tasks ROW at creation time.
+//
+// That moves the source of truth from React state to the database, which opens
+// a window the old path didn't have: edits are autosaved on a ~1.5s idle
+// debounce, so typing and hitting ⌘⏎ immediately would resolve $TASK_BODY
+// against the PRE-EDIT row. Hence `flushTask` — delegation waits for the
+// document to land before it POSTs.
 export interface DelegateBarProps {
   client: HitchClient;
   // The committed task id (the bar mounts only once the row exists).
   taskId: string;
-  // The live document fields, so the preamble embeds the CURRENT title/body at
-  // delegate time (composed on click, not at mount).
-  title: string;
-  body: string;
+  // useTaskDocument's flush: persists any dirty title/body now. Awaited before
+  // every delegate so the server resolves the prompt against what's on screen.
+  flushTask: () => Promise<void>;
 }
 
 // Map the V2 server harness (claude|codex) onto V1's HarnessIcon prop
@@ -90,7 +99,7 @@ function iconHarness(harness: ServerHarness): "claude-code" | "codex" {
   return harness === "codex" ? "codex" : "claude-code";
 }
 
-export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
+export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
   const queryClient = useQueryClient();
   const assignmentsQuery = useAssignments(client, taskId);
   const machinesQuery = useMachines(client);
@@ -131,11 +140,15 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
     availability.disabledReason === null &&
     selectedMachineId !== null;
 
-  // POST /assignments — the composed prompt is built here (current title/body).
+  // POST /assignments — the textarea's text goes over the wire UNCHANGED as a
+  // template; the server substitutes the task variables (server/src/prompt.ts).
   const onStart = useCallback(
-    async ({ harness, model, effort, prompt }: DelegateStartParams) => {
+    async ({ harness, model, effort, promptTemplate }: DelegateStartParams) => {
       if (!selectedMachineId) throw new Error("No machine selected");
-      const composed = composeDelegatePrompt({ id: taskId, title, body }, prompt);
+      // Land any in-flight edit FIRST: the server resolves $TASK_TITLE /
+      // $TASK_BODY from the row, so an unsaved keystroke would otherwise reach
+      // the agent as the previous version of the task.
+      await flushTask();
       const response = await client.assignments.$post({
         json: {
           taskId,
@@ -146,7 +159,7 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
           // compose UI always has a concrete selection.
           model,
           effort,
-          prompt: composed,
+          promptTemplate,
           desiredState: "running",
         },
       });
@@ -155,7 +168,7 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
       }
       await queryClient.invalidateQueries({ queryKey: ["assignments"] });
     },
-    [client, queryClient, selectedMachineId, taskId, title, body],
+    [client, queryClient, selectedMachineId, taskId, flushTask],
   );
 
   const composer = useDelegationComposerV2({
@@ -284,7 +297,13 @@ export function DelegateBar({ client, taskId, title, body }: DelegateBarProps) {
             onSelect={setSelectedMachineId}
           />
         }
-        disabledReason={loadingMachines ? null : availability.disabledReason}
+        // While the machine list loads, Delegate is disabled but we don't yet
+        // know WHY it might stay that way — so say what's happening rather than
+        // rendering a dead button with no explanation. A slow or retrying
+        // GET /machines can hold this for several seconds.
+        disabledReason={
+          loadingMachines ? "Checking for machines…" : availability.disabledReason
+        }
         canDelegate={canDelegate}
       />
     </div>
@@ -399,6 +418,27 @@ function ComposeControls({
   const [expanded, setExpanded] = useState(false);
   const chip = "h-7 gap-1.5 border-0 px-1.5 font-normal hover:bg-black/5";
 
+  // A failed delegate used to be swallowed by `void composer.start()`: the
+  // click did nothing, said nothing, and logged nothing. The message lives on
+  // the composer so the ⌘⏎ path reports too; catching here only keeps the
+  // rethrow from becoming an unhandled rejection.
+  const onDelegateClick = useCallback(() => {
+    void composer.start().catch((e: unknown) => {
+      console.error("Failed to delegate", e);
+    });
+  }, [composer]);
+
+  // Why Delegate is greyed out. Machine availability first (it's the blocking
+  // one), then a blank prompt — which is otherwise a dead button with no
+  // explanation, since the textarea is collapsed by default.
+  //
+  // Keyed on the prompt being blank, NOT on !canSubmit: canSubmit also folds in
+  // machine availability, so the !canSubmit form told every cold start "Write a
+  // prompt" while the textarea held the full default preset.
+  const blockedReason =
+    disabledReason ??
+    (composer.prompt.trim() === "" ? "Write a prompt to delegate." : null);
+
   return (
     <>
       {/* Preset row */}
@@ -465,16 +505,20 @@ function ComposeControls({
         </button>
       </div>
 
-      {/* The one-off editable instruction (never written back to the preset). */}
+      {/* The one-off editable prompt template — the entire text the agent gets
+          (never written back to the preset). */}
       {expanded && (
         <textarea
-          aria-label="Delegation instructions"
+          aria-label="Delegation prompt"
           value={composer.prompt}
           onChange={(e) => composer.setPrompt(e.target.value)}
           spellCheck={false}
-          rows={6}
+          // Tall enough to show a whole default template without scrolling: the
+          // framing alone is 6 lines before the instruction, and a box that cut
+          // off the instruction would recreate the problem templates fixed.
+          rows={11}
           autoFocus
-          className="w-full resize-none rounded-md border border-[#E4E4E4] bg-white px-3 py-2 font-mono text-xs leading-relaxed outline-none dark:border-border dark:bg-background"
+          className="max-h-[45vh] w-full resize-none overflow-y-auto rounded-md border border-[#E4E4E4] bg-white px-3 py-2 font-mono text-xs leading-relaxed outline-none dark:border-border dark:bg-background"
         />
       )}
 
@@ -562,8 +606,8 @@ function ComposeControls({
         {/* Delegate — black, text + embedded ⌘⏎ chip (mirrors V1's Start). */}
         <button
           type="button"
-          onClick={() => void composer.start()}
-          disabled={composer.phase !== "idle" || !canDelegate}
+          onClick={onDelegateClick}
+          disabled={composer.phase !== "idle" || !canDelegate || !composer.canSubmit}
           aria-label="Delegate"
           className="flex h-8 shrink-0 items-center gap-1.75 rounded-md bg-[#0B0B0B] px-3 text-white disabled:opacity-40 dark:bg-foreground dark:text-background"
         >
@@ -580,8 +624,11 @@ function ComposeControls({
         </button>
       </div>
 
-      {disabledReason && (
-        <p className="text-[12px] text-muted-foreground">{disabledReason}</p>
+      {blockedReason && (
+        <p className="text-[12px] text-muted-foreground">{blockedReason}</p>
+      )}
+      {composer.error && (
+        <p className="text-[12px] text-destructive">{composer.error}</p>
       )}
     </>
   );
