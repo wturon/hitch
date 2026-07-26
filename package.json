@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Hitch \u2014 AI-native task management with an agent delegation layer (Hono server + Electron desktop + reconciler daemon).",
+  "description": "Hitch — AI-native task management with an agent delegation layer (Hono server + Electron desktop + reconciler daemon).",
   "packageManager": "npm@11.11.0",
   "engines": {
     "node": ">=24.15.0",

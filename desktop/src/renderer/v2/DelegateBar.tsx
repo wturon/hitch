@@ -433,8 +433,7 @@ function ComposeControls({
   // explanation, since the textarea is collapsed by default.
   //
   // Keyed on the prompt being blank, NOT on !canSubmit: canSubmit also folds in
-  // machine availability, and `disabledReason` is null while the machine list is
-  // still loading — so the !canSubmit form told every cold start "Write a
+  // machine availability, so the !canSubmit form told every cold start "Write a
   // prompt" while the textarea held the full default preset.
   const blockedReason =
     disabledReason ??

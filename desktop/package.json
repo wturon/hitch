@@ -3,7 +3,7 @@
   "version": "0.1.16",
   "private": true,
   "type": "module",
-  "description": "Hitch Desktop \u2014 live Kanban board over git-ignored .hitch/ folders, supervising the local sync daemon.",
+  "description": "Hitch Desktop — live Kanban board over git-ignored .hitch/ folders, supervising the local sync daemon.",
   "author": "Jakib",
   "main": "dist/main/main.js",
   "scripts": {
@@ -17,7 +17,7 @@
     "gen:app-config": "node scripts/gen-app-config.mjs",
     "package": "[ -f ../.env.production ] && { set -a; . ../.env.production; set +a; }; npm run build && npm run bundle:daemon && npm run gen:app-config && node scripts/package.mjs",
     "release": "node scripts/release.mjs",
-    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "typecheck": "npm run build:libs && tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "npm run build:libs && vitest run",
     "doctor": "react-doctor",
     "build:libs": "npm -w @hitch/server run build && npm -w @hitch/shared run build"
