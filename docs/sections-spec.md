@@ -159,19 +159,24 @@ currently written against a single flat backlog:
 - `uncheckSortOrder(backlog)` → return to the top of **its own section**, not the project's.
 
 ### PR 5 — drag + keyboard
-Multi-container dnd-kit: one `DndContext` over every container, a `SortableContext` per section, and
-the whole `<section>` as a droppable so the header and add-row aren't a dead band. A cross-section
-drop is one PATCH carrying both `sectionId` and `sortOrder`. `onDragOver` only paints the drop
-hairline — the move itself happens in `onDragEnd`. Rebuild the `useListKeyboardNav` flat index in
-render order — section headers are **not** navigable; per-section add rows are.
+Multi-container dnd-kit, following the library's own guidance: one `DndContext` over every container,
+a `SortableContext` per section, the whole `<section>` as a droppable ("add a droppable zone around
+each sortable context", which is also what makes an empty section reachable), and — the load-bearing
+part — **`onDragOver` inserts the row into the destination while the drag is still in flight**. Where
+it lands is then its INDEX in a list the library maintains, and the drop is one PATCH carrying
+`sectionId` + a `sortOrder` computed at that index.
 
-Two things about the drop maths are worth carrying forward, because both shipped wrong first:
-- A drop that resolves to a CONTAINER means the end of its list you dropped nearer, decided against
-  the **first row's top edge** — not the container's midpoint, which inverts for one-row sections.
-- The comparison uses a **live pointer coordinate**, tracked with our own `pointermove` listener.
-  dnd-kit's `delta` is scroll-adjusted and `activatorEvent` is frozen at drag start, so combining
-  them puts the two sides of the comparison in different frames as soon as auto-scroll moves the
-  list under the pointer.
+Collision detection is `pointerWithin` and nothing else. Every more tolerant algorithm returns every
+droppable sorted by distance with **no cutoff**, so `over` is never null and a drag can't be
+abandoned — dragging a row aside and letting go silently refiles it into whatever section was
+nearest. The cost is that a pointer-less sensor gets no collisions; none is configured.
+
+**This is the second design.** The first computed placement in `onDragEnd` from geometry, and was
+wrong three times: a rect that isn't where anything is drawn (dnd-kit doesn't displace the row while
+`over` is a container), a scroll-adjusted `delta` compared against a live rect, and a container
+midpoint that inverts for one-row sections. Every one of those was a silent wrong-end write with no
+undo. The lesson is not "measure more carefully" — it is that the library already knows the answer,
+and reconstructing it from coordinates was the mistake.
 
 ## Risks
 

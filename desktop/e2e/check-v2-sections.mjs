@@ -378,6 +378,36 @@ try {
     `${nudgeBefore.join(" | ")} → ${nudgeAfter.join(" | ")}`,
   );
 
+  // Drag a row somewhere droppable-free and let go — how anyone abandons a
+  // drag. A collision strategy with a distance fallback (closestCenter,
+  // closestCorners, rectIntersection-by-distance) returns EVERY droppable
+  // sorted by distance with no cutoff, so `over` is never null and there is no
+  // way to abort: the row silently refiles into whatever section was nearest.
+  const abortBefore = await titlesIn();
+  const abortRow = blockers.locator("[data-testid=v2-task-row]", {
+    hasText: abortBefore.at(-1),
+  });
+  const abortBox = await abortRow.boundingBox();
+  await page.mouse.move(1, 1);
+  await sleep(150);
+  await page.mouse.move(abortBox.x + abortBox.width / 2, abortBox.y + abortBox.height / 2, {
+    steps: 4,
+  });
+  await page.mouse.down();
+  await page.mouse.move(abortBox.x + abortBox.width / 2, abortBox.y + 14, { steps: 3 });
+  // Out to the empty gutter beside the 720px column: inside the scroll area,
+  // outside every droppable, and — unlike the sidebar — nothing there to click.
+  const listBox = await list.boundingBox();
+  await page.mouse.move(listBox.x + listBox.width - 14, abortBox.y, { steps: 10 });
+  await page.mouse.up();
+  await sleep(2000);
+  const abortAfter = await titlesIn();
+  check(
+    "14. releasing a drag away from the list changes nothing",
+    abortAfter.join("|") === abortBefore.join("|"),
+    `${abortBefore.join(" | ")} → ${abortAfter.join(" | ")}`,
+  );
+
   // The same drop, with the list SCROLLING mid-drag. dnd-kit's `delta` is
   // scroll-adjusted while a frozen activator coordinate and a live
   // getBoundingClientRect are not, so any code that adds those two reads a drop
@@ -434,7 +464,7 @@ try {
     return titles.includes(scrollTarget) ? titles : undefined;
   }).catch(() => []);
   check(
-    "14. a drop on a header still means TOP after the list scrolls mid-drag",
+    "15. a drop on a header still means TOP after the list scrolls mid-drag",
     scrolledOrder[0] === scrollTarget,
     scrolledOrder.slice(0, 4).join(" | "),
   );
@@ -476,7 +506,7 @@ try {
     return titles.length === 2 ? titles : undefined;
   }).catch(() => []);
   check(
-    "15. dropping above a ONE-row section's row lands above it, not below",
+    "16. dropping above a ONE-row section's row lands above it, not below",
     soloOrder[0] === first,
     soloOrder.join(" | "),
   );
@@ -499,8 +529,8 @@ try {
   await waitFor("the section to collapse", async () =>
     (await sectionEl.locator("[data-testid=v2-task-row]").count()) === 0 || undefined,
   );
-  check("16. collapsing hides its rows");
-  check("17. and the header still reports the count", (await header.innerText()).includes("2"));
+  check("17. collapsing hides its rows");
+  check("18. and the header still reports the count", (await header.innerText()).includes("2"));
   await shot("v2-sections-02-collapsed");
   await header.getByRole("button", { name: /Expand/ }).click();
 
@@ -514,7 +544,7 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.find((s) => s.id === created.id && s.name === "Renamed section");
   });
-  check("18. ⋯ → Rename persisted", renamed.name === "Renamed section");
+  check("19. ⋯ → Rename persisted", renamed.name === "Renamed section");
 
   // ── delete keeps the todos ───────────────────────────────────────────────
   page.once("dialog", (d) => d.accept());
@@ -526,18 +556,18 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.every((s) => s.id !== created.id) || undefined;
   });
-  check("19. ⋯ → Delete section removed it");
+  check("20. ⋯ → Delete section removed it");
 
   const survivors = await api("GET", `/tasks?project_id=${project.id}`);
   check(
-    "20. its todos SURVIVED and fell back to loose",
+    "21. its todos SURVIVED and fell back to loose",
     survivors.length === 4 && survivors.every((t) => t.sectionId === null),
     `${survivors.length} tasks, sectionIds=${[...new Set(survivors.map((t) => t.sectionId))]}`,
   );
   await waitFor("all four rows to render loose", async () =>
     (await list.locator("[data-testid=v2-loose] [data-testid=v2-task-row]").count()) === 4 || undefined,
   );
-  check("21. and the list shows all four again");
+  check("22. and the list shows all four again");
 
   // ── the chip carries agent status ────────────────────────────────────────
   scratch = mkdtempSync(join(tmpdir(), "hitch-sections-daemon-"));
@@ -586,11 +616,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("22. a delegated row grows a WORKING chip");
+  check("23. a delegated row grows a WORKING chip");
   await shot("v2-sections-03-chip-working");
 
   check(
-    "23. and the row carries no status TEXT any more",
+    "24. and the row carries no status TEXT any more",
     !/Working|Needs input|Mark reviewed/.test(await alphaRow.innerText()),
     JSON.stringify(await alphaRow.innerText()),
   );
@@ -602,11 +632,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("24. the chip advances to NEEDS-YOU when the turn completes");
+  check("25. the chip advances to NEEDS-YOU when the turn completes");
   await shot("v2-sections-04-chip-needs-you");
 
   check(
-    "25. rows without an agent still render a chip-less slot",
+    "26. rows without an agent still render a chip-less slot",
     (await list.locator("[data-testid=v2-harness-chip]").count()) === 1,
   );
 } catch (error) {

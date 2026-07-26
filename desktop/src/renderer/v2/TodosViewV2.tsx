@@ -9,7 +9,6 @@ import {
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  closestCenter,
   DndContext,
   pointerWithin,
   PointerSensor,
@@ -68,11 +67,7 @@ import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import type { ServerHarness } from "./delegation";
 import { HarnessChipSlot, StaticHarnessChip } from "./HarnessChip";
-import {
-  insertSortOrder,
-  reorderSortOrder,
-  sortOrderAtIndex,
-} from "./listMutations";
+import { reorderSortOrder, sortOrderAtIndex } from "./listMutations";
 import { loadCollapsedSections, saveCollapsedSections } from "./sectionCollapse";
 import {
   deriveSectionedTasks,
@@ -477,32 +472,48 @@ function SectionNameInput({
 // section is invisible to the drag without this. The id is namespaced to stay
 // distinguishable from a task's uuid in onDragEnd.
 const DROP_ID_PREFIX = "container:";
-const dropId = (sectionId: string | null) => `${DROP_ID_PREFIX}${sectionId ?? "loose"}`;
+const LOOSE_KEY = "loose";
+const containerKey = (sectionId: string | null) => sectionId ?? LOOSE_KEY;
+const dropId = (sectionId: string | null) => `${DROP_ID_PREFIX}${containerKey(sectionId)}`;
 const isDropId = (id: string) => id.startsWith(DROP_ID_PREFIX);
+
+/** Which container currently holds a task, in the live drag ordering. */
+function keyHolding(order: Record<string, string[]>, taskId: string): string | null {
+  for (const [key, ids] of Object.entries(order)) {
+    if (ids.includes(taskId)) return key;
+  }
+  return null;
+}
+
+/**
+ * The container an `over` id refers to — a container droppable itself, or the
+ * one holding the row that was hovered.
+ */
+function keyOfOver(order: Record<string, string[]>, overId: string): string | null {
+  if (isDropId(overId)) return overId.slice(DROP_ID_PREFIX.length);
+  return keyHolding(order, overId);
+}
 
 // A ROW always beats the container it sits inside. The container wins in the
 // bands no row covers: a section's header and add-row above its rows, the strip
 // below them, and the whole of a section that has no rows at all (which a
 // SortableContext can't see, because it has no items to register).
 //
-// This has to start from `pointerWithin`, which is a real hit test: it returns
-// only droppables whose rect actually contains the pointer. `closestCenter`
-// is NOT — it returns EVERY registered droppable, sorted by distance — so
-// filtering its output can never let a container through (the dragged row
-// itself is always in the list), and filtering nothing out leaves a container
-// spanning all its rows to win the band around its own midpoint. Both readings
-// are wrong, in opposite directions.
+// `pointerWithin` and nothing else. The docs suggest composing it with a more
+// tolerant algorithm as a fallback, but every one of those (closestCenter,
+// closestCorners, rectIntersection-by-distance) returns EVERY droppable sorted
+// by distance, with no cutoff — so `over` would never be null and there would
+// be no way to abandon a drag. Dragging a row off to one side and letting go is
+// how people cancel; with a fallback it silently refiles the task into whatever
+// section happened to be nearest.
 //
-// closestCenter stays as the fallback for a pointer outside every droppable
-// (and for any sensor that reports no coordinates at all).
+// The cost is that a pointer-less sensor gets no collisions at all. None is
+// configured, and adding one means giving it a strategy here rather than
+// inheriting one that turns aborted drags into moves.
 const preferRows: CollisionDetection = (args) => {
   const within = pointerWithin(args);
-  const rowsWithin = within.filter((c) => !isDropId(String(c.id)));
-  if (rowsWithin.length > 0) return rowsWithin;
-  if (within.length > 0) return within;
-  const closest = closestCenter(args);
-  const rowsClosest = closest.filter((c) => !isDropId(String(c.id)));
-  return rowsClosest.length > 0 ? rowsClosest : closest;
+  const rows = within.filter((c) => !isDropId(String(c.id)));
+  return rows.length > 0 ? rows : within;
 };
 
 function DroppableContainer({
@@ -652,7 +663,6 @@ function TaskRow({
   actions,
   chip,
   sections,
-  dropBefore,
   drag,
   nav,
 }: {
@@ -667,8 +677,6 @@ function TaskRow({
   chip: RowChip;
   /** The project's sections, for the Move to ▸ submenu. */
   sections: ReadonlyArray<{ id: string; name: string }>;
-  /** A row being dragged in from ANOTHER container would land above this one. */
-  dropBefore?: boolean;
   // Present only for BACKLOG rows, which are drag-reorderable — dnd-kit's
   // sortable node/transform on the whole row (V1's whole-row drag). The
   // checkbox stops pointerdown so a drag can't start from it, and
@@ -713,10 +721,6 @@ function TaskRow({
             // a hair of shadow — no new chrome, no handle. Quiet. (V1)
             drag?.dragging &&
               "relative z-10 bg-background shadow-sm ring-1 ring-border/70",
-            // Where a drag from another section would land. A hairline, drawn
-            // in the row's own padding so nothing reflows mid-drag.
-            dropBefore &&
-              "relative before:absolute before:inset-x-2.5 before:-top-px before:h-0.5 before:rounded-full before:bg-foreground/40",
           )}
         >
           <TaskCheckbox
@@ -786,7 +790,6 @@ function SortableTaskRow({
   chip,
   sections,
   nav,
-  dropBefore,
 }: {
   task: TaskItem;
   tag: TagActions;
@@ -794,7 +797,6 @@ function SortableTaskRow({
   chip: RowChip;
   sections: ReadonlyArray<{ id: string; name: string }>;
   nav?: RowNav;
-  dropBefore?: boolean;
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } =
     useSortable({ id: task.id });
@@ -807,7 +809,6 @@ function SortableTaskRow({
       chip={chip}
       sections={sections}
       nav={nav}
-      dropBefore={dropBefore}
       drag={{
         setNodeRef,
         style: {
@@ -1054,8 +1055,8 @@ export function TodosViewV2({
   useEffect(() => {
     setCollapsedIds(loadCollapsedSections(projectId));
     // Any in-flight drag belongs to the project we just left; its ids mean
-    // nothing here and would paint a drop hairline on an unrelated row.
-    setDragging(null);
+    // nothing here.
+    setDragOrder(null);
   }, [projectId]);
   // The write lives here, not in the setState updater (React may invoke an
   // updater twice, and a state updater has no business touching localStorage)
@@ -1180,122 +1181,95 @@ export function TodosViewV2({
   // another section possible at all — a DndContext per section would trap each
   // row in the one it started in.
   //
-  // Two outcomes, and the difference is where the row LANDED, not where it
-  // came from:
-  //   • same container → reorder: a key between the drop's neighbours, one
-  //     PATCH, no placement change (listMutations.reorderSortOrder).
-  //   • different container → move: sectionId AND a key computed in the
-  //     destination, one PATCH (insertSortOrder). The dragged row takes the
-  //     place of the row it was dropped on; a drop on the section itself lands
-  //     at whichever end of its list you dropped nearer (droppedAboveRows).
+  // The placement question is answered the way dnd-kit's own multi-container
+  // guidance answers it: "use the onDragOver callback of DndContext to detect
+  // when a draggable element is moved over a different container to insert it
+  // in that new container while dragging." The row genuinely joins the
+  // destination's SortableContext mid-drag, so where it lands is just its INDEX
+  // in a list the library is already maintaining — and you can see it, because
+  // the destination opens a real gap.
+  //
+  // This replaces a hand-rolled geometry pass that compared the dragged row's
+  // rect (or the pointer) against the first row's top edge. That code was wrong
+  // three times: a rect that isn't where anything is drawn, a scroll-adjusted
+  // delta compared against a live rect, and a container midpoint that inverts
+  // for short sections. None of those failure modes has anywhere to live here —
+  // there is no coordinate comparison left to get wrong.
   function onDragOver(event: DragOverEvent) {
-    setDragging((prev) =>
-      prev ? { ...prev, overId: event.over ? String(event.over.id) : null } : prev,
-    );
-  }
-
-  // A drop that resolved to a CONTAINER rather than a row landed in one of the
-  // two bands rows don't cover: the header + add-row above them, or the strip
-  // below the last one. Which band decides what the drop meant. Treating every
-  // container drop as "append" makes dragging a row up onto its own header —
-  // the most natural way to say "put this first" — send it to the bottom.
-  //
-  // The boundary is the FIRST ROW's top edge, read from the DOM, not the
-  // container's midpoint. The band above the rows is a fixed ~72px (header +
-  // add-row) while the container grows 42px per row, so a midpoint test is
-  // wrong for exactly the sections where it's easiest to be sloppy: with one
-  // row, the lower third of "Add a todo…" already sits below the midpoint.
-  //
-  // And it compares the POINTER, not the dragged row's rect. The rect is a
-  // phantom: dnd-kit's `translated` is the row's home position plus the drag
-  // delta, and while the pointer is over a container band the row isn't
-  // displaced at all (SortableContext computes overIndex = -1 for a non-item
-  // `over`, which disables its transform). So a rect-midpoint test asks
-  // "have you dragged more than half a row's height" — independent of where
-  // you grabbed — while `over` flips to the container the moment the POINTER
-  // clears the row's top edge. Between those two thresholds a 12px nudge on a
-  // section's first row silently relocated it to the bottom of that section.
-  function droppedAboveRows(event: DragEndEvent): boolean {
-    const overId = event.over ? String(event.over.id) : null;
-    if (!overId) return false;
-    // `data-drop-id` is a container: prefix + a server uuid, so it needs no
-    // escaping — and it can only reach here past isDropId().
-    const firstRow = scrollRef.current?.querySelector<HTMLElement>(
-      `[data-drop-id="${overId}"] [data-testid="v2-task-row"]`,
-    );
-    // No rows to be above or below (an empty section): the two answers are the
-    // same list position, so either is right.
-    if (!firstRow) return false;
-    const boundary = firstRow.getBoundingClientRect().top;
-    const pointerY = pointerYRef.current;
-    if (pointerY !== null) return pointerY < boundary;
-    // Only reachable from a sensor that reports no pointer — none is configured
-    // today. It carries the same scroll-frame caveat as `delta` does, so adding
-    // a KeyboardSensor means revisiting this line, not just trusting it.
-    const active = event.active.rect.current.translated;
-    return active ? active.top + active.height / 2 < boundary : false;
+    const { active, over } = event;
+    if (!over) return;
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    setDragOrder((prev) => {
+      if (!prev) return prev;
+      const from = keyHolding(prev, activeId);
+      const to = keyOfOver(prev, overId);
+      if (from === null || to === null) return prev;
+      // Same container, over a row: SortableContext already previews that by
+      // transforming its own items. Rewriting the array under it would fight
+      // its animation for no gain.
+      if (from === to && !isDropId(overId)) return prev;
+      const target = (prev[to] ?? []).filter((id) => id !== activeId);
+      // Over the container itself rather than a row — its header, its add-row,
+      // or an empty section. That band sits ABOVE the rows, so it means the top
+      // of the list. No measuring: the row moves there and you watch it.
+      const at = isDropId(overId)
+        ? 0
+        : target.indexOf(overId) < 0
+          ? target.length
+          : target.indexOf(overId);
+      return {
+        ...prev,
+        [from]: (prev[from] ?? []).filter((id) => id !== activeId),
+        [to]: [...target.slice(0, at), activeId, ...target.slice(at)],
+      };
+    });
   }
 
   function onDragEnd(event: DragEndEvent) {
-    setDragging(null);
-    const { active: dragged, over } = event;
-    if (!over) return;
-    const draggedId = String(dragged.id);
+    const order = dragOrder;
+    setDragOrder(null);
+    const { active, over } = event;
+    // No `over` means the pointer was over nothing droppable — the gesture for
+    // abandoning a drag. Nothing moves.
+    if (!over || !order) return;
+
+    const activeId = String(active.id);
     const overId = String(over.id);
-    if (draggedId === overId) return;
+    const home = containers.find((c) => c.tasks.some((t) => t.id === activeId));
+    const task = home?.tasks.find((t) => t.id === activeId);
+    if (!home || !task) return;
+    const homeKey = containerKey(home.section?.id ?? null);
+    const destKey = keyHolding(order, activeId);
+    if (destKey === null) return;
 
-    const source = containers.find((c) => c.tasks.some((t) => t.id === draggedId));
-    const task = source?.tasks.find((t) => t.id === draggedId);
-    if (!source || !task) return;
-
-    // `over` is either a task row or a container's own droppable (its empty
-    // space, which is the only way to reach an empty section).
-    const destination = isDropId(overId)
-      ? containers.find((c) => dropId(c.section?.id ?? null) === overId)
-      : containers.find((c) => c.tasks.some((t) => t.id === overId));
-    if (!destination) return;
-
-    const sourceId = source.section?.id ?? null;
-    const destinationId = destination.section?.id ?? null;
-
-    if (sourceId === destinationId) {
-      // Dropped on the container's own space rather than on a row. Without
-      // this branch the index lookup returns -1, reorderSortOrder declines, and
-      // the drop vanishes with the row snapping back and nothing said.
-      if (isDropId(overId)) {
-        const rest = source.tasks.filter((t) => t.id !== draggedId);
-        if (rest.length === 0) return;
-        const top = droppedAboveRows(event);
-        onReorderTask(
-          draggedId,
-          sortOrderAtIndex(rest, top ? 0 : rest.length, top ? "before" : "after"),
-        );
-        return;
-      }
-      const ids = source.tasks.map((t) => t.id);
-      const sortOrder = reorderSortOrder(
-        source.tasks,
-        ids.indexOf(draggedId),
-        ids.indexOf(overId),
-      );
-      if (sortOrder !== null) onReorderTask(draggedId, sortOrder);
+    // Crossed containers, or dropped on a container's own space: onDragOver
+    // already put the row where it belongs, so its index in the live ordering
+    // IS the answer.
+    if (destKey !== homeKey || isDropId(overId)) {
+      const destIds = order[destKey] ?? [];
+      const index = destIds.indexOf(activeId);
+      if (index < 0) return;
+      const rest = destIds
+        .filter((id) => id !== activeId)
+        .map((id) => taskById.get(id))
+        .filter((t): t is TaskItem => t !== undefined);
+      const sortOrder = sortOrderAtIndex(rest, index, "before");
+      if (destKey === homeKey) onReorderTask(activeId, sortOrder);
+      else onMoveTask(task, destKey === LOOSE_KEY ? null : destKey, sortOrder);
       return;
     }
 
-    onMoveTask(
-      task,
-      destinationId,
-      isDropId(overId)
-        ? // Onto the section itself: its header means the top of it, its
-          // trailing strip means the bottom. `insertSortOrder(_, null)` only
-          // knows how to append, so the top case indexes the first row.
-          sortOrderAtIndex(
-            destination.tasks,
-            droppedAboveRows(event) ? 0 : destination.tasks.length,
-            "before",
-          )
-        : insertSortOrder(destination.tasks, overId),
+    // Stayed put and landed on a row: an ordinary reorder, between the drop's
+    // neighbours.
+    if (activeId === overId) return;
+    const ids = home.tasks.map((t) => t.id);
+    const sortOrder = reorderSortOrder(
+      home.tasks,
+      ids.indexOf(activeId),
+      ids.indexOf(overId),
     );
+    if (sortOrder !== null) onReorderTask(activeId, sortOrder);
   }
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1358,54 +1332,39 @@ export function TodosViewV2({
     ];
   }, [grouped, allGrouped, collapsedIds]);
 
-  // Where a CROSS-container drag would land, so the list can say so before the
-  // drop. Within a container, SortableContext already animates a gap open; when
-  // the row comes from somewhere else it can't — SortableContext only shifts
-  // items belonging to its own context — so without this the user drags blind
-  // over the destination and finds out where it went afterwards.
+  // The list's ordering DURING a drag, keyed by container. Seeded at drag start
+  // and rewritten by onDragOver as the row crosses between sections; null the
+  // rest of the time, when `containers` is the only truth.
   //
-  // Row-targeted drops only: a drop resolving to the SECTION itself is
-  // signalled by the section's own tint, which is the whole target lighting up.
-  const [dragging, setDragging] = useState<{
-    activeId: string;
-    overId: string | null;
-  } | null>(null);
-  // The row a foreign drag would land above, or null. Compared by container so
-  // an in-container drag (which animates properly) shows no line.
-  const dropBeforeId = useMemo(() => {
-    if (!dragging?.overId || isDropId(dragging.overId)) return null;
-    const from = containers.find((c) => c.tasks.some((t) => t.id === dragging.activeId));
-    const to = containers.find((c) => c.tasks.some((t) => t.id === dragging.overId));
-    if (!from || !to || from.section?.id === to.section?.id) return null;
-    return dragging.overId;
-  }, [dragging, containers]);
+  // This is a fork of the list, which this codebase is otherwise strict about
+  // not keeping — but it lasts exactly as long as a drag and is discarded on
+  // drop, on cancel and on unmount. It buys the thing that makes all the
+  // geometry unnecessary: the row is really in the destination's
+  // SortableContext, so the library reports where it landed instead of us
+  // reconstructing it from rects.
+  const [dragOrder, setDragOrder] = useState<Record<string, string[]> | null>(null);
+  const taskById = useMemo(
+    () => new Map(visibleTasks.map((task) => [task.id, task])),
+    [visibleTasks],
+  );
 
-  // The live pointer, in viewport coordinates. Tracked ourselves because
-  // dnd-kit's `delta` is SCROLL-ADJUSTED — it carries `translate + (scrollTop
-  // now − scrollTop at drag start)` — while `activatorEvent.clientY` is frozen
-  // at drag start and `getBoundingClientRect()` is live. Adding those two puts
-  // the left side of the comparison in a different frame from the right the
-  // moment the list scrolls, and the list is a scroll container with dnd-kit's
-  // auto-scroll on: dragging into the bottom 20% scrolls it under you, no user
-  // gesture required. A ~56px error is all it takes to read a drop on a
-  // section's header as a drop past its last row.
-  const pointerYRef = useRef<number | null>(null);
-  const isDragging = dragging !== null;
-  useEffect(() => {
-    if (!isDragging) return;
-    const track = (event: PointerEvent) => {
-      pointerYRef.current = event.clientY;
-    };
-    // pointerup as well as pointermove: it is the event that ENDS the drag, so
-    // it carries the position the drop actually happened at.
-    window.addEventListener("pointermove", track, { passive: true });
-    window.addEventListener("pointerup", track, { passive: true });
-    return () => {
-      window.removeEventListener("pointermove", track);
-      window.removeEventListener("pointerup", track);
-    };
-  }, [isDragging]);
-
+  // What the list actually shows. While a drag is in flight that's the drag
+  // ordering — the row has to be VISIBLY in its destination, because that
+  // ordering is what the drop reads. Render and the ↑↓ index both walk this,
+  // so the two can't disagree with each other or with the drop.
+  const displayed: Container[] = useMemo(() => {
+    if (!dragOrder) return containers;
+    return containers.map((container) => {
+      const ids = dragOrder[containerKey(container.section?.id ?? null)];
+      if (!ids) return container;
+      return {
+        ...container,
+        tasks: ids
+          .map((id) => taskById.get(id))
+          .filter((task): task is TaskItem => task !== undefined),
+      };
+    });
+  }, [containers, dragOrder, taskById]);
 
   // ─── Keyboard nav (V1's, ported onto server rows) ──────────────────────────
   // The flat ↑↓ order = every VISIBLE row, top-to-bottom, matching render
@@ -1415,7 +1374,7 @@ export function TodosViewV2({
   const navItems = useMemo(
     () =>
       [
-        ...containers.flatMap((container) =>
+        ...displayed.flatMap((container) =>
           container.collapsed
             ? []
             : [
@@ -1678,17 +1637,21 @@ export function TodosViewV2({
         <DndContext
           sensors={sensors}
           collisionDetection={preferRows}
-          onDragStart={(event) => {
-            const activator = event.activatorEvent as Partial<PointerEvent>;
-            pointerYRef.current =
-              typeof activator?.clientY === "number" ? activator.clientY : null;
-            setDragging({ activeId: String(event.active.id), overId: null });
-          }}
+          onDragStart={() =>
+            setDragOrder(
+              Object.fromEntries(
+                containers.map((c) => [
+                  containerKey(c.section?.id ?? null),
+                  c.tasks.map((task) => task.id),
+                ]),
+              ),
+            )
+          }
           onDragOver={onDragOver}
           onDragEnd={onDragEnd}
-          onDragCancel={() => setDragging(null)}
+          onDragCancel={() => setDragOrder(null)}
         >
-          {containers.map((container) => {
+          {displayed.map((container) => {
           const sectionId = container.section?.id ?? null;
           // While filtering, a section with no matches is noise — UNLESS it is
           // collapsed and holding a live agent, which its header is the only
@@ -1711,7 +1674,6 @@ export function TodosViewV2({
               // drag is off entirely (the order is a projection).
               disabled={container.collapsed || filterActive}
               data-testid={sectionId ? "v2-section" : "v2-loose"}
-              // Read by droppedAboveRows to find this container's first row.
               data-drop-id={dropId(sectionId)}
               data-section-id={sectionId ?? undefined}
             >
@@ -1776,7 +1738,6 @@ export function TodosViewV2({
                           chip={chipOf(task.id)}
                           sections={sectionRows}
                           nav={rowNav(task.id)}
-                          dropBefore={dropBeforeId === task.id}
                         />
                       ))}
                     </SortableContext>

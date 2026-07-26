@@ -88,25 +88,6 @@ export function uncheckSortOrder(
 }
 
 /**
- * The sortOrder for a row dropped INTO a different container.
- *
- * `dest` is the destination's current list in order (it never contains the
- * dragged row — it came from somewhere else). `overTaskId` is the row the drop
- * landed on; the dragged row takes its place, pushing it down. `null` (or an id
- * that has since vanished) appends. Callers that resolved to a CONTAINER rather
- * than a row decide top-vs-bottom themselves and call sortOrderAtIndex — the
- * container's own area is both above and below its rows.
- */
-export function insertSortOrder(
-  dest: ReadonlyArray<{ id: string; sortOrder: string }>,
-  overTaskId: string | null,
-): string {
-  const index = overTaskId === null ? -1 : dest.findIndex((t) => t.id === overTaskId);
-  // "Takes its place, pushing it down" — so above a run of equal keys.
-  return sortOrderAtIndex(dest, index === -1 ? dest.length : index, "before");
-}
-
-/**
  * The sortOrder for a backlog row dragged from index `from` to index `to`
  * (dnd-kit arrayMove semantics: the row lands at index `to` of the reordered
  * list). Computed between the destination's neighbors so the drop is a
