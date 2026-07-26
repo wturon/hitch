@@ -441,15 +441,21 @@ export class Reconciler {
     // assignments.prompt VERBATIM — the daemon never composes a prompt. The
     // server resolves the template when the assignment is created (see
     // server/src/prompt.ts), so this column is the exact text the user approved
-    // in the delegate bar. Null only happens for a row created before that was
-    // true; launching with an empty prompt is honest (and visible) where
-    // silently re-inventing a preamble here would not be.
+    // in the delegate bar.
+    //
+    // Null means the row predates server-side resolution, or a NEW daemon is
+    // talking to an OLD server (the daemon ships inside the desktop app and
+    // updates on its own schedule — deploy the server first). Fail the launch
+    // rather than spawn an agent with an empty prompt: a visible dead
+    // assignment beats a confused agent sitting in a tab, and re-inventing a
+    // preamble here is exactly the duplication this change removed.
     if (a.prompt == null) {
-      this.logger.error?.(
-        `[hitch] assignment ${a.id} has no prompt — launching with an empty one`,
+      throw new Error(
+        `assignment ${a.id} has no prompt — the server did not resolve one ` +
+          `(is it running a build older than the daemon?)`,
       );
     }
-    const prompt = a.prompt ?? "";
+    const prompt = a.prompt;
     const serverHarness = (a.harness as ServerHarness) ?? "claude";
     const harness = launcherHarness(serverHarness);
     // Kickoff-only launch params. null/undefined → undefined so the launcher

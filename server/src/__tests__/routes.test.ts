@@ -327,7 +327,10 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       expect(assignment.prompt).not.toContain("$TASK_");
     });
 
-    it("rejects a pre-composed `prompt` so nothing bypasses resolution", async () => {
+    // TRANSITION SHIM: the server deploys ahead of the desktop, so a client
+    // still sending the pre-composed `prompt` must keep working rather than
+    // hitting a 400 on a button that then appears to do nothing.
+    it("still accepts an old client's pre-composed `prompt`", async () => {
       const project = await createProject(USER_A, "Legacy prompt project");
       const task = await createTask(USER_A, project.id);
       const machine = await registerMachine(USER_A, "legacy-prompt-machine");
@@ -336,9 +339,30 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
         taskId: task.id,
         machineId: machine.id,
         harness: "claude",
-        prompt: "pre-composed, bypassing the resolver",
+        prompt: "Already composed by an old build.",
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(201);
+      // Resolving variable-free text is a no-op, so the old behavior is exact.
+      expect((await json(res)).prompt).toBe("Already composed by an old build.");
+    });
+
+    // A cleared textarea means "nothing chosen", not "launch with nothing" —
+    // `??` alone would let "" straight through to the agent.
+    it("treats a blank template as absent and uses the default", async () => {
+      const project = await createProject(USER_A, "Blank prompt project");
+      const task = await createTask(USER_A, project.id, { title: "Blank" });
+      const machine = await registerMachine(USER_A, "blank-prompt-machine");
+
+      for (const promptTemplate of ["", "   \n  "]) {
+        const res = await api(USER_A, "POST", "/assignments", {
+          taskId: task.id,
+          machineId: machine.id,
+          harness: "claude",
+          promptTemplate,
+        });
+        expect(res.status).toBe(201);
+        expect((await json(res)).prompt).toContain('"Blank"');
+      }
     });
   });
 

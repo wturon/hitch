@@ -41,6 +41,14 @@ assert.doesNotMatch(anonymous, /HITCH_LAUNCH_ID/);
 const quoted = codexStartCommand({ prompt: "hi", launchId: "a b; rm -rf /" });
 assert.match(quoted, /^HITCH_LAUNCH_ID='a b; rm -rf \/'\s/);
 
+// An EMPTY prompt still has to reach codex as an argument. The bare-word fast
+// path in shellQuote has no character to object to in "", so an unguarded
+// version returns it unquoted and the prompt vanishes from the command line
+// entirely — codex would open an interactive session instead of a seeded one,
+// and nothing downstream would report why.
+const empty = codexStartCommand({ cwd: "/tmp/x", prompt: "" });
+assert.match(empty, /\s''$/, "an empty prompt is quoted, not dropped");
+
 const resume = codexResumeCommand({
   threadId: "thread-1",
   cwd: "/tmp/my project",

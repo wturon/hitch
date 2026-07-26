@@ -17,7 +17,11 @@ import { codexBin } from "../codex.js";
 import type { Launcher } from "./types.js";
 
 function shellQuote(value: string): string {
-  if (!/[^A-Za-z0-9_./:-]/.test(value)) return value;
+  // The empty string MUST be quoted. The bare-word fast path below tests for
+  // characters needing quotes, and "" has none — so returning it unquoted would
+  // emit nothing at all and the argument would silently vanish from the command
+  // line (`codex -C /tmp` with no prompt, rather than `codex -C /tmp ''`).
+  if (value !== "" && !/[^A-Za-z0-9_./:-]/.test(value)) return value;
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 

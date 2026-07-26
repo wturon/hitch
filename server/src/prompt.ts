@@ -17,7 +17,7 @@
 //     told;
 //   • the daemon goes back to being a pure consumer of a string.
 
-/** The variables a template may use. Deliberately small — see AGENTS.md. */
+/** The variables a template may use. Deliberately few — see docs/v2-prd.md. */
 export const PROMPT_VARIABLES = ["TASK_TITLE", "TASK_BODY", "TASK_ID"] as const;
 
 export interface PromptTask {

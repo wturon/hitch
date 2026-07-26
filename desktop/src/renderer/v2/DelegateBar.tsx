@@ -77,12 +77,20 @@ import {
 // without hiding anything.
 // The bar no longer takes the task's title/body: it used to splice them into a
 // preamble here, but the prompt is a template now and the server substitutes
-// them from the row at creation time — which also means no stale-props window
-// between an edit and a delegate.
+// them from the tasks ROW at creation time.
+//
+// That moves the source of truth from React state to the database, which opens
+// a window the old path didn't have: edits are autosaved on a ~1.5s idle
+// debounce, so typing and hitting ⌘⏎ immediately would resolve $TASK_BODY
+// against the PRE-EDIT row. Hence `flushTask` — delegation waits for the
+// document to land before it POSTs.
 export interface DelegateBarProps {
   client: HitchClient;
   // The committed task id (the bar mounts only once the row exists).
   taskId: string;
+  // useTaskDocument's flush: persists any dirty title/body now. Awaited before
+  // every delegate so the server resolves the prompt against what's on screen.
+  flushTask: () => Promise<void>;
 }
 
 // Map the V2 server harness (claude|codex) onto V1's HarnessIcon prop
@@ -91,7 +99,7 @@ function iconHarness(harness: ServerHarness): "claude-code" | "codex" {
   return harness === "codex" ? "codex" : "claude-code";
 }
 
-export function DelegateBar({ client, taskId }: DelegateBarProps) {
+export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
   const queryClient = useQueryClient();
   const assignmentsQuery = useAssignments(client, taskId);
   const machinesQuery = useMachines(client);
@@ -137,6 +145,10 @@ export function DelegateBar({ client, taskId }: DelegateBarProps) {
   const onStart = useCallback(
     async ({ harness, model, effort, promptTemplate }: DelegateStartParams) => {
       if (!selectedMachineId) throw new Error("No machine selected");
+      // Land any in-flight edit FIRST: the server resolves $TASK_TITLE /
+      // $TASK_BODY from the row, so an unsaved keystroke would otherwise reach
+      // the agent as the previous version of the task.
+      await flushTask();
       const response = await client.assignments.$post({
         json: {
           taskId,
@@ -156,7 +168,7 @@ export function DelegateBar({ client, taskId }: DelegateBarProps) {
       }
       await queryClient.invalidateQueries({ queryKey: ["assignments"] });
     },
-    [client, queryClient, selectedMachineId, taskId],
+    [client, queryClient, selectedMachineId, taskId, flushTask],
   );
 
   const composer = useDelegationComposerV2({
@@ -400,6 +412,19 @@ function ComposeControls({
   const [expanded, setExpanded] = useState(false);
   const chip = "h-7 gap-1.5 border-0 px-1.5 font-normal hover:bg-black/5";
 
+  // A failed delegate used to be swallowed by `void composer.start()`: the
+  // click did nothing, said nothing, and logged nothing. Surface it — a server
+  // that rejects the POST (an older desktop against a newer server, say) is
+  // exactly the case where silence is worst.
+  const [error, setError] = useState<string | null>(null);
+  const onDelegateClick = useCallback(() => {
+    setError(null);
+    void composer.start().catch((e: unknown) => {
+      console.error("Failed to delegate", e);
+      setError(e instanceof Error ? e.message : "Failed to delegate");
+    });
+  }, [composer]);
+
   return (
     <>
       {/* Preset row */}
@@ -567,8 +592,8 @@ function ComposeControls({
         {/* Delegate — black, text + embedded ⌘⏎ chip (mirrors V1's Start). */}
         <button
           type="button"
-          onClick={() => void composer.start()}
-          disabled={composer.phase !== "idle" || !canDelegate}
+          onClick={onDelegateClick}
+          disabled={composer.phase !== "idle" || !canDelegate || !composer.canSubmit}
           aria-label="Delegate"
           className="flex h-8 shrink-0 items-center gap-1.75 rounded-md bg-[#0B0B0B] px-3 text-white disabled:opacity-40 dark:bg-foreground dark:text-background"
         >
@@ -588,6 +613,7 @@ function ComposeControls({
       {disabledReason && (
         <p className="text-[12px] text-muted-foreground">{disabledReason}</p>
       )}
+      {error && <p className="text-[12px] text-destructive">{error}</p>}
     </>
   );
 }

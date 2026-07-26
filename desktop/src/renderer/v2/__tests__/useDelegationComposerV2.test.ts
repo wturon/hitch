@@ -213,3 +213,28 @@ describe("custom prompts bridge", () => {
     }
   });
 });
+
+// An empty prompt used to be impossible: a blank instruction still got the
+// preamble. Now the textarea IS the whole prompt, so clearing it would launch
+// an agent with nothing to do.
+describe("blank prompts can't be delegated", () => {
+  it("blocks start() and reports canSubmit=false when the prompt is empty", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const { result } = render(onStart);
+    expect(result.current.canSubmit).toBe(true);
+
+    act(() => result.current.setPrompt("   \n  "));
+    expect(result.current.canSubmit).toBe(false);
+    await act(async () => {
+      await result.current.start();
+    });
+    expect(onStart).not.toHaveBeenCalled();
+    // Not latched — the user can type something and try again.
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("canSubmit is false when the consumer says we can't start at all", () => {
+    const { result } = render(vi.fn(), false);
+    expect(result.current.canSubmit).toBe(false);
+  });
+});

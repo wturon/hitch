@@ -65,6 +65,10 @@ export interface DelegationComposerV2 {
   setPrompt: (prompt: string) => void;
   // Pick a preset by id (refills the prompt text).
   choosePreset: (id: string) => void;
+  // canStart AND the prompt isn't blank. An empty prompt used to be impossible
+  // (a blank instruction still got the preamble); now the textarea IS the whole
+  // prompt, so clearing it would launch an agent with nothing to do.
+  canSubmit: boolean;
   // Fire the delegation: guards re-entry via the phase latch, calls onStart,
   // remembers the harness on success, unlatches (and rethrows) on failure.
   start: () => Promise<void>;
@@ -151,8 +155,10 @@ export function useDelegationComposerV2({
   // Fire the delegation. The latch closes the window where a durable
   // assignment row can lag the mutation, so ⌘⏎ / click can't fire a second
   // launch; it clears only on remount (keyed per task) or a failed start.
+  const canSubmit = canStart && prompt.trim() !== "";
+
   const start = useCallback(async () => {
-    if (phase !== "idle" || !canStart) return;
+    if (phase !== "idle" || !canStart || prompt.trim() === "") return;
     setPhase("sending");
     try {
       await onStart({ harness, model, effort, promptTemplate: prompt });
@@ -202,6 +208,7 @@ export function useDelegationComposerV2({
     prompt,
     setPrompt,
     choosePreset,
+    canSubmit,
     start,
   };
 }

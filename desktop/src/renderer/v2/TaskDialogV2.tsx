@@ -591,7 +591,11 @@ function TaskBodyV2({
             history + the machine list. */}
         {stage === "capture" && <CaptureFooter />}
         {stage === "saved" && committedId && (
-          <DelegateBar client={client} taskId={committedId} />
+          <DelegateBar
+            client={client}
+            taskId={committedId}
+            flushTask={doc.flush}
+          />
         )}
       </div>
     </div>

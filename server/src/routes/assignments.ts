@@ -47,8 +47,13 @@ export const assignmentRoutes = new Hono<AppEnv>()
     // Resolve the template ONCE, here, against the task as it stands right now.
     // assignments.prompt is a record of what was sent, so later edits to the
     // task never rewrite the prompt an agent was actually given.
-    const { promptTemplate, ...rest } = body;
-    const prompt = resolvePromptTemplate(promptTemplate ?? DEFAULT_PROMPT_TEMPLATE, {
+    const { promptTemplate, prompt: legacyPrompt, ...rest } = body;
+    // ?? would let an explicit "" through as a prompt; a blank template means
+    // "nothing was chosen", which is the default's job. `legacyPrompt` is the
+    // transition shim for older desktop builds (see validation.ts).
+    const template =
+      promptTemplate?.trim() ? promptTemplate : (legacyPrompt ?? DEFAULT_PROMPT_TEMPLATE);
+    const prompt = resolvePromptTemplate(template, {
       id: task.id,
       title: task.title,
       body: task.body,
