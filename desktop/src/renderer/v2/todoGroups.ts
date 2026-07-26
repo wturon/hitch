@@ -60,7 +60,7 @@ function completedEpoch(raw: string | null): number | null {
 // use a raw string compare, NOT localeCompare (locale collation can disagree
 // with the index math). Ties (two clients minting the same key) break by id;
 // uuidv7 is creation-ordered, so the tie order is stable and roughly temporal.
-const bySortOrder = (a: TaskRow, b: TaskRow) =>
+export const bySortOrder = (a: TaskRow, b: TaskRow) =>
   a.sortOrder < b.sortOrder
     ? -1
     : a.sortOrder > b.sortOrder
@@ -75,7 +75,7 @@ const bySortOrder = (a: TaskRow, b: TaskRow) =>
 // bottom. Exact ties (and the unparseable block) break by id DESC — uuidv7's
 // creation order — so the list is a total order and never jumps between
 // refetches.
-const byCompletedDesc = (a: TaskRow, b: TaskRow) => {
+export const byCompletedDesc = (a: TaskRow, b: TaskRow) => {
   const diff = (completedEpoch(b.completedAt) ?? 0) - (completedEpoch(a.completedAt) ?? 0);
   if (diff !== 0) return diff;
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;

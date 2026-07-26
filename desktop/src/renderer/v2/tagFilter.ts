@@ -16,6 +16,7 @@
 // row shape and the Convex `Id<"projects">` brand.
 
 import { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter } from "@/lib/tagFilter";
+import type { PlacedTask, SectionedTasks } from "./sectionGroups";
 import type { TaskGroups, TaskRow } from "./todoGroups";
 
 export { EMPTY_TAG_FILTER, isTagFilterActive, type TagFilter };
@@ -44,6 +45,30 @@ export function filterTaskGroups<T extends TaskRow>(
     working: keep(groups.working),
     backlog: keep(groups.backlog),
     done: keep(groups.done),
+  };
+}
+
+// Project the SECTIONED rows through the active filter (the successor to
+// filterTaskGroups now that placement, not status, decides layout). Inactive
+// filter → the same object back, untouched.
+//
+// Sections with no surviving task are dropped ENTIRELY rather than rendered
+// empty: while filtering, the list is a projection, and a header with nothing
+// under it is just noise. Section identity and order are otherwise preserved,
+// so the shape you know stays legible through the lens.
+export function filterSectionedTasks<T extends PlacedTask>(
+  grouped: SectionedTasks<T>,
+  f: TagFilter,
+  namesOf: (task: T) => string[],
+): SectionedTasks<T> {
+  if (!isTagFilterActive(f)) return grouped;
+  const keep = (list: T[]) => list.filter((t) => taskMatchesTagFilter(namesOf(t), f));
+  return {
+    loose: keep(grouped.loose),
+    sections: grouped.sections
+      .map((bucket) => ({ section: bucket.section, tasks: keep(bucket.tasks) }))
+      .filter((bucket) => bucket.tasks.length > 0),
+    done: keep(grouped.done),
   };
 }
 
