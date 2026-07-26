@@ -297,7 +297,13 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
             onSelect={setSelectedMachineId}
           />
         }
-        disabledReason={loadingMachines ? null : availability.disabledReason}
+        // While the machine list loads, Delegate is disabled but we don't yet
+        // know WHY it might stay that way — so say what's happening rather than
+        // rendering a dead button with no explanation. A slow or retrying
+        // GET /machines can hold this for several seconds.
+        disabledReason={
+          loadingMachines ? "Checking for machines…" : availability.disabledReason
+        }
         canDelegate={canDelegate}
       />
     </div>

@@ -295,11 +295,23 @@ export interface StartingPrompt {
 // of them identically. What's left is the part that actually differs.
 export function promptDescription(prompt: StartingPrompt): string {
   if (prompt.description?.trim()) return prompt.description.trim();
-  const stripped = prompt.body.startsWith(PROMPT_TEMPLATE_FRAMING)
-    ? prompt.body.slice(PROMPT_TEMPLATE_FRAMING.length)
-    : prompt.body;
-  const body = stripped.trim().replace(/\s+/g, " ");
+  const body = describableRemainder(prompt.body).trim().replace(/\s+/g, " ");
   return body.length > 72 ? `${body.slice(0, 71)}…` : body;
+}
+
+// The part of a template worth describing. An exact framing prefix is stripped
+// (which also makes a framing-only draft describe as nothing, i.e. "no
+// instructions yet"); otherwise fall back to the LAST paragraph, since an
+// instruction stanza comes after the task in every shape we ship. The exact
+// prefix alone wasn't enough: editing one word of the framing — or deleting the
+// `hitch` CLI line, which the seeded draft rather invites — put every prompt
+// back to describing itself with the same shared boilerplate.
+function describableRemainder(body: string): string {
+  if (body.startsWith(PROMPT_TEMPLATE_FRAMING)) {
+    return body.slice(PROMPT_TEMPLATE_FRAMING.length);
+  }
+  const paragraphs = body.split(/\n\s*\n/).filter((p) => p.trim() !== "");
+  return paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : "";
 }
 
 // A complete template: the shared framing (task title, body, id, CLI pointer)

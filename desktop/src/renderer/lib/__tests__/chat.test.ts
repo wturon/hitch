@@ -9,6 +9,7 @@ import {
   defaultReasoning,
   loadCustomPrompts,
   modelLabel,
+  promptDescription,
   reasoningOptions,
 } from "../chat";
 
@@ -86,5 +87,44 @@ describe("legacy custom-prompt migration", () => {
 
     expect(prompt.body).toBe("");
     expect(persist).not.toHaveBeenCalled();
+  });
+});
+
+// Every template opens with the same framing, so describing a prompt by its
+// first characters describes all of them identically — the settings list and
+// the delegate bar both rely on this picking out what DIFFERS.
+describe("promptDescription", () => {
+  const describe_ = (body: string) => promptDescription({ id: "x", name: "x", body });
+
+  it("prefers an authored description", () => {
+    expect(
+      promptDescription({ id: "x", name: "x", body: "ignored", description: " Real " }),
+    ).toBe("Real");
+  });
+
+  it("strips an exact framing prefix", () => {
+    expect(describe_(`${PROMPT_TEMPLATE_FRAMING}\n\nGo wild.`)).toBe("Go wild.");
+  });
+
+  // The exact-prefix path alone wasn't enough: change one word of the framing —
+  // or delete the CLI line, which the seeded draft invites — and two different
+  // prompts described identically again.
+  it("still finds the instruction when the framing has been edited", () => {
+    const edited = PROMPT_TEMPLATE_FRAMING.replace("picking up", "working on");
+    expect(describe_(`${edited}\n\nWrite tests.`)).toBe("Write tests.");
+
+    const trimmed = PROMPT_TEMPLATE_FRAMING.split("\n").slice(0, -1).join("\n");
+    expect(describe_(`${trimmed}\n\nShip it.`)).toBe("Ship it.");
+  });
+
+  it("describes nothing for a framing-only draft or an empty body", () => {
+    expect(describe_(`${PROMPT_TEMPLATE_FRAMING}\n\n`)).toBe("");
+    expect(describe_("")).toBe("");
+    expect(describe_("   \n  ")).toBe("");
+  });
+
+  it("squashes whitespace and truncates long text", () => {
+    expect(describe_("do\n\n  this   thing")).toBe("this thing");
+    expect(describe_("x".repeat(100)).endsWith("…")).toBe(true);
   });
 });

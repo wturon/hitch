@@ -37,9 +37,13 @@ function newDraft(): EditorDraft {
 // Manage the kickoff prompts shown in the task delegation dropdown. Two groups:
 // the curated built-ins (shipped with the app, locked, shown read-only) and the
 // user's own prompts (the editable list persisted here). In the dropdown the
-// built-ins come first and "Ship it" is the default selection. Edits here are the
-// only ones that persist — tweaks made in the delegation dialog are one-off and
-// never write back.
+// built-ins come first and "Do the task." is the default selection. Edits here
+// are the only ones that persist — tweaks made in the delegation dialog are
+// one-off and never write back.
+//
+// A prompt is the WHOLE text an agent receives; nothing is prepended at launch.
+// It refers to the task through $TASK_TITLE / $TASK_BODY / $TASK_ID, which the
+// server substitutes when the assignment is created.
 export function StartingPromptsPanel() {
   const [prompts, setPrompts] = useState<StartingPrompt[]>([]);
   const [editor, setEditor] = useState<EditorDraft | null>(null);
