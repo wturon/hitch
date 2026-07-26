@@ -369,6 +369,45 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       expect((await json(res)).prompt).toBe(composed);
     });
 
+    // Both fields present: a new client's template wins outright and the legacy
+    // text is DROPPED, not resolved. (A client sending both is a client
+    // mid-upgrade; the template is the one it actually meant.)
+    it("prefers promptTemplate over a legacy prompt, and never resolves the legacy one", async () => {
+      const project = await createProject(USER_A, "Both fields project");
+      const task = await createTask(USER_A, project.id, { title: "Both" });
+      const machine = await registerMachine(USER_A, "both-fields-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        promptTemplate: "template wins: $TASK_TITLE",
+        prompt: "legacy $TASK_TITLE should not appear",
+      });
+      expect(res.status).toBe(201);
+      expect((await json(res)).prompt).toBe("template wins: Both");
+    });
+
+    // A non-blank template can still RESOLVE to blank. The daemon refuses to
+    // launch a blank prompt, so the server must not be able to store one.
+    it("falls back to the default when a template resolves to nothing", async () => {
+      const project = await createProject(USER_A, "Resolves blank project");
+      // min(1) admits a whitespace title.
+      const task = await createTask(USER_A, project.id, { title: " " });
+      const machine = await registerMachine(USER_A, "resolves-blank-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        promptTemplate: "$TASK_TITLE",
+      });
+      expect(res.status).toBe(201);
+      const assignment = await json(res);
+      expect(assignment.prompt.trim()).not.toBe("");
+      expect(assignment.prompt).toContain(`Task id: ${task.id}`);
+    });
+
     // `??` on the legacy field would store "" and launch an agent with nothing.
     it("treats a blank legacy prompt as absent too", async () => {
       const project = await createProject(USER_A, "Blank legacy project");

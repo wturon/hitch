@@ -425,9 +425,14 @@ function ComposeControls({
   // Why Delegate is greyed out. Machine availability first (it's the blocking
   // one), then a blank prompt — which is otherwise a dead button with no
   // explanation, since the textarea is collapsed by default.
+  //
+  // Keyed on the prompt being blank, NOT on !canSubmit: canSubmit also folds in
+  // machine availability, and `disabledReason` is null while the machine list is
+  // still loading — so the !canSubmit form told every cold start "Write a
+  // prompt" while the textarea held the full default preset.
   const blockedReason =
     disabledReason ??
-    (composer.canSubmit ? null : "Write a prompt to delegate.");
+    (composer.prompt.trim() === "" ? "Write a prompt to delegate." : null);
 
   return (
     <>

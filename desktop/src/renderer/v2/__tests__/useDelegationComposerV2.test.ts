@@ -273,3 +273,63 @@ describe("failed delegates are reported, not swallowed", () => {
     expect(result.current.error).toBe("Failed to delegate");
   });
 });
+
+// The REAL ⌘⏎ path: start() fired from a window keydown listener, where the
+// caller has nowhere to catch. Every other test here drives start() directly
+// (keyboardArmed: false), i.e. the click path — which is exactly why this
+// failure mode survived two rounds of review.
+describe("the ⌘⏎ path", () => {
+  function renderArmed(onStart: (params: unknown) => Promise<void> | void) {
+    return renderHook(() =>
+      useDelegationComposerV2({ canStart: true, keyboardArmed: true, onStart }),
+    );
+  }
+
+  const pressCmdEnter = () =>
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+    );
+
+  it("delegates on ⌘⏎", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const { result } = renderArmed(onStart);
+    await act(async () => {
+      pressCmdEnter();
+    });
+    await waitFor(() => expect(result.current.phase).toBe("submitted"));
+    expect(onStart).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces a failure instead of failing silently", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onStart = vi.fn().mockRejectedValue(new Error("Failed to delegate (400)"));
+    const { result } = renderArmed(onStart);
+    await act(async () => {
+      pressCmdEnter();
+    });
+    await waitFor(() =>
+      expect(result.current.error).toBe("Failed to delegate (400)"),
+    );
+    // Unlatched, so the user can fix whatever it was and retry.
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("clears a stale error even when the attempt is blocked", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onStart = vi.fn().mockRejectedValue(new Error("boom"));
+    const { result } = renderArmed(onStart);
+    await act(async () => {
+      pressCmdEnter();
+    });
+    await waitFor(() => expect(result.current.error).toBe("boom"));
+
+    // Blank the prompt: the next attempt is refused, and the old message must
+    // not linger under the "write a prompt" hint.
+    act(() => result.current.setPrompt("  "));
+    await act(async () => {
+      pressCmdEnter();
+    });
+    expect(result.current.error).toBeNull();
+    expect(onStart).toHaveBeenCalledOnce();
+  });
+});

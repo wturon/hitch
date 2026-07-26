@@ -58,14 +58,18 @@ export const assignmentRoutes = new Hono<AppEnv>()
     // it again would expand any variable name the BODY happens to mention,
     // duplicating the task inside its own prompt. (Tasks about this feature are
     // exactly the ones whose bodies say "$TASK_BODY".)
-    const prompt =
+    const taskValues = { id: task.id, title: task.title, body: task.body };
+    const resolved =
       legacy && !template
         ? legacy
-        : resolvePromptTemplate(template ?? DEFAULT_PROMPT_TEMPLATE, {
-            id: task.id,
-            title: task.title,
-            body: task.body,
-          });
+        : resolvePromptTemplate(template ?? DEFAULT_PROMPT_TEMPLATE, taskValues);
+    // A non-blank template can still RESOLVE to blank — `$TASK_TITLE` alone,
+    // against a whitespace title (titles are min(1), not min(1) non-blank).
+    // Checking the output rather than the input is what actually keeps the
+    // never-store-an-empty-prompt promise the daemon relies on.
+    const prompt = resolved.trim()
+      ? resolved
+      : resolvePromptTemplate(DEFAULT_PROMPT_TEMPLATE, taskValues);
     const [row] = await db.insert(assignments).values({ ...rest, prompt }).returning();
     return c.json(row, 201);
   })

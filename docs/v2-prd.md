@@ -301,4 +301,8 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   regrow). The four built-in presets are unchanged in intent — each is now framing + its own
   instruction stanza. Legacy custom prompts (instruction-only, no variables) are migrated in place
   on load, since silently launching with no task context is the worst failure mode here. The old
-  `prompt` field on create is rejected by `strictObject` rather than quietly bypassing resolution.
+  `prompt` field on create is still accepted as a **transition shim** (the server deploys to Railway
+  independently of the electron-updater'd desktop, and a 400 there would silently kill the delegate
+  button on older builds) — but it is stored VERBATIM, never resolved: an old client had already
+  inlined the task body, so re-resolving would expand any variable name the body itself mentions.
+  Delete the shim once no old build is in use.

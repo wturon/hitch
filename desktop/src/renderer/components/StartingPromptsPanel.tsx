@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import {
   BUILTIN_STARTING_PROMPTS,
   loadCustomPrompts,
+  promptDescription,
   saveCustomPrompts,
   type StartingPrompt,
 } from "@/lib/chat";
@@ -182,8 +183,11 @@ function PromptRow({
     <div className="flex items-center gap-3 rounded-lg border bg-card px-3.5 py-3">
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{prompt.name}</p>
+        {/* promptDescription, not the raw body: every template opens with the
+            same framing, so the first 70 characters of two different prompts
+            are byte-identical. Describe what DIFFERS. */}
         <p className="truncate font-mono text-xs text-muted-foreground">
-          {prompt.body || "No instructions"}
+          {promptDescription(prompt) || "No instructions"}
         </p>
       </div>
       {locked ? (

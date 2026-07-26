@@ -163,9 +163,12 @@ export function useDelegationComposerV2({
   const canSubmit = canStart && prompt.trim() !== "";
 
   const start = useCallback(async () => {
+    // Cleared BEFORE the guards: a blocked attempt (blank prompt, still
+    // latched) should not leave a previous failure's message stacked
+    // underneath the reason the attempt was blocked.
+    setError(null);
     if (phase !== "idle" || !canStart || prompt.trim() === "") return;
     setPhase("sending");
-    setError(null);
     try {
       await onStart({ harness, model, effort, promptTemplate: prompt });
       // Remember this exact combination for the next surface's composer.
@@ -199,8 +202,11 @@ export function useDelegationComposerV2({
       e.preventDefault();
       e.stopPropagation();
       // The rejection is already captured in `error` for display; catching here
-      // only stops it becoming an unhandled promise rejection.
-      void start().catch(() => {});
+      // stops it becoming an unhandled promise rejection, and still leaves a
+      // devtools record the way the click path does.
+      void start().catch((error: unknown) => {
+        console.error("Failed to delegate", error);
+      });
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
