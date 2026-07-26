@@ -204,13 +204,17 @@ droppable sorted by distance with **no cutoff**, so `over` is never null and a d
 abandoned. (`rectIntersection` does have a cutoff, but a 672px-wide row still overlaps the column
 from halfway across the window.) One hit test suffices only because the list has no holes in it —
 which is why the add-row is a slot rather than a 40px dead band under every header, and why each
-section header's droppable reaches 22px up over the separation above it (`-mt-[22px] pt-[22px]`) —
-that strip is the natural aim for "put this at the end of the section above". A pointer-less sensor
-gets no collisions; none is configured.
+section header's droppable reaches 22px up over the separation above it (`-mt-[22px] pt-[22px]`).
+That strip draws nothing and you drag through it on the way to every boundary; it now means what the
+header means, because it *is* the header. A pointer-less sensor gets no collisions; none is
+configured.
 
-What remains undroppable is everything *below* the last section: `+ New section`, DONE, and the
-bottom padding are outside the `DndContext`. Releasing there does nothing, and the preview gap
-visibly closes on the way in, so it reads as "not a target" rather than as a wrong answer.
+Two holes remain, both benign because the preview gap visibly closes on the way in — they read as
+"not a target" rather than as a wrong answer. Everything *below* the last section (`+ New section`,
+DONE, the bottom padding) is outside the `DndContext`. And the column's `pt-7` above the first
+add-row is 28px of nothing; the same `-mt` trick is **not** a safe fix there, because a transparent
+box reaching up from the loose add-row would cover the bottom of the tag filter bar and swallow its
+clicks.
 
 A `<DragOverlay>` renders the row under the cursor (a plain `TaskRow`, never the sortable one — the
 pitfall the docs call out). With an overlay `useSortable` stops transforming the drag source, so the

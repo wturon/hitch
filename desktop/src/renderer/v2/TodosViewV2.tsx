@@ -1619,10 +1619,12 @@ export function TodosViewV2({
                       // and a release did nothing. It now behaves exactly as
                       // the header does, because it IS the header.
                       //
-                      // It also fixes the gap the sorting strategy measures:
-                      // with the header's rect abutting the row above it,
-                      // `getItemGap` no longer adds 22px of separation to
-                      // every displacement that crosses a section boundary.
+                      // It also fixes the gap the sorting strategy measures.
+                      // `getItemGap` is per item, so the 22px landed on
+                      // exactly one item per boundary — which then overshot
+                      // its neighbours, and the header visibly overlapped its
+                      // own add-row mid-drag. With the rects abutting, every
+                      // item displaces by exactly the dragged row's height.
                       className="-mt-[22px] pt-[22px]"
                       // Filtering turns the order into a projection, so drag is
                       // off entirely and nothing in the list is a drop target.

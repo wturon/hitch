@@ -408,15 +408,17 @@ try {
   // closes as you enter the band and a drop there is silently inert, which
   // reads as a broken drag rather than as "not a target".
   const bandTitle = (await titlesIn())[0];
-  const bandHeader = await page
-    .locator(`[data-testid=v2-section][data-section-id="${empty.id}"]`)
-    .locator("[data-testid=v2-section-header]")
-    .boundingBox();
+  const bandHeader = await emptyEl.locator("[data-testid=v2-section-header]").boundingBox();
   await dragTo(blockers.locator("[data-testid=v2-task-row]", { hasText: bandTitle }), {
     x: bandHeader.x + bandHeader.width / 2,
-    // 6px ABOVE the header's own top edge: inside the separation, outside
-    // anything that draws.
-    y: bandHeader.y - 6,
+    // Aim at the FAR end of the band — 20px above the header's own top edge,
+    // ~2px below the previous section's last row. A few px above the header
+    // would pass for any reach at all; this fails unless the reach covers the
+    // whole 22px. It also pins the other direction: if the separation ever
+    // shrinks below the reach, the header's transparent box starts overlapping
+    // the row above and steals its hover and clicks, and nothing else here
+    // would notice.
+    y: bandHeader.y - 20,
   });
   const banded = await waitFor("the row to land in the section below the strip", async () =>
     (await sectionOf(bandTitle)) === empty.id || undefined,
@@ -426,7 +428,12 @@ try {
     banded === true,
     `${bandTitle} → sectionId=${await sectionOf(bandTitle)}`,
   );
-  // Put it back; the counts below are written against this section.
+  // Put it back; the counts below are written against this section. No
+  // sortOrder, for the same reason as 12b — and note this returns the row
+  // holding the key the empty section minted for it ("a0"), which may now
+  // duplicate one already in Launch blockers. That is deliberate: duplicate
+  // keys inside one container are ordinary data here (listMutations), and the
+  // checks below exercise the drag against exactly that.
   const bandId = (await api("GET", `/tasks?project_id=${project.id}`)).find(
     (t) => t.title === bandTitle,
   ).id;
