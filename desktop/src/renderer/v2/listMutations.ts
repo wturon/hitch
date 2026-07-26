@@ -86,23 +86,3 @@ export function uncheckSortOrder(
 ): string {
   return generateKeyBetween(null, backlog[0]?.sortOrder ?? null);
 }
-
-/**
- * The sortOrder for a backlog row dragged from index `from` to index `to`
- * (dnd-kit arrayMove semantics: the row lands at index `to` of the reordered
- * list). Computed between the destination's neighbors so the drop is a
- * single-task PATCH. `backlog` is the CURRENT open group in list order.
- * Returns null for a no-op or out-of-range move (the caller skips the PATCH).
- */
-export function reorderSortOrder(
-  backlog: ReadonlyArray<{ sortOrder: string }>,
-  from: number,
-  to: number,
-): string | null {
-  const n = backlog.length;
-  if (from === to || from < 0 || to < 0 || from >= n || to >= n) return null;
-  // dnd-kit's arrayMove semantics: the row ends up at index `to` of the
-  // reordered list — i.e. inserted at `to` in the list WITHOUT it.
-  const rest = backlog.filter((_, i) => i !== from);
-  return sortOrderAtIndex(rest, to, from < to ? "after" : "before");
-}

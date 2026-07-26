@@ -95,11 +95,11 @@ that needs you — but this reuses the chip rather than minting a second status 
 
 - **Per-section add row** — existing `AddTaskRow` chrome, no `C` hint (that's the global capture).
 - **`+ New section`** at the bottom, quiet, between hairlines.
-- **Drag between sections** — whole-row drag exactly like backlog reorder today, now across
-  containers. A drop on a row takes that row's place; a drop on the section itself lands at whichever
-  end of its list you dropped nearer. (Revised: this spec said the destination "opens a gap".
-  `SortableContext` only displaces items in its own context, so it cannot — a hairline above the row
-  the drop would land on carries that signal instead.)
+- **Drag between sections** — whole-row drag exactly like backlog reorder today, now across sections.
+  The destination opens a real gap where the row will land, and the row itself follows the cursor in
+  a `DragOverlay`. A drop on a row takes that row's place; a drop on a section's add-row puts it
+  first in that section; a drop on a header puts it on whichever side of that header the gap opened.
+  See PR 5 — the placement rule is one sentence and everything else follows from it.
 - **`Move to ▸`** on the row context menu, from the same `ContextMenuSub` the Tags submenu uses;
   `No section` first, then the sections, check on the current one. This is the only route that works
   from the keyboard, and the only one that reaches a collapsed section.
@@ -159,29 +159,66 @@ currently written against a single flat backlog:
 - `uncheckSortOrder(backlog)` → return to the top of **its own section**, not the project's.
 
 ### PR 5 — drag + keyboard
-Multi-container dnd-kit, following the library's own guidance: one `DndContext` over every container,
-a `SortableContext` per section, the whole `<section>` as a droppable ("add a droppable zone around
-each sortable context", which is also what makes an empty section reachable), and — the load-bearing
-part — **`onDragOver` inserts the row into the destination while the drag is still in flight**, so
-the destination opens a real gap and the row is genuinely in that context.
 
-The drop then reads the LIVE `over`, not the index `onDragOver` inserted at. Those diverge:
-`onDragOver` only fires when the row crosses a container boundary, while `SortableContext` keeps
-previewing against the pointer — so the insertion index freezes on entry and the gap you're watching
-walks away from it. Reading `over` at drop time is what keeps the write and the preview describing
-the same position.
+**A section is a marker in one list, not a container around part of one.**
+
+The whole project is a single `DndContext` and a single `SortableContext` whose items are, in render
+order: every task row, every section header, and every container's add-row (`flatList.ts`). Headers
+and add-rows are `useSortable({ disabled: { draggable: true, droppable: false } })` — drop targets
+that can't be picked up.
+
+Which section a task is in is never stored during a drag and never reconstructed afterwards. It is
+read the way you read it off the screen: **a task is in the section whose header is nearest above
+it.** So the drop handler is one path with no branches —
+
+```
+arrayMove(slots, from, to) → walk down → { sectionId, index } → sortOrderAtIndex
+```
+
+— and `arrayMove` over those slots is *precisely* what `verticalListSortingStrategy` just animated.
+The gap you watched open and the position written are the same computation on the same array, so
+they cannot disagree. That is the entire design.
+
+Consequences that fall out rather than being coded:
+
+- **An empty section** needs no droppable of its own; its header and add-row are already slots.
+- **A collapsed section** contributes only its header, so a drop there is index 0 — the top of what's
+  hidden inside.
+- **A header is the section's boundary.** Approach it from above and the row lands in the section;
+  drag up onto it from inside and the row lands above it, unfiled. Both are what the screen shows
+  while you do it, because the header physically moves out of the way in the direction that makes
+  room. **The add-row is the unambiguous "top of this container"** — being below the header, its
+  meaning can't flip with approach direction.
+- **Dragging above the first header** unfiles a row, with nothing implementing "loose" as a target.
 
 Collision detection is `pointerWithin` and nothing else. Every more tolerant algorithm returns every
 droppable sorted by distance with **no cutoff**, so `over` is never null and a drag can't be
-abandoned — dragging a row aside and letting go silently refiles it into whatever section was
-nearest. The cost is that a pointer-less sensor gets no collisions; none is configured.
+abandoned. (`rectIntersection` does have a cutoff, but a 672px-wide row still overlaps the column
+from halfway across the window.) One hit test suffices only because the list has no holes in it —
+which is why the add-row is a slot rather than a 40px dead band under every header. A pointer-less
+sensor gets no collisions; none is configured.
 
-**This is the second design.** The first computed placement in `onDragEnd` from geometry, and was
-wrong three times: a rect that isn't where anything is drawn (dnd-kit doesn't displace the row while
-`over` is a container), a scroll-adjusted `delta` compared against a live rect, and a container
-midpoint that inverts for one-row sections. Every one of those was a silent wrong-end write with no
-undo. The lesson is not "measure more carefully" — it is that the library already knows the answer,
-and reconstructing it from coordinates was the mistake.
+A `<DragOverlay>` renders the row under the cursor (a plain `TaskRow`, never the sortable one — the
+pitfall the docs call out). With an overlay `useSortable` stops transforming the drag source, so the
+resting row can no longer appear to snap home when the pointer crosses a seam.
+
+**This is the third design, and the first two are worth keeping on the record.**
+
+The first computed placement in `onDragEnd` from geometry and was wrong three times: a rect that
+isn't where anything is drawn, a scroll-adjusted `delta` compared against a live rect, and a
+container midpoint that inverts for one-row sections.
+
+The second used dnd-kit's multi-container pattern — a `SortableContext` per section, a droppable per
+container, and an `onDragOver` splicing the row into its destination mid-flight. It failed for a
+subtler reason: `onDragOver` only fires when `over` changes *container*, so the insertion index froze
+on entry while `SortableContext` kept previewing against the pointer. Every cross-section drop wrote
+"top" no matter where you released, and no row could ever be placed last.
+
+Both failures are the same failure. Placement was being derived a second time, from something other
+than the arrangement on screen — and every disagreement between the two was a silent wrong-position
+write with no undo. The fix was not more care in the derivation; it was deleting the second
+derivation, along with the per-container droppables, the mid-drag splice, the forked copy of the list
+held in state, and the branch-per-drop-kind at the end.
 
 ## Risks
 

@@ -228,12 +228,14 @@ try {
   await page.locator("[role=dialog]").waitFor({ state: "hidden", timeout: 10_000 });
 
   // ── drag across sections ─────────────────────────────────────────────────
-  // Two gestures, and the second only works if collision detection is a real
-  // hit test: an empty section has no rows for a SortableContext to register,
-  // so the ONLY droppable there is the container itself. A "nearest centre"
-  // strategy never surfaces it — it returns every droppable sorted by distance,
-  // so the container loses to a row in some other section — and the section
-  // stays permanently unfillable by drag.
+  // The list is ONE sortable run — rows, section headers and add-rows all slots
+  // in the same array — so a task's section is simply "whose header is nearest
+  // above it" (flatList.ts). These checks pin the gestures that fall out of
+  // that: a header is the BOUNDARY of a section, and a container's add-row is
+  // its TOP.
+  //
+  // The second gesture below only works if an empty section is reachable at
+  // all: it has no rows, so its header and add-row are the only slots in it.
   const empty = await api("POST", "/sections", {
     projectId: project.id,
     name: "Empty section",
@@ -277,8 +279,15 @@ try {
     await page.mouse.down();
     await page.mouse.move(box.x + box.width / 2, grabY + 8, { steps: 3 });
     await page.mouse.move(targetBox.x, targetBox.y, { steps: 10 });
-    // Settle, then land exactly: auto-scroll can move the target during the
-    // approach, and a stale aim silently tests a different band.
+    // Aim at PRE-DRAG coordinates. dnd-kit measures every droppable when the
+    // drag starts and hit-tests against those rects — the CSS transforms that
+    // open the gap move the elements on screen but not the rects. Re-measuring
+    // a target mid-drag therefore aims at where it has been pushed to, not at
+    // where the hit test still thinks it is, and lands the drop one slot away.
+    //
+    // `settle` exists for the one case where the rects really do move: a scroll
+    // under the drag, which dnd-kit applies to every rect. Only the scroll
+    // check needs it.
     await sleep(250);
     if (target.settle) {
       const fresh = await target.settle();
@@ -321,10 +330,10 @@ try {
   check("11. and dropping on an EMPTY section's header works too", ontoEmpty === true);
   await shot("v2-sections-03-dragged");
 
-  // Dropping a row on its OWN section's header means "put this first" — the
-  // band above the rows belongs to the container, and reading every container
-  // drop as "append" sends the row to the bottom instead. The section is
-  // tinted either way, so a wrong answer here looks exactly like a right one.
+  // A section's ADD-ROW is its top. It sits below the header and above the
+  // first row, so — unlike the header — its meaning can't flip with the
+  // direction you approach from: land there and you are first in the section,
+  // whether you came from above, from below, or from inside it.
   await api("PATCH", `/tasks/${(await api("GET", `/tasks?project_id=${project.id}`)).find((t) => t.title === "Gamma task").id}`, {
     sectionId: created.id,
   });
@@ -341,33 +350,66 @@ try {
     );
   const before = await titlesIn();
   const lastTitle = before.at(-1);
-  const blockersHeader = await blockers
-    .locator("[data-testid=v2-section-header]")
-    .boundingBox();
+  const blockersAdd = await blockers.locator("[data-testid=v2-add-task]").boundingBox();
   await dragTo(
     blockers.locator("[data-testid=v2-task-row]", { hasText: lastTitle }),
-    { x: blockersHeader.x + blockersHeader.width / 2, y: blockersHeader.y + blockersHeader.height / 2 },
+    { x: blockersAdd.x + blockersAdd.width / 2, y: blockersAdd.y + blockersAdd.height / 2 },
   );
   const movedToTop = await waitFor("the dragged row to become first", async () =>
     (await titlesIn())[0] === lastTitle || undefined,
   ).catch(() => false);
   check(
-    "12. dropping a row on its own section header puts it FIRST, not last",
+    "12. dropping a row on its own section's add-row puts it FIRST",
     movedToTop === true,
     `before=${before.join(" | ")} after=${(await titlesIn()).join(" | ")}`,
   );
 
+  // …and the header is the section's BOUNDARY, not a second "top". Dragging a
+  // row UP onto its own header opens the gap ABOVE the header, so the row
+  // leaves the section — which is exactly what the screen shows while you do
+  // it, and the only drag gesture that unfiles a task. Asserting this pins the
+  // rule that replaced a pile of special cases: what `arrayMove` draws is what
+  // gets written, with no band that means something other than where it looks.
+  const escapeTitle = (await titlesIn())[0];
+  const escapeHeader = await blockers
+    .locator("[data-testid=v2-section-header]")
+    .boundingBox();
+  await dragTo(blockers.locator("[data-testid=v2-task-row]", { hasText: escapeTitle }), {
+    x: escapeHeader.x + escapeHeader.width / 2,
+    y: escapeHeader.y + escapeHeader.height / 2,
+  });
+  const escaped = await waitFor("the row to leave the section", async () =>
+    (await sectionOf(escapeTitle)) === null || undefined,
+  ).catch(() => false);
+  check(
+    "12b. dragging a row up onto its own header takes it OUT of the section",
+    escaped === true,
+    `${escapeTitle} → sectionId=${await sectionOf(escapeTitle)}`,
+  );
+  // Put it back where the later checks expect it — and WAIT for the list to
+  // actually show that, not merely for the row to reappear. A restore that
+  // hasn't landed makes the next check measure this one's leftovers.
+  const escapedId = (await api("GET", `/tasks?project_id=${project.id}`)).find(
+    (t) => t.title === escapeTitle,
+  ).id;
+  // No sortOrder: check 12 minted a key BELOW "a0" to put this row first, so
+  // naming a literal key here would be guessing at the list's real head.
+  await api("PATCH", `/tasks/${escapedId}`, { sectionId: created.id });
+  await waitFor("the row to return to the section", async () =>
+    (await titlesIn()).includes(escapeTitle) || undefined,
+  );
+  await sleep(400);
+
   // A SMALL upward nudge on a section's FIRST row. The pointer clears the row's
-  // top edge and lands in the add-row band, so the drop resolves to the
-  // container — but the row itself is barely moved. Measuring the dragged
-  // rect instead of the pointer reads that as "you dragged less than half a
-  // row, so you meant the bottom" and relocates the top row to the END of its
-  // own section, from a 12px gesture with no undo.
+  // top edge and lands in the add-row band — a real drop target now — while the
+  // row itself has barely moved. It must resolve to "first in this section",
+  // which is where the row already is: nothing moves. Reading a drop in that
+  // band as "the end of the container" instead relocates the top row to the
+  // BOTTOM of its own section, from a 12px gesture with no undo.
   const nudgeBefore = await titlesIn();
-  // Grabbed 6px below the row's top and nudged up 12: the POINTER is 6px above
-  // the row (so the drop resolves to the container's band) while the row has
-  // moved barely a quarter of its own height. Grabbing at the centre instead
-  // would make the two thresholds coincide and the check prove nothing.
+  // Grabbed 6px below the row's top and nudged up 12: the POINTER leaves the
+  // row while the row has moved barely a quarter of its own height. Grabbing at
+  // the centre instead would make the two coincide and prove nothing.
   await dragTo(
     blockers.locator("[data-testid=v2-task-row]", { hasText: nudgeBefore[0] }),
     { grabDy: 6, dy: -12 },
@@ -576,21 +618,13 @@ try {
   await waitFor("the solo section to hold exactly one row", async () =>
     (await soloEl.locator("[data-testid=v2-task-row]").count()) === 1 || undefined,
   );
-  const soloAddRowLoc = soloEl.locator("[data-testid=v2-add-task]");
-  const soloAddRow = await soloAddRowLoc.boundingBox();
-  // Aim at the BOTTOM of its add-row: below the container's midpoint, above its
-  // only row. Intent is unambiguous; a midpoint test answers "bottom".
-  await dragTo(
-    page.locator("[data-testid=v2-task-row]", { hasText: first }),
-    {
-      x: soloAddRow.x + soloAddRow.width / 2,
-      y: soloAddRow.y + soloAddRow.height - 3,
-      settle: async () => {
-        const b = await soloAddRowLoc.boundingBox();
-        return { x: b.x + b.width / 2, y: b.y + b.height - 3 };
-      },
-    },
-  );
+  const soloAddRow = await soloEl.locator("[data-testid=v2-add-task]").boundingBox();
+  // Aim at the BOTTOM of its add-row: below the section's midpoint, above its
+  // only row. Intent is unambiguous, and the answer must be "above".
+  await dragTo(page.locator("[data-testid=v2-task-row]", { hasText: first }), {
+    x: soloAddRow.x + soloAddRow.width / 2,
+    y: soloAddRow.y + soloAddRow.height - 3,
+  });
   const soloOrder = await waitFor("both rows to be in the solo section", async () => {
     const titles = (
       await soloEl.locator("[data-testid=v2-task-row]").allInnerTexts()
@@ -622,7 +656,18 @@ try {
     (await sectionEl.locator("[data-testid=v2-task-row]").count()) === 0 || undefined,
   );
   check("18. collapsing hides its rows");
-  check("19. and the header still reports the count", (await header.innerText()).includes("2"));
+  // Ask the SERVER how many are filed here rather than hardcoding a number.
+  // The count depends on which rows the drag checks above happened to borrow,
+  // so a literal makes this check fail whenever a drag gesture changes — which
+  // says nothing about whether a collapsed header reports its count.
+  const filedHere = (await api("GET", `/tasks?project_id=${project.id}`)).filter(
+    (t) => t.sectionId === created.id && t.status !== "done",
+  ).length;
+  check(
+    "19. and the header still reports the count",
+    (await header.innerText()).includes(String(filedHere)),
+    `${filedHere} filed`,
+  );
   await shot("v2-sections-02-collapsed");
   await header.getByRole("button", { name: /Expand/ }).click();
 

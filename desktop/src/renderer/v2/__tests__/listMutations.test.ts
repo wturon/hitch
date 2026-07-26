@@ -5,11 +5,25 @@ import { describe, expect, it } from "vitest";
 import { generateKeyBetween } from "fractional-indexing";
 
 import { captureSortOrder } from "../capture";
-import {
-  reorderSortOrder,
-  sortOrderAtIndex,
-  uncheckSortOrder,
-} from "../listMutations";
+import { sortOrderAtIndex, uncheckSortOrder } from "../listMutations";
+
+/**
+ * A drag, exactly as TodosViewV2 issues one: drop the row out of the list, ask
+ * for a key at its destination index, and pick the run-escape bias from the
+ * direction of travel. Tested through this wrapper rather than against
+ * `sortOrderAtIndex` directly so the assertions below cover the call the app
+ * actually makes.
+ */
+const reorderSortOrder = (
+  list: ReadonlyArray<{ sortOrder: string }>,
+  from: number,
+  to: number,
+): string | null => {
+  const n = list.length;
+  if (from === to || from < 0 || to < 0 || from >= n || to >= n) return null;
+  const siblings = list.filter((_, i) => i !== from);
+  return sortOrderAtIndex(siblings, to, from < to ? "after" : "before");
+};
 
 describe("uncheckSortOrder", () => {
   it("mints the first key for an empty backlog", () => {
