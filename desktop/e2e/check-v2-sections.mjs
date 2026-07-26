@@ -273,15 +273,21 @@ try {
   ).catch(() => false);
   check("10. dropping a row onto a row in another section files it", ontoRow === true);
 
-  const emptyBox = await emptyEl.locator("[data-testid=v2-drop-target]").boundingBox();
+  // Aimed at the section's HEADER, not a padding strip: "put it in this
+  // section" is the gesture, and the header is what people point at. That band
+  // is outside the rows, so it only resolves to anything if the whole section
+  // is the drop target.
+  const headerBox = await emptyEl
+    .locator("[data-testid=v2-section-header]")
+    .boundingBox();
   await dragTo(gamma, {
-    x: emptyBox.x + emptyBox.width / 2,
-    y: emptyBox.y + emptyBox.height / 2,
+    x: headerBox.x + headerBox.width / 2,
+    y: headerBox.y + headerBox.height / 2,
   });
   const ontoEmpty = await waitFor("Gamma to land in the empty section", async () =>
     (await sectionOf("Gamma task")) === empty.id || undefined,
   ).catch(() => false);
-  check("11. and dropping into an EMPTY section works too", ontoEmpty === true);
+  check("11. and dropping on an EMPTY section's header works too", ontoEmpty === true);
   await shot("v2-sections-03-dragged");
 
   // Put it back and drop the scratch section, so the later counts hold.

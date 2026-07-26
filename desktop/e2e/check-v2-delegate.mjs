@@ -134,7 +134,10 @@ try {
       HITCH_FAKE_LAUNCH: "1",
       // A long turn delay keeps `running` (WORKING) observable in the list
       // before it folds to `waiting_input` (NEEDS YOU).
-      HITCH_FAKE_LAUNCH_DELAY_MS: "4000",
+      // The Working window: the fake launcher flips to idle after this, and
+      // stages B/5 assert Working is VISIBLE. 4s raced the daemon's own
+      // reconcile + the WS round trip on a loaded machine.
+      HITCH_FAKE_LAUNCH_DELAY_MS: "8000",
       HITCH_APP_SUPPORT_DIR: scratch,
       HITCH_RECONCILE_MS: "600",
       HITCH_HEARTBEAT_MS: "4000",

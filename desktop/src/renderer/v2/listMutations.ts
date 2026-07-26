@@ -11,6 +11,13 @@ import { generateKeyBetween } from "fractional-indexing";
  * The sortOrder for a row inserted BEFORE `list[index]` (an `index` of
  * `list.length` appends). `list` must be in list order.
  *
+ * `bias` decides which way to escape a run of EQUAL keys, and it matters:
+ * there is no key between two equal ones, so the row has to land at one end of
+ * the run. "before" puts it above (what an upward move or a drop onto a row
+ * means); "after" puts it below (what a downward move means). Getting this
+ * backwards makes a downward drag into a run land exactly where it started —
+ * a silent no-op, which is the failure this whole helper exists to prevent.
+ *
  * This exists because DUPLICATE keys within one container are ordinary data
  * here, not a bug to assert against. Every container mints its first key
  * independently (`generateKeyBetween(null, null)` = "a0"), so a task filed into
@@ -33,17 +40,37 @@ import { generateKeyBetween } from "fractional-indexing";
 export function sortOrderAtIndex(
   list: ReadonlyArray<{ sortOrder: string }>,
   index: number,
+  bias: "before" | "after" = "before",
 ): string {
-  const next = list[index]?.sortOrder ?? null;
-  let prev: string | null = null;
-  for (let i = index - 1; i >= 0; i--) {
-    const candidate = list[i].sortOrder;
-    if (next === null || candidate < next) {
-      prev = candidate;
+  const at = Math.max(0, Math.min(index, list.length));
+  const prev = list[at - 1]?.sortOrder ?? null;
+  const next = list[at]?.sortOrder ?? null;
+  // The ordinary case: a real gap to split.
+  if (prev === null || next === null || prev < next) {
+    return generateKeyBetween(prev, next);
+  }
+  // Degenerate: `at` sits inside a run of equal keys. Escape it in the
+  // direction the caller is moving. Either way the open interval we end up
+  // splitting provably holds no existing row — every key skipped equals the
+  // run's — so the new key is unique.
+  if (bias === "before") {
+    let low: string | null = null;
+    for (let i = at - 1; i >= 0; i--) {
+      if (list[i].sortOrder < next) {
+        low = list[i].sortOrder;
+        break;
+      }
+    }
+    return generateKeyBetween(low, next);
+  }
+  let high: string | null = null;
+  for (let i = at; i < list.length; i++) {
+    if (list[i].sortOrder > prev) {
+      high = list[i].sortOrder;
       break;
     }
   }
-  return generateKeyBetween(prev, next);
+  return generateKeyBetween(prev, high);
 }
 
 /**
@@ -74,7 +101,8 @@ export function insertSortOrder(
   overTaskId: string | null,
 ): string {
   const index = overTaskId === null ? -1 : dest.findIndex((t) => t.id === overTaskId);
-  return sortOrderAtIndex(dest, index === -1 ? dest.length : index);
+  // "Takes its place, pushing it down" — so above a run of equal keys.
+  return sortOrderAtIndex(dest, index === -1 ? dest.length : index, "before");
 }
 
 /**
@@ -94,5 +122,5 @@ export function reorderSortOrder(
   // dnd-kit's arrayMove semantics: the row ends up at index `to` of the
   // reordered list — i.e. inserted at `to` in the list WITHOUT it.
   const rest = backlog.filter((_, i) => i !== from);
-  return sortOrderAtIndex(rest, to);
+  return sortOrderAtIndex(rest, to, from < to ? "after" : "before");
 }

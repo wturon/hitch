@@ -158,20 +158,16 @@ export type TaskItem = Awaited<ReturnType<typeof fetchTasks>>[number];
 // "Show N more completed" toggle — same cadence as V1 (DONE stays tucked away).
 const DONE_PREVIEW = 3;
 
-// V1's group header, verbatim: 11px small-caps label + trailing hairline. The
-// amber NEEDS YOU treatment comes along for free for M4.
-function GroupHeader({ label, amber }: { label: string; amber?: boolean }) {
+// V1's group header, verbatim: 11px small-caps label + trailing hairline. Its
+// amber variant went with NEEDS YOU — DONE is the only caller left, and a
+// section's own header is a different component (SectionHeader).
+function GroupHeader({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2.5 px-2.5 py-1.5">
-      <span
-        className={cn(
-          "text-[11px] font-medium uppercase leading-[14px] tracking-[0.05em]",
-          amber ? "text-amber-700 dark:text-amber-500/90" : "text-muted-foreground",
-        )}
-      >
+      <span className="text-[11px] font-medium uppercase leading-[14px] tracking-[0.05em] text-muted-foreground">
         {label}
       </span>
-      <span className={cn("h-px flex-1", amber ? "bg-amber-500/35" : "bg-border")} aria-hidden />
+      <span className="h-px flex-1 bg-border" aria-hidden />
     </div>
   );
 }
@@ -510,35 +506,35 @@ const preferRows: CollisionDetection = (args) => {
 
 function DroppableContainer({
   sectionId,
-  empty,
+  disabled,
   children,
+  ...rest
 }: {
   sectionId: string | null;
-  /** No rows — the container's own area is the ONLY way to drop in here. */
-  empty?: boolean;
+  /** Not a drop target: collapsed (its contents are hidden) or filtering. */
+  disabled?: boolean;
   children: ReactNode;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: dropId(sectionId) });
+} & Record<`data-${string}`, string | undefined>) {
+  const { setNodeRef, isOver } = useDroppable({ id: dropId(sectionId), disabled });
   return (
-    <div
+    <section
       ref={setNodeRef}
-      data-testid="v2-drop-target"
+      {...rest}
       className={cn(
-        // The bottom padding is the append target: with a hit-test collision
-        // strategy, "below the last row" has to be a place the pointer can
-        // actually be, or the deepest reachable drop is "above the last row".
-        "flex flex-col rounded-lg pb-2.5 transition-colors",
-        // An EMPTY section has no rows to aim at, so its own area has to be a
-        // real target rather than a hairline of padding.
-        empty ? "min-h-[38px]" : "min-h-[10px]",
+        // The WHOLE section is the drop target — header, add-row and the strip
+        // below the last row included. Wrapping only the rows leaves a ~70px
+        // dead band above each section where a hit-test strategy finds no
+        // droppable at all, and "put it in this section" is exactly the
+        // gesture people aim at a header.
+        "flex flex-col rounded-lg pb-1.5 transition-colors",
         // A section you're hovering over lights up faintly — the only cue that
         // a cross-section drop is live. No border, no outline: this is a hint,
         // not a dialog.
-        isOver && "bg-muted/40",
+        isOver && !disabled && "bg-muted/40",
       )}
     >
       {children}
-    </div>
+    </section>
   );
 }
 
@@ -1266,6 +1262,18 @@ export function TodosViewV2({
      *  hide behind a collapsed section AND a tag filter at once. */
     allTasks: TaskItem[];
   };
+  // Every task filed in a section, DONE included — what a delete actually
+  // unfiles. The header's count is open-only (done tasks aren't structure), but
+  // the delete confirm has to describe the real consequence.
+  const filedCountById = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const task of visibleTasks) {
+      if (task.sectionId == null) continue;
+      counts.set(task.sectionId, (counts.get(task.sectionId) ?? 0) + 1);
+    }
+    return counts;
+  }, [visibleTasks]);
+
   const containers: Container[] = useMemo(() => {
     const unfilteredById = new Map(
       allGrouped.sections.map((b) => [b.section.id, b.tasks] as const),
@@ -1509,9 +1517,18 @@ export function TodosViewV2({
       allGrouped.sections.reduce((n, b) => n + b.tasks.length, 0) ===
     0;
   // Filtered down to nothing (distinct from an empty project).
+  // Count TASKS, not buckets. filterSectionedTasks used to drop emptied
+  // sections, which made `sections.length` a proxy for "something matched";
+  // it keeps them now (a collapsed one still has to show its agents), so a
+  // project with any section would otherwise never report "no matches" — and
+  // a filter that matches nothing would render a blank list with no
+  // explanation at all.
   const noFilterMatches =
     filterActive &&
-    grouped.loose.length + grouped.sections.length + grouped.done.length === 0;
+    grouped.loose.length +
+      grouped.done.length +
+      grouped.sections.reduce((n, b) => n + b.tasks.length, 0) ===
+      0;
   const hiddenDone = grouped.done.length - doneVisible.length;
 
   const actions: RowActions = {
@@ -1591,10 +1608,15 @@ export function TodosViewV2({
           }
           const key = sectionId ?? "loose";
           return (
-            <section
-              className="flex flex-col"
+            <DroppableContainer
               key={key}
+              sectionId={sectionId}
+              // Collapsed: its rows aren't on screen, and dropping into a
+              // container you can't see is a way to lose a task. Filtering:
+              // drag is off entirely (the order is a projection).
+              disabled={container.collapsed || filterActive}
               data-testid={sectionId ? "v2-section" : "v2-loose"}
+              data-drop-target={sectionId ?? "loose"}
               data-section-id={sectionId ?? undefined}
             >
               {container.section && (
@@ -1612,7 +1634,7 @@ export function TodosViewV2({
                       section={container.section!}
                       index={sectionIndexById.get(container.section!.id) ?? -1}
                       sections={sectionRows}
-                      taskCount={container.total}
+                      taskCount={filedCountById.get(container.section!.id) ?? 0}
                       mutations={sectionMutations}
                       onStartRename={startRename}
                     />
@@ -1645,32 +1667,27 @@ export function TodosViewV2({
                       />
                     ))
                   ) : (
-                    <DroppableContainer
-                      sectionId={sectionId}
-                      empty={container.tasks.length === 0}
+                    <SortableContext
+                      items={container.tasks.map((task) => task.id)}
+                      strategy={verticalListSortingStrategy}
                     >
-                      <SortableContext
-                        items={container.tasks.map((task) => task.id)}
-                        strategy={verticalListSortingStrategy}
-                      >
-                        {container.tasks.map((task) => (
-                          <SortableTaskRow
-                            key={task.id}
-                            task={task}
-                            tag={tag}
-                            actions={actions}
-                            chip={chipOf(task.id)}
-                            sections={sectionRows}
-                            nav={rowNav(task.id)}
-                            dropBefore={dropBeforeId === task.id}
-                          />
-                        ))}
-                      </SortableContext>
-                    </DroppableContainer>
+                      {container.tasks.map((task) => (
+                        <SortableTaskRow
+                          key={task.id}
+                          task={task}
+                          tag={tag}
+                          actions={actions}
+                          chip={chipOf(task.id)}
+                          sections={sectionRows}
+                          nav={rowNav(task.id)}
+                          dropBefore={dropBeforeId === task.id}
+                        />
+                      ))}
+                    </SortableContext>
                   )}
                 </>
               )}
-            </section>
+            </DroppableContainer>
           );
           })}
         </DndContext>

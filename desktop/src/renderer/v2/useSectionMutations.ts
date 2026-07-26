@@ -65,7 +65,11 @@ export function stepSectionSortOrder(
   // further along. Routing through sortOrderAtIndex means a duplicate key among
   // the sections widens rather than throwing or colliding.
   const rest = sections.filter((_, i) => i !== index);
-  return sortOrderAtIndex(rest, direction === "up" ? index - 1 : index + 1);
+  return sortOrderAtIndex(
+    rest,
+    direction === "up" ? index - 1 : index + 1,
+    direction === "up" ? "before" : "after",
+  );
 }
 
 export function useSectionMutations(
