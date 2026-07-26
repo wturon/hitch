@@ -33,10 +33,12 @@ export function taskMatchesTagFilter(tagNames: string[], f: TagFilter): boolean 
 // filterTaskGroups now that placement, not status, decides layout). Inactive
 // filter → the same object back, untouched.
 //
-// Sections with no surviving task are dropped ENTIRELY rather than rendered
-// empty: while filtering, the list is a projection, and a header with nothing
-// under it is just noise. Section identity and order are otherwise preserved,
-// so the shape you know stays legible through the lens.
+// EVERY section survives, including ones the filter empties. Hiding those is a
+// view decision and it lives in the view, because it depends on something this
+// function has no business knowing: a collapsed section still has to surface
+// the agents inside it, and dropping the bucket here would delete the only
+// place those chips can appear — letting a filter plus a collapse hide an agent
+// that needs you, which is the exact hole the chips exist to close.
 export function filterSectionedTasks<T extends PlacedTask>(
   grouped: SectionedTasks<T>,
   f: TagFilter,
@@ -46,9 +48,10 @@ export function filterSectionedTasks<T extends PlacedTask>(
   const keep = (list: T[]) => list.filter((t) => taskMatchesTagFilter(namesOf(t), f));
   return {
     loose: keep(grouped.loose),
-    sections: grouped.sections
-      .map((bucket) => ({ section: bucket.section, tasks: keep(bucket.tasks) }))
-      .filter((bucket) => bucket.tasks.length > 0),
+    sections: grouped.sections.map((bucket) => ({
+      section: bucket.section,
+      tasks: keep(bucket.tasks),
+    })),
     done: keep(grouped.done),
   };
 }

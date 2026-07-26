@@ -134,7 +134,7 @@ try {
   await taskRow("Alpha task").waitFor({ timeout: 10_000 });
   check("8. selecting a project switches the task list");
   const backlogTitles = await page
-    .locator("[data-testid=v2-backlog] [data-testid=v2-task-row]")
+    .locator("[data-testid=v2-loose] [data-testid=v2-task-row]")
     .allInnerTexts();
   check(
     "9. open tasks render in sortOrder (not creation order)",
@@ -175,7 +175,7 @@ try {
   await api("POST", "/tasks", { projectId: work.id, title: "Via Websocket", sortOrder: "a1V" });
   await taskRow("Via Websocket").waitFor({ timeout: 10_000 });
   const afterLive = await page
-    .locator("[data-testid=v2-backlog] [data-testid=v2-task-row]")
+    .locator("[data-testid=v2-loose] [data-testid=v2-task-row]")
     .allInnerTexts();
   check(
     "14. out-of-band task appears mid-list via WS invalidation",

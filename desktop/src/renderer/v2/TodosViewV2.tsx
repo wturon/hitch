@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   closestCenter,
   DndContext,
+  pointerWithin,
   PointerSensor,
   useDroppable,
   useSensor,
@@ -67,7 +68,11 @@ import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import type { ServerHarness } from "./delegation";
 import { HarnessChipSlot, StaticHarnessChip } from "./HarnessChip";
-import { insertSortOrder, keyBetween, reorderSortOrder } from "./listMutations";
+import {
+  insertSortOrder,
+  reorderSortOrder,
+  sortOrderAtIndex,
+} from "./listMutations";
 import { loadCollapsedSections, saveCollapsedSections } from "./sectionCollapse";
 import {
   deriveSectionedTasks,
@@ -322,7 +327,11 @@ function SectionHeader({
           </span>
           {count > 0 && (
             <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">
-              {count}
+              {/* While filtering, the list is a projection — say so, rather
+                  than showing a total that doesn't match the rows under it. */}
+              {matching === undefined || matching === count
+                ? count
+                : `${matching} of ${count}`}
             </span>
           )}
           <span className="flex-1" />
@@ -475,37 +484,53 @@ const DROP_ID_PREFIX = "container:";
 const dropId = (sectionId: string | null) => `${DROP_ID_PREFIX}${sectionId ?? "loose"}`;
 const isDropId = (id: string) => id.startsWith(DROP_ID_PREFIX);
 
-// closestCenter, but a ROW always beats the container it sits in.
+// A ROW always beats the container it sits inside; the container only wins
+// where there is no row — which is the one case it exists for, an empty
+// section that a SortableContext can't see because it has no items.
 //
-// A container droppable spans all of its rows, so its centre sits at the
-// container's vertical midpoint — and plain closestCenter hands it back
-// whenever the pointer is in the ~20px band around that midpoint, even though
-// a row is directly under the cursor. That made a mid-list drop mean "you
-// dropped it below everything" (it appends), and a same-container drop there
-// resolve to an id that isn't in the list at all.
+// This has to start from `pointerWithin`, which is a real hit test: it returns
+// only droppables whose rect actually contains the pointer. `closestCenter`
+// is NOT — it returns EVERY registered droppable, sorted by distance — so
+// filtering its output can never let a container through (the dragged row
+// itself is always in the list), and filtering nothing out leaves a container
+// spanning all its rows to win the band around its own midpoint. Both readings
+// are wrong, in opposite directions.
 //
-// The container droppable exists for ONE case: a section with no rows, which a
-// SortableContext can't see because it has no items. So it only wins when
-// nothing else collides.
+// closestCenter stays as the fallback for a pointer outside every droppable
+// (and for any sensor that reports no coordinates at all).
 const preferRows: CollisionDetection = (args) => {
-  const collisions = closestCenter(args);
-  const rows = collisions.filter((c) => !isDropId(String(c.id)));
-  return rows.length > 0 ? rows : collisions;
+  const within = pointerWithin(args);
+  const rowsWithin = within.filter((c) => !isDropId(String(c.id)));
+  if (rowsWithin.length > 0) return rowsWithin;
+  if (within.length > 0) return within;
+  const closest = closestCenter(args);
+  const rowsClosest = closest.filter((c) => !isDropId(String(c.id)));
+  return rowsClosest.length > 0 ? rowsClosest : closest;
 };
 
 function DroppableContainer({
   sectionId,
+  empty,
   children,
 }: {
   sectionId: string | null;
+  /** No rows — the container's own area is the ONLY way to drop in here. */
+  empty?: boolean;
   children: ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: dropId(sectionId) });
   return (
     <div
       ref={setNodeRef}
+      data-testid="v2-drop-target"
       className={cn(
-        "flex min-h-[8px] flex-col rounded-lg transition-colors",
+        // The bottom padding is the append target: with a hit-test collision
+        // strategy, "below the last row" has to be a place the pointer can
+        // actually be, or the deepest reachable drop is "above the last row".
+        "flex flex-col rounded-lg pb-2.5 transition-colors",
+        // An EMPTY section has no rows to aim at, so its own area has to be a
+        // real target rather than a hairline of padding.
+        empty ? "min-h-[38px]" : "min-h-[10px]",
         // A section you're hovering over lights up faintly — the only cue that
         // a cross-section drop is live. No border, no outline: this is a hint,
         // not a dialog.
@@ -856,6 +881,19 @@ function AddTaskRow({
 // wants a human is never the one that gets truncated.
 const COLLAPSED_CHIP_LIMIT = 3;
 
+// Whether any of these tasks has an agent worth telegraphing from a collapsed
+// header. Same predicate CollapsedSectionChips renders from, so a section is
+// never kept for chips it then declines to draw.
+function hasLiveAgent(
+  tasks: TaskItem[],
+  chipOf: (taskId: string) => RowChip,
+): boolean {
+  return tasks.some((task) => {
+    const { state } = chipOf(task.id);
+    return state === "needs-you" || state === "working";
+  });
+}
+
 function CollapsedSectionChips({
   tasks,
   chipOf,
@@ -1016,6 +1054,9 @@ export function TodosViewV2({
   );
   useEffect(() => {
     setCollapsedIds(loadCollapsedSections(projectId));
+    // Any in-flight drag belongs to the project we just left; its ids mean
+    // nothing here and would paint a drop hairline on an unrelated row.
+    setDragging(null);
   }, [projectId]);
   const toggleCollapsed = useCallback(
     (sectionId: string) => {
@@ -1180,9 +1221,9 @@ export function TodosViewV2({
       // lookup returns -1, reorderSortOrder declines, and the drop vanishes
       // with the row snapping back and nothing said.
       if (isDropId(overId)) {
-        const last = source.tasks.at(-1);
-        if (!last || last.id === draggedId) return;
-        onReorderTask(draggedId, keyBetween(last.sortOrder, null));
+        const rest = source.tasks.filter((t) => t.id !== draggedId);
+        if (rest.length === source.tasks.length || rest.length === 0) return;
+        onReorderTask(draggedId, sortOrderAtIndex(rest, rest.length));
         return;
       }
       const ids = source.tasks.map((t) => t.id);
@@ -1444,10 +1485,18 @@ export function TodosViewV2({
   // A failed sections fetch must NOT degrade to "this project has no sections":
   // that silently unfiles every task on screen and invites a duplicate section
   // to be created next to the ones it couldn't load.
-  if (tasks.isError || sections.isError) {
+  //
+  // But only when there is nothing to show. React Query sets `status: "error"`
+  // on a failed REFETCH too, with good data still cached — and every section
+  // write plus every WS notify triggers a refetch, so keying on `isError`
+  // alone would replace a perfectly renderable list with a red string on any
+  // transient blip.
+  const noTasks = tasks.data === undefined;
+  const noSections = sections.data === undefined;
+  if ((tasks.isError && noTasks) || (sections.isError && noSections)) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-destructive">
-        {String(tasks.error ?? sections.error)}
+        {String((noTasks ? tasks.error : sections.error) ?? "Failed to load")}
       </div>
     );
   }
@@ -1529,6 +1578,17 @@ export function TodosViewV2({
         >
           {containers.map((container) => {
           const sectionId = container.section?.id ?? null;
+          // While filtering, a section with no matches is noise — UNLESS it is
+          // collapsed and holding a live agent, which its header is the only
+          // remaining place to show (V2's sidebar has no attention count).
+          if (
+            filterActive &&
+            container.section &&
+            container.tasks.length === 0 &&
+            !(container.collapsed && hasLiveAgent(container.allTasks, chipOf))
+          ) {
+            return null;
+          }
           const key = sectionId ?? "loose";
           return (
             <section
@@ -1585,7 +1645,10 @@ export function TodosViewV2({
                       />
                     ))
                   ) : (
-                    <DroppableContainer sectionId={sectionId}>
+                    <DroppableContainer
+                      sectionId={sectionId}
+                      empty={container.tasks.length === 0}
+                    >
                       <SortableContext
                         items={container.tasks.map((task) => task.id)}
                         strategy={verticalListSortingStrategy}

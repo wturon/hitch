@@ -8,29 +8,40 @@ import { generateKeyBetween } from "fractional-indexing";
 // model — V2's schema keys order into the rows themselves).
 
 /**
- * `generateKeyBetween`, but tolerant of a DEGENERATE neighbour pair.
+ * The sortOrder for a row inserted BEFORE `list[index]` (an `index` of
+ * `list.length` appends). `list` must be in list order.
  *
- * Sections made duplicate keys reachable within one container, which the
- * library treats as a programming error: it swaps an out-of-order pair but
- * THROWS on an equal one. Every container mints its first key independently
- * (`generateKeyBetween(null, null)` = "a0"), so a task filed into a section and
- * a task captured loose can hold the same key — and then `on delete set null`
- * merges those two key spaces into one list. The duplicate is legal data the
- * moment a section is deleted, or the moment another client deletes one and our
- * orphan fallback renders those tasks loose.
+ * This exists because DUPLICATE keys within one container are ordinary data
+ * here, not a bug to assert against. Every container mints its first key
+ * independently (`generateKeyBetween(null, null)` = "a0"), so a task filed into
+ * a section and a task captured loose both hold "a0" — and `on delete set null`
+ * then merges those two key spaces into one list. fractional-indexing treats an
+ * equal pair as a programming error and THROWS, and that throw lands inside
+ * dnd-kit's async drag-end handler where nothing catches it: the drop is
+ * silently discarded, and so is every later drop near the pair.
  *
- * A throw here lands inside dnd-kit's async drag-end handler, where nothing
- * catches it: the drop is silently discarded and every later drop near the pair
- * fails the same way, with nothing on screen to explain it.
- *
- * So when the pair can't be split, we drop the upper bound and land the row
- * immediately AFTER `prev` — which is also after its duplicate, since they're
- * equal. Deterministic, never throws, and puts the row adjacent to where it was
- * aimed.
+ * Widening, not clamping, is what makes this converge. Taking the neighbours
+ * literally gives `(a0, a0)`, which can't be split; dropping the upper bound
+ * instead — `generateKeyBetween("a0", null)` = "a1" — happily mints a key that
+ * COLLIDES with whatever already holds "a1", flinging the row past unrelated
+ * rows and breeding a fresh duplicate pair. So we walk `prev` back to the last
+ * key strictly below `next`. Because the list is sorted, every key we skip
+ * equals `next`, which means the open interval `(prev, next)` provably holds no
+ * existing row: the new key is unique, and the row lands directly above the
+ * duplicates it was aimed at.
  */
-export function keyBetween(prev: string | null, next: string | null): string {
-  if (prev !== null && next !== null && prev >= next) {
-    return generateKeyBetween(prev, null);
+export function sortOrderAtIndex(
+  list: ReadonlyArray<{ sortOrder: string }>,
+  index: number,
+): string {
+  const next = list[index]?.sortOrder ?? null;
+  let prev: string | null = null;
+  for (let i = index - 1; i >= 0; i--) {
+    const candidate = list[i].sortOrder;
+    if (next === null || candidate < next) {
+      prev = candidate;
+      break;
+    }
   }
   return generateKeyBetween(prev, next);
 }
@@ -63,8 +74,7 @@ export function insertSortOrder(
   overTaskId: string | null,
 ): string {
   const index = overTaskId === null ? -1 : dest.findIndex((t) => t.id === overTaskId);
-  if (index === -1) return keyBetween(dest.at(-1)?.sortOrder ?? null, null);
-  return keyBetween(dest[index - 1]?.sortOrder ?? null, dest[index].sortOrder);
+  return sortOrderAtIndex(dest, index === -1 ? dest.length : index);
 }
 
 /**
@@ -81,9 +91,8 @@ export function reorderSortOrder(
 ): string | null {
   const n = backlog.length;
   if (from === to || from < 0 || to < 0 || from >= n || to >= n) return null;
-  // Neighbors at the destination, in the CURRENT list, skipping the moved row:
-  // moving down lands after backlog[to]; moving up lands before backlog[to].
-  const prev = from < to ? backlog[to] : backlog[to - 1];
-  const next = from < to ? backlog[to + 1] : backlog[to];
-  return keyBetween(prev?.sortOrder ?? null, next?.sortOrder ?? null);
+  // dnd-kit's arrayMove semantics: the row ends up at index `to` of the
+  // reordered list — i.e. inserted at `to` in the list WITHOUT it.
+  const rest = backlog.filter((_, i) => i !== from);
+  return sortOrderAtIndex(rest, to);
 }

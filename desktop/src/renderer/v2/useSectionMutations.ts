@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { generateKeyBetween } from "fractional-indexing";
 
-import { keyBetween } from "./listMutations";
+import { sortOrderAtIndex } from "./listMutations";
 
 import type { HitchClient } from "@/lib/server/client";
 import type { SectionItem } from "./useSections";
@@ -37,7 +37,15 @@ export interface SectionMutations {
 export function appendSectionSortOrder(
   sections: ReadonlyArray<{ sortOrder: string }>,
 ): string {
-  return generateKeyBetween(sections.at(-1)?.sortOrder ?? null, null);
+  // The MAX key, not the last element's. The array this is handed is the raw
+  // cache, and an optimistic reorder rewrites a row's sortOrder in place
+  // without moving it — so `at(-1)` is not reliably the largest, and appending
+  // after it mints a key that collides with a section further down.
+  let max: string | null = null;
+  for (const section of sections) {
+    if (max === null || section.sortOrder > max) max = section.sortOrder;
+  }
+  return generateKeyBetween(max, null);
 }
 
 /**
@@ -52,19 +60,12 @@ export function stepSectionSortOrder(
   direction: "up" | "down",
 ): string | null {
   if (index < 0 || index >= sections.length) return null;
-  if (direction === "up") {
-    if (index === 0) return null;
-    // Between the two rows above it (or before the head).
-    return keyBetween(
-      sections[index - 2]?.sortOrder ?? null,
-      sections[index - 1].sortOrder,
-    );
-  }
-  if (index === sections.length - 1) return null;
-  return keyBetween(
-    sections[index + 1].sortOrder,
-    sections[index + 2]?.sortOrder ?? null,
-  );
+  if (direction === "up" ? index === 0 : index === sections.length - 1) return null;
+  // Same shape as a task drag: take the section out, then insert it one place
+  // further along. Routing through sortOrderAtIndex means a duplicate key among
+  // the sections widens rather than throwing or colliding.
+  const rest = sections.filter((_, i) => i !== index);
+  return sortOrderAtIndex(rest, direction === "up" ? index - 1 : index + 1);
 }
 
 export function useSectionMutations(

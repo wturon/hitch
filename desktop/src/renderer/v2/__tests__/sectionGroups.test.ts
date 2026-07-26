@@ -170,14 +170,20 @@ describe("filterSectionedTasks", () => {
     );
   });
 
-  it("drops non-matching rows and sections that empty out", () => {
+  it("drops non-matching rows but KEEPS every section", () => {
+    // A section the filter empties still has to exist as a bucket: if it is
+    // collapsed and holding a live agent, its header is the only place that
+    // agent can appear. Whether to render it is the view's call, not this
+    // function's.
     const filtered = filterSectionedTasks(
       grouped,
       { tags: ["keep"], untagged: false },
       namesOf,
     );
     expect(filtered.loose.map((t) => t.id)).toEqual(["loose-hit"]);
-    expect(filtered.sections.map((b) => b.section.id)).toEqual(["s1"]);
+    expect(filtered.sections.map((b) => b.section.id)).toEqual(["s1", "s2"]);
+    expect(filtered.sections[0].tasks.map((t) => t.id)).toEqual(["s1-hit"]);
+    expect(filtered.sections[1].tasks).toEqual([]);
     expect(filtered.done.map((t) => t.id)).toEqual(["done-hit"]);
   });
 });

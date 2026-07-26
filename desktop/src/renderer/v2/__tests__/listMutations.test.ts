@@ -7,8 +7,8 @@ import { generateKeyBetween } from "fractional-indexing";
 import { captureSortOrder } from "../capture";
 import {
   insertSortOrder,
-  keyBetween,
   reorderSortOrder,
+  sortOrderAtIndex,
   uncheckSortOrder,
 } from "../listMutations";
 
@@ -121,23 +121,43 @@ describe("insertSortOrder", () => {
   });
 });
 
-describe("keyBetween — degenerate neighbour pairs", () => {
-  it("splits an ordinary pair like generateKeyBetween", () => {
-    expect(keyBetween("a1", "a3")).toBe(generateKeyBetween("a1", "a3"));
+describe("sortOrderAtIndex — duplicate keys", () => {
+  it("splits an ordinary gap", () => {
+    const list = [{ sortOrder: "a1" }, { sortOrder: "a3" }];
+    const key = sortOrderAtIndex(list, 1);
+    expect(key > "a1" && key < "a3").toBe(true);
   });
 
-  it("does not throw on EQUAL neighbours, and lands after them", () => {
-    // Reachable data, not a hypothetical: every container mints its first key
-    // independently, so a loose task and a task filed into a section can both
-    // hold "a0" — and `on delete set null` then merges those key spaces.
+  it("appends past the end", () => {
+    const list = [{ sortOrder: "a1" }];
+    expect(sortOrderAtIndex(list, 1) > "a1").toBe(true);
+  });
+
+  it("does not throw on duplicates, and does not collide with an existing key", () => {
+    // Reachable data: every container mints its first key independently, so a
+    // loose task and a filed one both hold "a0" — then `on delete set null`
+    // merges those key spaces. Naively dropping the upper bound here would mint
+    // "a1", which the list already contains.
+    const list = [
+      { sortOrder: "a0" },
+      { sortOrder: "a0" },
+      { sortOrder: "a1" },
+      { sortOrder: "a2" },
+    ];
     expect(() => generateKeyBetween("a0", "a0")).toThrow();
-    const key = keyBetween("a0", "a0");
-    expect(key > "a0").toBe(true);
+    const key = sortOrderAtIndex(list, 1);
+    expect(list.some((row) => row.sortOrder === key)).toBe(false);
+    expect(key < "a0").toBe(true); // above both duplicates, where it was aimed
   });
 
-  it("does not throw on an inverted pair", () => {
-    const key = keyBetween("a3", "a1");
-    expect(typeof key).toBe("string");
+  it("converges — inserting repeatedly at a duplicate pair never collides", () => {
+    const list = [{ sortOrder: "a0" }, { sortOrder: "a0" }, { sortOrder: "a1" }];
+    for (let i = 0; i < 5; i++) {
+      const key = sortOrderAtIndex(list, 1);
+      expect(list.some((row) => row.sortOrder === key)).toBe(false);
+      list.splice(1, 0, { sortOrder: key });
+      list.sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
+    }
   });
 
   it("keeps a drag over duplicate keys from throwing", () => {

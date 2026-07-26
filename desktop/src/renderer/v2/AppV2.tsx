@@ -567,6 +567,12 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
   // Order is only compared within a container, so prepending against the whole
   // project would put a section's new task above rows it doesn't share an
   // ordering with. Shares useSections' cache entry with the list (same key).
+  //
+  // No error gate here, deliberately: the list refuses to render without its
+  // sections, so a section's add-row is unreachable when they're missing and
+  // the only capture that can still fire is the global `C`, which files loose.
+  // A loose prepend against the un-split list still lands at the top of loose
+  // (loose ⊆ every open task), so the degraded answer is the right one.
   const captureSectionId =
     taskDialog.mode === "capture" ? taskDialog.sectionId : null;
   const dialogSections = useSections(client, selectedProject?.id ?? null);

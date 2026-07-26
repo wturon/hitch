@@ -186,17 +186,28 @@ try {
   await chip.filter({ hasText: "Working" }).waitFor({ timeout: 15_000 });
   check("4. delegate chip reached Working (observed=running)");
   await shot("v2-delegate-02-working-chip");
-  // Close the dialog and see the WORKING group reflect it.
+  // Close the dialog and see the ROW reflect it. Sections v1 removed the
+  // WORKING / NEEDS YOU groups — a row no longer MOVES when its agent's state
+  // changes, so what used to be "appears in a group" is now "its chip changes".
   await page.keyboard.press("Escape");
-  await page.locator("[data-testid=v2-working] [data-testid=v2-task-row]", { hasText: "Delegate me" })
-    .waitFor({ timeout: 15_000 });
-  check("5. task appears in the WORKING group");
-  await shot("v2-delegate-03-working-group");
+  const rowChip = taskRow("Delegate me").locator("[data-testid=v2-harness-chip]");
+  await waitFor(
+    "the row chip to read working",
+    async () =>
+      (await rowChip.getAttribute("data-chip-state").catch(() => null)) === "working" ||
+      undefined,
+    { timeoutMs: 15_000 },
+  );
+  check("5. the row's harness chip shows WORKING");
+  await shot("v2-delegate-03-working-chip");
 
-  // The fake turn completes → waiting_input → NEEDS YOU.
-  await page.locator("[data-testid=v2-needs-you] [data-testid=v2-task-row]", { hasText: "Delegate me" })
-    .waitFor({ timeout: 20_000 });
-  check("6. task moves to the NEEDS YOU group (observed=waiting_input)");
+  // The fake turn completes → waiting_input → the chip goes amber IN PLACE.
+  await waitFor(
+    "the row chip to read needs-you",
+    async () => (await rowChip.getAttribute("data-chip-state").catch(() => null)) === "needs-you" || undefined,
+    { timeoutMs: 20_000 },
+  );
+  check("6. the chip turns NEEDS-YOU without the row moving (observed=waiting_input)");
   await shot("v2-delegate-04-needs-you");
 
   // ── stage C: Open chat relays a focus event the daemon logs ──────────────
@@ -226,15 +237,18 @@ try {
   });
   check("8. Stop → desired=stopped → observed=done (re-delegate state)");
   await page.keyboard.press("Escape");
-  // Task is still OPEN with a done∧unreviewed assignment → NEEDS YOU (review).
-  const reviewRow = page.locator(
-    "[data-testid=v2-needs-you] [data-testid=v2-task-row]",
-    { hasText: "Delegate me" },
+  // Task is still OPEN with a done∧unreviewed assignment: the chip stays amber
+  // and the ack lives in the row's context menu (the chip took the row's agent
+  // slot, so "Mark reviewed" moved rather than being dropped).
+  await waitFor(
+    "the chip to stay needs-you after Stop",
+    async () => (await rowChip.getAttribute("data-chip-state").catch(() => null)) === "needs-you" || undefined,
+    { timeoutMs: 15_000 },
   );
-  await reviewRow.waitFor({ timeout: 15_000 });
-  const markReviewed = reviewRow.getByRole("button", { name: "Mark reviewed" });
+  await taskRow("Delegate me").click({ button: "right" });
+  const markReviewed = page.getByRole("menuitem", { name: "Mark reviewed" });
   await markReviewed.waitFor({ timeout: 10_000 });
-  check("9. done∧unreviewed shows in NEEDS YOU with an ack affordance");
+  check("9. done∧unreviewed keeps the amber chip and offers ack in the row menu");
   await shot("v2-delegate-05-ack-affordance");
   await markReviewed.click();
   await waitFor("reviewed_at stamped", async () => {
@@ -242,10 +256,14 @@ try {
     return a?.reviewedAt ? a : undefined;
   });
   check("10. ack stamped reviewed_at (assignment left the attention queue)");
-  // The row falls back to BACKLOG (open, no attention).
-  await page.locator("[data-testid=v2-backlog] [data-testid=v2-task-row]", { hasText: "Delegate me" })
-    .waitFor({ timeout: 10_000 });
-  check("11. acked task returned to BACKLOG");
+  // The chip falls back to idle — the chat is still there to reopen, it just
+  // isn't asking for anything. The row never moved.
+  await waitFor(
+    "the chip to fall back to idle",
+    async () => (await rowChip.getAttribute("data-chip-state").catch(() => null)) === "idle" || undefined,
+    { timeoutMs: 10_000 },
+  );
+  check("11. acking drops the chip to idle, in place");
   await shot("v2-delegate-06-acked");
 
   // ── stage E: close-on-done ───────────────────────────────────────────────
@@ -259,15 +277,15 @@ try {
     return a && ["running", "spawning"].includes(a.observedState) ? a : undefined;
   });
   await page.keyboard.press("Escape");
-  await page.locator("[data-testid=v2-working] [data-testid=v2-task-row]", { hasText: "Delegate me" })
-    .waitFor({ timeout: 15_000 });
-  check("12. re-delegated; task back in WORKING");
+  await waitFor(
+    "the chip to read working again",
+    async () => (await rowChip.getAttribute("data-chip-state").catch(() => null)) === "working" || undefined,
+    { timeoutMs: 15_000 },
+  );
+  check("12. re-delegated; the chip is WORKING again");
 
   // Mark the task done via the list checkbox → close-on-done.
-  await page
-    .locator("[data-testid=v2-working] [data-testid=v2-task-row]", { hasText: "Delegate me" })
-    .locator('[role=checkbox]')
-    .click();
+  await taskRow("Delegate me").locator('[role=checkbox]').click();
   await waitFor("close-on-done flipped desired=stopped", async () => {
     const a = (await assignmentsFor(task.id)).find((x) => x.id === running.id);
     return a?.desiredState === "stopped" ? a : undefined;

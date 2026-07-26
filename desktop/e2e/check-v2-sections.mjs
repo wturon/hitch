@@ -173,8 +173,13 @@ try {
 
   // ── file a task into it via Move to ▸ ────────────────────────────────────
   await page.locator("[data-testid=v2-task-row]", { hasText: "Beta task" }).click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Move to" }).click();
-  await page.getByRole("menuitem", { name: "Launch blockers", exact: true }).click();
+  // Submenus open on hover; a click alone races the open animation.
+  const moveTo = page.getByRole("menuitem", { name: "Move to" });
+  await moveTo.waitFor({ timeout: 10_000 });
+  await moveTo.hover();
+  const target = page.getByRole("menuitem", { name: "Launch blockers", exact: true });
+  await target.waitFor({ timeout: 10_000 });
+  await target.click();
   const moved = await waitFor("Beta task to be filed", async () => {
     const row = (await api("GET", `/tasks?project_id=${project.id}`)).find(
       (t) => t.title === "Beta task",
@@ -205,6 +210,89 @@ try {
   });
   check("9. a section's add-row captures INTO that section", filed.sectionId === created.id);
   await page.keyboard.press("Escape");
+  // The capture dialog must be fully gone before the drag below — its overlay
+  // swallows pointer events, and a drag that starts under it never begins.
+  await page.locator("[role=dialog]").waitFor({ state: "hidden", timeout: 10_000 });
+
+  // ── drag across sections ─────────────────────────────────────────────────
+  // Two gestures, and the second only works if collision detection is a real
+  // hit test: an empty section has no rows for a SortableContext to register,
+  // so the ONLY droppable there is the container itself. A "nearest centre"
+  // strategy never surfaces it — it returns every droppable sorted by distance,
+  // so the container loses to a row in some other section — and the section
+  // stays permanently unfillable by drag.
+  const empty = await api("POST", "/sections", {
+    projectId: project.id,
+    name: "Empty section",
+    sortOrder: "a5",
+  });
+  const emptyEl = page.locator(`[data-testid=v2-section][data-section-id="${empty.id}"]`);
+  await emptyEl.waitFor({ timeout: 15_000 });
+
+  // The dialog's overlay puts `pointer-events: none` on the body and clears it
+  // only after its exit transition — which outlives the element being hidden.
+  // A drag begun in that window never starts, and reads as a broken feature.
+  await page.waitForFunction(
+    () => getComputedStyle(document.body).pointerEvents !== "none",
+    undefined,
+    { timeout: 10_000 },
+  );
+
+  // Press, one short move to clear PointerSensor's 4px activation distance,
+  // then one long move: dnd-kit only recomputes collisions on movement.
+  async function dragTo(source, targetBox) {
+    // Park the pointer away first, then approach: the row arms its drag from a
+    // pointerdown, and pressing on a spot the pointer is already sitting on
+    // (having never entered the row) doesn't reliably produce one.
+    await page.mouse.move(1, 1);
+    await sleep(150);
+    const box = await source.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+    await sleep(150);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 12, {
+      steps: 3,
+    });
+    await page.mouse.move(targetBox.x, targetBox.y, { steps: 10 });
+    await page.mouse.up();
+  }
+  const sectionOf = async (title) =>
+    (await api("GET", `/tasks?project_id=${project.id}`)).find((t) => t.title === title)
+      ?.sectionId ?? null;
+
+  const gamma = page.locator("[data-testid=v2-task-row]", { hasText: "Gamma task" });
+  const betaBox = await page
+    .locator("[data-testid=v2-task-row]", { hasText: "Beta task" })
+    .boundingBox();
+  await dragTo(gamma, {
+    x: betaBox.x + betaBox.width / 2,
+    y: betaBox.y + betaBox.height / 2,
+  });
+  const ontoRow = await waitFor("Gamma to land in Launch blockers", async () =>
+    (await sectionOf("Gamma task")) === created.id || undefined,
+  ).catch(() => false);
+  check("10. dropping a row onto a row in another section files it", ontoRow === true);
+
+  const emptyBox = await emptyEl.locator("[data-testid=v2-drop-target]").boundingBox();
+  await dragTo(gamma, {
+    x: emptyBox.x + emptyBox.width / 2,
+    y: emptyBox.y + emptyBox.height / 2,
+  });
+  const ontoEmpty = await waitFor("Gamma to land in the empty section", async () =>
+    (await sectionOf("Gamma task")) === empty.id || undefined,
+  ).catch(() => false);
+  check("11. and dropping into an EMPTY section works too", ontoEmpty === true);
+  await shot("v2-sections-03-dragged");
+
+  // Put it back and drop the scratch section, so the later counts hold.
+  const gammaId = (await api("GET", `/tasks?project_id=${project.id}`)).find(
+    (t) => t.title === "Gamma task",
+  ).id;
+  await api("PATCH", `/tasks/${gammaId}`, { sectionId: null, sortOrder: "a3" });
+  await api("DELETE", `/sections/${empty.id}`);
+  await waitFor("the scratch section to disappear", async () =>
+    (await emptyEl.count()) === 0 || undefined,
+  );
 
   // ── collapse hides the rows, keeps the count ─────────────────────────────
   const header = page.locator("[data-testid=v2-section-header]", { hasText: "Launch blockers" });
@@ -212,8 +300,8 @@ try {
   await waitFor("the section to collapse", async () =>
     (await sectionEl.locator("[data-testid=v2-task-row]").count()) === 0 || undefined,
   );
-  check("10. collapsing hides its rows");
-  check("11. and the header still reports the count", (await header.innerText()).includes("2"));
+  check("12. collapsing hides its rows");
+  check("13. and the header still reports the count", (await header.innerText()).includes("2"));
   await shot("v2-sections-02-collapsed");
   await header.getByRole("button", { name: /Expand/ }).click();
 
@@ -227,7 +315,7 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.find((s) => s.id === created.id && s.name === "Renamed section");
   });
-  check("12. ⋯ → Rename persisted", renamed.name === "Renamed section");
+  check("14. ⋯ → Rename persisted", renamed.name === "Renamed section");
 
   // ── delete keeps the todos ───────────────────────────────────────────────
   page.once("dialog", (d) => d.accept());
@@ -239,18 +327,18 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.every((s) => s.id !== created.id) || undefined;
   });
-  check("13. ⋯ → Delete section removed it");
+  check("15. ⋯ → Delete section removed it");
 
   const survivors = await api("GET", `/tasks?project_id=${project.id}`);
   check(
-    "14. its todos SURVIVED and fell back to loose",
+    "16. its todos SURVIVED and fell back to loose",
     survivors.length === 4 && survivors.every((t) => t.sectionId === null),
     `${survivors.length} tasks, sectionIds=${[...new Set(survivors.map((t) => t.sectionId))]}`,
   );
   await waitFor("all four rows to render loose", async () =>
     (await list.locator("[data-testid=v2-loose] [data-testid=v2-task-row]").count()) === 4 || undefined,
   );
-  check("15. and the list shows all four again");
+  check("17. and the list shows all four again");
 
   // ── the chip carries agent status ────────────────────────────────────────
   scratch = mkdtempSync(join(tmpdir(), "hitch-sections-daemon-"));
@@ -299,11 +387,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("16. a delegated row grows a WORKING chip");
+  check("18. a delegated row grows a WORKING chip");
   await shot("v2-sections-03-chip-working");
 
   check(
-    "17. and the row carries no status TEXT any more",
+    "19. and the row carries no status TEXT any more",
     !/Working|Needs input|Mark reviewed/.test(await alphaRow.innerText()),
     JSON.stringify(await alphaRow.innerText()),
   );
@@ -315,11 +403,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("18. the chip advances to NEEDS-YOU when the turn completes");
+  check("20. the chip advances to NEEDS-YOU when the turn completes");
   await shot("v2-sections-04-chip-needs-you");
 
   check(
-    "19. rows without an agent still render a chip-less slot",
+    "21. rows without an agent still render a chip-less slot",
     (await list.locator("[data-testid=v2-harness-chip]").count()) === 1,
   );
 } catch (error) {
