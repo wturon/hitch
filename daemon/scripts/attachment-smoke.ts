@@ -1,10 +1,9 @@
 // The ATTACHMENT layer (docs/chat-tracking-redesign.md §4).
 //
-// Covers the three jobs — pre-registration, the codex surface→thread bind, and
-// the assignment→chat link — plus the property that used to live in the hook
-// template and MUST NOT have changed when it moved: the surface-id match is
-// deterministic, and anything other than exactly one candidate is never
-// guessed at.
+// Covers the three jobs — pre-registration, the codex nonce→thread bind, and
+// the assignment→chat link — plus the property the join exists to guarantee:
+// a chat is attached because it carried OUR launch nonce, never because it
+// looked like a plausible match.
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -37,7 +36,8 @@ const client = {
 function hookEvent(input: {
   harness: string;
   chatId: string;
-  surfaceId?: string;
+  launchId?: string;
+  providerEvent?: string;
   lifecycle?: string;
 }): SpooledEvent {
   return {
@@ -45,16 +45,18 @@ function hookEvent(input: {
     source: "hook",
     producer: `${input.harness}-hook`,
     harness: input.harness,
-    providerEvent: "UserPromptSubmit",
+    providerEvent: input.providerEvent ?? "UserPromptSubmit",
     lifecycle: input.lifecycle ?? "turn.started",
     status: "working",
     chatId: input.chatId,
-    launchId: null,
+    launchId: input.launchId ?? null,
     turnId: null,
     cwd: "/repo",
     host: HOST,
     observedAt: Date.now(),
-    metadata: input.surfaceId ? { environment: "cmux", surfaceId: input.surfaceId } : {},
+    // Nothing environment-specific: the hook reports no surface, no pane, and
+    // no terminal — only the nonce we put on the process.
+    metadata: {},
   };
 }
 
@@ -127,7 +129,7 @@ try {
     assert.deepEqual(patched, [{ id: "assign-retry", chatId: "chat-r" }], "…and was retried");
   }
 
-  // ── codex: the surface-id join, moved out of the hook VERBATIM ────────────
+  // ── codex: the nonce→thread join ──────────────────────────────────────────
   {
     patched.length = 0;
     const a = make();
@@ -139,18 +141,32 @@ try {
       projectId: "proj-1",
       title: "Codex task",
     });
-    // The launcher stamps the pane id before the command runs.
-    a.launches.stampSurface("launch-codex", "SURFACE-7", clock);
 
-    // An event from another pane resolves to nothing.
-    a.onSpooledEvents([hookEvent({ harness: "codex", chatId: "thread-x", surfaceId: "surface-9" })]);
-    assert.equal(a.lookup("codex", "thread-x"), null, "a foreign surface never binds");
+    // A codex chat someone started by hand carries no nonce, so it is never
+    // attached — the common case, and the one a cwd/timestamp heuristic would
+    // get wrong by stealing this launch's assignment.
+    a.onSpooledEvents([hookEvent({ harness: "codex", chatId: "thread-x" })]);
+    assert.equal(a.lookup("codex", "thread-x"), null, "no nonce, no attachment");
+
+    // A nonce we never issued resolves to nothing either.
+    a.onSpooledEvents([
+      hookEvent({ harness: "codex", chatId: "thread-y", launchId: "launch-someone-else" }),
+    ]);
+    assert.equal(a.lookup("codex", "thread-y"), null, "a foreign nonce never binds");
 
     // No chat row is created at spawn: nothing is injected for codex.
     assert.deepEqual(a.injected(clock), [], "codex is NOT pre-registered — the thread doesn't exist yet");
 
-    // The real one — case-insensitive, exactly as the hook matched.
-    a.onSpooledEvents([hookEvent({ harness: "codex", chatId: "thread-1", surfaceId: "surface-7" })]);
+    // SessionStart is the real one, and it arrives before any prompt.
+    a.onSpooledEvents([
+      hookEvent({
+        harness: "codex",
+        chatId: "thread-1",
+        launchId: "launch-codex",
+        providerEvent: "SessionStart",
+        lifecycle: "session.started",
+      }),
+    ]);
     const bound = a.lookup("codex", "thread-1");
     assert.equal(bound?.task, "assign-2", "the thread bound to the launch's assignment");
     assert.equal(
@@ -166,41 +182,49 @@ try {
 
     await a.resolveLinks([{ id: "chat-2", harness: "codex", sessionId: "thread-1" }]);
     assert.deepEqual(patched, [{ id: "assign-2", chatId: "chat-2" }]);
+
+    // The nonce rides on EVERY event, so the later ones re-present a launch
+    // that is already claimed. They must be inert — not a rebind, and not a
+    // file write per turn.
+    a.onSpooledEvents([
+      hookEvent({ harness: "codex", chatId: "thread-1", launchId: "launch-codex" }),
+    ]);
+    assert.equal(
+      a.lookup("codex", "thread-1")?.task,
+      "assign-2",
+      "a repeat event leaves the binding exactly as it was",
+    );
   }
 
-  // ── ambiguity is NEVER guessed at ─────────────────────────────────────────
+  // ── the join is a primary key, never a search ─────────────────────────────
   {
-    const store = new LaunchStore({ path: join(dir, "ambiguous.json") });
-    store.record({ launchId: "l-a", surfaceId: "surface-dup" }, clock);
-    store.record({ launchId: "l-b", surfaceId: "surface-dup" }, clock);
-    assert.equal(
-      store.claimBySurface("surface-dup", "thread-dup", clock),
-      null,
-      "two candidates on one surface → no match, no guess",
-    );
-    // Neither was consumed, so a later disambiguation is still possible.
-    assert.deepEqual(
-      store.list(clock).map((r) => r.claimedAt),
-      [undefined, undefined],
-      "an ambiguous match consumes nothing",
-    );
-
     const one = new LaunchStore({ path: join(dir, "one.json") });
-    one.record({ launchId: "l-c", surfaceId: "surface-1" }, clock);
-    assert.equal(one.claimBySurface("surface-1", "t-1", clock)?.launchId, "l-c", "one → matched");
+    one.record({ launchId: "l-c" }, clock);
+    assert.equal(one.claimByLaunchId("l-c", "t-1", clock)?.launchId, "l-c", "our nonce → matched");
     assert.equal(
-      one.claimBySurface("surface-1", "t-2", clock),
-      null,
-      "a consumed claim is never matched again",
+      one.claimByLaunchId("l-c", "t-1", clock)?.launchId,
+      "l-c",
+      "re-presenting the same pairing is idempotent, not a second claim",
     );
-    assert.equal(one.forSession("t-1", clock)?.launchId, "l-c", "…but stays findable by session");
+    assert.equal(
+      one.claimByLaunchId("l-c", "t-2", clock),
+      null,
+      "a claimed launch never rebinds to a DIFFERENT thread",
+    );
+    assert.equal(one.forSession("t-1", clock)?.launchId, "l-c", "…and stays findable by session");
+
+    assert.equal(
+      one.claimByLaunchId("l-unknown", "t-9", clock),
+      null,
+      "a nonce we never issued claims nothing",
+    );
 
     const stale = new LaunchStore({ path: join(dir, "stale.json") });
-    stale.record({ launchId: "l-d", surfaceId: "surface-2" }, clock - LAUNCH_TTL_MS - 1);
+    stale.record({ launchId: "l-d" }, clock - LAUNCH_TTL_MS - 1);
     assert.equal(
-      stale.claimBySurface("surface-2", "t-3", clock),
+      stale.claimByLaunchId("l-d", "t-3", clock),
       null,
-      "an expired claim never binds",
+      "an expired launch never binds",
     );
     assert.deepEqual(stale.list(clock), [], "…and is pruned on the way past");
   }
