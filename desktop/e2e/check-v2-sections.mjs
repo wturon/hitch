@@ -290,6 +290,42 @@ try {
   check("11. and dropping on an EMPTY section's header works too", ontoEmpty === true);
   await shot("v2-sections-03-dragged");
 
+  // Dropping a row on its OWN section's header means "put this first" — the
+  // band above the rows belongs to the container, and reading every container
+  // drop as "append" sends the row to the bottom instead. The section is
+  // tinted either way, so a wrong answer here looks exactly like a right one.
+  await api("PATCH", `/tasks/${(await api("GET", `/tasks?project_id=${project.id}`)).find((t) => t.title === "Gamma task").id}`, {
+    sectionId: created.id,
+  });
+  const blockers = page.locator(
+    `[data-testid=v2-section][data-section-id="${created.id}"]`,
+  );
+  await waitFor("Gamma to render inside Launch blockers", async () =>
+    (await blockers.locator("[data-testid=v2-task-row]", { hasText: "Gamma task" }).count()) === 1 ||
+    undefined,
+  );
+  const titlesIn = async () =>
+    (await blockers.locator("[data-testid=v2-task-row]").allInnerTexts()).map((t) =>
+      t.split("\n")[0].trim(),
+    );
+  const before = await titlesIn();
+  const lastTitle = before.at(-1);
+  const blockersHeader = await blockers
+    .locator("[data-testid=v2-section-header]")
+    .boundingBox();
+  await dragTo(
+    blockers.locator("[data-testid=v2-task-row]", { hasText: lastTitle }),
+    { x: blockersHeader.x + blockersHeader.width / 2, y: blockersHeader.y + blockersHeader.height / 2 },
+  );
+  const movedToTop = await waitFor("the dragged row to become first", async () =>
+    (await titlesIn())[0] === lastTitle || undefined,
+  ).catch(() => false);
+  check(
+    "12. dropping a row on its own section header puts it FIRST, not last",
+    movedToTop === true,
+    `before=${before.join(" | ")} after=${(await titlesIn()).join(" | ")}`,
+  );
+
   // Put it back and drop the scratch section, so the later counts hold.
   const gammaId = (await api("GET", `/tasks?project_id=${project.id}`)).find(
     (t) => t.title === "Gamma task",
@@ -306,8 +342,8 @@ try {
   await waitFor("the section to collapse", async () =>
     (await sectionEl.locator("[data-testid=v2-task-row]").count()) === 0 || undefined,
   );
-  check("12. collapsing hides its rows");
-  check("13. and the header still reports the count", (await header.innerText()).includes("2"));
+  check("13. collapsing hides its rows");
+  check("14. and the header still reports the count", (await header.innerText()).includes("2"));
   await shot("v2-sections-02-collapsed");
   await header.getByRole("button", { name: /Expand/ }).click();
 
@@ -321,7 +357,7 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.find((s) => s.id === created.id && s.name === "Renamed section");
   });
-  check("14. ⋯ → Rename persisted", renamed.name === "Renamed section");
+  check("15. ⋯ → Rename persisted", renamed.name === "Renamed section");
 
   // ── delete keeps the todos ───────────────────────────────────────────────
   page.once("dialog", (d) => d.accept());
@@ -333,18 +369,18 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.every((s) => s.id !== created.id) || undefined;
   });
-  check("15. ⋯ → Delete section removed it");
+  check("16. ⋯ → Delete section removed it");
 
   const survivors = await api("GET", `/tasks?project_id=${project.id}`);
   check(
-    "16. its todos SURVIVED and fell back to loose",
+    "17. its todos SURVIVED and fell back to loose",
     survivors.length === 4 && survivors.every((t) => t.sectionId === null),
     `${survivors.length} tasks, sectionIds=${[...new Set(survivors.map((t) => t.sectionId))]}`,
   );
   await waitFor("all four rows to render loose", async () =>
     (await list.locator("[data-testid=v2-loose] [data-testid=v2-task-row]").count()) === 4 || undefined,
   );
-  check("17. and the list shows all four again");
+  check("18. and the list shows all four again");
 
   // ── the chip carries agent status ────────────────────────────────────────
   scratch = mkdtempSync(join(tmpdir(), "hitch-sections-daemon-"));
@@ -393,11 +429,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("18. a delegated row grows a WORKING chip");
+  check("19. a delegated row grows a WORKING chip");
   await shot("v2-sections-03-chip-working");
 
   check(
-    "19. and the row carries no status TEXT any more",
+    "20. and the row carries no status TEXT any more",
     !/Working|Needs input|Mark reviewed/.test(await alphaRow.innerText()),
     JSON.stringify(await alphaRow.innerText()),
   );
@@ -409,11 +445,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("20. the chip advances to NEEDS-YOU when the turn completes");
+  check("21. the chip advances to NEEDS-YOU when the turn completes");
   await shot("v2-sections-04-chip-needs-you");
 
   check(
-    "21. rows without an agent still render a chip-less slot",
+    "22. rows without an agent still render a chip-less slot",
     (await list.locator("[data-testid=v2-harness-chip]").count()) === 1,
   );
 } catch (error) {

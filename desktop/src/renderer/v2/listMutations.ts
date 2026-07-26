@@ -92,9 +92,10 @@ export function uncheckSortOrder(
  *
  * `dest` is the destination's current list in order (it never contains the
  * dragged row — it came from somewhere else). `overTaskId` is the row the drop
- * landed on; the dragged row takes its place, pushing it down. A drop on the
- * container's empty space (`null`, or an id that isn't there any more) appends
- * — that's the only reading of "you dropped it below everything".
+ * landed on; the dragged row takes its place, pushing it down. `null` (or an id
+ * that has since vanished) appends. Callers that resolved to a CONTAINER rather
+ * than a row decide top-vs-bottom themselves and call sortOrderAtIndex — the
+ * container's own area is both above and below its rows.
  */
 export function insertSortOrder(
   dest: ReadonlyArray<{ id: string; sortOrder: string }>,

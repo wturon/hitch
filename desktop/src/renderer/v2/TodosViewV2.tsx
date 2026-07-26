@@ -480,9 +480,10 @@ const DROP_ID_PREFIX = "container:";
 const dropId = (sectionId: string | null) => `${DROP_ID_PREFIX}${sectionId ?? "loose"}`;
 const isDropId = (id: string) => id.startsWith(DROP_ID_PREFIX);
 
-// A ROW always beats the container it sits inside; the container only wins
-// where there is no row — which is the one case it exists for, an empty
-// section that a SortableContext can't see because it has no items.
+// A ROW always beats the container it sits inside. The container wins in the
+// bands no row covers: a section's header and add-row above its rows, the strip
+// below them, and the whole of a section that has no rows at all (which a
+// SortableContext can't see, because it has no items to register).
 //
 // This has to start from `pointerWithin`, which is a real hit test: it returns
 // only droppables whose rect actually contains the pointer. `closestCenter`
@@ -530,7 +531,9 @@ function DroppableContainer({
         // A section you're hovering over lights up faintly — the only cue that
         // a cross-section drop is live. No border, no outline: this is a hint,
         // not a dialog.
-        isOver && !disabled && "bg-muted/40",
+        // A disabled droppable never wins a collision, so `isOver` already
+        // implies enabled.
+        isOver && "bg-muted/40",
       )}
     >
       {children}
@@ -1187,6 +1190,18 @@ export function TodosViewV2({
     );
   }
 
+  // A drop that resolved to a CONTAINER rather than a row landed in one of the
+  // two bands rows don't cover: the header + add-row above them, or the strip
+  // below the last one. Which band decides what the drop meant. Treating every
+  // container drop as "append" makes dragging a row up onto its own header —
+  // the most natural way to say "put this first" — send it to the bottom.
+  function droppedAboveRows(event: DragEndEvent): boolean {
+    const active = event.active.rect.current.translated;
+    const over = event.over?.rect;
+    if (!active || !over) return false;
+    return active.top + active.height / 2 < over.top + over.height / 2;
+  }
+
   function onDragEnd(event: DragEndEvent) {
     setDragging(null);
     const { active: dragged, over } = event;
@@ -1202,9 +1217,7 @@ export function TodosViewV2({
     // `over` is either a task row or a container's own droppable (its empty
     // space, which is the only way to reach an empty section).
     const destination = isDropId(overId)
-      ? containers.find(
-          (c) => dropId(c.section?.id ?? null) === overId && !c.collapsed,
-        )
+      ? containers.find((c) => dropId(c.section?.id ?? null) === overId)
       : containers.find((c) => c.tasks.some((t) => t.id === overId));
     if (!destination) return;
 
@@ -1212,14 +1225,17 @@ export function TodosViewV2({
     const destinationId = destination.section?.id ?? null;
 
     if (sourceId === destinationId) {
-      // Dropped on the container's own space rather than on a row: that reads
-      // as "below everything", so send it to the end. Without this the index
-      // lookup returns -1, reorderSortOrder declines, and the drop vanishes
-      // with the row snapping back and nothing said.
+      // Dropped on the container's own space rather than on a row. Without
+      // this branch the index lookup returns -1, reorderSortOrder declines, and
+      // the drop vanishes with the row snapping back and nothing said.
       if (isDropId(overId)) {
         const rest = source.tasks.filter((t) => t.id !== draggedId);
-        if (rest.length === source.tasks.length || rest.length === 0) return;
-        onReorderTask(draggedId, sortOrderAtIndex(rest, rest.length));
+        if (rest.length === 0) return;
+        const top = droppedAboveRows(event);
+        onReorderTask(
+          draggedId,
+          sortOrderAtIndex(rest, top ? 0 : rest.length, top ? "before" : "after"),
+        );
         return;
       }
       const ids = source.tasks.map((t) => t.id);
@@ -1235,7 +1251,16 @@ export function TodosViewV2({
     onMoveTask(
       task,
       destinationId,
-      insertSortOrder(destination.tasks, isDropId(overId) ? null : overId),
+      isDropId(overId)
+        ? // Onto the section itself: its header means the top of it, its
+          // trailing strip means the bottom. `insertSortOrder(_, null)` only
+          // knows how to append, so the top case indexes the first row.
+          sortOrderAtIndex(
+            destination.tasks,
+            droppedAboveRows(event) ? 0 : destination.tasks.length,
+            "before",
+          )
+        : insertSortOrder(destination.tasks, overId),
     );
   }
 
@@ -1388,13 +1413,17 @@ export function TodosViewV2({
           `[data-idx="${ctx.selected}"]`,
         );
         if (!row) return false;
-        // The row body itself (cell 0) plus its focusable controls, in DOM
-        // order (today just the checkbox; M4's chip will slot in for free).
+        // The row body itself (cell 0) plus its focusable controls in DOM
+        // order: the checkbox, then the harness chip. DISABLED ones are left
+        // out — .focus() on them is a no-op, so including one makes → look
+        // like it stopped working (the chip is disabled until its chat starts).
         const cells = [
           row,
-          ...row.querySelectorAll<HTMLElement>(
-            'button, [tabindex]:not([tabindex="-1"])',
-          ),
+          ...[
+            ...row.querySelectorAll<HTMLElement>(
+              'button, [tabindex]:not([tabindex="-1"])',
+            ),
+          ].filter((el) => !(el as HTMLButtonElement).disabled),
         ];
         const at = cells.indexOf(document.activeElement as HTMLElement);
         e.preventDefault(); // claim it so focus can never escape the row sideways
@@ -1616,7 +1645,6 @@ export function TodosViewV2({
               // drag is off entirely (the order is a projection).
               disabled={container.collapsed || filterActive}
               data-testid={sectionId ? "v2-section" : "v2-loose"}
-              data-drop-target={sectionId ?? "loose"}
               data-section-id={sectionId ?? undefined}
             >
               {container.section && (

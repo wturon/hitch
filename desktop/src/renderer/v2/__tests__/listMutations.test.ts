@@ -190,10 +190,14 @@ describe("sortOrderAtIndex — duplicate keys", () => {
     }
   });
 
-  it("clamps an out-of-range index rather than throwing", () => {
-    expect(() => sortOrderAtIndex(rows(RUN), 99)).not.toThrow();
-    expect(() => sortOrderAtIndex(rows(RUN), -3)).not.toThrow();
-    expect(() => sortOrderAtIndex([], 0)).not.toThrow();
+  it("clamps an out-of-range index to the ends, not to nothing", () => {
+    // Without the clamp both of these read past the array, get prev=next=null
+    // and mint "a0" — which this list already holds. Asserting only that it
+    // doesn't throw would pass against exactly that bug.
+    const list = rows(RUN);
+    expect(sortOrderAtIndex(list, 99) > "a3").toBe(true);
+    expect(sortOrderAtIndex(list, -3) < "a0").toBe(true);
+    expect(typeof sortOrderAtIndex([], 0)).toBe("string");
   });
 
   it("keeps a cross-container drop over duplicates from throwing", () => {
