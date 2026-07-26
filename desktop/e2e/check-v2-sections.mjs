@@ -326,6 +326,45 @@ try {
     `before=${before.join(" | ")} after=${(await titlesIn()).join(" | ")}`,
   );
 
+  // The same gesture against a ONE-ROW section — the case a container-midpoint
+  // test gets backwards, because the band above a single row extends past the
+  // container's own midpoint.
+  const solo = await api("POST", "/sections", {
+    projectId: project.id,
+    name: "Solo section",
+    sortOrder: "a7",
+  });
+  const soloEl = page.locator(`[data-testid=v2-section][data-section-id="${solo.id}"]`);
+  await soloEl.waitFor({ timeout: 15_000 });
+  const [first, second] = await titlesIn();
+  const soloRowId = (await api("GET", `/tasks?project_id=${project.id}`)).find(
+    (t) => t.title === second,
+  ).id;
+  await api("PATCH", `/tasks/${soloRowId}`, { sectionId: solo.id });
+  await waitFor("the solo section to hold exactly one row", async () =>
+    (await soloEl.locator("[data-testid=v2-task-row]").count()) === 1 || undefined,
+  );
+  const soloAddRow = await soloEl.locator("[data-testid=v2-add-task]").boundingBox();
+  // Aim at the BOTTOM of its add-row: below the container's midpoint, above its
+  // only row. Intent is unambiguous; a midpoint test answers "bottom".
+  await dragTo(
+    page.locator("[data-testid=v2-task-row]", { hasText: first }),
+    { x: soloAddRow.x + soloAddRow.width / 2, y: soloAddRow.y + soloAddRow.height - 3 },
+  );
+  const soloOrder = await waitFor("both rows to be in the solo section", async () => {
+    const titles = (
+      await soloEl.locator("[data-testid=v2-task-row]").allInnerTexts()
+    ).map((t) => t.split("\n")[0].trim());
+    return titles.length === 2 ? titles : undefined;
+  }).catch(() => []);
+  check(
+    "13. dropping above a ONE-row section's row lands above it, not below",
+    soloOrder[0] === first,
+    soloOrder.join(" | "),
+  );
+  await api("PATCH", `/tasks/${soloRowId}`, { sectionId: created.id });
+  await api("DELETE", `/sections/${solo.id}`);
+
   // Put it back and drop the scratch section, so the later counts hold.
   const gammaId = (await api("GET", `/tasks?project_id=${project.id}`)).find(
     (t) => t.title === "Gamma task",
@@ -342,8 +381,8 @@ try {
   await waitFor("the section to collapse", async () =>
     (await sectionEl.locator("[data-testid=v2-task-row]").count()) === 0 || undefined,
   );
-  check("13. collapsing hides its rows");
-  check("14. and the header still reports the count", (await header.innerText()).includes("2"));
+  check("14. collapsing hides its rows");
+  check("15. and the header still reports the count", (await header.innerText()).includes("2"));
   await shot("v2-sections-02-collapsed");
   await header.getByRole("button", { name: /Expand/ }).click();
 
@@ -357,7 +396,7 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.find((s) => s.id === created.id && s.name === "Renamed section");
   });
-  check("15. ⋯ → Rename persisted", renamed.name === "Renamed section");
+  check("16. ⋯ → Rename persisted", renamed.name === "Renamed section");
 
   // ── delete keeps the todos ───────────────────────────────────────────────
   page.once("dialog", (d) => d.accept());
@@ -369,18 +408,18 @@ try {
     const rows = await api("GET", `/sections?project_id=${project.id}`);
     return rows.every((s) => s.id !== created.id) || undefined;
   });
-  check("16. ⋯ → Delete section removed it");
+  check("17. ⋯ → Delete section removed it");
 
   const survivors = await api("GET", `/tasks?project_id=${project.id}`);
   check(
-    "17. its todos SURVIVED and fell back to loose",
+    "18. its todos SURVIVED and fell back to loose",
     survivors.length === 4 && survivors.every((t) => t.sectionId === null),
     `${survivors.length} tasks, sectionIds=${[...new Set(survivors.map((t) => t.sectionId))]}`,
   );
   await waitFor("all four rows to render loose", async () =>
     (await list.locator("[data-testid=v2-loose] [data-testid=v2-task-row]").count()) === 4 || undefined,
   );
-  check("18. and the list shows all four again");
+  check("19. and the list shows all four again");
 
   // ── the chip carries agent status ────────────────────────────────────────
   scratch = mkdtempSync(join(tmpdir(), "hitch-sections-daemon-"));
@@ -429,11 +468,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("19. a delegated row grows a WORKING chip");
+  check("20. a delegated row grows a WORKING chip");
   await shot("v2-sections-03-chip-working");
 
   check(
-    "20. and the row carries no status TEXT any more",
+    "21. and the row carries no status TEXT any more",
     !/Working|Needs input|Mark reviewed/.test(await alphaRow.innerText()),
     JSON.stringify(await alphaRow.innerText()),
   );
@@ -445,11 +484,11 @@ try {
       undefined,
     { timeoutMs: 30_000 },
   );
-  check("21. the chip advances to NEEDS-YOU when the turn completes");
+  check("22. the chip advances to NEEDS-YOU when the turn completes");
   await shot("v2-sections-04-chip-needs-you");
 
   check(
-    "22. rows without an agent still render a chip-less slot",
+    "23. rows without an agent still render a chip-less slot",
     (await list.locator("[data-testid=v2-harness-chip]").count()) === 1,
   );
 } catch (error) {

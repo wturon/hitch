@@ -1183,7 +1183,8 @@ export function TodosViewV2({
   //     PATCH, no placement change (listMutations.reorderSortOrder).
   //   • different container → move: sectionId AND a key computed in the
   //     destination, one PATCH (insertSortOrder). The dragged row takes the
-  //     place of the row it was dropped on; a drop on empty space appends.
+  //     place of the row it was dropped on; a drop on the section itself lands
+  //     at whichever end of its list you dropped nearer (droppedAboveRows).
   function onDragOver(event: DragOverEvent) {
     setDragging((prev) =>
       prev ? { ...prev, overId: event.over ? String(event.over.id) : null } : prev,
@@ -1195,11 +1196,24 @@ export function TodosViewV2({
   // below the last one. Which band decides what the drop meant. Treating every
   // container drop as "append" makes dragging a row up onto its own header —
   // the most natural way to say "put this first" — send it to the bottom.
+  //
+  // The boundary is the FIRST ROW's top edge, read from the DOM, not the
+  // container's midpoint. The band above the rows is a fixed ~72px (header +
+  // add-row) while the container grows 42px per row, so a midpoint test is
+  // wrong for exactly the sections where it's easiest to be sloppy: with one
+  // row, the lower third of "Add a todo…" already sits below the midpoint and
+  // reads as "bottom". Measuring the rows themselves has no such threshold.
   function droppedAboveRows(event: DragEndEvent): boolean {
     const active = event.active.rect.current.translated;
-    const over = event.over?.rect;
-    if (!active || !over) return false;
-    return active.top + active.height / 2 < over.top + over.height / 2;
+    const overId = event.over ? String(event.over.id) : null;
+    if (!active || !overId) return false;
+    const firstRow = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-drop-id="${overId}"] [data-testid="v2-task-row"]`,
+    );
+    // No rows to be above or below (an empty section): the two answers are the
+    // same list position, so either is right.
+    if (!firstRow) return false;
+    return active.top + active.height / 2 < firstRow.getBoundingClientRect().top;
   }
 
   function onDragEnd(event: DragEndEvent) {
@@ -1329,6 +1343,9 @@ export function TodosViewV2({
   // the row comes from somewhere else it can't — SortableContext only shifts
   // items belonging to its own context — so without this the user drags blind
   // over the destination and finds out where it went afterwards.
+  //
+  // Row-targeted drops only: a drop resolving to the SECTION itself is
+  // signalled by the section's own tint, which is the whole target lighting up.
   const [dragging, setDragging] = useState<{
     activeId: string;
     overId: string | null;
@@ -1645,6 +1662,8 @@ export function TodosViewV2({
               // drag is off entirely (the order is a projection).
               disabled={container.collapsed || filterActive}
               data-testid={sectionId ? "v2-section" : "v2-loose"}
+              // Read by droppedAboveRows to find this container's first row.
+              data-drop-id={dropId(sectionId)}
               data-section-id={sectionId ?? undefined}
             >
               {container.section && (
