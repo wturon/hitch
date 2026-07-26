@@ -238,7 +238,7 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
         taskId: task.id,
         machineId: machine.id,
         harness: "claude",
-        prompt: "do the thing",
+        promptTemplate: "do the thing",
       });
       expect(createRes.status).toBe(201);
       const assignment = await json(createRes);
@@ -276,6 +276,69 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       });
       expect(stopRes.status).toBe(200);
       expect((await json(stopRes)).desiredState).toBe("stopped");
+    });
+  });
+
+  describe("prompt templates", () => {
+    it("resolves the template once at creation and stores the result", async () => {
+      const project = await createProject(USER_A, "Prompt project");
+      const task = await createTask(USER_A, project.id, {
+        title: "Fix the login bug",
+        body: "Repro: sign in twice.",
+      });
+      const machine = await registerMachine(USER_A, "prompt-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        promptTemplate: 'Task "$TASK_TITLE" ($TASK_ID):\n$TASK_BODY',
+      });
+      expect(res.status).toBe(201);
+      const assignment = await json(res);
+      expect(assignment.prompt).toBe(
+        `Task "Fix the login bug" (${task.id}):\nRepro: sign in twice.`,
+      );
+
+      // IMMUTABLE RECORD: editing the task afterwards must not rewrite the
+      // prompt an agent was already given.
+      await api(USER_A, "PATCH", `/tasks/${task.id}`, { title: "Renamed" });
+      const after = await json(await api(USER_A, "GET", `/assignments/${assignment.id}`));
+      expect(after.prompt).toContain("Fix the login bug");
+      expect(after.prompt).not.toContain("Renamed");
+    });
+
+    it("omitting a template falls back to the default one, still resolved", async () => {
+      const project = await createProject(USER_A, "Default prompt project");
+      const task = await createTask(USER_A, project.id, { title: "Untemplated" });
+      const machine = await registerMachine(USER_A, "default-prompt-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+      });
+      expect(res.status).toBe(201);
+      const assignment = await json(res);
+      expect(assignment.prompt).toContain('"Untemplated"');
+      expect(assignment.prompt).toContain(`Task id: ${task.id}`);
+      // The daemon launches this verbatim, so an unsubstituted variable would
+      // reach the agent as raw text.
+      expect(assignment.prompt).not.toContain("$TASK_");
+    });
+
+    it("rejects a pre-composed `prompt` so nothing bypasses resolution", async () => {
+      const project = await createProject(USER_A, "Legacy prompt project");
+      const task = await createTask(USER_A, project.id);
+      const machine = await registerMachine(USER_A, "legacy-prompt-machine");
+
+      const res = await api(USER_A, "POST", "/assignments", {
+        taskId: task.id,
+        machineId: machine.id,
+        harness: "claude",
+        prompt: "pre-composed, bypassing the resolver",
+      });
+      expect(res.status).toBe(400);
     });
   });
 

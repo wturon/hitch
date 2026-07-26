@@ -20,10 +20,10 @@ import {
 //     carries model/effort on the assignment again; the daemon passes them to
 //     the launcher argv at spawn. No launch-param honoring gate is needed — V2
 //     always spawns into cmux, which honors both.
-//   • the prompt is the chosen INSTRUCTION text only (a preset body or the
-//     user's one-off edit). The machine-facing task preamble is NOT in this
-//     text — DelegateBar prepends it verbatim at delegate time via
-//     composeDelegatePrompt, so the textarea stays about the instruction.
+//   • the prompt is the WHOLE prompt, as a template (a preset body or the
+//     user's one-off edit). Nothing is prepended at delegate time: this text is
+//     POSTed as `promptTemplate` and the server substitutes $TASK_TITLE /
+//     $TASK_BODY / $TASK_ID. What the user reads is what the agent gets.
 //
 // Kept verbatim in spirit from V1: the last-agent seed (loadLastAgent /
 // saveLastAgent on a successful delegate), the (harness, model) pair selection
@@ -37,9 +37,9 @@ export interface DelegateStartParams {
   // Kickoff-only launch params — passed to the launcher argv by the daemon.
   model: string;
   effort: string;
-  // The chosen instruction text (preamble-free); DelegateBar composes the final
-  // stamped prompt.
-  prompt: string;
+  // The complete prompt template, exactly as shown in the textarea. DelegateBar
+  // sends it unchanged — it composes nothing.
+  promptTemplate: string;
 }
 
 export interface DelegationComposerV2 {
@@ -58,11 +58,12 @@ export interface DelegationComposerV2 {
   // Built-ins + the user's custom prompts (loaded once on mount).
   prompts: StartingPrompt[];
   promptId: string;
-  // The editable instruction text. Manual edits are one-off — replaced on the
-  // next preset pick, never written back to the preset.
+  // The editable prompt template — the entire text the agent receives. Manual
+  // edits are one-off: replaced on the next preset pick, never written back to
+  // the preset.
   prompt: string;
   setPrompt: (prompt: string) => void;
-  // Pick a preset by id (refills the instruction text).
+  // Pick a preset by id (refills the prompt text).
   choosePreset: (id: string) => void;
   // Fire the delegation: guards re-entry via the phase latch, calls onStart,
   // remembers the harness on success, unlatches (and rethrows) on failure.
@@ -135,8 +136,8 @@ export function useDelegationComposerV2({
     [chooseAgent],
   );
 
-  // Picking a preset refills the instruction text, which stays freely editable
-  // for one-off tweaks — edits never write back to the saved preset.
+  // Picking a preset refills the prompt text, which stays freely editable for
+  // one-off tweaks — edits never write back to the saved preset.
   const choosePreset = useCallback(
     (id: string) => {
       const preset = prompts.find((p) => p.id === id);
@@ -154,7 +155,7 @@ export function useDelegationComposerV2({
     if (phase !== "idle" || !canStart) return;
     setPhase("sending");
     try {
-      await onStart({ harness, model, effort, prompt });
+      await onStart({ harness, model, effort, promptTemplate: prompt });
       // Remember this exact combination for the next surface's composer.
       saveLastAgent({ harness, model, effort });
       setPhase("submitted");

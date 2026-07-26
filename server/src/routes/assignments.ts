@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { requireAuth } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { assignments, projects, tasks } from "../db/schema.js";
+import { DEFAULT_PROMPT_TEMPLATE, resolvePromptTemplate } from "../prompt.js";
 import { assignmentClientUpdate, assignmentCreate, assignmentListQuery, idParam } from "../validation.js";
 import { notFound, ownedAssignment, ownedMachine, ownedTask } from "./helpers.js";
 
@@ -43,7 +44,16 @@ export const assignmentRoutes = new Hono<AppEnv>()
     if (!task) return c.json(notFound, 404);
     const machine = await ownedMachine(db, c.var.userId, body.machineId);
     if (!machine) return c.json(notFound, 404);
-    const [row] = await db.insert(assignments).values(body).returning();
+    // Resolve the template ONCE, here, against the task as it stands right now.
+    // assignments.prompt is a record of what was sent, so later edits to the
+    // task never rewrite the prompt an agent was actually given.
+    const { promptTemplate, ...rest } = body;
+    const prompt = resolvePromptTemplate(promptTemplate ?? DEFAULT_PROMPT_TEMPLATE, {
+      id: task.id,
+      title: task.title,
+      body: task.body,
+    });
+    const [row] = await db.insert(assignments).values({ ...rest, prompt }).returning();
     return c.json(row, 201);
   })
   .get("/:id", zValidator("param", idParam), async (c) => {

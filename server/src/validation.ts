@@ -157,7 +157,12 @@ export const assignmentCreate = z.strictObject({
   taskId: z.uuid(),
   machineId: z.uuid(),
   harness: harnessSchema,
-  prompt: z.string().optional(),
+  // A TEMPLATE, not the final prompt: the server substitutes $TASK_TITLE /
+  // $TASK_BODY / $TASK_ID and stores the result in assignments.prompt. Omitting
+  // it uses DEFAULT_PROMPT_TEMPLATE. The old `prompt` field is gone on purpose
+  // — strictObject rejects it, so a client that still sends a pre-composed
+  // prompt fails loudly instead of silently bypassing resolution.
+  promptTemplate: z.string().optional(),
   // Kickoff-only launch params (mirror the nullable schema columns). Optional
   // AND nullable: omitting them, or passing null, means "harness default" — the
   // daemon falls back to the launcher's argv defaults (today's behavior).

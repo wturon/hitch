@@ -3,6 +3,8 @@
 import { useEffect, useId, useState } from "react";
 import { LockIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 
+import { PROMPT_TEMPLATE_FRAMING } from "@hitch/shared";
+
 import { Button } from "@/components/ui/button";
 import {
   BUILTIN_STARTING_PROMPTS,
@@ -18,11 +20,15 @@ interface EditorDraft {
   isNew: boolean;
 }
 
+// Seeded with the shared framing rather than blank: a prompt is the WHOLE text
+// the agent gets now, so an empty box would quietly produce a prompt with no
+// task in it. Starting from the framing makes the variables discoverable by
+// example and leaves only the instruction to write.
 function newDraft(): EditorDraft {
   return {
     id: crypto.randomUUID(),
     name: "",
-    body: "",
+    body: `${PROMPT_TEMPLATE_FRAMING}\n\n`,
     isNew: true,
   };
 }
@@ -255,13 +261,14 @@ function PromptEditor({
           Prompt
         </label>
         <p className="text-xs leading-5 text-muted-foreground">
-          The task's title and description are always sent to the agent first —
-          write only what it should DO with the task.
+          This is the whole prompt — nothing else is added. Use{" "}
+          <code>$TASK_TITLE</code>, <code>$TASK_BODY</code> and{" "}
+          <code>$TASK_ID</code> to pull in the task.
         </p>
         <textarea
           id={bodyId}
           value={draft.body}
-          rows={4}
+          rows={10}
           spellCheck={false}
           placeholder="What should the agent do?"
           onChange={(e) => onChange({ ...draft, body: e.target.value })}

@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PROMPT_TEMPLATE_FRAMING,
+  resolvePromptTemplate,
+} from "@hitch/shared";
+
+import { BUILTIN_STARTING_PROMPTS, promptDescription } from "@/lib/chat";
+import {
   assignmentsToStopOnDone,
-  buildDelegatePreamble,
-  composeDelegatePrompt,
   deriveBarState,
   formatLastSeen,
   isMachineStale,
@@ -184,40 +188,42 @@ describe("formatLastSeen", () => {
   });
 });
 
-describe("buildDelegatePreamble", () => {
-  it("embeds the title, the body VERBATIM, and the task id", () => {
+// THE HONESTY CONTRACT. What the delegate bar shows is the whole prompt — the
+// only edit between the textarea and the agent is the server substituting task
+// variables. These pin that nothing else can creep back in.
+describe("built-in prompts are complete templates", () => {
+  it("every built-in carries the task itself, not just an instruction", () => {
+    for (const preset of BUILTIN_STARTING_PROMPTS) {
+      expect(preset.body).toContain("$TASK_TITLE");
+      expect(preset.body).toContain("$TASK_BODY");
+      expect(preset.body).toContain("$TASK_ID");
+      expect(preset.body.startsWith(PROMPT_TEMPLATE_FRAMING)).toBe(true);
+    }
+  });
+
+  it("resolves to a prompt containing the task body verbatim", () => {
     const body = "Line one.\n\n  Indented line — keep the  spacing.\nTrailing.";
-    const preamble = buildDelegatePreamble({
+    const resolved = resolvePromptTemplate(BUILTIN_STARTING_PROMPTS[0].body, {
       id: "task-123",
       title: "Fix the login bug",
       body,
     });
     // The body appears byte-for-byte as a contiguous substring.
-    expect(preamble).toContain(body);
-    expect(preamble).toContain('"Fix the login bug"');
-    expect(preamble).toContain("Task id: task-123");
-    expect(preamble).toContain("hitch");
+    expect(resolved).toContain(body);
+    expect(resolved).toContain('"Fix the login bug"');
+    expect(resolved).toContain("Task id: task-123");
+    expect(resolved).toContain("Read this task and do what it asks.");
+    // Nothing is left unsubstituted.
+    expect(resolved).not.toContain("$TASK_");
   });
 
-  it("uses a placeholder when the body is empty/whitespace", () => {
-    const preamble = buildDelegatePreamble({ id: "t", title: "T", body: "   " });
-    expect(preamble).toContain("No description");
-  });
-});
-
-describe("composeDelegatePrompt", () => {
-  const task = { id: "t1", title: "Task", body: "Do the thing." };
-
-  it("prepends the preamble to a non-empty instruction", () => {
-    const result = composeDelegatePrompt(task, "Read this task and do what it asks.");
-    expect(result.startsWith(buildDelegatePreamble(task))).toBe(true);
-    expect(result).toContain("Read this task and do what it asks.");
-    // The instruction survives verbatim after the preamble.
-    expect(result.endsWith("Read this task and do what it asks.")).toBe(true);
-  });
-
-  it("collapses to just the preamble for a blank instruction", () => {
-    expect(composeDelegatePrompt(task, "   ")).toBe(buildDelegatePreamble(task));
+  it("describes a preset by what differs, not the shared framing", () => {
+    const described = promptDescription({
+      id: "x",
+      name: "x",
+      body: `${PROMPT_TEMPLATE_FRAMING}\n\nGo wild.`,
+    });
+    expect(described).toBe("Go wild.");
   });
 });
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
-  buildDelegatePreamble,
   closeTarget,
   decideAction,
   deriveObserved,
@@ -234,31 +234,26 @@ assert.equal(
 assert.equal(observationTransition("waiting_input", "done"), "done");
 assert.equal(observationTransition("running", "waiting_input"), "waiting_input");
 
-// ─── buildDelegatePreamble: wording parity with the desktop builder ───────────
-
-const withBody = buildDelegatePreamble({ id: "t-1", title: "Ship it", body: "do the thing" });
-assert.ok(withBody.includes('You\'re picking up the Hitch task "Ship it".'));
-assert.ok(withBody.includes("Here is the full task description, verbatim:"));
-assert.ok(withBody.includes("do the thing"), "body embedded verbatim");
-assert.ok(withBody.includes("Task id: t-1"));
-assert.ok(withBody.includes("run `hitch --help`"));
-
-const noBody = buildDelegatePreamble({ id: "t-2", title: "Empty", body: "   " });
-assert.ok(noBody.includes("(No description was written.)"), "blank body → placeholder");
-
-// The exact string the desktop's composeDelegatePrompt produces for a
-// blank prompt (preamble only) — pins byte-for-byte parity.
-const expected = [
-  'You\'re picking up the Hitch task "Empty".',
-  "",
-  "Here is the full task description, verbatim:",
-  "",
-  "(No description was written.)",
-  "",
-  "Task id: t-2",
-  "If the `hitch` CLI is installed, you can use it to read this task, add" +
-    " comments, and mark it complete — run `hitch --help` to see how.",
-].join("\n");
-assert.equal(noBody, expected, "preamble is byte-identical to the desktop builder");
+// ─── The daemon composes NO prompt ───────────────────────────────────────────
+//
+// There used to be a buildDelegatePreamble here, a hand-maintained copy of the
+// desktop's builder ("keep the wording identical", said the comment). Prompts
+// are now resolved once by the server at assignment creation, so the reconciler
+// only ever reads assignments.prompt. Guard the regression: nothing in the
+// reconciler may reconstruct prompt text.
+const reconcilerSource = readFileSync(
+  new URL("../src/v2/reconciler.ts", import.meta.url),
+  "utf8",
+);
+assert.doesNotMatch(
+  reconcilerSource,
+  /You're picking up the Hitch task/,
+  "the daemon must never compose prompt text — the server owns resolution",
+);
+assert.doesNotMatch(
+  reconcilerSource,
+  /buildDelegatePreamble/,
+  "buildDelegatePreamble is deleted, not re-exported",
+);
 
 console.log("v2-reconciler smoke: OK");

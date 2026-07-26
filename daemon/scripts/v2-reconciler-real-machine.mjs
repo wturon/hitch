@@ -175,7 +175,8 @@ try {
   });
   check("3. created scratch project (repoPath=tmp) + task");
 
-  // Delegate: prompt null → the DAEMON builds the preamble (embeds the body).
+  // Delegate with no template → the SERVER resolves DEFAULT_PROMPT_TEMPLATE
+  // against this task and stores the result in assignments.prompt.
   const assignment = await api("POST", "/assignments", {
     taskId: task.id,
     machineId: machine.id,
@@ -183,7 +184,7 @@ try {
     desiredState: "running",
   });
   assignmentId = assignment.id;
-  check("4. posted assignment (desired=running, claude, prompt=null → daemon preamble)");
+  check("4. posted assignment (desired=running, claude, no template → server default)");
 
   // A real cmux tab opens with claude, and the assignment walks
   // pending → spawning → running.

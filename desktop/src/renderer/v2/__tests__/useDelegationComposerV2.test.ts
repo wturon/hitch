@@ -22,7 +22,7 @@ function render(
     harness: string;
     model: string;
     effort: string;
-    prompt: string;
+    promptTemplate: string;
   }) => Promise<void> | void,
   canStart = true,
 ) {
@@ -93,7 +93,7 @@ describe("agent selection", () => {
 });
 
 describe("choosePreset", () => {
-  it("refills the instruction text from the picked preset", () => {
+  it("refills the prompt text from the picked preset", () => {
     const second = BUILTIN_STARTING_PROMPTS[1];
     const { result } = render(vi.fn());
     act(() => result.current.choosePreset(second.id));
@@ -126,7 +126,8 @@ describe("start", () => {
       harness: "codex",
       model,
       effort,
-      prompt: BUILTIN_STARTING_PROMPTS[0].body,
+      // The WHOLE template goes over the wire — the bar composes nothing.
+      promptTemplate: BUILTIN_STARTING_PROMPTS[0].body,
     });
     expect(result.current.phase).toBe("submitted");
     // The full triple is persisted as a JSON blob now.

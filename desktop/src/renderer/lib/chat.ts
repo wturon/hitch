@@ -3,6 +3,8 @@
 // All pure data plus small helpers over it — no React and no DOM beyond the
 // localStorage guards in loadLastAgent/saveLastAgent/loadCustomPrompts.
 
+import { PROMPT_TEMPLATE_FRAMING, PROMPT_VARIABLES } from "@hitch/shared";
+
 // The coding agents Hitch can delegate to.
 export type Harness = "claude-code" | "codex";
 
@@ -266,11 +268,14 @@ export function honorsLaunchParams(
   );
 }
 
-// A reusable kickoff instruction the user picks from the delegation dropdown.
-// `body` is the user-authored instruction. It's stamped AFTER the machine-facing
-// task preamble that V2 always prepends at launch (see buildDelegatePreamble in
-// v2/delegation.ts — title + verbatim body + task id + `hitch` CLI line), so a
-// prompt never needs to restate the task; it just says what to DO with it.
+// A reusable kickoff prompt the user picks from the delegation dropdown.
+//
+// `body` is the COMPLETE prompt template — nothing is prepended to it at launch.
+// That's the honesty contract: whatever is in the delegate bar's textarea is
+// what the agent gets, byte for byte, once the server substitutes $TASK_TITLE /
+// $TASK_BODY / $TASK_ID (server/src/prompt.ts). Templates keep the editable text
+// short without hiding anything — the task body is already on screen above the
+// bar, so restating it in the textarea would be noise, not transparency.
 export interface StartingPrompt {
   id: string;
   name: string;
@@ -285,10 +290,24 @@ export interface StartingPrompt {
 
 // The secondary line shown under a preset's name. Falls back to a one-line
 // squashed/truncated `body` when a (custom) prompt has no authored description.
+// The shared framing is stripped first: every template opens with the same
+// header, so describing a prompt by its first 72 characters would describe all
+// of them identically. What's left is the part that actually differs.
 export function promptDescription(prompt: StartingPrompt): string {
   if (prompt.description?.trim()) return prompt.description.trim();
-  const body = prompt.body.trim().replace(/\s+/g, " ");
+  const stripped = prompt.body.startsWith(PROMPT_TEMPLATE_FRAMING)
+    ? prompt.body.slice(PROMPT_TEMPLATE_FRAMING.length)
+    : prompt.body;
+  const body = stripped.trim().replace(/\s+/g, " ");
   return body.length > 72 ? `${body.slice(0, 71)}…` : body;
+}
+
+// A complete template: the shared framing (task title, body, id, CLI pointer)
+// followed by the stanza that says what to DO. Built-ins are assembled this way
+// so the framing has exactly one definition, on the server, next to the
+// resolver that substitutes it.
+export function withPromptFraming(instruction: string): string {
+  return `${PROMPT_TEMPLATE_FRAMING}\n\n${instruction}`;
 }
 
 // Curated built-in kickoff prompts. These ship in the app binary and are the
@@ -297,37 +316,44 @@ export function promptDescription(prompt: StartingPrompt): string {
 // followed by the user's custom prompts. The bodies live only here now — the
 // main process knows the ids (BUILTIN_PROMPT_IDS, mirrored in main.ts) so it can
 // strip any built-in a user previously had seeded into their stored library.
-// Bodies assume the task preamble is already present (it always is), so they
+// Each body is a COMPLETE template: shared framing + one instruction stanza. The
+// stanzas are unchanged from when a hidden preamble supplied the framing — they
 // reference "this task" and drive the agent via the `hitch` CLI, never a file.
 export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
     name: "Do the task.",
     description: "Reads the task and does what it asks",
-    body: "Read this task and do what it asks.",
+    body: withPromptFraming("Read this task and do what it asks."),
   },
   {
     id: "think-through",
     name: "Help me think this through.",
     description: "Talks through the problem with you, no code yet",
-    body: "Don't write any code yet. Help me reason through the task, question, or idea described here and organize my own thinking. Read the task and explore any relevant context, then push on it with me: ask clarifying questions, point out inconsistencies or risks I may have missed, and compare plausible approaches with your honest recommendation. The goal is to help me sharpen my judgment, not to produce a step-by-step plan or start implementation.",
+    body: withPromptFraming(
+      "Don't write any code yet. Help me reason through the task, question, or idea described here and organize my own thinking. Read the task and explore any relevant context, then push on it with me: ask clarifying questions, point out inconsistencies or risks I may have missed, and compare plausible approaches with your honest recommendation. The goal is to help me sharpen my judgment, not to produce a step-by-step plan or start implementation.",
+    ),
   },
   {
     id: "refine-task",
     name: "Turn this into an agent-ready task.",
     description: "Interviews you, then rewrites the task as a spec",
-    body: [
-      "Don't start implementation yet. Help me turn this task into a clear, self-contained brief that a fresh agent with no context can execute confidently.",
-      "First, investigate. Read the task description above and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
-      'Then interview me. Ask your most important clarifying questions, and keep going until we share an unambiguous understanding of the goal, what "done" looks like, the scope boundaries, and any constraints.',
-      "When we agree it's fully specified, rewrite the task's description so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Save it with `hitch tasks edit <task-id>` (pass the new description via --body-file or piped stdin — run `hitch tasks --help` for the exact flags), then confirm when you've updated it.",
-    ].join("\n\n"),
+    body: withPromptFraming(
+      [
+        "Don't start implementation yet. Help me turn this task into a clear, self-contained brief that a fresh agent with no context can execute confidently.",
+        "First, investigate. Read the task description above and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
+        'Then interview me. Ask your most important clarifying questions, and keep going until we share an unambiguous understanding of the goal, what "done" looks like, the scope boundaries, and any constraints.',
+        "When we agree it's fully specified, rewrite the task's description so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Save it with `hitch tasks edit $TASK_ID` (pass the new description via --body-file or piped stdin — run `hitch tasks --help` for the exact flags), then confirm when you've updated it.",
+      ].join("\n\n"),
+    ),
   },
   {
     id: "investigate",
     name: "How hard would this be?",
     description: "Scopes the work and flags risks, no code",
-    body: "Don't write any code. Read the task, explore the parts of the repo it would touch, and come back with a candid read on how hard it'd be to solve — the rough shape of the work, what's risky or uncertain, and any open questions.",
+    body: withPromptFraming(
+      "Don't write any code. Read the task, explore the parts of the repo it would touch, and come back with a candid read on how hard it'd be to solve — the rough shape of the work, what's risky or uncertain, and any open questions.",
+    ),
   },
 ];
 
@@ -349,6 +375,22 @@ function startingPromptsBridge(): StartingPromptsBridge | undefined {
     .hitchDaemon;
 }
 
+// Prompts saved before templates existed are instruction-only: they assumed a
+// preamble would be prepended at launch. Nothing is prepended any more, so left
+// alone they'd launch an agent with NO task context — silently, which is the
+// worst way for this to break. A prompt that mentions no variable at all gets
+// the framing put back.
+//
+// Migrated in place (persisted below) rather than on every read, so a user who
+// later deletes the framing on purpose keeps their edit.
+function migrateLegacyPrompt(prompt: StartingPrompt): StartingPrompt {
+  const hasVariable = PROMPT_VARIABLES.some((name) =>
+    prompt.body.includes(`$${name}`),
+  );
+  if (hasVariable || prompt.body.trim() === "") return prompt;
+  return { ...prompt, body: withPromptFraming(prompt.body) };
+}
+
 // Read the user's custom prompts from the desktop bridge. Built-ins are not
 // included — they live in BUILTIN_STARTING_PROMPTS and the dropdown concatenates
 // the two. Outside Hitch Desktop (web, no bridge) there are no customs.
@@ -356,7 +398,14 @@ export async function loadCustomPrompts(): Promise<StartingPrompt[]> {
   const bridge = startingPromptsBridge();
   if (!bridge?.getStartingPrompts) return [];
   try {
-    return await bridge.getStartingPrompts();
+    const stored = await bridge.getStartingPrompts();
+    const migrated = stored.map(migrateLegacyPrompt);
+    if (migrated.some((p, i) => p.body !== stored[i].body)) {
+      // Fire-and-forget: the caller gets the migrated list either way, and a
+      // failed write just means we migrate again next load.
+      void saveCustomPrompts(migrated).catch(() => {});
+    }
+    return migrated;
   } catch {
     return [];
   }
