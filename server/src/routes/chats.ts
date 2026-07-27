@@ -1,11 +1,12 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, desc, eq, inArray, ne, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 
 import { requireAuth } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { assignments, chatEvents, chats, machines, projects, tasks } from "../db/schema.js";
 import { chatClientListQuery, chatEventListQuery, idParam } from "../validation.js";
+import { chatIsVisible } from "./chatPredicates.js";
 import { notFound, ownedChat } from "./helpers.js";
 
 // Client-facing chat routes: read-only. Chats are created and observed by the
@@ -25,7 +26,7 @@ export const chatRoutes = new Hono<AppEnv>()
     // "Live" is the negative of the one terminal status: a dead chat is one the
     // machine stopped seeing. dormant/idle chats are still live — they're
     // resumable, and hiding them is what a session browser does, not a monitor.
-    if (q.live === "true") conds.push(ne(chats.status, "dead"));
+    if (q.live === "true") conds.push(chatIsVisible);
     const rows = await db
       .select({
         chat: chats,

@@ -9,7 +9,6 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { toast } from "sonner";
 
 import { CaptureFooter } from "@/components/capture/CaptureFooter";
 import { copyTaskAgentPrompt } from "./agentPrompt";
@@ -530,9 +529,7 @@ function TaskBodyV2({
                     <MenuItem
                       onClick={() => {
                         if (!committedId) return;
-                        void copyTaskAgentPrompt(committedId)
-                          .then(() => toast.success("Agent prompt copied"))
-                          .catch(() => toast.error("Could not copy agent prompt"));
+                        void copyTaskAgentPrompt(committedId);
                       }}
                     >
                       <CopyIcon />

@@ -26,6 +26,13 @@ export function currentChatIdentity(
     );
   }
   if (candidates.length > 1) {
+    // Claude launched from a Codex tool inherits the outer CODEX_THREAD_ID,
+    // while Claude marks its own subprocesses with these variables. Prefer the
+    // innermost harness rather than making this common nested-agent case a dead
+    // end. With no Claude marker, ambiguity still fails closed.
+    if (env.CLAUDECODE?.trim() || env.CLAUDE_CODE_ENTRYPOINT?.trim()) {
+      return candidates.find((candidate) => candidate.harness === "claude")!;
+    }
     throw new CliError(
       "Both Codex and Claude session ids are present, so Hitch cannot safely choose a chat.\n" +
         "Run the command directly inside the agent chat you want to attach.",

@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+import type { AttachmentLayer } from "../src/attachment/index.js";
 import {
   closeTarget,
   decideAction,
   deriveObserved,
+  existingChatAttachmentPatch,
   observationTransition,
+  Reconciler,
   type ReconcileDecision,
 } from "../src/v2/reconciler.js";
+import type { HitchClient } from "../src/v2/serverClient.js";
 
 // ─── decideAction: desired × observed × hasChat × launchPending → action ─────
 
@@ -254,6 +258,140 @@ assert.equal(
 );
 assert.equal(observationTransition("waiting_input", "done"), "done");
 assert.equal(observationTransition("running", "waiting_input"), "waiting_input");
+
+// ─── existing chat attachment: adopt as genuinely running ───────────────────
+
+assert.deepEqual(
+  existingChatAttachmentPatch("codex", {
+    id: "chat-pending",
+    harness: "codex",
+    existence: "pending",
+  }),
+  { chatId: "chat-pending", observedState: "running" },
+  "a pre-registered chat cannot leave the assignment stuck pending",
+);
+assert.deepEqual(
+  existingChatAttachmentPatch("claude", {
+    id: "chat-dormant",
+    harness: "claude",
+    existence: "dormant",
+  }),
+  { chatId: "chat-dormant", observedState: "running" },
+  "a stale dormant observation cannot complete the assignment during attach",
+);
+assert.equal(
+  existingChatAttachmentPatch("codex", {
+    id: "chat-stale",
+    harness: "codex",
+    existence: null,
+  }),
+  null,
+  "an aged-out chat is visible but not attachable",
+);
+assert.equal(
+  existingChatAttachmentPatch("codex", {
+    id: "chat-wrong-harness",
+    harness: "claude",
+    existence: "running",
+  }),
+  null,
+  "harness identity must agree",
+);
+
+async function reconcileRequestedChat(
+  harness: "claude" | "codex",
+  existence: "pending" | "dormant",
+): Promise<Record<string, unknown>> {
+  let resolvePatch!: (patch: Record<string, unknown>) => void;
+  const patched = new Promise<Record<string, unknown>>((resolve) => {
+    resolvePatch = resolve;
+  });
+  const client = {
+    assignments: {
+      $get: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => [
+          {
+            id: "assignment-existing",
+            taskId: "task-1",
+            machineId: "machine-1",
+            harness,
+            prompt: null,
+            model: null,
+            effort: null,
+            desiredState: "running",
+            observedState: "pending",
+            requestedChatId: "chat-existing",
+            chatId: null,
+          },
+        ],
+      }),
+    },
+    daemon: {
+      chats: {
+        $get: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              id: "chat-existing",
+              harness,
+              sessionId: "session-existing",
+              status: "idle",
+              existence,
+              handle: null,
+            },
+          ],
+        }),
+      },
+      assignments: {
+        ":id": {
+          $patch: async (input: { json: Record<string, unknown> }) => {
+            resolvePatch(input.json);
+            return { ok: true, status: 200 };
+          },
+        },
+      },
+    },
+  } as unknown as HitchClient;
+  const attachments = {
+    sweep: () => [],
+    resolveLinks: async () => {},
+    pendingLaunches: () => new Set<string>(),
+  } as unknown as AttachmentLayer;
+  const reconciler = new Reconciler({
+    client,
+    attachments,
+    machineId: "machine-1",
+    host: "smoke-host",
+    tickMs: 60_000,
+    logger: { info: () => {} },
+    resolveLauncher: () => undefined,
+  });
+  reconciler.start();
+  try {
+    return await Promise.race([
+      patched,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("existing-chat reconcile timed out")), 1_000),
+      ),
+    ]);
+  } finally {
+    reconciler.stop();
+  }
+}
+
+assert.deepEqual(
+  await reconcileRequestedChat("codex", "pending"),
+  { chatId: "chat-existing", observedState: "running" },
+  "the real reconcile path attaches pending chats as running",
+);
+assert.deepEqual(
+  await reconcileRequestedChat("claude", "dormant"),
+  { chatId: "chat-existing", observedState: "running" },
+  "the real reconcile path never completes a dormant chat during attach",
+);
 
 // ─── The daemon composes NO prompt ───────────────────────────────────────────
 //

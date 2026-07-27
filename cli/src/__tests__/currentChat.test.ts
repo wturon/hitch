@@ -29,4 +29,14 @@ describe("currentChatIdentity", () => {
       }),
     ).toThrow("cannot safely choose");
   });
+
+  it("selects an inner Claude chat that inherited an outer Codex thread", () => {
+    expect(
+      currentChatIdentity({
+        CODEX_THREAD_ID: "outer-codex",
+        CLAUDE_CODE_SESSION_ID: "inner-claude",
+        CLAUDECODE: "1",
+      }),
+    ).toEqual({ harness: "claude", sessionId: "inner-claude" });
+  });
 });

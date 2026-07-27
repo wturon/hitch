@@ -292,6 +292,7 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
       harness: "codex",
       requestedChatId: chats.get("link-one").id,
       chatId: null,
+      prompt: null,
       desiredState: "running",
       observedState: "pending",
     });
@@ -339,6 +340,13 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
       sessionId: "link-one",
     });
     expect(stolen.status).toBe(404);
+
+    // The request cannot silently disappear and turn pending intent into a
+    // spawn. Historical chat rows are protected while an assignment targets
+    // them.
+    await expect(
+      pool.query("delete from chats where id = $1", [chats.get("link-one").id]),
+    ).rejects.toThrow();
   });
 
   it("marks absent chats dead on the FIRST miss — no second server-side debounce", async () => {

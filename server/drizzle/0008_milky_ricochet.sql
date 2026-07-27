@@ -1,3 +1,3 @@
 ALTER TABLE "assignments" ADD COLUMN "requested_chat_id" uuid;--> statement-breakpoint
-ALTER TABLE "assignments" ADD CONSTRAINT "assignments_requested_chat_id_chats_id_fk" FOREIGN KEY ("requested_chat_id") REFERENCES "public"."chats"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "assignments" ADD CONSTRAINT "assignments_requested_chat_id_chats_id_fk" FOREIGN KEY ("requested_chat_id") REFERENCES "public"."chats"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "assignments_requested_chat_id_idx" ON "assignments" USING btree ("requested_chat_id");

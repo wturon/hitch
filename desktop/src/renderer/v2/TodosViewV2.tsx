@@ -40,7 +40,6 @@ import {
   TagIcon,
   Trash2Icon,
 } from "lucide-react";
-import { toast } from "sonner";
 
 import { TagCombobox } from "@/components/tags/TagCombobox";
 import { TagFilterBar } from "@/components/tags/TagFilterBar";
@@ -714,11 +713,7 @@ function TaskRow({
           Open
         </ContextMenuItem>
         <ContextMenuItem
-          onClick={() => {
-            void copyTaskAgentPrompt(task.id)
-              .then(() => toast.success("Agent prompt copied"))
-              .catch(() => toast.error("Could not copy agent prompt"));
-          }}
+          onClick={() => void copyTaskAgentPrompt(task.id)}
         >
           <CopyIcon />
           Copy agent prompt

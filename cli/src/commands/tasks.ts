@@ -16,6 +16,7 @@ import {
   resolveTagByName,
   resolveTaskRef,
   tagNames,
+  type AssignmentRow,
   type TaskRow,
   type Workspace,
 } from "../resolvers.js";
@@ -241,10 +242,7 @@ async function link(args: string[]): Promise<void> {
     },
   });
   await ensureOk(session, response, `Linking the current ${identity.harness} chat`);
-  const assignment = (await response.json()) as unknown as {
-    id: string;
-    [key: string]: unknown;
-  };
+  const assignment = (await response.json()) as AssignmentRow;
   if (values.json) {
     printJson({ task: taskJson(task, workspace), assignment });
     return;

@@ -230,6 +230,23 @@ export function observationTransition(
   return derived === current ? null : derived;
 }
 
+export function existingChatAttachmentPatch(
+  assignmentHarness: ServerHarness,
+  requested: Pick<WireChat, "id" | "harness" | "existence"> | null,
+): { chatId: string; observedState: "running" } | null {
+  if (
+    !requested ||
+    requested.harness !== assignmentHarness ||
+    requested.existence === null
+  ) {
+    return null;
+  }
+  // The chat existed before the assignment. Enter the normal observation
+  // lifecycle as already-running; the next tick can honestly derive idle,
+  // blocked, dormant, or dead without the new-launch grace period.
+  return { chatId: requested.id, observedState: "running" };
+}
+
 // ─── Reconciler ──────────────────────────────────────────────────────────────
 
 export interface ReconcilerOptions {
@@ -434,24 +451,17 @@ export class Reconciler {
     const requested = a.requestedChatId
       ? (chatsById.get(a.requestedChatId) ?? null)
       : null;
-    if (!requested || requested.harness !== a.harness || requested.existence === null) {
+    const patch = existingChatAttachmentPatch(a.harness, requested);
+    if (!patch) {
       this.logger.info(
         `[hitch] requested chat for assignment ${a.id} is no longer live — marking dead`,
       );
       await this.patchObservedIfChanged(a, "dead");
       return;
     }
-    // This chat predates the assignment, so an idle observation really does
-    // mean "waiting" — unlike a newly spawned chat's brief pre-prompt idle
-    // window. Seed the derivation from running to avoid leaving an attached,
-    // already-idle chat pending forever.
-    const initialObserved = deriveObserved(requested, "running");
-    await this.patchAssignment(a.id, {
-      chatId: requested.id,
-      ...(initialObserved ? { observedState: initialObserved } : {}),
-    });
+    await this.patchAssignment(a.id, patch);
     this.logger.info(
-      `[hitch] attached existing ${requested.harness} chat ${requested.id} ` +
+      `[hitch] attached existing ${a.harness} chat ${patch.chatId} ` +
         `to assignment ${a.id}`,
     );
   }

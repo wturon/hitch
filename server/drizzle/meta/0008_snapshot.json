@@ -219,7 +219,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         },
         "assignments_chat_id_chats_id_fk": {

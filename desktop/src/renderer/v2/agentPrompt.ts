@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+
 export function taskAgentPrompt(taskId: string): string {
   return (
     `Take Hitch task ${taskId}. ` +
@@ -9,5 +11,10 @@ export async function copyTaskAgentPrompt(
   taskId: string,
   clipboard: Pick<Clipboard, "writeText"> = navigator.clipboard,
 ): Promise<void> {
-  await clipboard.writeText(taskAgentPrompt(taskId));
+  try {
+    await clipboard.writeText(taskAgentPrompt(taskId));
+    toast.success("Agent prompt copied");
+  } catch {
+    toast.error("Could not copy agent prompt");
+  }
 }

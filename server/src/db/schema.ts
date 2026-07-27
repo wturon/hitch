@@ -310,7 +310,7 @@ export const assignments = pgTable(
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     observedState: assignmentObservedState("observed_state").notNull().default("pending"),
     requestedChatId: uuid("requested_chat_id").references(() => chats.id, {
-      onDelete: "set null",
+      onDelete: "restrict",
     }),
     chatId: uuid("chat_id").references(() => chats.id, { onDelete: "set null" }),
     worktree: text("worktree"),
