@@ -25,6 +25,24 @@ export interface TaskRow {
   tagIds: string[];
 }
 
+export interface AssignmentRow {
+  id: string;
+  taskId: string;
+  machineId: string;
+  harness: "claude" | "codex";
+  prompt: string | null;
+  model: string | null;
+  effort: string | null;
+  desiredState: "running" | "stopped";
+  reviewedAt: string | null;
+  observedState: "pending" | "spawning" | "running" | "waiting_input" | "done" | "dead";
+  requestedChatId: string | null;
+  chatId: string | null;
+  worktree: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProjectRow {
   id: string;
   name: string;

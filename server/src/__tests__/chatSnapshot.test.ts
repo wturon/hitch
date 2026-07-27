@@ -248,6 +248,107 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     expect(new Set(shared.map((c) => c.harness))).toEqual(new Set(["claude", "codex"]));
   });
 
+  it("links an existing live chat idempotently and rejects conflicting live work", async () => {
+    const machine = await registerMachine(USER_A, "link-existing");
+    const project = await json(
+      await api(USER_A, "POST", "/projects", { name: "Link project", sortOrder: "a0" }),
+    );
+    const taskA = await json(
+      await api(USER_A, "POST", "/tasks", {
+        projectId: project.id,
+        title: "Task A",
+        sortOrder: "a0",
+      }),
+    );
+    const taskB = await json(
+      await api(USER_A, "POST", "/tasks", {
+        projectId: project.id,
+        title: "Task B",
+        sortOrder: "a1",
+      }),
+    );
+    const live = [
+      { harness: "codex", sessionId: "link-one", existence: "running", activity: "working" },
+      { harness: "codex", sessionId: "link-two", existence: "running", activity: "idle" },
+    ];
+    expect((await put(USER_A, machine.id, snapshot(live))).status).toBe(200);
+    const chats = new Map((await chatsOf(USER_A, machine.id)).map((chat) => [chat.sessionId, chat]));
+
+    const linkBody = {
+      taskId: taskA.id,
+      harness: "codex",
+      sessionId: "link-one",
+    };
+    const [first, raced] = await Promise.all([
+      api(USER_A, "POST", "/assignments/link", linkBody),
+      api(USER_A, "POST", "/assignments/link", linkBody),
+    ]);
+    expect([first.status, raced.status].sort()).toEqual([200, 201]);
+    const [assignment, racedAssignment] = await Promise.all([json(first), json(raced)]);
+    expect(racedAssignment.id).toBe(assignment.id);
+    expect(assignment).toMatchObject({
+      taskId: taskA.id,
+      machineId: machine.id,
+      harness: "codex",
+      requestedChatId: chats.get("link-one").id,
+      chatId: null,
+      prompt: null,
+      desiredState: "running",
+      observedState: "pending",
+    });
+
+    // Same pair remains a read-like retry after the concurrent race.
+    const again = await api(USER_A, "POST", "/assignments/link", {
+      taskId: taskA.id,
+      harness: "codex",
+      sessionId: "link-one",
+    });
+    expect(again.status).toBe(200);
+    expect((await json(again)).id).toBe(assignment.id);
+
+    // Neither side of an active pairing can be silently reassigned.
+    const chatConflict = await api(USER_A, "POST", "/assignments/link", {
+      taskId: taskB.id,
+      harness: "codex",
+      sessionId: "link-one",
+    });
+    expect(chatConflict.status).toBe(409);
+    expect((await json(chatConflict)).error).toContain("chat is already linked");
+
+    const taskConflict = await api(USER_A, "POST", "/assignments/link", {
+      taskId: taskA.id,
+      harness: "codex",
+      sessionId: "link-two",
+    });
+    expect(taskConflict.status).toBe(409);
+    expect((await json(taskConflict)).error).toContain("task already has");
+
+    // A user cannot resolve another user's chat by its harness-native id.
+    const otherProject = await json(
+      await api(USER_B, "POST", "/projects", { name: "Other", sortOrder: "a0" }),
+    );
+    const otherTask = await json(
+      await api(USER_B, "POST", "/tasks", {
+        projectId: otherProject.id,
+        title: "Other task",
+        sortOrder: "a0",
+      }),
+    );
+    const stolen = await api(USER_B, "POST", "/assignments/link", {
+      taskId: otherTask.id,
+      harness: "codex",
+      sessionId: "link-one",
+    });
+    expect(stolen.status).toBe(404);
+
+    // The request cannot silently disappear and turn pending intent into a
+    // spawn. Historical chat rows are protected while an assignment targets
+    // them.
+    await expect(
+      pool.query("delete from chats where id = $1", [chats.get("link-one").id]),
+    ).rejects.toThrow();
+  });
+
   it("marks absent chats dead on the FIRST miss — no second server-side debounce", async () => {
     const machine = await registerMachine(USER_A, "snapshot-sweep");
     const live = [

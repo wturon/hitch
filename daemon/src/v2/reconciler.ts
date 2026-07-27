@@ -60,6 +60,8 @@ interface WireAssignment {
   effort: string | null;
   desiredState: DesiredState;
   observedState: ObservedState;
+  /** Client intent to adopt an existing chat; the daemon fulfills it into chatId. */
+  requestedChatId: string | null;
   chatId: string | null;
 }
 interface WireChat {
@@ -108,6 +110,7 @@ export interface ReconcilerLogger {
 // whether a chat is linked, and whether a launch for it is still in flight.
 // Pure — the diff table lives here, testable without a server or cmux.
 export type ReconcileDecision =
+  | "attach"
   | "spawn"
   | "close"
   | "mark-done"
@@ -119,6 +122,8 @@ export interface AssignmentSnapshot {
   desiredState: DesiredState;
   observedState: ObservedState;
   hasChat: boolean;
+  /** The client asked this assignment to adopt an already-observed chat. */
+  hasRequestedChat: boolean;
   /**
    * A launch record for this assignment exists and hasn't been linked yet.
    * Durable (the attachment layer keeps it on disk), which is what lets a
@@ -140,6 +145,9 @@ export function decideAction(a: AssignmentSnapshot): ReconcileDecision {
 
   // desired = running
   if (a.observedState === "done" || a.observedState === "dead") return "noop";
+  // Existing-chat handoff: never spawn a second agent. The daemon resolves the
+  // requested server chat and writes the authoritative chat_id.
+  if (!a.hasChat && a.hasRequestedChat) return "attach";
   // Not acted on yet and no chat → claim + spawn, UNLESS a launch is already in
   // flight (a restart mid-spawn must never double-spawn). A pending row that
   // somehow already carries a chat is observed, not re-spawned.
@@ -220,6 +228,23 @@ export function observationTransition(
 ): ObservedState | null {
   if (derived === null) return null;
   return derived === current ? null : derived;
+}
+
+export function existingChatAttachmentPatch(
+  assignmentHarness: ServerHarness,
+  requested: Pick<WireChat, "id" | "harness" | "existence"> | null,
+): { chatId: string; observedState: "running" } | null {
+  if (
+    !requested ||
+    requested.harness !== assignmentHarness ||
+    requested.existence === null
+  ) {
+    return null;
+  }
+  // The chat existed before the assignment. Enter the normal observation
+  // lifecycle as already-running; the next tick can honestly derive idle,
+  // blocked, dormant, or dead without the new-launch grace period.
+  return { chatId: requested.id, observedState: "running" };
 }
 
 // ─── Reconciler ──────────────────────────────────────────────────────────────
@@ -345,9 +370,13 @@ export class Reconciler {
         desiredState: a.desiredState as DesiredState,
         observedState: a.observedState as ObservedState,
         hasChat: a.chatId != null,
+        hasRequestedChat: a.requestedChatId != null,
         launchPending: this.inFlight.has(a.id) || pendingLaunches.has(a.id),
       });
       switch (decision) {
+        case "attach":
+          await this.attachExisting(a, chatsById);
+          break;
         case "spawn":
           this.claimAndSpawn(a);
           break;
@@ -414,6 +443,28 @@ export class Reconciler {
   }
 
   // ─── Spawn ─────────────────────────────────────────────────────────────────
+
+  private async attachExisting(
+    a: WireAssignment,
+    chatsById: Map<string, WireChat>,
+  ): Promise<void> {
+    const requested = a.requestedChatId
+      ? (chatsById.get(a.requestedChatId) ?? null)
+      : null;
+    const patch = existingChatAttachmentPatch(a.harness, requested);
+    if (!patch) {
+      this.logger.info(
+        `[hitch] requested chat for assignment ${a.id} is no longer live — marking dead`,
+      );
+      await this.patchObservedIfChanged(a, "dead");
+      return;
+    }
+    await this.patchAssignment(a.id, patch);
+    this.logger.info(
+      `[hitch] attached existing ${a.harness} chat ${patch.chatId} ` +
+        `to assignment ${a.id}`,
+    );
+  }
 
   private claimAndSpawn(a: WireAssignment): void {
     if (this.inFlight.has(a.id)) return;

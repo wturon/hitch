@@ -4,12 +4,14 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
   CircleCheckIcon,
   CircleIcon,
+  CopyIcon,
   EllipsisIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
 
 import { CaptureFooter } from "@/components/capture/CaptureFooter";
+import { copyTaskAgentPrompt } from "./agentPrompt";
 import { DelegateBar } from "./DelegateBar";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { useGrowAnimation } from "@/components/capture/useGrowAnimation";
@@ -69,8 +71,9 @@ export interface TaskDialogRow extends TaskDocumentFields {
 // The saved-stage ⋯ menu's actions, threaded from the shell's single
 // useTaskMutations instance so the dialog shares the row/keyboard code path
 // (same undo toasts, same pending-delete window). V1's SavedActions menu
-// minus its V1-only entries: raw view / copy path / detach / archive have no
-// V2 counterpart (M4-or-never). Present only once the task exists on the
+// minus its V1-only entries: raw view / detach / archive have no V2
+// counterpart. Copy agent prompt is the server-native successor to copy path.
+// Present only once the task exists on the
 // server (edit mode / a committed capture).
 export interface TaskDialogActions {
   completed: boolean;
@@ -523,6 +526,15 @@ function TaskBodyV2({
                     <EllipsisIcon className="size-4" />
                   </MenuTrigger>
                   <MenuContent align="end">
+                    <MenuItem
+                      onClick={() => {
+                        if (!committedId) return;
+                        void copyTaskAgentPrompt(committedId);
+                      }}
+                    >
+                      <CopyIcon />
+                      Copy agent prompt
+                    </MenuItem>
                     <MenuItem onClick={actions.onToggleCompleted}>
                       {actions.completed ? <CircleIcon /> : <CircleCheckIcon />}
                       {actions.completed ? "Mark not done" : "Mark done"}

@@ -31,6 +31,7 @@ import {
   ChevronRightIcon,
   CircleCheckIcon,
   CircleIcon,
+  CopyIcon,
   FolderInputIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -64,6 +65,7 @@ import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import type { ServerHarness } from "./delegation";
+import { copyTaskAgentPrompt } from "./agentPrompt";
 import { HarnessChipSlot, StaticHarnessChip } from "./HarnessChip";
 import { addSlotId, buildSlots, headerSlotId, placementAfterMove } from "./flatList";
 import { sortOrderAtIndex } from "./listMutations";
@@ -115,7 +117,8 @@ import type { TagActions } from "./useTagMutations";
 //   • whole-row drag reorder, within a container and across them (dnd-kit,
 //     single-row PATCH computed between the drop's neighbors);
 //   • right-click context menu (V1's structure minus the V1-only entries —
-//     copy-path/detach/archive have no V2 counterpart) with V1's Tags ▸
+//     copy-agent-prompt replaces V1's filesystem-only copy-path; detach/archive
+//     have no V2 counterpart. Tags ▸
 //     assign submenu (PR 5), routed through the shell's single
 //     useTagMutations instance;
 //   • V1's tag filter bar (PR 5): AND-semantics multi-tag filter + exclusive
@@ -702,13 +705,18 @@ function TaskRow({
           />
         </div>
       </ContextMenuTrigger>
-      {/* V1's row menu minus its V1-only entries: Copy task path / Detach
-          chat / Archive have no V2 counterpart (tasks aren't files; chats are
-          M4; V2 has no archived state). */}
+      {/* Copy agent prompt is V2's server-native successor to Copy task path:
+          it hands an existing chat the stable task id + exact CLI command. */}
       <ContextMenuContent>
         <ContextMenuItem onClick={() => actions.onOpen(task.id)}>
           <SquareArrowOutUpRightIcon />
           Open
+        </ContextMenuItem>
+        <ContextMenuItem
+          onClick={() => void copyTaskAgentPrompt(task.id)}
+        >
+          <CopyIcon />
+          Copy agent prompt
         </ContextMenuItem>
         <ContextMenuItem onClick={() => actions.onToggleDone(task, !done)}>
           {done ? <CircleIcon /> : <CircleCheckIcon />}
