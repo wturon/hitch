@@ -4,27 +4,39 @@ import { Hono } from "hono";
 
 import { requireAuth } from "../auth.js";
 import type { AppEnv, Db } from "../context.js";
-import { projects, tasks, taskTags } from "../db/schema.js";
+import { projects, tags, tasks, taskTags } from "../db/schema.js";
 import { idParam, taskCreate, taskListQuery, taskTagParams, taskUpdate } from "../validation.js";
 import { notFound, ownedProject, ownedSection, ownedTag, ownedTask } from "./helpers.js";
 
 // Every task response embeds `tagIds` so the client cache shape is uniform
 // and a task_tags change can invalidate plain ["tasks"] keys without a
 // follow-up links fetch. One grouped query per response — never N+1.
-async function tagIdsByTask(db: Db, taskIds: string[]) {
-  const map = new Map<string, string[]>();
+async function tagLinksByTask(db: Db, taskIds: string[]) {
+  const map = new Map<string, { tagId: string; createdAt: Date }[]>();
   if (taskIds.length === 0) return map;
   const links = await db
-    .select({ taskId: taskTags.taskId, tagId: taskTags.tagId })
+    .select({
+      taskId: taskTags.taskId,
+      tagId: taskTags.tagId,
+      createdAt: taskTags.createdAt,
+    })
     .from(taskTags)
     .where(inArray(taskTags.taskId, taskIds))
-    .orderBy(taskTags.createdAt);
-  for (const { taskId, tagId } of links) {
+    .orderBy(taskTags.createdAt, taskTags.tagId);
+  for (const { taskId, tagId, createdAt } of links) {
     const list = map.get(taskId);
-    if (list) list.push(tagId);
-    else map.set(taskId, [tagId]);
+    const link = { tagId, createdAt };
+    if (list) list.push(link);
+    else map.set(taskId, [link]);
   }
   return map;
+}
+
+async function tagIdsByTask(db: Db, taskIds: string[]) {
+  const links = await tagLinksByTask(db, taskIds);
+  return new Map(
+    [...links].map(([taskId, rows]) => [taskId, rows.map((row) => row.tagId)]),
+  );
 }
 
 export const taskRoutes = new Hono<AppEnv>()
@@ -123,11 +135,64 @@ export const taskRoutes = new Hono<AppEnv>()
       updates.completedAt = patch.status === "done" ? new Date() : null;
     }
 
-    // The patch never touches links, so current tagIds are safe to read here.
-    const tagIds = (await tagIdsByTask(db, [id])).get(id) ?? [];
-    if (Object.keys(updates).length === 0) return c.json({ ...existing, tagIds });
-    const [row] = await db.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
-    return c.json({ ...row, tagIds });
+    const currentLinks = (await tagLinksByTask(db, [id])).get(id) ?? [];
+    const currentTagIds = currentLinks.map((link) => link.tagId);
+    const requestedTagIds =
+      patch.tagIds === undefined ? currentTagIds : [...new Set(patch.tagIds)];
+
+    // Validate the complete replacement set before opening the transaction.
+    // A foreign or missing id is deliberately indistinguishable (404).
+    if (patch.tagIds !== undefined && requestedTagIds.length > 0) {
+      const ownedTags = await db
+        .select({ id: tags.id })
+        .from(tags)
+        .where(and(eq(tags.userId, c.var.userId), inArray(tags.id, requestedTagIds)));
+      if (ownedTags.length !== requestedTagIds.length) return c.json(notFound, 404);
+    }
+
+    const currentTagSet = new Set(currentTagIds);
+    const requestedTagSet = new Set(requestedTagIds);
+    const removedTagIds = currentTagIds.filter((tagId) => !requestedTagSet.has(tagId));
+    const addedTagIds = requestedTagIds.filter((tagId) => !currentTagSet.has(tagId));
+    // Retained links keep their created_at provenance and relative order. New
+    // links share the transaction timestamp, so tagId is their deterministic
+    // read-order tiebreaker (the same ordering tagLinksByTask applies).
+    const persistedTagIds = [
+      ...currentTagIds.filter((tagId) => requestedTagSet.has(tagId)),
+      ...addedTagIds.slice().sort(),
+    ];
+
+    if (
+      Object.keys(updates).length === 0 &&
+      removedTagIds.length === 0 &&
+      addedTagIds.length === 0
+    ) {
+      return c.json({ ...existing, tagIds: persistedTagIds });
+    }
+
+    const row = await db.transaction(async (tx) => {
+      let updated = existing;
+      if (Object.keys(updates).length > 0) {
+        [updated] = await tx.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
+      }
+      if (patch.tagIds !== undefined) {
+        if (removedTagIds.length > 0) {
+          await tx
+            .delete(taskTags)
+            .where(
+              and(eq(taskTags.taskId, id), inArray(taskTags.tagId, removedTagIds)),
+            );
+        }
+        if (addedTagIds.length > 0) {
+          await tx
+            .insert(taskTags)
+            .values(addedTagIds.map((tagId) => ({ taskId: id, tagId })))
+            .onConflictDoNothing();
+        }
+      }
+      return updated;
+    });
+    return c.json({ ...row, tagIds: persistedTagIds });
   })
   .delete("/:id", zValidator("param", idParam), async (c) => {
     const { id } = c.req.valid("param");

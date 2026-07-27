@@ -23,12 +23,14 @@ export interface BodyFlags {
  * `--body-file -` reads stdin explicitly. Returns undefined when no body was
  * provided (callers decide: add → "", edit → leave unchanged).
  *
- * `hasTitleFlag` guards the one stdin footgun: a script running
- * `hitch tasks edit <id> --title X` with an empty non-TTY stdin must not
- * silently blank the body — empty piped input is ignored when --title (or
- * another explicit change) was given.
+ * `hasExplicitChange` guards the stdin footgun: a script running an edit with
+ * an empty non-TTY stdin must not silently blank the body when title, section,
+ * or tags were explicitly changed.
  */
-export async function resolveBody(flags: BodyFlags, hasTitleFlag = false): Promise<string | undefined> {
+export async function resolveBody(
+  flags: BodyFlags,
+  hasExplicitChange = false,
+): Promise<string | undefined> {
   if (flags.body !== undefined && flags.bodyFile !== undefined) {
     throw new UsageError(
       "Pass --body OR --body-file, not both. For example:\n" +
@@ -48,7 +50,7 @@ export async function resolveBody(flags: BodyFlags, hasTitleFlag = false): Promi
   }
   if (flags.bodyFile === "-" || !process.stdin.isTTY) {
     const piped = await readStdin();
-    if (piped === "" && flags.bodyFile !== "-" && hasTitleFlag) return undefined;
+    if (piped === "" && flags.bodyFile !== "-" && hasExplicitChange) return undefined;
     return piped;
   }
   return undefined;

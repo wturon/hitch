@@ -90,6 +90,9 @@ export const taskUpdate = z.strictObject({
   status: taskStatusSchema.optional(),
   projectId: z.uuid().optional(),
   sectionId: z.uuid().nullable().optional(),
+  // When present, replaces the complete tag set in the same transaction as
+  // the task-row patch. Link endpoints remain for small single-tag mutations.
+  tagIds: z.array(z.uuid()).optional(),
   sortOrder: z.string().min(1).optional(),
 });
 

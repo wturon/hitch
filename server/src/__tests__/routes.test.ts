@@ -564,6 +564,74 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       const afterUnlink = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
       expect(afterUnlink.tagIds).toEqual([tagB.id]);
     });
+
+    it("atomically replaces tags alongside content and section changes", async () => {
+      const project = await createProject(USER_A, "Atomic edit project");
+      const task = await createTask(USER_A, project.id, { title: "before" });
+      const sectionRes = await api(USER_A, "POST", "/sections", {
+        projectId: project.id,
+        name: "In Progress",
+        sortOrder: "a0",
+      });
+      expect(sectionRes.status).toBe(201);
+      const section = await json(sectionRes);
+      const keepA = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-keep-a", color: "olive" }),
+      );
+      const keepB = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-keep-b", color: "blue" }),
+      );
+      const addedA = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-added-a", color: "green" }),
+      );
+      const addedB = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-added-b", color: "purple" }),
+      );
+      const remove = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-remove", color: "rust" }),
+      );
+      expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${keepA.id}`)).status).toBe(201);
+      expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${keepB.id}`)).status).toBe(201);
+      expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${remove.id}`)).status).toBe(201);
+
+      const patchRes = await api(USER_A, "PATCH", `/tasks/${task.id}`, {
+        title: "after",
+        body: "updated body",
+        sectionId: section.id,
+        tagIds: [keepA.id, keepB.id, addedB.id, addedA.id, keepA.id],
+      });
+      expect(patchRes.status).toBe(200);
+      const patched = await json(patchRes);
+      const addedInReadOrder = [addedA.id, addedB.id].sort();
+      const persistedTagIds = [keepA.id, keepB.id, ...addedInReadOrder];
+      expect(patched).toMatchObject({
+        title: "after",
+        body: "updated body",
+        sectionId: section.id,
+        tagIds: persistedTagIds,
+      });
+      // The next GET must observe the exact same deterministic order. Retained
+      // links keep their provenance; new links use tagId as the tie-breaker.
+      const reread = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
+      expect(reread.tagIds).toEqual(persistedTagIds);
+
+      const foreignTag = await json(
+        await api(USER_B, "POST", "/tags", { name: "foreign", color: "red" }),
+      );
+      const rejected = await api(USER_A, "PATCH", `/tasks/${task.id}`, {
+        title: "must not land",
+        tagIds: [foreignTag.id],
+      });
+      expect(rejected.status).toBe(404);
+
+      const unchanged = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
+      expect(unchanged.title).toBe("after");
+      expect(unchanged.tagIds).toEqual(persistedTagIds);
+
+      const clearRes = await api(USER_A, "PATCH", `/tasks/${task.id}`, { tagIds: [] });
+      expect(clearRes.status).toBe(200);
+      expect((await json(clearRes)).tagIds).toEqual([]);
+    });
   });
 
   describe("CORS", () => {

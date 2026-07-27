@@ -5,7 +5,7 @@ import { formatTimestamp, printJson, truncate } from "../format.js";
 import { COMMENTS_HELP } from "../help.js";
 import { shortId } from "../ids.js";
 import { onePositional, parseFlags } from "../parse.js";
-import { resolveTaskRef } from "../resolvers.js";
+import { loadWorkspace, resolveTaskRef } from "../resolvers.js";
 
 interface CommentRow {
   id: string;
@@ -44,7 +44,8 @@ async function list(args: string[]): Promise<void> {
   }
   const ref = onePositional(positionals, "task id", "hitch comments list 0198c2a4");
   const session = requireSession();
-  const task = await resolveTaskRef(session, ref);
+  const workspace = await loadWorkspace(session);
+  const task = resolveTaskRef(workspace, ref);
   const res = await session.client.comments.$get({ query: { task_id: task.id } });
   await ensureOk(session, res, "Listing comments");
   const rows = (await res.json()) as CommentRow[];
@@ -52,9 +53,11 @@ async function list(args: string[]): Promise<void> {
     printJson(rows);
     return;
   }
-  const label = `${shortId(task.id, [task.id])} "${truncate(task.title, 60)}"`;
+  const allIds = workspace.tasks.map((row) => row.id);
+  const taskId = shortId(task.id, allIds);
+  const label = `${taskId} "${truncate(task.title, 60)}"`;
   if (rows.length === 0) {
-    console.log(`No comments on ${label}. Add one:\n  hitch comments add ${shortId(task.id, [task.id])} --body "..."`);
+    console.log(`No comments on ${label}. Add one:\n  hitch comments add ${taskId} --body "..."`);
     return;
   }
   const blocks = rows.map(
@@ -95,7 +98,8 @@ async function add(args: string[]): Promise<void> {
   // environment; everything else is authored as the user.
   const authorKind = values["as-agent"] || process.env.HITCH_AGENT === "1" ? "agent" : "user";
   const session = requireSession();
-  const task = await resolveTaskRef(session, ref);
+  const workspace = await loadWorkspace(session);
+  const task = resolveTaskRef(workspace, ref);
   const res = await session.client.comments.$post({
     json: { taskId: task.id, authorKind, body },
   });
@@ -103,8 +107,9 @@ async function add(args: string[]): Promise<void> {
   const row = (await res.json()) as CommentRow;
   if (values.json) printJson(row);
   else {
+    const allIds = workspace.tasks.map((row) => row.id);
     console.log(
-      `Commented on ${shortId(task.id, [task.id])} "${truncate(task.title, 60)}" as ${authorKind}.`,
+      `Commented on ${shortId(task.id, allIds)} "${truncate(task.title, 60)}" as ${authorKind}.`,
     );
   }
 }
