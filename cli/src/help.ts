@@ -121,7 +121,8 @@ USAGE
 
 NOTES
   list    shows OPEN tasks by default; --status done or --status all widens it.
-          --tag may repeat and uses AND semantics. --section requires --project.
+          --tag may repeat and uses AND semantics. A unique section id/name can
+          infer its project; --project disambiguates repeated section names.
           --search matches title or body, case-insensitively.
   add     defaults to the Inbox project. The body is stored verbatim, so pipe
           markdown straight in: cat notes.md | hitch tasks add "Triage notes"

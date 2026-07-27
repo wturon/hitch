@@ -15,6 +15,16 @@ import { runTasks } from "./commands/tasks.js";
 import { CliError, UsageError } from "./errors.js";
 import { ROOT_HELP } from "./help.js";
 
+const COMMAND_HINTS: Record<string, string> = {
+  task: "tasks",
+  todo: "tasks",
+  todos: "tasks",
+  project: "projects",
+  section: "sections",
+  comment: "comments",
+  tag: "tags",
+};
+
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
   switch (command) {
@@ -40,18 +50,8 @@ async function main(argv: string[]): Promise<void> {
       return runTags(rest);
     default: {
       // Teach the near-misses people actually type before dumping full help.
-      const hint =
-        command === "task" || command === "todo" || command === "todos"
-          ? "Did you mean 'hitch tasks'?\n\n"
-          : command === "project"
-            ? "Did you mean 'hitch projects'?\n\n"
-            : command === "section"
-              ? "Did you mean 'hitch sections'?\n\n"
-              : command === "comment"
-                ? "Did you mean 'hitch comments'?\n\n"
-                : command === "tag"
-                  ? "Did you mean 'hitch tags'?\n\n"
-                  : "";
+      const suggestion = COMMAND_HINTS[command];
+      const hint = suggestion ? `Did you mean 'hitch ${suggestion}'?\n\n` : "";
       throw new UsageError(`Unknown command '${command}'. ${hint || "\n\n"}${ROOT_HELP}`);
     }
   }

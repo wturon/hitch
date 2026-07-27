@@ -11,20 +11,32 @@ import { notFound, ownedProject, ownedSection, ownedTag, ownedTask } from "./hel
 // Every task response embeds `tagIds` so the client cache shape is uniform
 // and a task_tags change can invalidate plain ["tasks"] keys without a
 // follow-up links fetch. One grouped query per response — never N+1.
-async function tagIdsByTask(db: Db, taskIds: string[]) {
-  const map = new Map<string, string[]>();
+async function tagLinksByTask(db: Db, taskIds: string[]) {
+  const map = new Map<string, { tagId: string; createdAt: Date }[]>();
   if (taskIds.length === 0) return map;
   const links = await db
-    .select({ taskId: taskTags.taskId, tagId: taskTags.tagId })
+    .select({
+      taskId: taskTags.taskId,
+      tagId: taskTags.tagId,
+      createdAt: taskTags.createdAt,
+    })
     .from(taskTags)
     .where(inArray(taskTags.taskId, taskIds))
-    .orderBy(taskTags.createdAt);
-  for (const { taskId, tagId } of links) {
+    .orderBy(taskTags.createdAt, taskTags.tagId);
+  for (const { taskId, tagId, createdAt } of links) {
     const list = map.get(taskId);
-    if (list) list.push(tagId);
-    else map.set(taskId, [tagId]);
+    const link = { tagId, createdAt };
+    if (list) list.push(link);
+    else map.set(taskId, [link]);
   }
   return map;
+}
+
+async function tagIdsByTask(db: Db, taskIds: string[]) {
+  const links = await tagLinksByTask(db, taskIds);
+  return new Map(
+    [...links].map(([taskId, rows]) => [taskId, rows.map((row) => row.tagId)]),
+  );
 }
 
 export const taskRoutes = new Hono<AppEnv>()
@@ -123,22 +135,42 @@ export const taskRoutes = new Hono<AppEnv>()
       updates.completedAt = patch.status === "done" ? new Date() : null;
     }
 
-    const currentTagIds = (await tagIdsByTask(db, [id])).get(id) ?? [];
-    const nextTagIds =
+    const currentLinks = (await tagLinksByTask(db, [id])).get(id) ?? [];
+    const currentTagIds = currentLinks.map((link) => link.tagId);
+    const requestedTagIds =
       patch.tagIds === undefined ? currentTagIds : [...new Set(patch.tagIds)];
 
     // Validate the complete replacement set before opening the transaction.
     // A foreign or missing id is deliberately indistinguishable (404).
-    if (patch.tagIds !== undefined && nextTagIds.length > 0) {
+    if (patch.tagIds !== undefined && requestedTagIds.length > 0) {
       const ownedTags = await db
         .select({ id: tags.id })
         .from(tags)
-        .where(and(eq(tags.userId, c.var.userId), inArray(tags.id, nextTagIds)));
-      if (ownedTags.length !== nextTagIds.length) return c.json(notFound, 404);
+        .where(and(eq(tags.userId, c.var.userId), inArray(tags.id, requestedTagIds)));
+      if (ownedTags.length !== requestedTagIds.length) return c.json(notFound, 404);
     }
+
+    const currentTagSet = new Set(currentTagIds);
+    const requestedTagSet = new Set(requestedTagIds);
+    const removedTagIds = currentTagIds.filter((tagId) => !requestedTagSet.has(tagId));
+    const addedTagIds = requestedTagIds.filter((tagId) => !currentTagSet.has(tagId));
+    // Retained links keep their created_at provenance and relative order; new
+    // links append in request order. This is also the order a subsequent GET
+    // observes via tagIdsByTask.
+    const persistedTagIds = [
+      ...currentTagIds.filter((tagId) => requestedTagSet.has(tagId)),
+      ...addedTagIds,
+    ];
 
     if (Object.keys(updates).length === 0 && patch.tagIds === undefined) {
       return c.json({ ...existing, tagIds: currentTagIds });
+    }
+    if (
+      Object.keys(updates).length === 0 &&
+      removedTagIds.length === 0 &&
+      addedTagIds.length === 0
+    ) {
+      return c.json({ ...existing, tagIds: persistedTagIds });
     }
 
     const row = await db.transaction(async (tx) => {
@@ -147,16 +179,34 @@ export const taskRoutes = new Hono<AppEnv>()
         [updated] = await tx.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
       }
       if (patch.tagIds !== undefined) {
-        await tx.delete(taskTags).where(eq(taskTags.taskId, id));
-        if (nextTagIds.length > 0) {
+        if (removedTagIds.length > 0) {
+          await tx
+            .delete(taskTags)
+            .where(
+              and(eq(taskTags.taskId, id), inArray(taskTags.tagId, removedTagIds)),
+            );
+        }
+        if (addedTagIds.length > 0) {
+          // Postgres now() is the transaction timestamp, so a multi-row insert
+          // would give every new link the same created_at and lose request
+          // order. Explicit millisecond steps make append order durable.
+          const lastCreatedAt = currentLinks.at(-1)?.createdAt.getTime() ?? 0;
+          const firstAddedAt = Math.max(Date.now(), lastCreatedAt + 1);
           await tx
             .insert(taskTags)
-            .values(nextTagIds.map((tagId) => ({ taskId: id, tagId })));
+            .values(
+              addedTagIds.map((tagId, index) => ({
+                taskId: id,
+                tagId,
+                createdAt: new Date(firstAddedAt + index),
+              })),
+            )
+            .onConflictDoNothing();
         }
       }
       return updated;
     });
-    return c.json({ ...row, tagIds: nextTagIds });
+    return c.json({ ...row, tagIds: persistedTagIds });
   })
   .delete("/:id", zValidator("param", idParam), async (c) => {
     const { id } = c.req.valid("param");

@@ -4,7 +4,7 @@ import { printJson, renderTable } from "../format.js";
 import { PROJECTS_HELP } from "../help.js";
 import { shortId } from "../ids.js";
 import { onePositional, parseFlags } from "../parse.js";
-import { fetchAllTasks, fetchProjects, fetchSections, resolveProjectRef } from "../resolvers.js";
+import { fetchProjects, loadWorkspace, resolveProjectRef } from "../resolvers.js";
 
 export async function runProjects(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
@@ -54,12 +54,10 @@ async function show(args: string[]): Promise<void> {
   }
   const ref = onePositional(positionals, "project name or id", "hitch projects show Hitch");
   const session = requireSession();
-  const project = await resolveProjectRef(session, ref);
-  const [sections, tasks] = await Promise.all([
-    fetchSections(session, project.id),
-    fetchAllTasks(session),
-  ]);
-  const projectTasks = tasks.filter((task) => task.projectId === project.id);
+  const workspace = await loadWorkspace(session);
+  const project = resolveProjectRef(workspace, ref);
+  const sections = workspace.sections.filter((section) => section.projectId === project.id);
+  const projectTasks = workspace.tasks.filter((task) => task.projectId === project.id);
   const counts = {
     open: projectTasks.filter((task) => task.status === "open").length,
     done: projectTasks.filter((task) => task.status === "done").length,

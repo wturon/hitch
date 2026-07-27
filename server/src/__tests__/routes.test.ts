@@ -575,19 +575,30 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       });
       expect(sectionRes.status).toBe(201);
       const section = await json(sectionRes);
-      const keep = await json(
-        await api(USER_A, "POST", "/tags", { name: "atomic-keep", color: "olive" }),
+      const keepA = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-keep-a", color: "olive" }),
+      );
+      const keepB = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-keep-b", color: "blue" }),
+      );
+      const addedA = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-added-a", color: "green" }),
+      );
+      const addedB = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-added-b", color: "purple" }),
       );
       const remove = await json(
         await api(USER_A, "POST", "/tags", { name: "atomic-remove", color: "rust" }),
       );
+      expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${keepA.id}`)).status).toBe(201);
+      expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${keepB.id}`)).status).toBe(201);
       expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${remove.id}`)).status).toBe(201);
 
       const patchRes = await api(USER_A, "PATCH", `/tasks/${task.id}`, {
         title: "after",
         body: "updated body",
         sectionId: section.id,
-        tagIds: [keep.id, keep.id],
+        tagIds: [keepA.id, keepB.id, addedB.id, addedA.id, keepA.id],
       });
       expect(patchRes.status).toBe(200);
       const patched = await json(patchRes);
@@ -595,8 +606,12 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
         title: "after",
         body: "updated body",
         sectionId: section.id,
-        tagIds: [keep.id],
+        tagIds: [keepA.id, keepB.id, addedB.id, addedA.id],
       });
+      // The next GET must observe the exact same order. Retained links keep
+      // their provenance; new links append in request order.
+      const reread = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
+      expect(reread.tagIds).toEqual([keepA.id, keepB.id, addedB.id, addedA.id]);
 
       const foreignTag = await json(
         await api(USER_B, "POST", "/tags", { name: "foreign", color: "red" }),
@@ -609,7 +624,7 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
 
       const unchanged = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
       expect(unchanged.title).toBe("after");
-      expect(unchanged.tagIds).toEqual([keep.id]);
+      expect(unchanged.tagIds).toEqual([keepA.id, keepB.id, addedB.id, addedA.id]);
 
       const clearRes = await api(USER_A, "PATCH", `/tasks/${task.id}`, { tagIds: [] });
       expect(clearRes.status).toBe(200);

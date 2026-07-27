@@ -4,7 +4,7 @@ import { printJson, renderTable } from "../format.js";
 import { SECTIONS_HELP } from "../help.js";
 import { shortId } from "../ids.js";
 import { parseFlags } from "../parse.js";
-import { fetchSections, resolveProjectRef } from "../resolvers.js";
+import { loadWorkspace, resolveProjectRef } from "../resolvers.js";
 
 export async function runSections(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
@@ -40,8 +40,9 @@ async function list(args: string[]): Promise<void> {
     );
   }
   const session = requireSession();
-  const project = await resolveProjectRef(session, values.project);
-  const sections = await fetchSections(session, project.id);
+  const workspace = await loadWorkspace(session);
+  const project = resolveProjectRef(workspace, values.project);
+  const sections = workspace.sections.filter((section) => section.projectId === project.id);
   if (values.json) {
     printJson(sections);
     return;
