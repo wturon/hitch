@@ -602,16 +602,18 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       });
       expect(patchRes.status).toBe(200);
       const patched = await json(patchRes);
+      const addedInReadOrder = [addedA.id, addedB.id].sort();
+      const persistedTagIds = [keepA.id, keepB.id, ...addedInReadOrder];
       expect(patched).toMatchObject({
         title: "after",
         body: "updated body",
         sectionId: section.id,
-        tagIds: [keepA.id, keepB.id, addedB.id, addedA.id],
+        tagIds: persistedTagIds,
       });
-      // The next GET must observe the exact same order. Retained links keep
-      // their provenance; new links append in request order.
+      // The next GET must observe the exact same deterministic order. Retained
+      // links keep their provenance; new links use tagId as the tie-breaker.
       const reread = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
-      expect(reread.tagIds).toEqual([keepA.id, keepB.id, addedB.id, addedA.id]);
+      expect(reread.tagIds).toEqual(persistedTagIds);
 
       const foreignTag = await json(
         await api(USER_B, "POST", "/tags", { name: "foreign", color: "red" }),
@@ -624,7 +626,7 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
 
       const unchanged = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
       expect(unchanged.title).toBe("after");
-      expect(unchanged.tagIds).toEqual([keepA.id, keepB.id, addedB.id, addedA.id]);
+      expect(unchanged.tagIds).toEqual(persistedTagIds);
 
       const clearRes = await api(USER_A, "PATCH", `/tasks/${task.id}`, { tagIds: [] });
       expect(clearRes.status).toBe(200);

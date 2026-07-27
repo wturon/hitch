@@ -365,27 +365,30 @@ async function edit(args: string[]): Promise<void> {
   const allIds = workspace.tasks.map((row) => row.id);
 
   if (values["dry-run"]) {
-    if (values.json) printJson({ dryRun: true, taskId: task.id, changes: plan.changes });
+    const changes = {
+      title: plan.patch.title,
+      body: plan.patch.body,
+      section: plan.sectionName,
+      tags: plan.resultingTagNames,
+      tagsToCreate: plan.tagsToCreate.length ? plan.tagsToCreate : undefined,
+    };
+    if (values.json) printJson({ dryRun: true, taskId: task.id, changes });
     else {
       console.log(
         [
           `Would update ${shortId(task.id, allIds)} "${truncate(task.title, 60)}":`,
-          ...(plan.changes.title !== undefined ? [`  title: ${plan.changes.title}`] : []),
-          ...(plan.changes.body !== undefined
-            ? [`  body: ${plan.changes.body.length} characters`]
+          ...(changes.title !== undefined ? [`  title: ${changes.title}`] : []),
+          ...(changes.body !== undefined ? [`  body: ${changes.body.length} characters`] : []),
+          ...(changes.section !== undefined
+            ? [`  section: ${changes.section ?? "(none)"}`]
             : []),
-          ...(plan.changes.section !== undefined
-            ? [`  section: ${plan.changes.section ?? "(none)"}`]
-            : []),
-          ...(plan.changes.tags !== undefined
+          ...(changes.tags !== undefined
             ? [
-                `  tags: ${
-                  plan.changes.tags.length ? plan.changes.tags.join(", ") : "(none)"
-                }`,
+                `  tags: ${changes.tags.length ? changes.tags.join(", ") : "(none)"}`,
               ]
             : []),
-          ...(plan.tagsToCreate.length
-            ? [`  creates tags: ${plan.tagsToCreate.join(", ")}`]
+          ...(changes.tagsToCreate
+            ? [`  creates tags: ${changes.tagsToCreate.join(", ")}`]
             : []),
         ].join("\n"),
       );

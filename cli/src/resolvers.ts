@@ -182,15 +182,17 @@ export function resolveSectionRef(
   const candidates = project
     ? workspace.sections.filter((section) => section.projectId === project.id)
     : workspace.sections;
+  const scope = project ? ` in '${project.name}'` : "";
+  const label = (section: SectionRow): string => {
+    if (project) return section.name;
+    const owner = workspace.projectById.get(section.projectId)?.name ?? "?";
+    return `${owner} / ${section.name}`;
+  };
   const needle = ref.toLowerCase();
   const byName = candidates.filter((section) => section.name.toLowerCase() === needle);
   if (byName.length === 1) return byName[0];
   if (byName.length > 1) {
-    const lines = byName.map((section) => {
-      const owner = workspace.projectById.get(section.projectId)?.name ?? "?";
-      return `  ${section.id}  ${owner} / ${section.name}`;
-    });
-    const scope = project ? ` in '${project.name}'` : "";
+    const lines = byName.map((section) => `  ${section.id}  ${label(section)}`);
     throw new CliError(
       `${byName.length} sections${scope} are named '${ref}' — pass an id instead:\n` +
         lines.join("\n"),
@@ -200,21 +202,15 @@ export function resolveSectionRef(
   if (byId.kind === "one") return byId.row;
   if (byId.kind === "many") {
     const allIds = candidates.map((section) => section.id);
-    const lines = byId.rows.map((section) => {
-      const owner = workspace.projectById.get(section.projectId)?.name ?? "?";
-      return `  ${shortId(section.id, allIds)}  ${owner} / ${section.name}`;
-    });
+    const lines = byId.rows.map(
+      (section) => `  ${shortId(section.id, allIds)}  ${label(section)}`,
+    );
     throw new CliError(
-      `'${ref}' matches ${byId.rows.length} sections — use a longer prefix:\n${lines.join("\n")}`,
+      `'${ref}' matches ${byId.rows.length} sections${scope} — use a longer prefix:\n` +
+        lines.join("\n"),
     );
   }
-  const names = candidates
-    .map((section) => {
-      const owner = workspace.projectById.get(section.projectId)?.name ?? "?";
-      return `  ${project ? section.name : `${owner} / ${section.name}`}`;
-    })
-    .join("\n");
-  const scope = project ? ` in '${project.name}'` : "";
+  const names = candidates.map((section) => `  ${label(section)}`).join("\n");
   throw new CliError(
     `No section${scope} matches '${ref}'. Existing sections:\n${names || "  (none)"}\n` +
       `Names match case-insensitively; a section id or unique id prefix also works.`,

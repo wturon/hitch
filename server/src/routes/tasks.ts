@@ -154,17 +154,14 @@ export const taskRoutes = new Hono<AppEnv>()
     const requestedTagSet = new Set(requestedTagIds);
     const removedTagIds = currentTagIds.filter((tagId) => !requestedTagSet.has(tagId));
     const addedTagIds = requestedTagIds.filter((tagId) => !currentTagSet.has(tagId));
-    // Retained links keep their created_at provenance and relative order; new
-    // links append in request order. This is also the order a subsequent GET
-    // observes via tagIdsByTask.
+    // Retained links keep their created_at provenance and relative order. New
+    // links share the transaction timestamp, so tagId is their deterministic
+    // read-order tiebreaker (the same ordering tagLinksByTask applies).
     const persistedTagIds = [
       ...currentTagIds.filter((tagId) => requestedTagSet.has(tagId)),
-      ...addedTagIds,
+      ...addedTagIds.slice().sort(),
     ];
 
-    if (Object.keys(updates).length === 0 && patch.tagIds === undefined) {
-      return c.json({ ...existing, tagIds: currentTagIds });
-    }
     if (
       Object.keys(updates).length === 0 &&
       removedTagIds.length === 0 &&
@@ -187,20 +184,9 @@ export const taskRoutes = new Hono<AppEnv>()
             );
         }
         if (addedTagIds.length > 0) {
-          // Postgres now() is the transaction timestamp, so a multi-row insert
-          // would give every new link the same created_at and lose request
-          // order. Explicit millisecond steps make append order durable.
-          const lastCreatedAt = currentLinks.at(-1)?.createdAt.getTime() ?? 0;
-          const firstAddedAt = Math.max(Date.now(), lastCreatedAt + 1);
           await tx
             .insert(taskTags)
-            .values(
-              addedTagIds.map((tagId, index) => ({
-                taskId: id,
-                tagId,
-                createdAt: new Date(firstAddedAt + index),
-              })),
-            )
+            .values(addedTagIds.map((tagId) => ({ taskId: id, tagId })))
             .onConflictDoNothing();
         }
       }

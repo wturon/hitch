@@ -126,9 +126,8 @@ describe("planTaskEdit", () => {
       removeTagNames: [],
       clearTags: false,
     });
-    expect(plan.resultingTagNames).toEqual(["bug", "Auth", "active"]);
+    expect(plan.resultingTagNames).toEqual(["active", "Auth", "bug"]);
     expect(plan.tagsToCreate).toEqual(["active"]);
-    expect(plan.changes.tags).toEqual(plan.resultingTagNames);
   });
 
   it("plans content, section, removal, and addition once for preview and write", () => {
@@ -146,18 +145,18 @@ describe("planTaskEdit", () => {
       body: "new body",
       sectionId: section.id,
     });
-    expect(plan.resultingTagNames).toEqual(["Auth", "active"]);
-    expect(plan.changes.section).toBe("In Progress");
+    expect(plan.resultingTagNames).toEqual(["active", "Auth"]);
+    expect(plan.sectionName).toBe("In Progress");
   });
 
-  it("preserves retained-link order for clear plus add", () => {
+  it("uses stable name order without promising server persistence order", () => {
     const plan = planTaskEdit(current, ws, {
       noSection: false,
       addTagNames: ["AUTH", "active"],
       removeTagNames: [],
       clearTags: true,
     });
-    expect(plan.resultingTagNames).toEqual(["Auth", "active"]);
+    expect(plan.resultingTagNames).toEqual(["active", "Auth"]);
   });
 
   it("rejects conflicting tag operations", () => {

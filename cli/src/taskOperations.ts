@@ -59,13 +59,7 @@ export interface TaskEditPlan {
   patch: TaskEditPatch;
   resultingTagNames?: string[];
   tagsToCreate: string[];
-  changes: {
-    title?: string;
-    body?: string;
-    section?: string | null;
-    tags?: string[];
-    tagsToCreate?: string[];
-  };
+  sectionName?: string | null;
 }
 
 type PlannedTag = { id?: string; name: string };
@@ -132,15 +126,9 @@ export function planTaskEdit(
       }
     }
 
-    // The server preserves provenance for retained links and appends new ones.
-    // Mirror that persisted order so dry-run, PATCH response, and the next GET
-    // all agree even for `--clear-tags --add-tag ...`.
-    const desiredKeys = new Set(desired.map((tag) => tagKey(tag.name)));
-    const currentKeys = new Set(current.map((tag) => tagKey(tag.name)));
-    resultingTags = [
-      ...current.filter((tag) => desiredKeys.has(tagKey(tag.name))),
-      ...desired.filter((tag) => !currentKeys.has(tagKey(tag.name))),
-    ];
+    // Tags are a set at the CLI boundary. Use a local, name-based order for a
+    // stable preview without coupling it to the server's persistence order.
+    resultingTags = desired.sort((a, b) => tagKey(a.name).localeCompare(tagKey(b.name)));
   }
 
   if (Object.keys(patch).length === 0 && resultingTags === undefined) {
@@ -159,12 +147,6 @@ export function planTaskEdit(
     patch,
     resultingTagNames,
     tagsToCreate,
-    changes: {
-      title: patch.title,
-      body: patch.body,
-      section: input.section?.name ?? (input.noSection ? null : undefined),
-      tags: resultingTagNames,
-      tagsToCreate: tagsToCreate.length ? tagsToCreate : undefined,
-    },
+    sectionName: input.section?.name ?? (input.noSection ? null : undefined),
   };
 }
