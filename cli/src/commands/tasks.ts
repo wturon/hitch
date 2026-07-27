@@ -224,13 +224,23 @@ function renderTask(task: TaskRow, workspace: Workspace): string {
 // ---------------------------------------------------------------------------
 
 async function link(args: string[]): Promise<void> {
-  const { values, positionals } = parseFlags(args, {}, TASKS_HELP);
+  const { values, positionals } = parseFlags(
+    args,
+    { harness: { type: "string" } },
+    TASKS_HELP,
+  );
   if (values.help) {
     console.log(TASKS_HELP);
     return;
   }
   const ref = onePositional(positionals, "task id", "hitch tasks link 0198c2a4 --json");
-  const identity = currentChatIdentity();
+  const harness = values.harness;
+  if (harness !== undefined && harness !== "claude" && harness !== "codex") {
+    throw new UsageError(
+      `Invalid --harness '${harness}'. Expected 'claude' or 'codex'.\n\n${TASKS_HELP}`,
+    );
+  }
+  const identity = currentChatIdentity(process.env, harness);
   const session = requireSession();
   const workspace = await loadWorkspace(session);
   const task = resolveTaskRef(workspace, ref);

@@ -27,16 +27,48 @@ describe("currentChatIdentity", () => {
         CODEX_THREAD_ID: "codex-thread",
         CLAUDE_CODE_SESSION_ID: "claude-session",
       }),
+    ).toThrow("--harness claude");
+  });
+
+  it("does not infer nesting direction from inherited Claude markers", () => {
+    expect(() =>
+      currentChatIdentity({
+        CODEX_THREAD_ID: "codex-thread",
+        CLAUDE_CODE_SESSION_ID: "claude-session",
+        CLAUDECODE: "1",
+        CLAUDE_CODE_ENTRYPOINT: "cli.js",
+      }),
     ).toThrow("cannot safely choose");
   });
 
-  it("selects an inner Claude chat that inherited an outer Codex thread", () => {
+  it("selects Claude explicitly when both harness ids are present", () => {
     expect(
-      currentChatIdentity({
-        CODEX_THREAD_ID: "outer-codex",
-        CLAUDE_CODE_SESSION_ID: "inner-claude",
-        CLAUDECODE: "1",
-      }),
-    ).toEqual({ harness: "claude", sessionId: "inner-claude" });
+      currentChatIdentity(
+        {
+          CODEX_THREAD_ID: "codex-thread",
+          CLAUDE_CODE_SESSION_ID: "claude-session",
+        },
+        "claude",
+      ),
+    ).toEqual({ harness: "claude", sessionId: "claude-session" });
+  });
+
+  it("selects Codex explicitly when both harness ids are present", () => {
+    expect(
+      currentChatIdentity(
+        {
+          CODEX_THREAD_ID: "codex-thread",
+          CLAUDE_CODE_SESSION_ID: "claude-session",
+          CLAUDECODE: "1",
+        },
+        "codex",
+      ),
+    ).toEqual({ harness: "codex", sessionId: "codex-thread" });
+  });
+
+  it("rejects an override whose session id is not present", () => {
+    expect(() =>
+      currentChatIdentity({ CLAUDE_CODE_SESSION_ID: "claude-session" }, "codex"),
+    ).toThrow("No current codex chat was detected");
   });
 });
