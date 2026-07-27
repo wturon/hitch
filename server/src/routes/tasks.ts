@@ -4,7 +4,7 @@ import { Hono } from "hono";
 
 import { requireAuth } from "../auth.js";
 import type { AppEnv, Db } from "../context.js";
-import { projects, tasks, taskTags } from "../db/schema.js";
+import { projects, tags, tasks, taskTags } from "../db/schema.js";
 import { idParam, taskCreate, taskListQuery, taskTagParams, taskUpdate } from "../validation.js";
 import { notFound, ownedProject, ownedSection, ownedTag, ownedTask } from "./helpers.js";
 
@@ -123,11 +123,40 @@ export const taskRoutes = new Hono<AppEnv>()
       updates.completedAt = patch.status === "done" ? new Date() : null;
     }
 
-    // The patch never touches links, so current tagIds are safe to read here.
-    const tagIds = (await tagIdsByTask(db, [id])).get(id) ?? [];
-    if (Object.keys(updates).length === 0) return c.json({ ...existing, tagIds });
-    const [row] = await db.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
-    return c.json({ ...row, tagIds });
+    const currentTagIds = (await tagIdsByTask(db, [id])).get(id) ?? [];
+    const nextTagIds =
+      patch.tagIds === undefined ? currentTagIds : [...new Set(patch.tagIds)];
+
+    // Validate the complete replacement set before opening the transaction.
+    // A foreign or missing id is deliberately indistinguishable (404).
+    if (patch.tagIds !== undefined && nextTagIds.length > 0) {
+      const ownedTags = await db
+        .select({ id: tags.id })
+        .from(tags)
+        .where(and(eq(tags.userId, c.var.userId), inArray(tags.id, nextTagIds)));
+      if (ownedTags.length !== nextTagIds.length) return c.json(notFound, 404);
+    }
+
+    if (Object.keys(updates).length === 0 && patch.tagIds === undefined) {
+      return c.json({ ...existing, tagIds: currentTagIds });
+    }
+
+    const row = await db.transaction(async (tx) => {
+      let updated = existing;
+      if (Object.keys(updates).length > 0) {
+        [updated] = await tx.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
+      }
+      if (patch.tagIds !== undefined) {
+        await tx.delete(taskTags).where(eq(taskTags.taskId, id));
+        if (nextTagIds.length > 0) {
+          await tx
+            .insert(taskTags)
+            .values(nextTagIds.map((tagId) => ({ taskId: id, tagId })));
+        }
+      }
+      return updated;
+    });
+    return c.json({ ...row, tagIds: nextTagIds });
   })
   .delete("/:id", zValidator("param", idParam), async (c) => {
     const { id } = c.req.valid("param");

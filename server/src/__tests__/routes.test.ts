@@ -564,6 +564,57 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
       const afterUnlink = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
       expect(afterUnlink.tagIds).toEqual([tagB.id]);
     });
+
+    it("atomically replaces tags alongside content and section changes", async () => {
+      const project = await createProject(USER_A, "Atomic edit project");
+      const task = await createTask(USER_A, project.id, { title: "before" });
+      const sectionRes = await api(USER_A, "POST", "/sections", {
+        projectId: project.id,
+        name: "In Progress",
+        sortOrder: "a0",
+      });
+      expect(sectionRes.status).toBe(201);
+      const section = await json(sectionRes);
+      const keep = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-keep", color: "olive" }),
+      );
+      const remove = await json(
+        await api(USER_A, "POST", "/tags", { name: "atomic-remove", color: "rust" }),
+      );
+      expect((await api(USER_A, "POST", `/tasks/${task.id}/tags/${remove.id}`)).status).toBe(201);
+
+      const patchRes = await api(USER_A, "PATCH", `/tasks/${task.id}`, {
+        title: "after",
+        body: "updated body",
+        sectionId: section.id,
+        tagIds: [keep.id, keep.id],
+      });
+      expect(patchRes.status).toBe(200);
+      const patched = await json(patchRes);
+      expect(patched).toMatchObject({
+        title: "after",
+        body: "updated body",
+        sectionId: section.id,
+        tagIds: [keep.id],
+      });
+
+      const foreignTag = await json(
+        await api(USER_B, "POST", "/tags", { name: "foreign", color: "red" }),
+      );
+      const rejected = await api(USER_A, "PATCH", `/tasks/${task.id}`, {
+        title: "must not land",
+        tagIds: [foreignTag.id],
+      });
+      expect(rejected.status).toBe(404);
+
+      const unchanged = await json(await api(USER_A, "GET", `/tasks/${task.id}`));
+      expect(unchanged.title).toBe("after");
+      expect(unchanged.tagIds).toEqual([keep.id]);
+
+      const clearRes = await api(USER_A, "PATCH", `/tasks/${task.id}`, { tagIds: [] });
+      expect(clearRes.status).toBe(200);
+      expect((await json(clearRes)).tagIds).toEqual([]);
+    });
   });
 
   describe("CORS", () => {

@@ -1,4 +1,4 @@
-import { ensureOk, requireSession, type Session } from "../api.js";
+import { ensureOk, requireSession } from "../api.js";
 import { resolveBody } from "../body.js";
 import { CliError, UsageError } from "../errors.js";
 import { printJson, renderTable, truncate } from "../format.js";
@@ -9,15 +9,21 @@ import {
   ensureTags,
   fetchAllTasks,
   fetchProjects,
+  fetchSections,
   fetchTags,
   prependSortOrder,
   resolveProjectForAdd,
   resolveProjectRef,
-  resolveTagByName,
+  resolveSectionRef,
+  resolveTagByNameFrom,
   resolveTaskRef,
   tagNames,
+  type ProjectRow,
+  type SectionRow,
+  type TagRow,
   type TaskRow,
 } from "../resolvers.js";
+import { applyTagEdit, filterTasks, taskContext } from "../taskOperations.js";
 
 export async function runTasks(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
@@ -47,10 +53,19 @@ export async function runTasks(args: string[]): Promise<void> {
   }
 }
 
-// The --json projection: the server row plus resolved tag names (agents want
-// names, not uuids — tagIds stay for joining against \`tags list --json\`).
-function taskJson(task: TaskRow, allTags: { id: string; name: string }[]) {
-  return { ...task, tags: tagNames(task.tagIds, allTags as never) };
+// The --json projection keeps ids for joins and also resolves the names agents
+// actually reason about.
+function taskJson(
+  task: TaskRow,
+  allTags: TagRow[],
+  projects: ProjectRow[],
+  sections: SectionRow[],
+) {
+  return {
+    ...task,
+    ...taskContext(task, projects, sections),
+    tags: tagNames(task.tagIds, allTags),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -62,8 +77,11 @@ async function list(args: string[]): Promise<void> {
     args,
     {
       project: { type: "string" },
+      section: { type: "string" },
       status: { type: "string" },
-      tag: { type: "string" },
+      tag: { type: "string", multiple: true },
+      search: { type: "string" },
+      limit: { type: "string" },
     },
     TASKS_HELP,
   );
@@ -85,57 +103,96 @@ async function list(args: string[]): Promise<void> {
         `  hitch tasks list --status done`,
     );
   }
+  let limit: number | undefined;
+  if (values.limit !== undefined) {
+    limit = Number(values.limit);
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new UsageError(
+        `Invalid --limit '${values.limit}'. Pass a positive integer, for example:\n` +
+          "  hitch tasks list --limit 20",
+      );
+    }
+  }
+  if (values.section && !values.project) {
+    throw new UsageError(
+      "--section requires --project so section names have an unambiguous scope. For example:\n" +
+        '  hitch tasks list --project Hitch --section "In Progress"',
+    );
+  }
 
   const session = requireSession();
   const project = values.project ? await resolveProjectRef(session, values.project) : undefined;
-  const tag = values.tag ? await resolveTagByName(session, values.tag) : undefined;
-
-  // Status filters client-side: the fetch stays status-free so the printed
-  // short-id prefixes are unique across open AND done (a prefix copied from
-  // an open listing must not collide with a hidden done task).
-  const query: Record<string, string> = {};
-  if (project) query.project_id = project.id;
-  if (tag) query.tag_id = tag.id;
-  const res = await session.client.tasks.$get({ query });
-  await ensureOk(session, res, "Listing tasks");
-  const fetched = (await res.json()) as TaskRow[];
-  const rows = status === "all" ? fetched : fetched.filter((t) => t.status === status);
-
-  const allTags = await fetchTags(session);
+  const [allTasks, allTags, projects, sections] = await Promise.all([
+    fetchAllTasks(session),
+    fetchTags(session),
+    fetchProjects(session),
+    fetchSections(session),
+  ]);
+  const section =
+    project && values.section
+      ? await resolveSectionRef(session, project, values.section)
+      : undefined;
+  const tags = (values.tag ?? []).map((name) => resolveTagByNameFrom(allTags, name));
+  const rows = filterTasks(allTasks, {
+    projectId: project?.id,
+    sectionId: section?.id,
+    status,
+    tagIds: tags.map((tag) => tag.id),
+    search: values.search,
+    limit,
+  });
   if (values.json) {
-    printJson(rows.map((t) => taskJson(t, allTags)));
+    printJson(rows.map((task) => taskJson(task, allTags, projects, sections)));
     return;
   }
 
   if (rows.length === 0) {
     const scope = project ? ` in ${project.name}` : "";
-    const withTag = tag ? ` tagged '${tag.name}'` : "";
+    const inSection = section ? ` / ${section.name}` : "";
+    const withTags = tags.length ? ` tagged '${tags.map((tag) => tag.name).join("' and '")}'` : "";
+    const matching = values.search ? ` matching '${values.search}'` : "";
     if (status === "open") {
-      console.log(`No open tasks${scope}${withTag}. (--status all includes done tasks.)`);
+      console.log(
+        `No open tasks${scope}${inSection}${withTags}${matching}. ` +
+          "(--status all includes done tasks.)",
+      );
     } else if (status === "done") {
-      console.log(`No done tasks${scope}${withTag}.`);
+      console.log(`No done tasks${scope}${inSection}${withTags}${matching}.`);
     } else {
-      console.log(`No tasks${scope}${withTag} yet. Create one: hitch tasks add "Your first task"`);
+      console.log(
+        `No tasks${scope}${inSection}${withTags}${matching} yet. ` +
+          'Create one: hitch tasks add "Your first task"',
+      );
     }
     return;
   }
 
-  const allIds = fetched.map((t) => t.id);
+  // Always disambiguate against the global task universe: an id copied from a
+  // project/tag-scoped listing must resolve later in `tasks show/edit`.
+  const allIds = allTasks.map((task) => task.id);
+  const projectById = new Map(projects.map((row) => [row.id, row.name]));
+  const sectionById = new Map(sections.map((row) => [row.id, row.name]));
+  const projectName = (task: TaskRow) =>
+    task.projectId ? (projectById.get(task.projectId) ?? "?") : "";
+  const sectionName = (task: TaskRow) =>
+    task.sectionId ? (sectionById.get(task.sectionId) ?? "?") : "(none)";
   // Without a --project scope, group rows by project for readability (the
   // sort is stable, so each project keeps its server-side ordering).
-  let display = rows;
-  let projectName: (t: TaskRow) => string = () => "";
-  if (!project) {
-    const projects = await fetchProjects(session);
-    const byId = new Map(projects.map((p) => [p.id, p.name]));
-    projectName = (t) => (t.projectId ? (byId.get(t.projectId) ?? "?") : "");
-    display = rows.slice().sort((a, b) => projectName(a).localeCompare(projectName(b)));
-  }
-
-  const headers = ["ID", "TITLE", "TAGS", "STATUS", ...(project ? [] : ["PROJECT"])];
+  const display = project
+    ? rows
+    : rows.slice().sort((a, b) => projectName(a).localeCompare(projectName(b)));
+  const headers = [
+    "ID",
+    "TITLE",
+    "SECTION",
+    "TAGS",
+    "STATUS",
+    ...(project ? [] : ["PROJECT"]),
+  ];
   const table = display.map((t) => [
     shortId(t.id, allIds),
     truncate(t.title, 56),
+    truncate(sectionName(t), 24),
     truncate(tagNames(t.tagIds, allTags).join(", "), 24),
     t.status,
     ...(project ? [] : [projectName(t)]),
@@ -156,19 +213,23 @@ async function show(args: string[]): Promise<void> {
   const ref = onePositional(positionals, "task id", "hitch tasks show 0198c2a4");
   const session = requireSession();
   const task = await resolveTaskRef(session, ref);
-  const allTags = await fetchTags(session);
+  const [allTags, projects, sections] = await Promise.all([
+    fetchTags(session),
+    fetchProjects(session),
+    fetchSections(session),
+  ]);
   if (values.json) {
-    printJson(taskJson(task, allTags));
+    printJson(taskJson(task, allTags, projects, sections));
     return;
   }
-  const projects = await fetchProjects(session);
-  const projectName = projects.find((p) => p.id === task.projectId)?.name ?? "?";
+  const context = taskContext(task, projects, sections);
   const names = tagNames(task.tagIds, allTags);
   const lines = [
     task.title,
     "",
     `id:       ${task.id}`,
-    `project:  ${projectName}`,
+    `project:  ${context.project ?? "?"}`,
+    `section:  ${context.section ?? "(none)"}`,
     `status:   ${task.status}`,
     `tags:     ${names.length ? names.join(", ") : "(none)"}`,
     `created:  ${task.createdAt}`,
@@ -190,6 +251,7 @@ async function add(args: string[]): Promise<void> {
       body: { type: "string" },
       "body-file": { type: "string" },
       project: { type: "string" },
+      section: { type: "string" },
       tag: { type: "string", multiple: true },
     },
     TASKS_HELP,
@@ -210,10 +272,13 @@ async function add(args: string[]): Promise<void> {
   const session = requireSession();
   const body = (await resolveBody({ body: values.body, bodyFile: values["body-file"] })) ?? "";
   const project = await resolveProjectForAdd(session, values.project);
+  const section = values.section
+    ? await resolveSectionRef(session, project, values.section)
+    : undefined;
   const sortOrder = await prependSortOrder(session, project.id);
 
   const res = await session.client.tasks.$post({
-    json: { projectId: project.id, title, body, sortOrder },
+    json: { projectId: project.id, sectionId: section?.id, title, body, sortOrder },
   });
   await ensureOk(session, res, "Creating the task");
   let task = (await res.json()) as TaskRow;
@@ -228,11 +293,20 @@ async function add(args: string[]): Promise<void> {
   task = { ...task, tagIds: tagRows.map((t) => t.id) };
 
   if (values.json) {
-    printJson({ ...task, tags: tagRows.map((t) => t.name) });
+    printJson({
+      ...task,
+      project: project.name,
+      section: section?.name ?? null,
+      tags: tagRows.map((t) => t.name),
+    });
     return;
   }
   const tagsNote = tagRows.length ? `  [${tagRows.map((t) => t.name).join(", ")}]` : "";
-  console.log(`Added ${shortId(task.id, [task.id])} "${truncate(title, 60)}" to ${project.name}${tagsNote}`);
+  const sectionNote = section ? ` / ${section.name}` : "";
+  console.log(
+    `Added ${shortId(task.id, [task.id])} "${truncate(title, 60)}" ` +
+      `to ${project.name}${sectionNote}${tagsNote}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +326,14 @@ async function setStatus(args: string[], status: "open" | "done"): Promise<void>
   const label = `${shortId(task.id, [task.id])} "${truncate(task.title, 60)}"`;
 
   if (task.status === status) {
-    if (values.json) printJson(taskJson(task, await fetchTags(session)));
-    else console.log(`Already ${status === "done" ? "done" : "open"}: ${label}`);
+    if (values.json) {
+      const [tags, projects, sections] = await Promise.all([
+        fetchTags(session),
+        fetchProjects(session),
+        fetchSections(session),
+      ]);
+      printJson(taskJson(task, tags, projects, sections));
+    } else console.log(`Already ${status === "done" ? "done" : "open"}: ${label}`);
     return;
   }
   const res = await session.client.tasks[":id"].$patch({
@@ -262,8 +342,14 @@ async function setStatus(args: string[], status: "open" | "done"): Promise<void>
   });
   await ensureOk(session, res, status === "done" ? "Completing the task" : "Reopening the task");
   const updated = (await res.json()) as TaskRow;
-  if (values.json) printJson(taskJson(updated, await fetchTags(session)));
-  else console.log(`${status === "done" ? "Done" : "Reopened"}: ${label}`);
+  if (values.json) {
+    const [tags, projects, sections] = await Promise.all([
+      fetchTags(session),
+      fetchProjects(session),
+      fetchSections(session),
+    ]);
+    printJson(taskJson(updated, tags, projects, sections));
+  } else console.log(`${status === "done" ? "Done" : "Reopened"}: ${label}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +363,12 @@ async function edit(args: string[]): Promise<void> {
       title: { type: "string" },
       body: { type: "string" },
       "body-file": { type: "string" },
+      section: { type: "string" },
+      "no-section": { type: "boolean", default: false },
+      "add-tag": { type: "string", multiple: true },
+      "remove-tag": { type: "string", multiple: true },
+      "clear-tags": { type: "boolean", default: false },
+      "dry-run": { type: "boolean", default: false },
     },
     TASKS_HELP,
   );
@@ -290,28 +382,130 @@ async function edit(args: string[]): Promise<void> {
       'The new title cannot be empty. To change only the body:\n  hitch tasks edit 0198c2a4 --body-file notes.md',
     );
   }
+  if (values.section && values["no-section"]) {
+    throw new UsageError("Cannot use --section and --no-section together.");
+  }
+  if (values["clear-tags"] && (values["remove-tag"]?.length ?? 0) > 0) {
+    throw new UsageError(
+      "Cannot use --clear-tags and --remove-tag together. " +
+        "Use --clear-tags with --add-tag to replace the complete set.",
+    );
+  }
+  const addNames = values["add-tag"] ?? [];
+  const removeNames = values["remove-tag"] ?? [];
+  const invalidTag = [...addNames, ...removeNames].find((name) => !name.trim());
+  if (invalidTag !== undefined) throw new UsageError("Tag names cannot be empty.");
+  const addKeys = new Set(addNames.map((name) => name.toLowerCase()));
+  const overlap = removeNames.find((name) => addKeys.has(name.toLowerCase()));
+  if (overlap) {
+    throw new UsageError(`Tag '${overlap}' cannot be added and removed in the same edit.`);
+  }
 
+  const hasTagEdit = addNames.length > 0 || removeNames.length > 0 || values["clear-tags"];
+  const hasExplicitNonBodyChange =
+    values.title !== undefined || Boolean(values.section) || values["no-section"] || hasTagEdit;
   const body = await resolveBody(
     { body: values.body, bodyFile: values["body-file"] },
-    values.title !== undefined,
+    hasExplicitNonBodyChange,
   );
-  const patch: { title?: string; body?: string } = {};
+  const patch: {
+    title?: string;
+    body?: string;
+    sectionId?: string | null;
+    tagIds?: string[];
+  } = {};
   if (values.title !== undefined) patch.title = values.title;
   if (body !== undefined) patch.body = body;
-  if (Object.keys(patch).length === 0) {
+  if (
+    Object.keys(patch).length === 0 &&
+    !values.section &&
+    !values["no-section"] &&
+    !hasTagEdit
+  ) {
     throw new UsageError(
-      "Nothing to change. Pass --title and/or a new body:\n" +
+      "Nothing to change. Pass content, section, and/or tag flags:\n" +
         '  hitch tasks edit 0198c2a4 --title "New title"\n' +
         "  hitch tasks edit 0198c2a4 --body-file notes.md\n" +
-        "  cat notes.md | hitch tasks edit 0198c2a4",
+        '  hitch tasks edit 0198c2a4 --section "In Progress"\n' +
+        "  hitch tasks edit 0198c2a4 --add-tag active",
     );
   }
 
   const session = requireSession();
   const task = await resolveTaskRef(session, ref);
+  const [projects, sections, allTags] = await Promise.all([
+    fetchProjects(session),
+    fetchSections(session),
+    fetchTags(session),
+  ]);
+  const project = projects.find((row) => row.id === task.projectId);
+  if (!project) {
+    throw new CliError(`Task '${task.id}' has no accessible project, so its section cannot be edited.`);
+  }
+  const section = values.section
+    ? await resolveSectionRef(session, project, values.section)
+    : undefined;
+  if (section) patch.sectionId = section.id;
+  else if (values["no-section"]) patch.sectionId = null;
+
+  const removeTags = removeNames.map((name) => resolveTagByNameFrom(allTags, name));
+  const existingAddTags = addNames.flatMap((name) => {
+    const match = allTags.find((tag) => tag.name.toLowerCase() === name.toLowerCase());
+    return match ? [match] : [];
+  });
+
+  if (values["dry-run"]) {
+    const currentNames = values["clear-tags"]
+      ? []
+      : tagNames(task.tagIds, allTags).filter(
+          (name) => !removeNames.some((remove) => remove.toLowerCase() === name.toLowerCase()),
+        );
+    for (const name of addNames) {
+      if (!currentNames.some((current) => current.toLowerCase() === name.toLowerCase())) {
+        currentNames.push(name);
+      }
+    }
+    const changes = {
+      title: patch.title,
+      body: patch.body,
+      section: section?.name ?? (values["no-section"] ? null : undefined),
+      tags: hasTagEdit ? currentNames : undefined,
+    };
+    if (values.json) printJson({ dryRun: true, taskId: task.id, changes });
+    else {
+      console.log(
+        [
+          `Would update ${shortId(task.id, [task.id])} "${truncate(task.title, 60)}":`,
+          ...(changes.title !== undefined ? [`  title: ${changes.title}`] : []),
+          ...(changes.body !== undefined ? [`  body: ${changes.body.length} characters`] : []),
+          ...(changes.section !== undefined
+            ? [`  section: ${changes.section ?? "(none)"}`]
+            : []),
+          ...(changes.tags !== undefined
+            ? [`  tags: ${changes.tags.length ? changes.tags.join(", ") : "(none)"}`]
+            : []),
+        ].join("\n"),
+      );
+    }
+    return;
+  }
+
+  if (hasTagEdit) {
+    const addedTags =
+      existingAddTags.length === addNames.length
+        ? existingAddTags
+        : await ensureTags(session, addNames);
+    patch.tagIds = applyTagEdit(task.tagIds, {
+      add: addedTags,
+      remove: removeTags,
+      clear: values["clear-tags"],
+    });
+  }
+
   const res = await session.client.tasks[":id"].$patch({ param: { id: task.id }, json: patch });
   await ensureOk(session, res, "Editing the task");
   const updated = (await res.json()) as TaskRow;
-  if (values.json) printJson(taskJson(updated, await fetchTags(session)));
+  const updatedTags = hasTagEdit ? await fetchTags(session) : allTags;
+  if (values.json) printJson(taskJson(updated, updatedTags, projects, sections));
   else console.log(`Updated ${shortId(updated.id, [updated.id])} "${truncate(updated.title, 60)}"`);
 }

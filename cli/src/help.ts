@@ -18,12 +18,14 @@ FIRST RUN
 
 COMMANDS
   projects list                       every project
+  projects show <name-or-id>          one project, its sections, task counts
+  sections list --project <project>   a project's sections
   tasks list                          open tasks (--status done|all widens)
   tasks show <id>                     one task in full, body verbatim
   tasks add "<title>"                 create a task (body: --body/--body-file/stdin)
   tasks done <id>                     mark done
   tasks reopen <id>                   back to open
-  tasks edit <id>                     change title and/or body
+  tasks edit <id>                     change content, section, and/or tags
   comments list <task-id>             a task's comment thread
   comments add <task-id> --body "…"   comment on a task
   tags list                           every tag
@@ -73,10 +75,11 @@ Best-effort revokes the CLI's API key on the server, then deletes
 ~/.config/hitch/cli.json. Never fails: an unreachable server still logs you
 out locally.`;
 
-export const PROJECTS_HELP = `hitch projects — list projects
+export const PROJECTS_HELP = `hitch projects — inspect projects
 
 USAGE
   hitch projects list [--json]
+  hitch projects show <name-or-id> [--json]
 
 Projects are the top-level buckets tasks live in ("Inbox" is the default).
 Use a project's name (case-insensitive) or id with \`hitch tasks list
@@ -84,36 +87,59 @@ Use a project's name (case-insensitive) or id with \`hitch tasks list
 
 EXAMPLES
   hitch projects list
+  hitch projects show Hitch
   hitch projects list --json`;
+
+export const SECTIONS_HELP = `hitch sections — inspect a project's sections
+
+USAGE
+  hitch sections list --project <name-or-id> [--json]
+
+Section names are resolved within their project, case-insensitively. A section
+id or unambiguous id prefix works too.
+
+EXAMPLES
+  hitch sections list --project Hitch
+  hitch sections list --project 0198c2a4 --json`;
 
 export const TASKS_HELP = `hitch tasks — read and write tasks
 
 USAGE
-  hitch tasks list   [--project <name-or-id>] [--status open|done|all] [--tag <name>] [--json]
+  hitch tasks list   [--project <name-or-id>] [--section <name-or-id>]
+                     [--status open|done|all] [--tag <name>]...
+                     [--search <text>] [--limit <n>] [--json]
   hitch tasks show   <id-or-prefix> [--json]
   hitch tasks add    "<title>" [--body <markdown> | --body-file <path>] [--project <name-or-id>]
-                     [--tag <name>]... [--json]
+                     [--section <name-or-id>] [--tag <name>]... [--json]
   hitch tasks done   <id-or-prefix> [--json]
   hitch tasks reopen <id-or-prefix> [--json]
-  hitch tasks edit   <id-or-prefix> [--title <title>] [--body <markdown> | --body-file <path>] [--json]
+  hitch tasks edit   <id-or-prefix> [--title <title>]
+                     [--body <markdown> | --body-file <path>]
+                     [--section <name-or-id> | --no-section]
+                     [--add-tag <name>]... [--remove-tag <name>]... [--clear-tags]
+                     [--dry-run] [--json]
 
 NOTES
   list    shows OPEN tasks by default; --status done or --status all widens it.
+          --tag may repeat and uses AND semantics. --section requires --project.
+          --search matches title or body, case-insensitively.
   add     defaults to the Inbox project. The body is stored verbatim, so pipe
           markdown straight in: cat notes.md | hitch tasks add "Triage notes"
           --tag may repeat; unknown tags are created automatically.
   edit    piped stdin (or --body/--body-file) REPLACES the body; --title alone
-          leaves the body untouched.
+          leaves the body untouched. Added tags are created if necessary.
+          --clear-tags may be combined with --add-tag to replace the whole set.
   show    prints metadata, a blank line, then the body verbatim. Use --json
           when you need to parse the body exactly.
 
 EXAMPLES
   hitch tasks list --project Inbox
-  hitch tasks list --status all --tag bug --json
-  hitch tasks add "Upgrade Node to 24.15" --project Hitch --tag chore --tag infra
+  hitch tasks list --project Hitch --section "In Progress" --tag bug
+  hitch tasks list --status all --search "oauth callback" --limit 20 --json
+  hitch tasks add "Upgrade Node" --project Hitch --section Backlog --tag infra
   hitch tasks add "Fix flaky sync test" --body "Repro: run vitest twice in a row"
   hitch tasks show 0198c2a4
-  hitch tasks edit 0198c2a4 --title "Upgrade Node to 24.16"
+  hitch tasks edit 0198c2a4 --section "In Progress" --add-tag active
   hitch tasks done 0198c2a4`;
 
 export const COMMENTS_HELP = `hitch comments — a task's comment thread

@@ -26,6 +26,14 @@ export interface TaskRow {
 export interface ProjectRow {
   id: string;
   name: string;
+  repoPath: string | null;
+  sortOrder: string;
+}
+
+export interface SectionRow {
+  id: string;
+  projectId: string;
+  name: string;
   sortOrder: string;
 }
 
@@ -67,6 +75,14 @@ export async function fetchProjects(session: Session): Promise<ProjectRow[]> {
   const res = await session.client.projects.$get();
   await ensureOk(session, res, "Listing projects");
   return (await res.json()) as ProjectRow[];
+}
+
+export async function fetchSections(session: Session, projectId?: string): Promise<SectionRow[]> {
+  const res = await session.client.sections.$get({
+    query: projectId ? { project_id: projectId } : {},
+  });
+  await ensureOk(session, res, "Listing sections");
+  return (await res.json()) as SectionRow[];
 }
 
 export async function fetchTags(session: Session): Promise<TagRow[]> {
@@ -133,6 +149,47 @@ export async function resolveProjectRef(session: Session, ref: string): Promise<
   );
 }
 
+// ---------------------------------------------------------------------------
+// Section refs (name or id/prefix, scoped to a project)
+// ---------------------------------------------------------------------------
+
+/** Resolve a section inside one project: exact name first, then id/prefix. */
+export async function resolveSectionRef(
+  session: Session,
+  project: ProjectRow,
+  ref: string,
+): Promise<SectionRow> {
+  const sections = await fetchSections(session, project.id);
+  const needle = ref.toLowerCase();
+  const byName = sections.filter((section) => section.name.toLowerCase() === needle);
+  if (byName.length === 1) return byName[0];
+  if (byName.length > 1) {
+    const lines = byName.map((section) => `  ${section.id}  ${section.name}`);
+    throw new CliError(
+      `${byName.length} sections in '${project.name}' are named '${ref}' — pass an id instead:\n` +
+        lines.join("\n"),
+    );
+  }
+  const byId = resolveByPrefix(sections, ref);
+  if (byId.kind === "one") return byId.row;
+  if (byId.kind === "many") {
+    const allIds = sections.map((section) => section.id);
+    const lines = byId.rows.map(
+      (section) => `  ${shortId(section.id, allIds)}  ${section.name}`,
+    );
+    throw new CliError(
+      `'${ref}' matches ${byId.rows.length} sections in '${project.name}' — use a longer prefix:\n` +
+        lines.join("\n"),
+    );
+  }
+  const names = sections.map((section) => `  ${section.name}`).join("\n");
+  throw new CliError(
+    `No section in '${project.name}' matches '${ref}'. Existing sections:\n` +
+      `${names || "  (none)"}\n` +
+      `Names match case-insensitively; a section id or unique id prefix also works.`,
+  );
+}
+
 /**
  * The target project for `tasks add`: an explicit --project must exist
  * (typos must not silently create projects), while the default, Inbox, is
@@ -157,9 +214,8 @@ export async function resolveProjectForAdd(session: Session, ref: string | undef
 // Tags (by name; auto-created on add)
 // ---------------------------------------------------------------------------
 
-/** Resolve a --tag filter by name (case-insensitive). Unknown names teach. */
-export async function resolveTagByName(session: Session, name: string): Promise<TagRow> {
-  const tags = await fetchTags(session);
+/** Resolve a tag from an already-fetched registry, case-insensitively. */
+export function resolveTagByNameFrom(tags: readonly TagRow[], name: string): TagRow {
   const match = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
   if (match) return match;
   const names = tags.map((t) => `  ${t.name}`).join("\n");

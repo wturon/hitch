@@ -9,6 +9,7 @@ import { describeNetworkError } from "./api.js";
 import { runComments } from "./commands/comments.js";
 import { runLogin, runLogout } from "./commands/login.js";
 import { runProjects } from "./commands/projects.js";
+import { runSections } from "./commands/sections.js";
 import { runTags } from "./commands/tags.js";
 import { runTasks } from "./commands/tasks.js";
 import { CliError, UsageError } from "./errors.js";
@@ -29,6 +30,8 @@ async function main(argv: string[]): Promise<void> {
       return runLogout(rest);
     case "projects":
       return runProjects(rest);
+    case "sections":
+      return runSections(rest);
     case "tasks":
       return runTasks(rest);
     case "comments":
@@ -42,11 +45,13 @@ async function main(argv: string[]): Promise<void> {
           ? "Did you mean 'hitch tasks'?\n\n"
           : command === "project"
             ? "Did you mean 'hitch projects'?\n\n"
-            : command === "comment"
-              ? "Did you mean 'hitch comments'?\n\n"
-              : command === "tag"
-                ? "Did you mean 'hitch tags'?\n\n"
-                : "";
+            : command === "section"
+              ? "Did you mean 'hitch sections'?\n\n"
+              : command === "comment"
+                ? "Did you mean 'hitch comments'?\n\n"
+                : command === "tag"
+                  ? "Did you mean 'hitch tags'?\n\n"
+                  : "";
       throw new UsageError(`Unknown command '${command}'. ${hint || "\n\n"}${ROOT_HELP}`);
     }
   }
