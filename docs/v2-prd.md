@@ -82,7 +82,9 @@ All user-data tables carry `user_id` FK → better-auth user.
   prompt? (from snippet), desired_state `running|stopped` [client-written],
   reviewed_at? [client-written; attention-queue ack],
   observed_state `pending|spawning|running|waiting_input|done|dead` [DAEMON-ONLY],
-  chat_id? FK [daemon sets at spawn], worktree? [daemon], created_at, updated_at
+  requested_chat_id? FK [client/CLI intent to adopt an existing chat],
+  chat_id? FK [daemon sets at spawn or fulfills requested_chat_id], worktree? [daemon],
+  created_at, updated_at
 - `chats` (daemon-created; can exist task-free for ad-hoc): id, machine_id FK, project_id?,
   harness, title (auto-named), cmux_ref jsonb, status `busy|waiting_input|idle|dead`,
   last_activity_at — ALL columns daemon-written

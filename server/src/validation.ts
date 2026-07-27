@@ -181,6 +181,16 @@ export const assignmentCreate = z.strictObject({
   desiredState: desiredStateSchema.default("running"),
 });
 
+// Link an already-running harness chat to a task. The caller supplies the
+// harness-native session id it can see from inside the agent process; the
+// server resolves the owned live chat and records requested_chat_id. chat_id
+// itself remains daemon-only.
+export const assignmentLink = z.strictObject({
+  taskId: z.uuid(),
+  harness: harnessSchema,
+  sessionId: z.string().trim().min(1),
+});
+
 // CLIENT-writable fields ONLY (single-creator-per-table rule): observed_state,
 // chat_id and worktree are daemon-only and rejected here by strictObject.
 export const assignmentClientUpdate = z.strictObject({

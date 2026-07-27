@@ -63,6 +63,16 @@ export async function typechecks(): Promise<void> {
     void assignment;
   }
 
+  // Existing-chat link intent: the CLI supplies only harness-native identity;
+  // the server derives machine + requested chat, and the daemon writes chatId.
+  const linkRes = await client.assignments.link.$post({
+    json: { taskId: "id", harness: "codex", sessionId: "thread-id" },
+  });
+  if (linkRes.status === 200 || linkRes.status === 201) {
+    const assignment: Serialized<Assignment> = await linkRes.json();
+    void assignment;
+  }
+
   // Daemon observation PATCH is the mirror image.
   const daemonPatch = await client.daemon.assignments[":id"].$patch({
     param: { id: "id" },

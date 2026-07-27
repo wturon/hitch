@@ -22,6 +22,7 @@ COMMANDS
   sections list --project <project>   a project's sections
   tasks list                          open tasks (--status done|all widens)
   tasks show <id>                     one task in full, body verbatim
+  tasks link <id>                     attach this agent chat and load the task
   tasks add "<title>"                 create a task (body: --body/--body-file/stdin)
   tasks done <id>                     mark done
   tasks reopen <id>                   back to open
@@ -34,6 +35,7 @@ COMMANDS
 EXAMPLES
   hitch tasks list --project Inbox
   hitch tasks show 0198c2a4
+  hitch tasks link 0198c2a4 --json
   hitch tasks add "Fix flaky sync test" --body "Repro: run vitest twice" --tag bug
   git log --oneline -20 | hitch tasks add "Write release notes" --project Hitch
   hitch tasks done 0198c2a4
@@ -109,6 +111,7 @@ USAGE
                      [--status open|done|all] [--tag <name>]...
                      [--search <text>] [--limit <n>] [--json]
   hitch tasks show   <id-or-prefix> [--json]
+  hitch tasks link   <id-or-prefix> [--json]
   hitch tasks add    "<title>" [--body <markdown> | --body-file <path>] [--project <name-or-id>]
                      [--section <name-or-id>] [--tag <name>]... [--json]
   hitch tasks done   <id-or-prefix> [--json]
@@ -132,11 +135,15 @@ NOTES
           --clear-tags may be combined with --add-tag to replace the whole set.
   show    prints metadata, a blank line, then the body verbatim. Use --json
           when you need to parse the body exactly.
+  link    run from inside Codex or Claude. It attaches the current chat to an
+          unassigned task without spawning a second agent, then prints the full
+          task. Repeating an active link is safe; conflicting live work fails.
 
 EXAMPLES
   hitch tasks list --project Inbox
   hitch tasks list --project Hitch --section "In Progress" --tag bug
   hitch tasks list --status all --search "oauth callback" --limit 20 --json
+  hitch tasks link 0198c2a4 --json
   hitch tasks add "Upgrade Node" --project Hitch --section Backlog --tag infra
   hitch tasks add "Fix flaky sync test" --body "Repro: run vitest twice in a row"
   hitch tasks show 0198c2a4

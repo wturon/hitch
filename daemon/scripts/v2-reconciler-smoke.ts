@@ -21,14 +21,35 @@ const decide = (input: {
     | "done"
     | "dead";
   hasChat: boolean;
+  hasRequestedChat?: boolean;
   launchPending?: boolean;
-}) => decideAction({ launchPending: false, ...input });
+}) => decideAction({ launchPending: false, hasRequestedChat: false, ...input });
 
 // desired running.
 assert.equal(
   decide({ desiredState: "running", observedState: "pending", hasChat: false }),
   "spawn" satisfies ReconcileDecision,
   "pending + running + no chat → spawn",
+);
+assert.equal(
+  decide({
+    desiredState: "running",
+    observedState: "pending",
+    hasChat: false,
+    hasRequestedChat: true,
+  }),
+  "attach" satisfies ReconcileDecision,
+  "requested existing chat → attach, never spawn",
+);
+assert.equal(
+  decide({
+    desiredState: "running",
+    observedState: "spawning",
+    hasChat: false,
+    hasRequestedChat: true,
+  }),
+  "attach",
+  "a resumed attach request still attaches rather than entering the launch gap",
 );
 assert.equal(
   decide({

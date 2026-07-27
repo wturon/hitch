@@ -282,6 +282,10 @@ export const chatEvents = pgTable(
 
 // One handoff of a task to an agent on a machine. Append-only; created by
 // client/CLI (intent) — observed_state and chat_id/worktree are DAEMON-ONLY.
+// requested_chat_id is different: it is client intent asking the daemon to
+// adopt an already-running chat instead of spawning a new one. The daemon
+// validates that request against its machine view and remains the sole writer
+// of the authoritative chat_id.
 export const assignments = pgTable(
   "assignments",
   {
@@ -305,6 +309,9 @@ export const assignments = pgTable(
     desiredState: assignmentDesiredState("desired_state").notNull(),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     observedState: assignmentObservedState("observed_state").notNull().default("pending"),
+    requestedChatId: uuid("requested_chat_id").references(() => chats.id, {
+      onDelete: "set null",
+    }),
     chatId: uuid("chat_id").references(() => chats.id, { onDelete: "set null" }),
     worktree: text("worktree"),
     createdAt: createdAt(),
@@ -313,6 +320,7 @@ export const assignments = pgTable(
   (t) => [
     index("assignments_task_id_idx").on(t.taskId),
     index("assignments_machine_id_idx").on(t.machineId),
+    index("assignments_requested_chat_id_idx").on(t.requestedChatId),
     index("assignments_chat_id_idx").on(t.chatId),
     index("assignments_observed_state_idx").on(t.observedState),
   ],

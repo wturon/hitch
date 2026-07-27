@@ -1,5 +1,6 @@
 import { ensureOk, requireSession } from "../api.js";
 import { resolveBody } from "../body.js";
+import { currentChatIdentity } from "../currentChat.js";
 import { UsageError } from "../errors.js";
 import { printJson, renderTable, truncate } from "../format.js";
 import { TASKS_HELP } from "../help.js";
@@ -33,6 +34,8 @@ export async function runTasks(args: string[]): Promise<void> {
       return list(rest);
     case "show":
       return show(rest);
+    case "link":
+      return link(rest);
     case "add":
       return add(rest);
     case "done":
@@ -43,7 +46,7 @@ export async function runTasks(args: string[]): Promise<void> {
       return edit(rest);
     default:
       throw new UsageError(
-        `Unknown subcommand 'tasks ${sub}'. Valid: list, show, add, done, reopen, edit.\n\n${TASKS_HELP}`,
+        `Unknown subcommand 'tasks ${sub}'. Valid: list, show, link, add, done, reopen, edit.\n\n${TASKS_HELP}`,
       );
   }
 }
@@ -193,6 +196,10 @@ async function show(args: string[]): Promise<void> {
     printJson(taskJson(task, workspace));
     return;
   }
+  console.log(renderTask(task, workspace));
+}
+
+function renderTask(task: TaskRow, workspace: Workspace): string {
   const context = taskContext(task, workspace);
   const names = tagNames(task.tagIds, workspace);
   const lines = [
@@ -208,7 +215,44 @@ async function show(args: string[]): Promise<void> {
   ];
   if (task.completedAt) lines.push(`done at:  ${task.completedAt}`);
   lines.push("", task.body === "" ? "(no body)" : task.body);
-  console.log(lines.join("\n"));
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// link
+// ---------------------------------------------------------------------------
+
+async function link(args: string[]): Promise<void> {
+  const { values, positionals } = parseFlags(args, {}, TASKS_HELP);
+  if (values.help) {
+    console.log(TASKS_HELP);
+    return;
+  }
+  const ref = onePositional(positionals, "task id", "hitch tasks link 0198c2a4 --json");
+  const identity = currentChatIdentity();
+  const session = requireSession();
+  const workspace = await loadWorkspace(session);
+  const task = resolveTaskRef(workspace, ref);
+  const response = await session.client.assignments.link.$post({
+    json: {
+      taskId: task.id,
+      harness: identity.harness,
+      sessionId: identity.sessionId,
+    },
+  });
+  await ensureOk(session, response, `Linking the current ${identity.harness} chat`);
+  const assignment = (await response.json()) as unknown as {
+    id: string;
+    [key: string]: unknown;
+  };
+  if (values.json) {
+    printJson({ task: taskJson(task, workspace), assignment });
+    return;
+  }
+  console.log(
+    `Linked this ${identity.harness} chat to task ${task.id} ` +
+      `(assignment ${assignment.id}).\n\n${renderTask(task, workspace)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

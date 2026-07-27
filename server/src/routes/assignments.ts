@@ -1,13 +1,47 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, isNull, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  eq,
+  isNotNull,
+  isNull,
+  ne,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { Hono } from "hono";
 
 import { requireAuth } from "../auth.js";
 import type { AppEnv } from "../context.js";
-import { assignments, projects, tasks } from "../db/schema.js";
+import { assignments, chats, machines, projects, tasks } from "../db/schema.js";
 import { DEFAULT_PROMPT_TEMPLATE, resolvePromptTemplate } from "../prompt.js";
-import { assignmentClientUpdate, assignmentCreate, assignmentListQuery, idParam } from "../validation.js";
+import {
+  assignmentClientUpdate,
+  assignmentCreate,
+  assignmentLink,
+  assignmentListQuery,
+  idParam,
+} from "../validation.js";
 import { notFound, ownedAssignment, ownedMachine, ownedTask } from "./helpers.js";
+
+function resolvedPromptForTask(
+  task: { id: string; title: string; body: string },
+  input: { promptTemplate?: string; prompt?: string },
+): string {
+  const template = input.promptTemplate?.trim() ? input.promptTemplate : null;
+  const legacy = input.prompt?.trim() ? input.prompt : null;
+  // A legacy prompt is used VERBATIM, never resolved. Old clients composed
+  // final text themselves, including the task body.
+  const taskValues = { id: task.id, title: task.title, body: task.body };
+  const resolved =
+    legacy && !template
+      ? legacy
+      : resolvePromptTemplate(template ?? DEFAULT_PROMPT_TEMPLATE, taskValues);
+  return resolved.trim()
+    ? resolved
+    : resolvePromptTemplate(DEFAULT_PROMPT_TEMPLATE, taskValues);
+}
 
 // Client-facing assignment routes. Assignments are append-only intent rows
 // (single-creator-per-table rule): the client creates them and may only touch
@@ -51,27 +85,118 @@ export const assignmentRoutes = new Hono<AppEnv>()
     // Blank (not just absent) counts as "nothing was chosen" on BOTH fields —
     // `??` alone would store "" and launch an agent with no instructions.
     const { promptTemplate, prompt: legacyPrompt, ...rest } = body;
-    const template = promptTemplate?.trim() ? promptTemplate : null;
-    const legacy = legacyPrompt?.trim() ? legacyPrompt : null;
-    // A legacy prompt is used VERBATIM, never resolved. Old clients composed
-    // the final text themselves — inlining the task body into it — so resolving
-    // it again would expand any variable name the BODY happens to mention,
-    // duplicating the task inside its own prompt. (Tasks about this feature are
-    // exactly the ones whose bodies say "$TASK_BODY".)
-    const taskValues = { id: task.id, title: task.title, body: task.body };
-    const resolved =
-      legacy && !template
-        ? legacy
-        : resolvePromptTemplate(template ?? DEFAULT_PROMPT_TEMPLATE, taskValues);
     // A non-blank template can still RESOLVE to blank — `$TASK_TITLE` alone,
     // against a whitespace title (titles are min(1), not min(1) non-blank).
     // Checking the output rather than the input is what actually keeps the
     // never-store-an-empty-prompt promise the daemon relies on.
-    const prompt = resolved.trim()
-      ? resolved
-      : resolvePromptTemplate(DEFAULT_PROMPT_TEMPLATE, taskValues);
+    const prompt = resolvedPromptForTask(task, {
+      promptTemplate,
+      prompt: legacyPrompt,
+    });
     const [row] = await db.insert(assignments).values({ ...rest, prompt }).returning();
     return c.json(row, 201);
+  })
+  .post("/link", zValidator("json", assignmentLink), async (c) => {
+    const body = c.req.valid("json");
+    const db = c.var.db;
+    const task = await ownedTask(db, c.var.userId, body.taskId);
+    if (!task) return c.json(notFound, 404);
+
+    // Session ids are harness-native and only machine-local in the schema.
+    // Usually this is one row; reject ambiguity instead of guessing which
+    // machine the CLI is running on.
+    const candidates = await db
+      .select({ chat: chats })
+      .from(chats)
+      .innerJoin(machines, eq(chats.machineId, machines.id))
+      .where(
+        and(
+          eq(machines.userId, c.var.userId),
+          eq(chats.harness, body.harness),
+          eq(chats.sessionId, body.sessionId),
+          ne(chats.status, "dead"),
+          isNotNull(chats.existence),
+        ),
+      );
+    if (candidates.length === 0) {
+      return c.json(
+        {
+          error:
+            "current live chat was not found in Hitch; check Chat Inspector health and try again",
+        },
+        404,
+      );
+    }
+    if (candidates.length > 1) {
+      return c.json(
+        { error: "current chat is ambiguous across machines; open it from Hitch and try again" },
+        409,
+      );
+    }
+    const chat = candidates[0].chat;
+
+    const result = await db.transaction(async (tx) => {
+      // Two simultaneous link commands must collapse to one assignment. Lock
+      // both sides in stable order so competing task/chat pairings serialize
+      // without deadlocking across server processes.
+      for (const key of [`chat:${chat.id}`, `task:${task.id}`].sort()) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+      }
+
+      // Linking is deliberately conservative. Transferring a chat that already
+      // serves another live task needs separate lifecycle semantics: stopping
+      // the previous assignment currently closes its chat.
+      const terminalStates: Array<"done" | "dead"> = ["done", "dead"];
+      const activeForTask = await tx
+        .select()
+        .from(assignments)
+        .where(
+          and(
+            eq(assignments.taskId, task.id),
+            notInArray(assignments.observedState, terminalStates),
+          ),
+        );
+      const samePair = activeForTask.find(
+        (row) =>
+          row.desiredState === "running" &&
+          (row.chatId === chat.id || row.requestedChatId === chat.id),
+      );
+      if (samePair) return { kind: "existing" as const, row: samePair };
+      if (activeForTask.length > 0) {
+        return { kind: "conflict" as const, error: "task already has a different live assignment" };
+      }
+
+      const activeForChat = await tx
+        .select()
+        .from(assignments)
+        .where(
+          and(
+            or(eq(assignments.chatId, chat.id), eq(assignments.requestedChatId, chat.id)),
+            notInArray(assignments.observedState, terminalStates),
+          ),
+        );
+      if (activeForChat.length > 0) {
+        return {
+          kind: "conflict" as const,
+          error: "current chat is already linked to another live task",
+        };
+      }
+
+      const [row] = await tx
+        .insert(assignments)
+        .values({
+          taskId: task.id,
+          machineId: chat.machineId,
+          harness: chat.harness,
+          prompt: resolvedPromptForTask(task, {}),
+          requestedChatId: chat.id,
+          desiredState: "running",
+        })
+        .returning();
+      return { kind: "created" as const, row };
+    });
+    if (result.kind === "conflict") return c.json({ error: result.error }, 409);
+    return c.json(result.row, result.kind === "existing" ? 200 : 201);
   })
   .get("/:id", zValidator("param", idParam), async (c) => {
     const row = await ownedAssignment(c.var.db, c.var.userId, c.req.valid("param").id);
