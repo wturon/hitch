@@ -248,7 +248,7 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     expect(new Set(shared.map((c) => c.harness))).toEqual(new Set(["claude", "codex"]));
   });
 
-  it("links an existing live chat idempotently and rejects conflicting live work", async () => {
+  it("links many chats to one task, stays idempotent, and keeps a chat to one task", async () => {
     const machine = await registerMachine(USER_A, "link-existing");
     const project = await json(
       await api(USER_A, "POST", "/projects", { name: "Link project", sortOrder: "a0" }),
@@ -256,7 +256,7 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     const taskA = await json(
       await api(USER_A, "POST", "/tasks", {
         projectId: project.id,
-        title: "Task A",
+        title: "Tighten task tag edit semantics",
         sortOrder: "a0",
       }),
     );
@@ -306,22 +306,63 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     expect(again.status).toBe(200);
     expect((await json(again)).id).toBe(assignment.id);
 
-    // Neither side of an active pairing can be silently reassigned.
+    // A task may run several chats at once: a DIFFERENT chat on the SAME task
+    // is a fresh assignment, not a conflict.
+    const second = await api(USER_A, "POST", "/assignments/link", {
+      taskId: taskA.id,
+      harness: "codex",
+      sessionId: "link-two",
+    });
+    expect(second.status).toBe(201);
+    const secondAssignment = await json(second);
+    expect(secondAssignment.id).not.toBe(assignment.id);
+    expect(secondAssignment).toMatchObject({
+      taskId: taskA.id,
+      requestedChatId: chats.get("link-two").id,
+      desiredState: "running",
+      observedState: "pending",
+    });
+
+    const forTask = (await json(
+      await api(USER_A, "GET", `/assignments?task_id=${taskA.id}`),
+    )) as any[];
+    expect(forTask).toHaveLength(2);
+    expect(new Set(forTask.map((row) => row.requestedChatId))).toEqual(
+      new Set([chats.get("link-one").id, chats.get("link-two").id]),
+    );
+    expect(forTask.every((row) => !["done", "dead"].includes(row.observedState))).toBe(true);
+
+    // The chat side stays exclusive, and the refusal names the task the chat is
+    // already working plus the way out.
     const chatConflict = await api(USER_A, "POST", "/assignments/link", {
       taskId: taskB.id,
       harness: "codex",
       sessionId: "link-one",
     });
     expect(chatConflict.status).toBe(409);
-    expect((await json(chatConflict)).error).toContain("chat is already linked");
+    const chatConflictError = (await json(chatConflict)).error as string;
+    expect(chatConflictError).toContain("already working on another task");
+    expect(chatConflictError).toContain('"Tighten task tag edit semantics"');
+    expect(chatConflictError).toContain("start a new chat for this task");
 
-    const taskConflict = await api(USER_A, "POST", "/assignments/link", {
+    // Re-linking the same pair while its stop is still in flight gets its own,
+    // more specific refusal: the daemon is about to close this very chat, so
+    // handing back a fresh running assignment would be a lie.
+    const stopping = await api(USER_A, "PATCH", `/assignments/${assignment.id}`, {
+      desiredState: "stopped",
+    });
+    expect(stopping.status).toBe(200);
+    expect(await json(stopping)).toMatchObject({
+      desiredState: "stopped",
+      observedState: "pending",
+    });
+    const stopConflict = await api(USER_A, "POST", "/assignments/link", {
       taskId: taskA.id,
       harness: "codex",
-      sessionId: "link-two",
+      sessionId: "link-one",
     });
-    expect(taskConflict.status).toBe(409);
-    expect((await json(taskConflict)).error).toContain("task already has");
+    expect(stopConflict.status).toBe(409);
+    expect((await json(stopConflict)).error).toContain("being stopped");
 
     // A user cannot resolve another user's chat by its harness-native id.
     const otherProject = await json(
