@@ -3,14 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   chatAgentDetail,
   chatStatusLine,
-  composeStartsExpanded,
   deadLaunchNotice,
-  earlierChatsLabel,
-  laneCountLabel,
   laneRowAction,
   laneSpansMachines,
-  primaryActionLabel,
-  showsStopAll,
   type LaneAgentFields,
   type LaneDeadFields,
   type LaneStatusFields,
@@ -23,7 +18,7 @@ const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 
 const agent = (over: Partial<LaneAgentFields> = {}): LaneAgentFields => ({
   harness: "claude",
-  model: "claude-opus-5",
+  model: "claude-opus-4-8",
   effort: "high",
   requestedChatId: null,
   ...over,
@@ -41,7 +36,7 @@ const status = (
 
 describe("chatAgentDetail", () => {
   it("reads model then effort, from the shared catalog", () => {
-    expect(chatAgentDetail(agent())).toBe("Opus 5 · High");
+    expect(chatAgentDetail(agent())).toBe("Opus 4.8 · High");
     expect(
       chatAgentDetail(agent({ harness: "codex", model: "gpt-5.4-mini", effort: "medium" })),
     ).toBe("GPT-5.4 Mini · Medium");
@@ -56,7 +51,7 @@ describe("chatAgentDetail", () => {
   });
 
   it("drops the effort clause when the launch pinned none", () => {
-    expect(chatAgentDetail(agent({ effort: null }))).toBe("Opus 5");
+    expect(chatAgentDetail(agent({ effort: null }))).toBe("Opus 4.8");
   });
 
   it("says a chat was linked from a terminal instead of inventing a model", () => {
@@ -212,38 +207,5 @@ describe("laneSpansMachines", () => {
 
   it("is true the moment two chats sit on different machines", () => {
     expect(laneSpansMachines([on("m1"), on("m2")])).toBe(true);
-  });
-});
-
-describe("lane wording", () => {
-  it("counts the visible chats, singular and plural, and nothing at zero", () => {
-    expect(laneCountLabel(0)).toBeNull();
-    expect(laneCountLabel(1)).toBe("1 chat");
-    expect(laneCountLabel(3)).toBe("3 chats");
-  });
-
-  it("pluralizes the earlier-chats disclosure", () => {
-    expect(earlierChatsLabel(1)).toBe("1 earlier chat");
-    expect(earlierChatsLabel(4)).toBe("4 earlier chats");
-  });
-});
-
-describe("compose decisions", () => {
-  it("starts expanded only when nothing is in play", () => {
-    expect(composeStartsExpanded(0)).toBe(true);
-    expect(composeStartsExpanded(1)).toBe(false);
-    expect(composeStartsExpanded(5)).toBe(false);
-  });
-
-  it("says Delegate for the first hand-off and Add agent alongside existing chats", () => {
-    expect(primaryActionLabel(0)).toBe("Delegate");
-    expect(primaryActionLabel(1)).toBe("Add agent");
-    expect(primaryActionLabel(2)).toBe("Add agent");
-  });
-
-  it("shows Stop all only when there is a bulk to stop", () => {
-    expect(showsStopAll([])).toBe(false);
-    expect(showsStopAll(["a1"])).toBe(false);
-    expect(showsStopAll(["a1", "a2"])).toBe(true);
   });
 });

@@ -5,14 +5,15 @@
 // /tasks. No React, no HTTP: unit-testable in isolation.
 //
 // The four groups (NEEDS YOU / WORKING / BACKLOG / DONE) split OPEN tasks by
-// the observed state of the agent chats on them (M4). Attention is derived from
-// a taskId → chats map the caller joins client-side; with no map, NEEDS YOU and
-// WORKING stay empty and every open task falls to BACKLOG. That path stays
-// supported because the only map-less callers left are the tests — a caller
-// with no assignments query still gets a coherent backlog-only fold rather than
-// an error. DONE always holds `status:"done"` tasks regardless of assignment
-// state: marking a task done takes it out of the attention queue (close-on-done,
-// Decision 3).
+// `rowState` over the agent chats on them (M4): the task's group IS the row's
+// state, so the lane's leading band, the row's chip and the group can never
+// disagree. The chats come from a taskId → chats map the caller joins
+// client-side; with no map, NEEDS YOU and WORKING stay empty and every open task
+// falls to BACKLOG. That path stays supported because the only map-less callers
+// left are the tests — a caller with no assignments query still gets a coherent
+// backlog-only fold rather than an error. DONE always holds `status:"done"` tasks
+// regardless of chat state: marking a task done takes it out of the attention
+// queue (close-on-done, Decision 3).
 //
 // MULTI-CHAT (slice 1): a task can carry SEVERAL live assignments at once —
 // `assignments` is append-only and per-task, the daemon reconciles each one
@@ -20,11 +21,10 @@
 // module used to fold each task down to its NEWEST assignment, which made every
 // other agent on the task invisible and — worse — let a row report "Working"
 // while a second agent on it sat blocked on the user. So nothing here picks a
-// latest any more: a task has a LIST of chats, the row's instrument is the
-// most DEMANDING of them (`rowState`), and attention is an ANY-fold over all of
-// them (`taskAttentionFromChats`). The row's chrome followed in slice 3: a stack
-// of chips, capped at two avatars plus a `+N` (chipStack.ts), whose outer ring is
-// `rowState`.
+// latest any more: a task has a LIST of chats, and ONE reduce by demand
+// (`rowState`) is both the row's instrument and the task's group. The row's
+// chrome followed in slice 3: a stack of chips, capped at two avatars plus a
+// `+N` (chipStack.ts), whose outer ring is that same `rowState`.
 
 import { type ObservedState } from "./delegation";
 
@@ -45,17 +45,22 @@ export interface TaskRow {
 
 export interface TaskGroups<T extends TaskRow> {
   /**
-   * Open tasks where ANY chat wants your attention — the PRD queue:
-   * `waiting_input` (the agent finished a pass) ∪ `done ∧ reviewed_at null`
-   * (the agent finished, not yet acked). sortOrder ascending.
+   * Open tasks whose `rowState` is `needs-you` — ANY chat is `waiting_input`
+   * (the agent finished a pass) or `done ∧ reviewed_at null` (the agent
+   * finished, not yet acked). The PRD queue. sortOrder ascending.
    */
   needsYou: T[];
   /**
-   * Open tasks with no attention chat but at least one still in flight
-   * (pending / spawning / running). sortOrder ascending.
+   * Open tasks whose `rowState` is `working`: nothing on them needs you, but at
+   * least one chat is still in flight (pending / spawning / running). sortOrder
+   * ascending.
    */
   working: T[];
-  /** Open tasks with no live/attention assignment, in manual order (sortOrder ascending). */
+  /**
+   * Open tasks with nothing in play — `rowState` is `idle` (every chat finished
+   * AND acked) or null (no chats at all: never delegated, or every launch died).
+   * Manual order (sortOrder ascending).
+   */
   backlog: T[];
   /** Done tasks, most recently completed first. */
   done: T[];
@@ -99,8 +104,8 @@ export const byCompletedDesc = (a: TaskRow, b: TaskRow) => {
 
 // ─── Attention (M4 PR 6) ─────────────────────────────────────────────────────
 
-// The minimal assignment shape the attention fold needs — a structural subset
-// of what GET /assignments returns. createdAt/reviewedAt cross the wire as ISO
+// The minimal assignment shape the chat fold needs — a structural subset of
+// what GET /assignments returns. createdAt/reviewedAt cross the wire as ISO
 // strings; observedState mirrors the server pgEnum.
 export interface AttentionAssignment {
   id: string;
@@ -110,11 +115,6 @@ export interface AttentionAssignment {
   /** ISO timestamp; non-null once the attention item has been acked. */
   reviewedAt: string | Date | null;
 }
-
-// How a task's chats want your attention (or "working" while in flight).
-// null = no attention (backlog): no chat, or every chat is terminal `dead`, or
-// a `done` that's already been acked (reviewed_at set).
-export type AttentionKind = "review" | "input" | "working";
 
 // ─── The chat's state (sections v1) ──────────────────────────────────────────
 
@@ -127,8 +127,8 @@ export type HarnessChipState = "idle" | "working" | "needs-you";
 /**
  * The ONE observed_state → chip mapping in the app. Internal on purpose: every
  * caller now goes through a `TaskChat`, which carries the already-mapped state,
- * so there is no second place a row can decide what an agent's state looks
- * like.
+ * so there is no second place a row — or the grouping fold — can decide what an
+ * agent's state looks like.
  *
  * Note `done ∧ reviewed → "idle"` rather than null: the chat still exists and
  * cmux can bring it back, so the chip stays as the way in. Only `dead` (the
@@ -161,9 +161,9 @@ export interface TaskChat<T> {
 }
 
 // The demand ladder, and the ONLY severity order in this module: how loudly a
-// chat is asking for a human. It orders the lane (bands), it reduces to the
-// row's single state, and it decides which group the task lands in — those three
-// must never disagree, which is why they read the same table.
+// chat is asking for a human. It orders the lane (bands) and it reduces to the
+// row's single state (`rowState`) — which IS the task's group, so the lane's
+// leading band, the row's chip and the group placement cannot disagree.
 const DEMAND: Record<HarnessChipState, number> = {
   "needs-you": 0,
   working: 1,
@@ -232,13 +232,13 @@ export function chatsByTaskId<T extends AttentionAssignment>(
 }
 
 /**
- * The row's single instrument: a REDUCE by demand over all the task's chats,
- * never "the latest". A row must never report "Working" while something on it
- * is blocked on the user — with an append-only assignment list the newest chat
- * is routinely NOT the one that needs a human, so picking by recency silently
- * buried the only state the user had to act on.
+ * The row's single instrument, and the task's group: a REDUCE by demand over all
+ * the task's chats, never "the latest". A row must never report "Working" while
+ * something on it is blocked on the user — with an append-only assignment list
+ * the newest chat is routinely NOT the one that needs a human, so picking by
+ * recency silently buried the only state the user had to act on.
  *
- * `null` for an empty or absent list — the empty chip slot.
+ * `null` for an empty or absent list — the empty chip slot, and BACKLOG.
  */
 export function rowState<T>(
   chats: readonly TaskChat<T>[] | undefined,
@@ -248,43 +248,6 @@ export function rowState<T>(
     if (worst === null || DEMAND[chat.state] < DEMAND[worst]) worst = chat.state;
   }
   return worst;
-}
-
-/**
- * The task's attention: the per-chat mapping (`waiting_input` → "input";
- * `done ∧ unreviewed` → "review"; in-flight → "working"; `dead` and acked-`done`
- * contribute nothing) OR'd across every chat. ANY chat can pull the task into
- * the queue.
- *
- * When chats disagree, attention beats working — the group placement follows the
- * same severity order as `rowState`, so a task whose second agent is blocked
- * cannot hide in WORKING. Between the two attention kinds "input" wins: a live
- * agent waiting on a reply is a conversation stalled right now, whereas a
- * finished-unreviewed one is only waiting to be acked.
- */
-export function taskAttentionFromChats<
-  T extends Pick<AttentionAssignment, "observedState" | "reviewedAt">,
->(chats: readonly TaskChat<T>[] | undefined): AttentionKind | null {
-  let review = false;
-  let working = false;
-  for (const { assignment } of chats ?? []) {
-    switch (assignment.observedState) {
-      case "waiting_input":
-        // Nothing outranks "input" — no need to look at the rest.
-        return "input";
-      case "done":
-        if (assignment.reviewedAt == null) review = true;
-        break;
-      case "pending":
-      case "spawning":
-      case "running":
-        working = true;
-        break;
-      case "dead":
-        break;
-    }
-  }
-  return review ? "review" : working ? "working" : null;
 }
 
 /**
@@ -314,17 +277,21 @@ export function partitionLaneChats<T>(chats: readonly TaskChat<T>[]): {
  * Fold a project's tasks into the four attention groups. Generic so callers
  * get their full row type back (title, tagIds, …), not just the sort fields.
  *
+ * The group is just `rowState` under another name — there is no second
+ * classification of a chat here, so a row's chip and its group are the same
+ * fact read twice. `idle` (every chat acked) lands in BACKLOG alongside the
+ * never-delegated: nothing on the task is in play.
+ *
  * `chatsByTask` is the taskId → chats map from `chatsByTaskId`. AppV2 passes it —
  * the ⌘K palette's labels ARE this fold. Optional only for the tests: with no
  * map, NEEDS YOU / WORKING stay empty and every open task falls to BACKLOG, so a
- * caller with no assignments query gets a backlog-only fold, not an error.
+ * caller with no assignments query gets a backlog-only fold, not an error. Only
+ * a chat's mapped `state` is read, so the map's assignment payload is irrelevant
+ * here (`unknown`) — callers keep their own row type.
  */
 export function deriveTaskGroups<T extends TaskRow>(
   tasks: T[],
-  chatsByTask?: ReadonlyMap<
-    string,
-    readonly TaskChat<Pick<AttentionAssignment, "observedState" | "reviewedAt">>[]
-  >,
+  chatsByTask?: ReadonlyMap<string, readonly TaskChat<unknown>[]>,
 ): TaskGroups<T> {
   const needsYou: T[] = [];
   const working: T[] = [];
@@ -336,11 +303,9 @@ export function deriveTaskGroups<T extends TaskRow>(
       done.push(task);
       continue;
     }
-    const attention = chatsByTask
-      ? taskAttentionFromChats(chatsByTask.get(task.id))
-      : null;
-    if (attention === "working") working.push(task);
-    else if (attention === "review" || attention === "input") needsYou.push(task);
+    const state = chatsByTask ? rowState(chatsByTask.get(task.id)) : null;
+    if (state === "needs-you") needsYou.push(task);
+    else if (state === "working") working.push(task);
     else backlog.push(task);
   }
   return {

@@ -6,7 +6,6 @@ import {
   deriveTaskGroups,
   partitionLaneChats,
   rowState,
-  taskAttentionFromChats,
   type AttentionAssignment,
   type HarnessChipState,
   type TaskRow,
@@ -384,92 +383,6 @@ describe("rowState", () => {
   });
 });
 
-describe("taskAttentionFromChats", () => {
-  // Build a lane for one task straight from its assignment overrides.
-  const lane = (
-    ...states: (Partial<AttentionAssignment> &
-      Pick<AttentionAssignment, "observedState">)[]
-  ) =>
-    chatsForTask(
-      states.map((s) => assignment({ taskId: "t", ...s })),
-      "t",
-    );
-
-  it("maps waiting_input → input", () => {
-    expect(taskAttentionFromChats(lane({ observedState: "waiting_input" }))).toBe("input");
-  });
-
-  it("maps in-flight states (pending/spawning/running) → working", () => {
-    for (const observedState of ["pending", "spawning", "running"] as const) {
-      expect(taskAttentionFromChats(lane({ observedState }))).toBe("working");
-    }
-  });
-
-  it("maps done → review only while unreviewed; acked done → null", () => {
-    expect(taskAttentionFromChats(lane({ observedState: "done", reviewedAt: null }))).toBe(
-      "review",
-    );
-    expect(
-      taskAttentionFromChats(
-        lane({ observedState: "done", reviewedAt: "2026-07-22T11:00:00.000Z" }),
-      ),
-    ).toBeNull();
-  });
-
-  it("maps dead and absent → null (backlog, re-delegate in the dialog)", () => {
-    expect(taskAttentionFromChats(lane({ observedState: "dead" }))).toBeNull();
-    expect(taskAttentionFromChats(undefined)).toBeNull();
-    expect(taskAttentionFromChats([])).toBeNull();
-  });
-
-  it("ORs across chats: attention beats working", () => {
-    expect(
-      taskAttentionFromChats(
-        lane({ observedState: "running" }, { observedState: "done", reviewedAt: null }),
-      ),
-    ).toBe("review");
-    expect(
-      taskAttentionFromChats(
-        lane({ observedState: "running" }, { observedState: "waiting_input" }),
-      ),
-    ).toBe("input");
-  });
-
-  it("prefers input over review when both are present", () => {
-    // A live agent waiting on a reply is a stalled conversation; a finished one
-    // is only waiting to be acked.
-    expect(
-      taskAttentionFromChats(
-        lane(
-          { observedState: "done", reviewedAt: null },
-          { observedState: "waiting_input" },
-        ),
-      ),
-    ).toBe("input");
-    // Order-independent — the fold, not the lane, decides.
-    expect(
-      taskAttentionFromChats(
-        lane(
-          { observedState: "waiting_input" },
-          { observedState: "done", reviewedAt: null },
-        ),
-      ),
-    ).toBe("input");
-  });
-
-  it("ignores acked-done and dead chats next to a live one", () => {
-    expect(
-      taskAttentionFromChats(
-        lane(
-          { observedState: "done", reviewedAt: "2026-07-22T11:00:00.000Z" },
-          { observedState: "dead" },
-          { observedState: "running" },
-        ),
-      ),
-    ).toBe("working");
-  });
-});
-
 describe("partitionLaneChats", () => {
   it("splits still-in-play chats from acked history, preserving order", () => {
     const t = "task-lane";
@@ -524,7 +437,7 @@ describe("deriveTaskGroups with attention", () => {
       assignment({ taskId: inputTask.id, observedState: "waiting_input" }),
       assignment({ taskId: reviewTask.id, observedState: "done", reviewedAt: null }),
       assignment({ taskId: workingTask.id, observedState: "running" }),
-      // plainTask's only chat is dead → no attention → backlog.
+      // plainTask's only assignment is dead → it has NO chats → backlog.
       assignment({ taskId: plainTask.id, observedState: "dead" }),
     ]);
     const groups = deriveTaskGroups(
@@ -557,6 +470,83 @@ describe("deriveTaskGroups with attention", () => {
     );
     expect(groups.needsYou.map((x) => x.title)).toEqual(["two-agents"]);
     expect(groups.working).toHaveLength(0);
+    expect(groups.backlog).toHaveLength(0);
+  });
+
+  it("puts every in-flight state (pending/spawning/running) in WORKING", () => {
+    for (const observedState of ["pending", "spawning", "running"] as const) {
+      const t = task({ sortOrder: "a0", title: observedState });
+      const groups = deriveTaskGroups(
+        [t],
+        chatsByTaskId([assignment({ taskId: t.id, observedState })]),
+      );
+      expect(groups.working.map((x) => x.title)).toEqual([observedState]);
+      expect(groups.backlog).toHaveLength(0);
+    }
+  });
+
+  it("collapses BOTH kinds of needs-you chat into NEEDS YOU", () => {
+    // `waiting_input` and finished-unreviewed are one group here — the fold has
+    // no input-beats-review precedence to express, because NEEDS YOU is NEEDS
+    // YOU. The second task pairs a finished-unreviewed chat with a running one:
+    // needs-you still outranks working.
+    const bothKinds = task({ sortOrder: "a0", title: "blocked-and-finished" });
+    const finishedWhileWorking = task({ sortOrder: "a1", title: "finished-plus-working" });
+    const groups = deriveTaskGroups(
+      [bothKinds, finishedWhileWorking],
+      chatsByTaskId([
+        assignment({ taskId: bothKinds.id, observedState: "done", reviewedAt: null }),
+        assignment({ taskId: bothKinds.id, observedState: "waiting_input" }),
+        assignment({ taskId: finishedWhileWorking.id, observedState: "running" }),
+        assignment({
+          taskId: finishedWhileWorking.id,
+          observedState: "done",
+          reviewedAt: null,
+        }),
+      ]),
+    );
+    expect(groups.needsYou.map((x) => x.title)).toEqual([
+      "blocked-and-finished",
+      "finished-plus-working",
+    ]);
+    expect(groups.working).toHaveLength(0);
+    expect(groups.backlog).toHaveLength(0);
+  });
+
+  it("files a task whose only chats are acked-done or dead in BACKLOG", () => {
+    const t = task({ sortOrder: "a0", title: "quiet" });
+    const groups = deriveTaskGroups(
+      [t],
+      chatsByTaskId([
+        assignment({
+          taskId: t.id,
+          observedState: "done",
+          reviewedAt: "2026-07-22T11:00:00.000Z",
+        }),
+        assignment({ taskId: t.id, observedState: "dead" }),
+      ]),
+    );
+    expect(groups.backlog.map((x) => x.title)).toEqual(["quiet"]);
+    expect(groups.needsYou).toHaveLength(0);
+    expect(groups.working).toHaveLength(0);
+  });
+
+  it("ignores acked-done and dead chats next to a live one", () => {
+    const t = task({ sortOrder: "a0", title: "one-live" });
+    const groups = deriveTaskGroups(
+      [t],
+      chatsByTaskId([
+        assignment({
+          taskId: t.id,
+          observedState: "done",
+          reviewedAt: "2026-07-22T11:00:00.000Z",
+        }),
+        assignment({ taskId: t.id, observedState: "dead" }),
+        assignment({ taskId: t.id, observedState: "running" }),
+      ]),
+    );
+    expect(groups.working.map((x) => x.title)).toEqual(["one-live"]);
+    expect(groups.needsYou).toHaveLength(0);
     expect(groups.backlog).toHaveLength(0);
   });
 

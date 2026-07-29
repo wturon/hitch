@@ -569,8 +569,8 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
   // (the capture prepend maths moved to `tasksInContainer` when sections landed,
   // so nothing here is load-bearing for WHERE a new task goes).
   //
-  // The chats map is not optional: without it `taskAttentionFromChats` is never
-  // called, NEEDS YOU / WORKING stay empty, and the palette labelled every open
+  // The chats map is not optional: without it `rowState` is never consulted,
+  // NEEDS YOU / WORKING stay empty, and the palette labelled every open
   // task "Backlog" — including ones an agent was actively working. Sections v1
   // removed the on-screen attention groups but left this consumer behind, so the
   // lie was invisible everywhere except in the palette.

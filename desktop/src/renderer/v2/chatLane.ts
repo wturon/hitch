@@ -4,9 +4,12 @@
 //
 // What the lane IS — its order, and the visible/earlier split — comes from
 // todoGroups (`chatsForTask` / `partitionLaneChats`, slice 1). What lives here is
-// what the lane SAYS: the per-row agent line, the status+age line, which action a
-// row has earned, whether machines are worth naming at all, and the compose
-// block's two decisions (does it start expanded, and what does its button say).
+// the lane's LIFECYCLE policy: the per-row agent line, the status+age line, which
+// action a row has earned, the launch that never started, and whether machines
+// are worth naming at all. Each one is a decision with branches; the lane's plain
+// wording (its counts, its button labels) is inlined at its call site in
+// ChatLane.tsx / DelegateBar.tsx, where a pluralising ternary reads better than an
+// import.
 //
 // The status vocabulary is NOT re-invented: labels come from
 // `observedStateChip`, the same mapping the bar has always used, and the ring's
@@ -189,55 +192,4 @@ export function laneSpansMachines(
     if (seen.size > 1) return true;
   }
   return false;
-}
-
-// ─── Wording + the compose block's two decisions ─────────────────────────────
-
-/**
- * The lane's header count, or null when there are no rows to count. Counts the
- * VISIBLE chats only — the earlier disclosure carries its own count, and a
- * header that folded both in would name a number the rows below it don't add up
- * to.
- */
-export function laneCountLabel(visibleCount: number): string | null {
-  if (visibleCount <= 0) return null;
-  return `${visibleCount} chat${visibleCount === 1 ? "" : "s"}`;
-}
-
-/** The earlier-chats disclosure. */
-export function earlierChatsLabel(count: number): string {
-  return `${count} earlier chat${count === 1 ? "" : "s"}`;
-}
-
-/**
- * Does compose start open? Yes exactly when nothing is in play — a fresh task,
- * or one whose chats have all finished. That preserves the pre-multi-chat
- * ergonomics for the common case (open a task, type, ⌘⏎) while a task that
- * already has agents on it leads with THEM and keeps compose one click away.
- *
- * Keyed on the VISIBLE chats, like every other lane decision: finished-and-acked
- * history behind the disclosure is not a reason to hide the delegate affordance.
- */
-export function composeStartsExpanded(visibleCount: number): boolean {
-  return visibleCount === 0;
-}
-
-/**
- * The primary button's label. "Delegate" is the first hand-off of a task;
- * once the lane holds a chat, the same button is ADDING an agent alongside the
- * ones already there — it never replaces or supersedes them, and the word has to
- * say so.
- */
-export function primaryActionLabel(visibleCount: number): "Delegate" | "Add agent" {
-  return visibleCount === 0 ? "Delegate" : "Add agent";
-}
-
-/**
- * Stop-all is a bulk action, so it only earns its place when there is a bulk to
- * act on: two or more chats that would actually be stopped. With one, the row's
- * own Stop is the same click with a clearer target. The SET comes from
- * `assignmentsToStopOnDone` — the lane never re-derives "live and not terminal".
- */
-export function showsStopAll(stoppableIds: readonly string[]): boolean {
-  return stoppableIds.length >= 2;
 }
