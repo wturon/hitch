@@ -128,6 +128,9 @@ export const tasks = pgTable(
     body: text("body").notNull(),
     status: taskStatus("status").notNull().default("open"),
     sortOrder: text("sort_order").notNull(),
+    // Non-null while naming is wanted. `title = auto_title_seed` is the whole
+    // state invariant and the completion compare-and-set guard.
+    autoTitleSeed: text("auto_title_seed"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     completedAt: timestamp("completed_at", { withTimezone: true }),

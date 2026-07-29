@@ -5,6 +5,16 @@ import type { AppType } from "@hitch/server";
 
 export const HITCH_API_VERSION = 1;
 
+export {
+  DEFAULT_TEXT_GENERATION_MODEL,
+  deriveTitleFromBody,
+  isAutoTitlePending,
+  isTextGenerationModel,
+  taskTitleSeed,
+  TEXT_GENERATION_MODELS,
+} from "./taskTitles.js";
+export type { TextGenerationModel } from "./taskTitles.js";
+
 // The full route tree type — hc<AppType> gives end-to-end typed requests.
 export type { AppType } from "@hitch/server";
 

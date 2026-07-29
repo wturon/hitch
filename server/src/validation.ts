@@ -82,6 +82,7 @@ export const taskCreate = z.strictObject({
   title: z.string().min(1),
   body: z.string().default(""),
   sortOrder: z.string().min(1),
+  autoTitleSeed: z.string().min(1).optional(),
 });
 
 export const taskUpdate = z.strictObject({
@@ -94,6 +95,7 @@ export const taskUpdate = z.strictObject({
   // the task-row patch. Link endpoints remain for small single-tag mutations.
   tagIds: z.array(z.uuid()).optional(),
   sortOrder: z.string().min(1).optional(),
+  autoTitleSeed: z.string().min(1).nullable().optional(),
 });
 
 // --- tags -------------------------------------------------------------------
@@ -207,6 +209,16 @@ export const machineRegister = z.strictObject({
 
 export const machineHeartbeat = z.strictObject({
   daemonVersion: z.string().min(1).optional(),
+});
+
+export const autoTitleListQuery = z.object({
+  requesting_machine_id: z.uuid(),
+  limit: z.coerce.number().int().min(1).max(10).default(5),
+});
+
+export const autoTitleComplete = z.strictObject({
+  machineId: z.uuid(),
+  title: z.string().min(1).max(50).nullable(),
 });
 
 export const chatListQuery = z.object({ machine_id: z.uuid() });

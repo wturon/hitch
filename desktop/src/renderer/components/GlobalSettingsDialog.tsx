@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from "react";
 import {
+  DEFAULT_TEXT_GENERATION_MODEL,
+  type TextGenerationModel,
+} from "@hitch/shared/taskTitles";
+import {
   AlertCircleIcon,
   CheckCircle2Icon,
   Code2Icon,
@@ -38,6 +42,7 @@ import {
 } from "@/lib/chat";
 import { HarnessIcon } from "@/components/HarnessIcon";
 import { StartingPromptsPanel } from "@/components/StartingPromptsPanel";
+import { TaskNamingModelSetting } from "@/components/TaskNamingModelSetting";
 import { useUpdater } from "@/components/UpdateBanner";
 import {
   Dialog,
@@ -50,7 +55,6 @@ import { cn } from "@/lib/utils";
 import { getStoredTheme, setTheme, type ThemeMode } from "@/lib/theme";
 
 type Harness = "codex" | "claude-code";
-
 export interface HarnessHookStatus {
   harness: Harness;
   installed: boolean;
@@ -122,6 +126,10 @@ interface HitchDaemonApi {
     harness: string,
     environment: string,
   ) => Promise<Record<string, string>>;
+  getTextGenerationModel: () => Promise<TextGenerationModel>;
+  setTextGenerationModel: (
+    model: TextGenerationModel,
+  ) => Promise<TextGenerationModel>;
 }
 
 // Each harness Hitch can drive renders as one card: a branded header plus its
@@ -175,6 +183,8 @@ export function GlobalSettingsDialog({
       : undefined;
   const [tab, setTab] = useState<GlobalSettingsTab>(initialTab);
   const [setup, setSetup] = useState<GlobalHarnessSetupStatus | null>(null);
+  const [textGenerationModel, setSelectedTextGenerationModel] =
+    useState<TextGenerationModel>(DEFAULT_TEXT_GENERATION_MODEL);
   const [integrationHealth, setIntegrationHealth] =
     useState<IntegrationHealth | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -198,12 +208,14 @@ export function GlobalSettingsDialog({
     setRefreshing(true);
     setError(null);
     try {
-      const [nextSetup, nextIntegrations] = await Promise.all([
+      const [nextSetup, nextIntegrations, nextTextGenerationModel] = await Promise.all([
         bridge.getGlobalHarnessSetup(),
         bridge.checkIntegrations(),
+        bridge.getTextGenerationModel(),
       ]);
       receiveSetup(nextSetup);
       receiveIntegrationHealth(nextIntegrations);
+      setSelectedTextGenerationModel(nextTextGenerationModel);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -268,6 +280,21 @@ export function GlobalSettingsDialog({
                         enabled Hitch folders.
                       </p>
                     </div>
+
+                    <TaskNamingModelSetting
+                      value={textGenerationModel}
+                      onChange={(model) => {
+                        setSelectedTextGenerationModel(model);
+                        void bridge
+                          .setTextGenerationModel(model)
+                          .then(setSelectedTextGenerationModel)
+                          .catch((err) =>
+                            setError(
+                              err instanceof Error ? err.message : String(err),
+                            ),
+                          );
+                      }}
+                    />
 
                     {HARNESS_CARDS.map((card) => (
                       <HarnessCard

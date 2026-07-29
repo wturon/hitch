@@ -82,7 +82,13 @@ export const taskRoutes = new Hono<AppEnv>()
         return c.json({ error: "section does not belong to project" }, 400);
       }
     }
-    const [row] = await db.insert(tasks).values(body).returning();
+    if (body.autoTitleSeed !== undefined && body.autoTitleSeed !== body.title) {
+      return c.json({ error: "auto-title seed must match title" }, 400);
+    }
+    const [row] = await db
+      .insert(tasks)
+      .values(body)
+      .returning();
     // A fresh task can't have links yet — [] keeps the response shape uniform.
     return c.json({ ...row, tagIds: [] as string[] }, 201);
   })
@@ -104,6 +110,17 @@ export const taskRoutes = new Hono<AppEnv>()
     // VERBATIM passthrough — never trim/transform the body.
     if (patch.body !== undefined) updates.body = patch.body;
     if (patch.sortOrder !== undefined) updates.sortOrder = patch.sortOrder;
+    if (patch.autoTitleSeed !== undefined) {
+      const nextTitle = patch.title ?? existing.title;
+      if (patch.autoTitleSeed !== null && patch.autoTitleSeed !== nextTitle) {
+        return c.json({ error: "auto-title seed must match title" }, 400);
+      }
+      updates.autoTitleSeed = patch.autoTitleSeed;
+    } else if (patch.title !== undefined && patch.title !== existing.title) {
+      // A rename ends the pending request outright. Leaving the old seed would
+      // let changing the title back later silently resurrect auto-naming.
+      updates.autoTitleSeed = null;
+    }
 
     let targetProjectId = existing.projectId;
     if (patch.projectId !== undefined) {

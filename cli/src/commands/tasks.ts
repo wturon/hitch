@@ -6,6 +6,7 @@ import { printJson, renderTable, truncate } from "../format.js";
 import { TASKS_HELP } from "../help.js";
 import { shortId } from "../ids.js";
 import { onePositional, parseFlags } from "../parse.js";
+import { taskTitleSeed } from "@hitch/shared/taskTitles";
 import {
   ensureTags,
   loadWorkspace,
@@ -276,6 +277,7 @@ async function add(args: string[]): Promise<void> {
       project: { type: "string" },
       section: { type: "string" },
       tag: { type: "string", multiple: true },
+      "auto-title": { type: "boolean", default: false },
     },
     TASKS_HELP,
   );
@@ -283,17 +285,30 @@ async function add(args: string[]): Promise<void> {
     console.log(TASKS_HELP);
     return;
   }
-  const title = onePositional(
-    positionals,
-    "task title",
-    'hitch tasks add "Fix flaky sync test" --body "Repro: run vitest twice"',
-  );
-  if (!title.trim()) {
-    throw new UsageError('The task title cannot be empty. For example:\n  hitch tasks add "Fix flaky sync test"');
+  if (positionals.length > 1) {
+    throw new UsageError(
+      "'hitch tasks add' accepts at most one title. Quote titles with spaces.",
+    );
   }
 
-  const session = requireSession();
   const body = (await resolveBody({ body: values.body, bodyFile: values["body-file"] })) ?? "";
+  const requestedTitle = positionals[0];
+  if (requestedTitle !== undefined && !requestedTitle.trim()) {
+    throw new UsageError(
+      'The task title cannot be empty. For example:\n  hitch tasks add "Fix flaky sync test"',
+    );
+  }
+  if (requestedTitle === undefined && !values["auto-title"]) {
+    throw new UsageError(
+      "Pass a title, or opt in to daemon naming with --auto-title. For example:\n" +
+        '  hitch tasks add --auto-title --body "Fix the flaky sync test"',
+    );
+  }
+  if (requestedTitle === undefined && !body.trim()) {
+    throw new UsageError("--auto-title without a title requires a non-empty task body.");
+  }
+  const title = requestedTitle ?? taskTitleSeed(body);
+  const session = requireSession();
   const workspace = await loadWorkspace(session);
   const project = await resolveProjectForAdd(session, workspace, values.project);
   const section = values.section
@@ -302,7 +317,14 @@ async function add(args: string[]): Promise<void> {
   const sortOrder = prependSortOrder(workspace, project.id);
 
   const res = await session.client.tasks.$post({
-    json: { projectId: project.id, sectionId: section?.id, title, body, sortOrder },
+    json: {
+      projectId: project.id,
+      sectionId: section?.id,
+      title,
+      body,
+      sortOrder,
+      autoTitleSeed: values["auto-title"] ? title : undefined,
+    },
   });
   await ensureOk(session, res, "Creating the task");
   let task = (await res.json()) as TaskRow;

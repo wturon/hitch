@@ -33,6 +33,11 @@ import {
   type UpdateInfo,
 } from "electron-updater";
 import {
+  DEFAULT_TEXT_GENERATION_MODEL,
+  isTextGenerationModel,
+  type TextGenerationModel,
+} from "@hitch/shared/taskTitles";
+import {
   applyEdits as applyJsoncEdits,
   modify as modifyJsonc,
   parse as parseJsonc,
@@ -553,6 +558,21 @@ function writePreferences(patch: Record<string, unknown>): void {
     `${JSON.stringify(next, null, 2)}\n`,
     "utf8",
   );
+}
+
+function readTextGenerationModel(): TextGenerationModel {
+  const stored = readPreferences().textGenerationModel;
+  return isTextGenerationModel(stored)
+    ? stored
+    : DEFAULT_TEXT_GENERATION_MODEL;
+}
+
+function setTextGenerationModel(value: unknown): TextGenerationModel {
+  if (!isTextGenerationModel(value)) {
+    return readTextGenerationModel();
+  }
+  writePreferences({ textGenerationModel: value });
+  return value;
 }
 
 // { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is
@@ -2084,6 +2104,12 @@ ipcMain.handle(
   "config:set-harness-environment",
   (_event, harness: string, environment: string) =>
     setHarnessEnvironment(harness, environment),
+);
+ipcMain.handle("config:get-text-generation-model", () =>
+  readTextGenerationModel(),
+);
+ipcMain.handle("config:set-text-generation-model", (_event, model: unknown) =>
+  setTextGenerationModel(model),
 );
 ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>

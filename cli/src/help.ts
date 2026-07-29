@@ -23,7 +23,7 @@ COMMANDS
   tasks list                          open tasks (--status done|all widens)
   tasks show <id>                     one task in full, body verbatim
   tasks link <id>                     attach this agent chat and load the task
-  tasks add "<title>"                 create a task (body: --body/--body-file/stdin)
+  tasks add ["<title>"]               create a task (--auto-title can name it)
   tasks done <id>                     mark done
   tasks reopen <id>                   back to open
   tasks edit <id>                     change content, section, and/or tags
@@ -112,7 +112,8 @@ USAGE
                      [--search <text>] [--limit <n>] [--json]
   hitch tasks show   <id-or-prefix> [--json]
   hitch tasks link   <id-or-prefix> [--harness claude|codex] [--json]
-  hitch tasks add    "<title>" [--body <markdown> | --body-file <path>] [--project <name-or-id>]
+  hitch tasks add    ["<title>"] [--auto-title]
+                     [--body <markdown> | --body-file <path>] [--project <name-or-id>]
                      [--section <name-or-id>] [--tag <name>]... [--json]
   hitch tasks done   <id-or-prefix> [--json]
   hitch tasks reopen <id-or-prefix> [--json]
@@ -130,6 +131,9 @@ NOTES
   add     defaults to the Inbox project. The body is stored verbatim, so pipe
           markdown straight in: cat notes.md | hitch tasks add "Triage notes"
           --tag may repeat; unknown tags are created automatically.
+          Explicit titles stay authoritative. Pass --auto-title to ask the
+          desktop daemon to replace a provisional title asynchronously; with
+          --auto-title the positional title may be omitted when the body is non-empty.
   edit    piped stdin (or --body/--body-file) REPLACES the body; --title alone
           leaves the body untouched. Added tags are created if necessary.
           --clear-tags may be combined with --add-tag to replace the whole set.
@@ -148,6 +152,7 @@ EXAMPLES
   hitch tasks link 0198c2a4 --harness codex --json
   hitch tasks add "Upgrade Node" --project Hitch --section Backlog --tag infra
   hitch tasks add "Fix flaky sync test" --body "Repro: run vitest twice in a row"
+  hitch tasks add --auto-title --body "Investigate the attached crash report"
   hitch tasks show 0198c2a4
   hitch tasks edit 0198c2a4 --section "In Progress" --add-tag active
   hitch tasks done 0198c2a4`;

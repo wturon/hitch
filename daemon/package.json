@@ -22,6 +22,7 @@
     "smoke:attachment": "tsx scripts/attachment-smoke.ts",
     "smoke:observer-boundary": "tsx scripts/observer-boundary-smoke.ts",
     "smoke:chat-title": "tsx scripts/chat-title-smoke.ts",
+    "smoke:task-title": "tsx scripts/task-title-smoke.ts",
     "smoke:codex-cmux-command": "tsx scripts/codex-cmux-command-smoke.ts",
     "smoke:observer-tail": "tsx scripts/observer-tail-smoke.ts",
     "smoke:v2-config": "tsx scripts/v2-config-smoke.ts",

@@ -1,5 +1,14 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, inArray, isNotNull, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  exists,
+  inArray,
+  isNotNull,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import { Hono } from "hono";
 
 import { requireAuth } from "../auth.js";
@@ -7,6 +16,7 @@ import { deriveChatStatus, type ChatBlock } from "../chatStatus.js";
 import type { AppEnv, Db } from "../context.js";
 import {
   assignments,
+  attachments,
   chatEvents,
   chats,
   harness as harnessEnum,
@@ -16,13 +26,21 @@ import {
 } from "../db/schema.js";
 import {
   assignmentObservationUpdate,
+  autoTitleComplete,
+  autoTitleListQuery,
   chatListQuery,
   chatSnapshot,
   idParam,
   machineHeartbeat,
   machineRegister,
 } from "../validation.js";
-import { notFound, ownedAssignment, ownedChat, ownedMachine, ownedProject } from "./helpers.js";
+import {
+  notFound,
+  ownedAssignment,
+  ownedChat,
+  ownedMachine,
+  ownedProject,
+} from "./helpers.js";
 
 type ChatRow = typeof chats.$inferSelect;
 type SnapshotHarness = (typeof harnessEnum.enumValues)[number];
@@ -121,6 +139,97 @@ export const daemonRoutes = new Hono<AppEnv>()
         .where(eq(machines.id, id))
         .returning();
       return c.json(row);
+    },
+  )
+  // ─── Task auto-titles ------------------------------------------------------
+  // A non-null seed equal to the current title is the complete durable intent.
+  // Multiple daemons may generate concurrently; the atomic completion CAS
+  // makes all but the first harmless no-ops.
+  .get("/auto-titles", zValidator("query", autoTitleListQuery), async (c) => {
+    const { requesting_machine_id: machineId, limit } = c.req.valid("query");
+    const machine = await ownedMachine(c.var.db, c.var.userId, machineId);
+    if (!machine) return c.json(notFound, 404);
+    const db = c.var.db;
+    const rows = await db
+      .select({ task: tasks })
+      .from(tasks)
+      .innerJoin(projects, eq(tasks.projectId, projects.id))
+      .where(
+        and(
+          eq(projects.userId, c.var.userId),
+          isNotNull(tasks.autoTitleSeed),
+          eq(tasks.title, tasks.autoTitleSeed),
+        ),
+      )
+      .orderBy(asc(tasks.createdAt))
+      .limit(limit);
+    const taskIds = rows.map(({ task }) => task.id);
+    const files =
+      taskIds.length === 0
+        ? []
+        : await db
+            .select()
+            .from(attachments)
+            .where(
+              and(
+                inArray(attachments.taskId, taskIds),
+                eq(attachments.state, "finalized"),
+              ),
+            )
+            .orderBy(attachments.createdAt);
+    return c.json(
+      rows.map(({ task }) => ({
+        task,
+        attachments: files.filter((file) => file.taskId === task.id),
+      })),
+    );
+  })
+  .post(
+    "/auto-titles/:id/complete",
+    zValidator("param", idParam),
+    zValidator("json", autoTitleComplete),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const { machineId, title } = c.req.valid("json");
+      const db = c.var.db;
+      const [row] = await db
+        .update(tasks)
+        .set({
+          ...(title === null ? {} : { title }),
+          autoTitleSeed: null,
+        })
+        .where(
+          and(
+            eq(tasks.id, id),
+            isNotNull(tasks.autoTitleSeed),
+            eq(tasks.title, tasks.autoTitleSeed),
+            exists(
+              db
+                .select({ id: projects.id })
+                .from(projects)
+                .where(
+                  and(
+                    eq(projects.id, tasks.projectId),
+                    eq(projects.userId, c.var.userId),
+                  ),
+                ),
+            ),
+            exists(
+              db
+                .select({ id: machines.id })
+                .from(machines)
+                .where(
+                  and(
+                    eq(machines.id, machineId),
+                    eq(machines.userId, c.var.userId),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .returning();
+      if (!row) return c.json({ error: "auto-title no longer active" }, 409);
+      return c.json({ task: row, applied: title !== null });
     },
   )
   // The daemon's read of its own chats: the reconciler resolves an assignment's
