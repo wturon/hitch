@@ -54,18 +54,16 @@ export function resolvePromptTemplate(template: string, task: PromptTask): strin
   });
 }
 
-// The orienting header every built-in prompt opens with: who you are, the task
-// verbatim, and how to write back. Exported (through @hitch/shared) so the
-// desktop's built-in presets are built from this exact text rather than a
-// second copy of it — a preset is framing + one instruction stanza.
+// The orienting header every built-in prompt opens with: who you are and the
+// task verbatim. Exported (through @hitch/shared) so the desktop's built-in
+// presets are built from this exact text rather than a second copy of it — a
+// preset is framing + one instruction stanza.
 export const PROMPT_TEMPLATE_FRAMING = [
   `You're picking up the Hitch task "$TASK_TITLE".`,
   "",
   "$TASK_BODY",
   "",
   "Task id: $TASK_ID",
-  "The `hitch` CLI can read this task, comment on it, and mark it done — run" +
-    " `hitch --help` to see how.",
 ].join("\n");
 
 // Used when an assignment is created without a template at all (the CLI and

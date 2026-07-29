@@ -80,6 +80,8 @@ describe("the shipped templates", () => {
     expect(resolved).toContain('"Fix the login bug"');
     expect(resolved).toContain("Do the thing.");
     expect(resolved).toContain("Task id: task-123");
+    expect(resolved).not.toContain("hitch");
+    expect(resolved).not.toMatch(/\bmark(?: it| the task)? done\b/i);
     // Nothing left unsubstituted — a stray $TASK_ would reach the agent raw.
     expect(resolved).not.toContain("$TASK_");
   });

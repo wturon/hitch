@@ -118,7 +118,8 @@ const CODEX_GPT_5_6_REASONING: LaunchOption[] = [
 export const MODELS_BY_HARNESS: Record<Harness, ModelOption[]> = {
   "claude-code": [
     { id: "claude-fable-5", label: "Fable 5" },
-    { id: "claude-opus-4-8", label: "Opus 4.8", default: true },
+    { id: "claude-opus-5", label: "Opus 5", default: true },
+    { id: "claude-opus-4-8", label: "Opus 4.8" },
     { id: "claude-opus-4-7", label: "Opus 4.7" },
     { id: "claude-opus-4-6", label: "Opus 4.6" },
     { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
@@ -304,8 +305,8 @@ export function promptDescription(prompt: StartingPrompt): string {
 // instructions yet"); otherwise fall back to the LAST paragraph, since an
 // instruction stanza comes after the task in every shape we ship. The exact
 // prefix alone wasn't enough: editing one word of the framing — or deleting the
-// `hitch` CLI line, which the seeded draft rather invites — put every prompt
-// back to describing itself with the same shared boilerplate.
+// task id line, which the seeded draft rather invites — put every prompt back
+// to describing itself with the same shared boilerplate.
 function describableRemainder(body: string): string {
   if (body.startsWith(PROMPT_TEMPLATE_FRAMING)) {
     return body.slice(PROMPT_TEMPLATE_FRAMING.length);
@@ -314,10 +315,10 @@ function describableRemainder(body: string): string {
   return paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : "";
 }
 
-// A complete template: the shared framing (task title, body, id, CLI pointer)
-// followed by the stanza that says what to DO. Built-ins are assembled this way
-// so the framing has exactly one definition, on the server, next to the
-// resolver that substitutes it.
+// A complete template: the shared framing (task title, body, id) followed by the
+// stanza that says what to DO. Built-ins are assembled this way so the framing
+// has exactly one definition, on the server, next to the resolver that
+// substitutes it.
 export function withPromptFraming(instruction: string): string {
   return `${PROMPT_TEMPLATE_FRAMING}\n\n${instruction}`;
 }
@@ -330,7 +331,7 @@ export function withPromptFraming(instruction: string): string {
 // strip any built-in a user previously had seeded into their stored library.
 // Each body is a COMPLETE template: shared framing + one instruction stanza. The
 // stanzas are unchanged from when a hidden preamble supplied the framing — they
-// reference "this task" and drive the agent via the `hitch` CLI, never a file.
+// reference "this task" rather than a file.
 export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
   {
     id: "default-execute",
@@ -355,7 +356,7 @@ export const BUILTIN_STARTING_PROMPTS: StartingPrompt[] = [
         "Don't start implementation yet. Help me turn this task into a clear, self-contained brief that a fresh agent with no context can execute confidently.",
         "First, investigate. Read the task description above and explore the repo for anything relevant: existing code, patterns, and the files this would likely touch.",
         'Then interview me. Ask your most important clarifying questions, and keep going until we share an unambiguous understanding of the goal, what "done" looks like, the scope boundaries, and any constraints.',
-        "When we agree it's fully specified, rewrite the task's description so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Save it with `hitch tasks edit $TASK_ID` (pass the new description via --body-file or piped stdin — run `hitch tasks --help` for the exact flags), then confirm when you've updated it.",
+        "When we agree it's fully specified, rewrite the task's description so it stands on its own: goal, the relevant context and files you found, concrete acceptance criteria, and anything explicitly out of scope. Give me the finished description to review and apply to the task.",
       ].join("\n\n"),
     ),
   },
