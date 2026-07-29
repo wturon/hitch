@@ -41,3 +41,10 @@ export function deriveTitleFromBody(body: string, maxWords = 6): string {
 export function taskTitleSeed(body: string): string {
   return deriveTitleFromBody(body) || "Untitled";
 }
+
+export function isAutoTitlePending(task: {
+  title: string;
+  autoTitleSeed?: string | null;
+}): boolean {
+  return task.autoTitleSeed != null && task.title === task.autoTitleSeed;
+}

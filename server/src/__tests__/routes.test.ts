@@ -694,8 +694,41 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
         await api(USER_A, "GET", `/tasks/${second.id}`),
       );
       expect(unchanged.title).toBe("My deliberate title");
-      expect(unchanged.autoTitleSeed).toBe("Provisional second title");
+      expect(unchanged.autoTitleSeed).toBeNull();
 
+      const restoredTitle = await api(USER_A, "PATCH", `/tasks/${second.id}`, {
+        title: "Provisional second title",
+      });
+      expect(restoredTitle.status).toBe(200);
+      expect((await json(restoredTitle)).autoTitleSeed).toBeNull();
+      const afterRestore = await json(
+        await api(
+          USER_A,
+          "GET",
+          `/daemon/auto-titles?requesting_machine_id=${machine.id}`,
+        ),
+      );
+      expect(afterRestore).not.toContainEqual(
+        expect.objectContaining({
+          task: expect.objectContaining({ id: second.id }),
+        }),
+      );
+
+      const mismatchedPatch = await api(
+        USER_A,
+        "PATCH",
+        `/tasks/${second.id}`,
+        {
+          title: "Mismatch title",
+          autoTitleSeed: "Different seed",
+        },
+      );
+      expect(mismatchedPatch.status).toBe(400);
+
+      const requested = await api(USER_A, "PATCH", `/tasks/${second.id}`, {
+        autoTitleSeed: "Provisional second title",
+      });
+      expect(requested.status).toBe(200);
       const canceled = await api(USER_A, "PATCH", `/tasks/${second.id}`, {
         autoTitleSeed: null,
       });

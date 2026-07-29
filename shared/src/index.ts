@@ -8,6 +8,7 @@ export const HITCH_API_VERSION = 1;
 export {
   DEFAULT_TEXT_GENERATION_MODEL,
   deriveTitleFromBody,
+  isAutoTitlePending,
   isTextGenerationModel,
   taskTitleSeed,
   TEXT_GENERATION_MODELS,

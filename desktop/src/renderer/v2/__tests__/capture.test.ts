@@ -1,15 +1,17 @@
-// Pure capture helpers: the sortOrder prepend, the seed title (deriveTitleFromBody
-// + captureSeedTitle's "Untitled" fallback), and the body-verbatim normalization
-// (CRLF only — capture text is sacred).
+// Pure capture helpers: sort-order prepend and body-verbatim normalization,
+// plus the shared title derivation used by every capture surface.
 import { describe, expect, it } from "vitest";
 import { generateKeyBetween } from "fractional-indexing";
 
 import {
-  captureSeedTitle,
   captureSortOrder,
-  deriveTitleFromBody,
   normalizeCaptureBody,
 } from "../capture";
+import {
+  deriveTitleFromBody,
+  isAutoTitlePending,
+  taskTitleSeed,
+} from "@hitch/shared/taskTitles";
 
 // The capture flow's title mechanism. Invariant: capture text is sacred; the
 // title is additive metadata derived NON-DESTRUCTIVELY from the body's first ~6
@@ -91,16 +93,30 @@ describe("captureSortOrder", () => {
   });
 });
 
-describe("captureSeedTitle", () => {
+describe("taskTitleSeed", () => {
   it("is deriveTitleFromBody, reused — not a copy", () => {
     const body = "## Fix the **drag ghost** on the board\nmore detail";
-    expect(captureSeedTitle(body)).toBe(deriveTitleFromBody(body));
+    expect(taskTitleSeed(body)).toBe(deriveTitleFromBody(body));
   });
 
   it("falls back to Untitled when the body has no words", () => {
     // deriveTitleFromBody strips markdown marks, so a symbols-only body
     // derives to "" — but the server requires a non-empty title.
-    expect(captureSeedTitle("***")).toBe("Untitled");
+    expect(taskTitleSeed("***")).toBe("Untitled");
+  });
+});
+
+describe("isAutoTitlePending", () => {
+  it("requires a non-null seed equal to the current title", () => {
+    expect(
+      isAutoTitlePending({ title: "Seed", autoTitleSeed: "Seed" }),
+    ).toBe(true);
+    expect(
+      isAutoTitlePending({ title: "Renamed", autoTitleSeed: "Seed" }),
+    ).toBe(false);
+    expect(isAutoTitlePending({ title: "Seed", autoTitleSeed: null })).toBe(
+      false,
+    );
   });
 });
 

@@ -1,10 +1,4 @@
 import { generateKeyBetween } from "fractional-indexing";
-import {
-  deriveTitleFromBody,
-  taskTitleSeed,
-} from "@hitch/shared/taskTitles";
-
-export { deriveTitleFromBody };
 
 // Pure capture helpers for TaskDialogV2 (M2 PR 3). No React, no HTTP —
 // unit-testable in isolation.
@@ -20,14 +14,6 @@ export { deriveTitleFromBody };
 // untouched (routes/tasks.ts).
 export function normalizeCaptureBody(text: string): string {
   return text.replace(/\r\n/g, "\n");
-}
-
-// The seed title: the body's first ~6 words with leading/inline markdown
-// stripped. Falls back to "Untitled" when the body has no words (e.g. symbols
-// only): the server requires a non-empty title, and "Untitled" is what the
-// dialog header shows for an empty one anyway.
-export function captureSeedTitle(body: string): string {
-  return taskTitleSeed(body);
 }
 
 // The sortOrder for a captured task: a fractional-index key BEFORE the current

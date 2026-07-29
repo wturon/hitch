@@ -116,6 +116,10 @@ export const taskRoutes = new Hono<AppEnv>()
         return c.json({ error: "auto-title seed must match title" }, 400);
       }
       updates.autoTitleSeed = patch.autoTitleSeed;
+    } else if (patch.title !== undefined && patch.title !== existing.title) {
+      // A rename ends the pending request outright. Leaving the old seed would
+      // let changing the title back later silently resurrect auto-naming.
+      updates.autoTitleSeed = null;
     }
 
     let targetProjectId = existing.projectId;

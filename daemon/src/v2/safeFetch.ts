@@ -8,6 +8,37 @@ export interface BoundedResponse {
   contentType: string;
 }
 
+interface ByteReader {
+  read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+  cancel: () => Promise<void>;
+}
+
+async function readBounded(
+  reader: ByteReader,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error("response too large");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 function privateAddress(address: string): boolean {
   const normalized = address.toLowerCase();
   if (
@@ -66,41 +97,43 @@ async function pinnedPublicAddress(url: URL): Promise<{
   return { ...addresses[0], hostname };
 }
 
-function collectResponse(
+async function collectResponse(
   response: IncomingMessage,
   maxBytes: number,
 ): Promise<BoundedResponse & { status: number; location?: string }> {
-  return new Promise((resolve, reject) => {
-    const declared = Number(response.headers["content-length"] ?? "0");
-    if (declared > maxBytes) {
-      response.destroy();
-      reject(new Error("response too large"));
-      return;
-    }
-    const chunks: Buffer[] = [];
-    let total = 0;
-    response.on("data", (chunk: Buffer) => {
-      total += chunk.byteLength;
-      if (total > maxBytes) {
-        response.destroy(new Error("response too large"));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    response.on("error", reject);
-    response.on("end", () => {
-      const contentType = response.headers["content-type"];
-      const location = response.headers.location;
-      resolve({
-        bytes: Buffer.concat(chunks),
-        contentType: Array.isArray(contentType)
-          ? (contentType[0] ?? "")
-          : (contentType ?? ""),
-        status: response.statusCode ?? 0,
-        ...(typeof location === "string" ? { location } : {}),
-      });
-    });
-  });
+  const declared = Number(response.headers["content-length"] ?? "0");
+  if (declared > maxBytes) {
+    response.destroy();
+    throw new Error("response too large");
+  }
+  const iterator = response[Symbol.asyncIterator]();
+  const bytes = await readBounded(
+    {
+      read: async () => {
+        const next = await iterator.next();
+        return {
+          done: next.done ?? false,
+          ...(next.value
+            ? { value: new Uint8Array(next.value as Uint8Array) }
+            : {}),
+        };
+      },
+      cancel: async () => {
+        response.destroy();
+      },
+    },
+    maxBytes,
+  );
+  const contentType = response.headers["content-type"];
+  const location = response.headers.location;
+  return {
+    bytes,
+    contentType: Array.isArray(contentType)
+      ? (contentType[0] ?? "")
+      : (contentType ?? ""),
+    status: response.statusCode ?? 0,
+    ...(typeof location === "string" ? { location } : {}),
+  };
 }
 
 async function requestPinned(
@@ -149,6 +182,8 @@ export async function fetchPublicBytes(
   const timeout = new Promise<never>((_resolve, reject) => {
     rejectTimeout = reject;
   });
+  // AbortSignal bounds the socket request, while this explicit race also
+  // bounds dns.lookup, which does not accept that signal.
   const timer = setTimeout(() => {
     controller.abort();
     rejectTimeout(new Error("fetch timed out"));
@@ -195,24 +230,13 @@ export async function fetchTrustedBytes(
     const declared = Number(response.headers.get("content-length") ?? "0");
     if (declared > options.maxBytes) throw new Error("response too large");
     const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > options.maxBytes) {
-        await reader.cancel();
-        throw new Error("response too large");
-      }
-      chunks.push(value);
-    }
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
+    const bytes = await readBounded(
+      {
+        read: () => reader.read(),
+        cancel: () => reader.cancel(),
+      },
+      options.maxBytes,
+    );
     return {
       bytes,
       contentType: response.headers.get("content-type") ?? "",

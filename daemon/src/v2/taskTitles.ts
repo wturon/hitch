@@ -38,6 +38,13 @@ export interface TitleAttachment {
   imagePath?: string;
 }
 
+export class NoTextGenerationProviderError extends Error {
+  constructor() {
+    super("Neither Codex nor Claude CLI is available");
+    this.name = "NoTextGenerationProviderError";
+  }
+}
+
 function limited(value: string, max: number): string {
   if (value.length <= max) return value;
   return `${value.slice(0, max)}\n[truncated]`;
@@ -250,7 +257,7 @@ export async function generateTaskTitle(options: {
     },
     claude: {
       binary: claudeBin(env),
-      run: (_model: TextGenerationModel) => generateViaClaude(prompt, env),
+      run: () => generateViaClaude(prompt, env),
     },
   } satisfies Record<
     TextGenerationProvider,
@@ -268,5 +275,5 @@ export async function generateTaskTitle(options: {
       model,
     };
   }
-  throw new Error("Neither Codex nor Claude CLI is available");
+  throw new NoTextGenerationProviderError();
 }

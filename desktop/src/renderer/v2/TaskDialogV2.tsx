@@ -18,7 +18,11 @@ import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { useGrowAnimation } from "@/components/capture/useGrowAnimation";
 import { MarkdownEditor, type MarkdownEditorHandle } from "@/editor";
 import type { HitchClient } from "@/lib/server/client";
-import { normalizeCaptureBody, captureSeedTitle, captureSortOrder } from "./capture";
+import {
+  isAutoTitlePending,
+  taskTitleSeed,
+} from "@hitch/shared/taskTitles";
+import { normalizeCaptureBody, captureSortOrder } from "./capture";
 import { DialogTagLaneV2, type DialogTagLaneV2Props } from "./DialogTagLaneV2";
 import {
   clearCaptureDraft,
@@ -311,7 +315,7 @@ function TaskBodyV2({
     if (captured.trim() === "" && !already) return; // ⌘⏎ on empty = no-op
 
     const body = normalizeCaptureBody(captured);
-    const title = captureSeedTitle(body) || "Untitled";
+    const title = taskTitleSeed(body);
     docRef.current.setTitle(title);
     if (body !== captured) docRef.current.setBody(body);
 
@@ -397,7 +401,7 @@ function TaskBodyV2({
     attachmentsRef,
     materializeEarly: async () => {
       const body = normalizeCaptureBody(docRef.current.body);
-      const title = captureSeedTitle(body) || "Untitled";
+      const title = taskTitleSeed(body);
       const response = await client.tasks.$post({
         json: {
           projectId,
@@ -484,8 +488,8 @@ function TaskBodyV2({
 
   const autoTitleActive =
     !titleClaimed &&
-    existing?.autoTitleSeed != null &&
-    existing.title === existing.autoTitleSeed;
+    existing != null &&
+    isAutoTitlePending(existing);
 
   return (
     <div ref={rootRef}>

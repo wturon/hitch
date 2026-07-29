@@ -8,6 +8,7 @@ import type { HitchClient } from "./serverClient.js";
 import { SerialLoop, type DaemonLogger } from "./serialLoop.js";
 import {
   generateTaskTitle,
+  NoTextGenerationProviderError,
   type TaskTitleContext,
   type TitleAttachment,
 } from "./taskTitles.js";
@@ -23,6 +24,7 @@ const MAX_LINKS = 2;
 const MAX_ATTACHMENTS = 6;
 const MAX_IMAGES = 2;
 const BATCH_SIZE = 5;
+const MAX_GENERATION_ATTEMPTS = 3;
 const MAX_EXTENSION_LENGTH = 12;
 
 interface WireTask {
@@ -176,6 +178,7 @@ async function buildContext(options: {
 
 export class AutoTitleWorker {
   private readonly loop: SerialLoop;
+  private readonly attemptsByTask = new Map<string, number>();
 
   constructor(
     private readonly options: {
@@ -184,6 +187,7 @@ export class AutoTitleWorker {
       logger: DaemonLogger;
       env?: NodeJS.ProcessEnv;
       tickMs?: number;
+      generateTitle?: typeof generateTaskTitle;
     },
   ) {
     this.loop = new SerialLoop({
@@ -233,7 +237,7 @@ export class AutoTitleWorker {
     try {
       const built = await buildContext({ client, request });
       tempDir = built.tempDir;
-      const generated = await generateTaskTitle({
+      const generated = await (this.options.generateTitle ?? generateTaskTitle)({
         context: built.context,
         env: this.options.env,
       });
@@ -242,6 +246,7 @@ export class AutoTitleWorker {
         json: { machineId, title: generated.title },
       });
       if (response.status === 409) {
+        this.attemptsByTask.delete(request.task.id);
         logger.info(
           `[hitch] discarded late auto-title for task ${request.task.id.slice(0, 8)}`,
         );
@@ -250,20 +255,35 @@ export class AutoTitleWorker {
       if (!response.ok) {
         throw new Error(`auto-title complete failed (${response.status})`);
       }
+      this.attemptsByTask.delete(request.task.id);
       logger.info(
         `[hitch] auto-titled task ${request.task.id.slice(0, 8)} → ${generated.title} (${generated.model})`,
       );
     } catch (error) {
-      // Clear the seed atomically so a missing subscription or malformed file
-      // does not retry every fallback tick. A concurrent user edit still wins.
-      await client.daemon["auto-titles"][":id"].complete
-        .$post({
-          param: { id: request.task.id },
-          json: { machineId, title: null },
-        })
-        .catch(() => undefined);
+      const attempts = (this.attemptsByTask.get(request.task.id) ?? 0) + 1;
+      const permanent = error instanceof NoTextGenerationProviderError;
+      const exhausted = attempts >= MAX_GENERATION_ATTEMPTS;
+      if (permanent || exhausted) {
+        this.attemptsByTask.delete(request.task.id);
+        // Clear atomically after a permanent failure or the bounded retry
+        // budget. A concurrent user edit still wins the server-side CAS.
+        await client.daemon["auto-titles"][":id"].complete
+          .$post({
+            param: { id: request.task.id },
+            json: { machineId, title: null },
+          })
+          .catch(() => undefined);
+      } else {
+        this.attemptsByTask.set(request.task.id, attempts);
+      }
       logger.error?.(
-        `[hitch] auto-title ${request.task.id.slice(0, 8)} failed: ${String(error)}`,
+        `[hitch] auto-title ${request.task.id.slice(0, 8)} failed` +
+          (permanent
+            ? " permanently"
+            : exhausted
+              ? ` after ${attempts} attempts`
+              : `; retry ${attempts + 1}/${MAX_GENERATION_ATTEMPTS} next tick`) +
+          `: ${String(error)}`,
       );
     } finally {
       if (tempDir) {
