@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  chatsByTaskId,
+  chatsForTask,
   deriveTaskGroups,
-  harnessChipState,
-  latestAssignmentByTaskId,
-  taskAttention,
+  partitionLaneChats,
+  rowState,
+  taskAttentionFromChats,
   type AttentionAssignment,
+  type HarnessChipState,
   type TaskRow,
 } from "../todoGroups";
 
@@ -146,37 +149,90 @@ function assignment(
   };
 }
 
-describe("taskAttention", () => {
-  it("maps waiting_input → input", () => {
-    expect(taskAttention({ observedState: "waiting_input", reviewedAt: null })).toBe("input");
-  });
+// The observed_state → chip mapping is no longer exported on its own — a chat
+// carries its already-mapped state, so a one-assignment lane is how you read the
+// mapping. `null` means the chat was dropped (nothing to open).
+function stateOf(
+  overrides: Partial<AttentionAssignment> & Pick<AttentionAssignment, "observedState">,
+): HarnessChipState | null {
+  const a = assignment({ taskId: "solo", ...overrides });
+  return chatsForTask([a], "solo")[0]?.state ?? null;
+}
 
-  it("maps in-flight states (pending/spawning/running) → working", () => {
+describe("chatsForTask (the observed_state → chip mapping)", () => {
+  it("maps every in-flight state to one working chip", () => {
+    // The row used to distinguish "Spawning…" from "Working"; the chip
+    // deliberately does not — at 22px they are the same fact.
     for (const observedState of ["pending", "spawning", "running"] as const) {
-      expect(taskAttention({ observedState, reviewedAt: null })).toBe("working");
+      expect(stateOf({ observedState })).toBe("working");
     }
   });
 
-  it("maps done → review only while unreviewed; acked done → null", () => {
-    expect(taskAttention({ observedState: "done", reviewedAt: null })).toBe("review");
-    expect(
-      taskAttention({ observedState: "done", reviewedAt: "2026-07-22T11:00:00.000Z" }),
-    ).toBeNull();
+  it("maps waiting_input → needs-you", () => {
+    expect(stateOf({ observedState: "waiting_input" })).toBe("needs-you");
   });
 
-  it("maps dead and absent → null (backlog, re-delegate in the dialog)", () => {
-    expect(taskAttention({ observedState: "dead", reviewedAt: null })).toBeNull();
-    expect(taskAttention(null)).toBeNull();
-    expect(taskAttention(undefined)).toBeNull();
+  it("treats a finished-but-unreviewed agent as needing you", () => {
+    // The state V1's chip never had: it was the row's "Mark reviewed" button.
+    expect(stateOf({ observedState: "done", reviewedAt: null })).toBe("needs-you");
   });
-});
 
-describe("latestAssignmentByTaskId", () => {
-  it("keeps the most-recently-created assignment per task", () => {
-    const t = "task-x";
+  it("falls back to idle once reviewed — the chat is still openable", () => {
+    expect(stateOf({ observedState: "done", reviewedAt: "2026-07-26T00:00:00Z" })).toBe(
+      "idle",
+    );
+  });
+
+  it("DROPS a dead launch — it never produced a chat, so there is nothing to open", () => {
+    const dead = assignment({ taskId: "t", observedState: "dead" });
+    expect(chatsForTask([dead], "t")).toEqual([]);
+  });
+
+  it("returns an empty lane for no assignments at all", () => {
+    expect(chatsForTask(undefined, "t")).toEqual([]);
+    expect(chatsForTask([], "t")).toEqual([]);
+  });
+
+  it("takes only the requested task's assignments", () => {
+    const mine = assignment({ taskId: "mine", observedState: "running" });
+    const theirs = assignment({ taskId: "theirs", observedState: "running" });
+    expect(chatsForTask([mine, theirs], "mine").map((c) => c.assignment.id)).toEqual([
+      mine.id,
+    ]);
+  });
+
+  it("bands by demand — needs-you, then working, then idle — regardless of recency", () => {
+    // The newest chat here is the IDLE one; band order must still put the one
+    // that wants a human first, because the row's chip speaks for the head.
+    const t = "task-multi";
+    const idle = assignment({
+      taskId: t,
+      observedState: "done",
+      reviewedAt: "2026-07-26T00:00:00.000Z",
+      createdAt: "2026-07-22T15:00:00.000Z",
+    });
+    const working = assignment({
+      taskId: t,
+      observedState: "running",
+      createdAt: "2026-07-22T14:00:00.000Z",
+    });
+    const blocked = assignment({
+      taskId: t,
+      observedState: "waiting_input",
+      createdAt: "2026-07-22T09:00:00.000Z",
+    });
+    expect(chatsForTask([idle, working, blocked], t).map((c) => c.state)).toEqual([
+      "needs-you",
+      "working",
+      "idle",
+    ]);
+  });
+
+  it("orders newest-first INSIDE a band", () => {
+    const t = "task-band";
     const older = assignment({
       taskId: t,
-      observedState: "dead",
+      observedState: "running",
       createdAt: "2026-07-22T09:00:00.000Z",
     });
     const newer = assignment({
@@ -184,44 +240,330 @@ describe("latestAssignmentByTaskId", () => {
       observedState: "running",
       createdAt: "2026-07-22T12:00:00.000Z",
     });
-    const map = latestAssignmentByTaskId([older, newer]);
-    expect(map.get(t)?.id).toBe(newer.id);
+    expect(chatsForTask([older, newer], t).map((c) => c.assignment.id)).toEqual([
+      newer.id,
+      older.id,
+    ]);
+    // Input order must not matter — the comparator is the only ordering.
+    expect(chatsForTask([newer, older], t).map((c) => c.assignment.id)).toEqual([
+      newer.id,
+      older.id,
+    ]);
+  });
+
+  it("parses createdAt as an epoch rather than sorting ISO strings", () => {
+    // Same instant, two legal spellings plus a Date (the optimistic-cache
+    // shape): a lexicographic sort would order these arbitrarily.
+    const t = "task-epoch";
+    const older = assignment({
+      taskId: t,
+      observedState: "running",
+      createdAt: new Date("2026-07-22T09:00:00.000Z"),
+    });
+    const newer = assignment({
+      taskId: t,
+      observedState: "running",
+      // No millis and a "+00:00" offset — still the later instant.
+      createdAt: "2026-07-22T11:30:00+00:00",
+    });
+    expect(chatsForTask([older, newer], t).map((c) => c.assignment.id)).toEqual([
+      newer.id,
+      older.id,
+    ]);
+  });
+
+  it("breaks exact createdAt ties by id DESC for a total order", () => {
+    // uuidv7 ids are creation-ordered, so id DESC continues "newest first" —
+    // and it never jumps between refetches of identical data.
+    const t = "task-tie";
+    const at = "2026-07-22T10:00:00.000Z";
+    const a = assignment({ taskId: t, observedState: "running", createdAt: at, id: "a" });
+    const b = assignment({ taskId: t, observedState: "running", createdAt: at, id: "b" });
+    expect(chatsForTask([a, b], t).map((c) => c.assignment.id)).toEqual(["b", "a"]);
+    expect(chatsForTask([b, a], t).map((c) => c.assignment.id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("chatsByTaskId", () => {
+  it("folds every task in one pass, with chatsForTask's exact ordering", () => {
+    const one = assignment({
+      taskId: "t1",
+      observedState: "running",
+      createdAt: "2026-07-22T09:00:00.000Z",
+    });
+    const two = assignment({
+      taskId: "t1",
+      observedState: "waiting_input",
+      createdAt: "2026-07-22T08:00:00.000Z",
+    });
+    const other = assignment({ taskId: "t2", observedState: "running" });
+    const map = chatsByTaskId([one, two, other]);
+    expect(map.get("t1")).toEqual(chatsForTask([one, two, other], "t1"));
+    expect(map.get("t1")?.map((c) => c.state)).toEqual(["needs-you", "working"]);
+    expect(map.get("t2")).toHaveLength(1);
+  });
+
+  it("gives a task with only dead assignments NO entry (so get() is absent = no chip)", () => {
+    const map = chatsByTaskId([
+      assignment({ taskId: "gone", observedState: "dead" }),
+      assignment({ taskId: "gone", observedState: "dead" }),
+    ]);
+    expect(map.has("gone")).toBe(false);
   });
 
   it("returns an empty map for no assignments", () => {
-    expect(latestAssignmentByTaskId(undefined).size).toBe(0);
-    expect(latestAssignmentByTaskId([]).size).toBe(0);
+    expect(chatsByTaskId(undefined).size).toBe(0);
+    expect(chatsByTaskId([]).size).toBe(0);
+  });
+});
+
+describe("rowState", () => {
+  it("reduces by severity, not recency: working + needs-you → needs-you", () => {
+    // The bug this exists to kill — a row saying "Working" while a second agent
+    // on the same task sits blocked on the user.
+    const t = "task-mixed";
+    const chats = chatsForTask(
+      [
+        assignment({
+          taskId: t,
+          observedState: "running",
+          createdAt: "2026-07-22T14:00:00.000Z",
+        }),
+        assignment({
+          taskId: t,
+          observedState: "waiting_input",
+          createdAt: "2026-07-22T09:00:00.000Z",
+        }),
+      ],
+      t,
+    );
+    expect(rowState(chats)).toBe("needs-you");
+  });
+
+  it("prefers working over idle", () => {
+    const t = "task-idle-plus";
+    const chats = chatsForTask(
+      [
+        assignment({
+          taskId: t,
+          observedState: "done",
+          reviewedAt: "2026-07-26T00:00:00.000Z",
+          createdAt: "2026-07-22T15:00:00.000Z",
+        }),
+        assignment({
+          taskId: t,
+          observedState: "pending",
+          createdAt: "2026-07-22T08:00:00.000Z",
+        }),
+      ],
+      t,
+    );
+    expect(rowState(chats)).toBe("working");
+  });
+
+  it("reports idle when every chat is finished and acked", () => {
+    const t = "task-quiet";
+    const chats = chatsForTask(
+      [
+        assignment({
+          taskId: t,
+          observedState: "done",
+          reviewedAt: "2026-07-26T00:00:00.000Z",
+        }),
+      ],
+      t,
+    );
+    expect(rowState(chats)).toBe("idle");
+  });
+
+  it("shows nothing when the task has no chats (never delegated, or all dead)", () => {
+    expect(rowState(undefined)).toBeNull();
+    expect(rowState([])).toBeNull();
+    const allDead = chatsForTask([assignment({ taskId: "t", observedState: "dead" })], "t");
+    expect(rowState(allDead)).toBeNull();
+  });
+});
+
+describe("taskAttentionFromChats", () => {
+  // Build a lane for one task straight from its assignment overrides.
+  const lane = (
+    ...states: (Partial<AttentionAssignment> &
+      Pick<AttentionAssignment, "observedState">)[]
+  ) =>
+    chatsForTask(
+      states.map((s) => assignment({ taskId: "t", ...s })),
+      "t",
+    );
+
+  it("maps waiting_input → input", () => {
+    expect(taskAttentionFromChats(lane({ observedState: "waiting_input" }))).toBe("input");
+  });
+
+  it("maps in-flight states (pending/spawning/running) → working", () => {
+    for (const observedState of ["pending", "spawning", "running"] as const) {
+      expect(taskAttentionFromChats(lane({ observedState }))).toBe("working");
+    }
+  });
+
+  it("maps done → review only while unreviewed; acked done → null", () => {
+    expect(taskAttentionFromChats(lane({ observedState: "done", reviewedAt: null }))).toBe(
+      "review",
+    );
+    expect(
+      taskAttentionFromChats(
+        lane({ observedState: "done", reviewedAt: "2026-07-22T11:00:00.000Z" }),
+      ),
+    ).toBeNull();
+  });
+
+  it("maps dead and absent → null (backlog, re-delegate in the dialog)", () => {
+    expect(taskAttentionFromChats(lane({ observedState: "dead" }))).toBeNull();
+    expect(taskAttentionFromChats(undefined)).toBeNull();
+    expect(taskAttentionFromChats([])).toBeNull();
+  });
+
+  it("ORs across chats: attention beats working", () => {
+    expect(
+      taskAttentionFromChats(
+        lane({ observedState: "running" }, { observedState: "done", reviewedAt: null }),
+      ),
+    ).toBe("review");
+    expect(
+      taskAttentionFromChats(
+        lane({ observedState: "running" }, { observedState: "waiting_input" }),
+      ),
+    ).toBe("input");
+  });
+
+  it("prefers input over review when both are present", () => {
+    // A live agent waiting on a reply is a stalled conversation; a finished one
+    // is only waiting to be acked.
+    expect(
+      taskAttentionFromChats(
+        lane(
+          { observedState: "done", reviewedAt: null },
+          { observedState: "waiting_input" },
+        ),
+      ),
+    ).toBe("input");
+    // Order-independent — the fold, not the lane, decides.
+    expect(
+      taskAttentionFromChats(
+        lane(
+          { observedState: "waiting_input" },
+          { observedState: "done", reviewedAt: null },
+        ),
+      ),
+    ).toBe("input");
+  });
+
+  it("ignores acked-done and dead chats next to a live one", () => {
+    expect(
+      taskAttentionFromChats(
+        lane(
+          { observedState: "done", reviewedAt: "2026-07-22T11:00:00.000Z" },
+          { observedState: "dead" },
+          { observedState: "running" },
+        ),
+      ),
+    ).toBe("working");
+  });
+});
+
+describe("partitionLaneChats", () => {
+  it("splits still-in-play chats from acked history, preserving order", () => {
+    const t = "task-lane";
+    const chats = chatsForTask(
+      [
+        assignment({
+          taskId: t,
+          observedState: "waiting_input",
+          createdAt: "2026-07-22T09:00:00.000Z",
+          id: "blocked",
+        }),
+        assignment({
+          taskId: t,
+          observedState: "running",
+          createdAt: "2026-07-22T10:00:00.000Z",
+          id: "live",
+        }),
+        assignment({
+          taskId: t,
+          observedState: "done",
+          reviewedAt: "2026-07-26T00:00:00.000Z",
+          createdAt: "2026-07-22T12:00:00.000Z",
+          id: "old-new",
+        }),
+        assignment({
+          taskId: t,
+          observedState: "done",
+          reviewedAt: "2026-07-26T00:00:00.000Z",
+          createdAt: "2026-07-22T11:00:00.000Z",
+          id: "old-old",
+        }),
+      ],
+      t,
+    );
+    const { visible, earlier } = partitionLaneChats(chats);
+    expect(visible.map((c) => c.assignment.id)).toEqual(["blocked", "live"]);
+    expect(earlier.map((c) => c.assignment.id)).toEqual(["old-new", "old-old"]);
+  });
+
+  it("returns two empty sides for an empty lane", () => {
+    expect(partitionLaneChats([])).toEqual({ visible: [], earlier: [] });
   });
 });
 
 describe("deriveTaskGroups with attention", () => {
-  it("buckets open tasks by their latest assignment's attention", () => {
+  it("buckets open tasks by their chats' attention", () => {
     const inputTask = task({ sortOrder: "a0", title: "needs-input" });
     const reviewTask = task({ sortOrder: "a1", title: "needs-review" });
     const workingTask = task({ sortOrder: "a2", title: "working" });
     const plainTask = task({ sortOrder: "a3", title: "plain-backlog" });
-    const latest = latestAssignmentByTaskId([
+    const chats = chatsByTaskId([
       assignment({ taskId: inputTask.id, observedState: "waiting_input" }),
       assignment({ taskId: reviewTask.id, observedState: "done", reviewedAt: null }),
       assignment({ taskId: workingTask.id, observedState: "running" }),
-      // plainTask's latest is dead → no attention → backlog.
+      // plainTask's only chat is dead → no attention → backlog.
       assignment({ taskId: plainTask.id, observedState: "dead" }),
     ]);
     const groups = deriveTaskGroups(
       [inputTask, reviewTask, workingTask, plainTask],
-      latest,
+      chats,
     );
     expect(groups.needsYou.map((t) => t.title)).toEqual(["needs-input", "needs-review"]);
     expect(groups.working.map((t) => t.title)).toEqual(["working"]);
     expect(groups.backlog.map((t) => t.title)).toEqual(["plain-backlog"]);
   });
 
+  it("lets ANY chat pull a task into NEEDS YOU while another one works", () => {
+    // The newest chat is the running one — the old latest-wins fold filed this
+    // task under WORKING and the blocked agent was never surfaced.
+    const t = task({ sortOrder: "a0", title: "two-agents" });
+    const groups = deriveTaskGroups(
+      [t],
+      chatsByTaskId([
+        assignment({
+          taskId: t.id,
+          observedState: "waiting_input",
+          createdAt: "2026-07-22T09:00:00.000Z",
+        }),
+        assignment({
+          taskId: t.id,
+          observedState: "running",
+          createdAt: "2026-07-22T14:00:00.000Z",
+        }),
+      ]),
+    );
+    expect(groups.needsYou.map((x) => x.title)).toEqual(["two-agents"]);
+    expect(groups.working).toHaveLength(0);
+    expect(groups.backlog).toHaveLength(0);
+  });
+
   it("removes attention tasks from backlog (no double-count)", () => {
     const t = task({ sortOrder: "a0", title: "busy" });
-    const latest = latestAssignmentByTaskId([
-      assignment({ taskId: t.id, observedState: "running" }),
-    ]);
-    const groups = deriveTaskGroups([t], latest);
+    const chats = chatsByTaskId([assignment({ taskId: t.id, observedState: "running" })]);
+    const groups = deriveTaskGroups([t], chats);
     expect(groups.working).toHaveLength(1);
     expect(groups.backlog).toHaveLength(0);
   });
@@ -233,10 +575,10 @@ describe("deriveTaskGroups with attention", () => {
       status: "done",
       completedAt: "2026-07-22T12:00:00.000Z",
     });
-    const latest = latestAssignmentByTaskId([
+    const chats = chatsByTaskId([
       assignment({ taskId: t.id, observedState: "done", reviewedAt: null }),
     ]);
-    const groups = deriveTaskGroups([t], latest);
+    const groups = deriveTaskGroups([t], chats);
     expect(groups.done.map((x) => x.title)).toEqual(["finished"]);
     expect(groups.needsYou).toHaveLength(0);
   });
@@ -245,12 +587,12 @@ describe("deriveTaskGroups with attention", () => {
     const t = task({ sortOrder: "a0", title: "acked" });
     const unacked = deriveTaskGroups(
       [t],
-      latestAssignmentByTaskId([assignment({ taskId: t.id, observedState: "done" })]),
+      chatsByTaskId([assignment({ taskId: t.id, observedState: "done" })]),
     );
     expect(unacked.needsYou.map((x) => x.title)).toEqual(["acked"]);
     const acked = deriveTaskGroups(
       [t],
-      latestAssignmentByTaskId([
+      chatsByTaskId([
         assignment({
           taskId: t.id,
           observedState: "done",
@@ -268,43 +610,5 @@ describe("deriveTaskGroups with attention", () => {
     expect(groups.needsYou).toHaveLength(0);
     expect(groups.working).toHaveLength(0);
     expect(groups.backlog.map((x) => x.title)).toEqual(["open"]);
-  });
-});
-
-describe("harnessChipState", () => {
-  it("shows nothing when the task has never been delegated", () => {
-    expect(harnessChipState(null)).toBeNull();
-    expect(harnessChipState(undefined)).toBeNull();
-  });
-
-  it("maps every in-flight state to one working chip", () => {
-    // The row used to distinguish "Spawning…" from "Working"; the chip
-    // deliberately does not — at 22px they are the same fact.
-    for (const observedState of ["pending", "spawning", "running"] as const) {
-      expect(harnessChipState({ observedState, reviewedAt: null })).toBe("working");
-    }
-  });
-
-  it("maps waiting_input → needs-you", () => {
-    expect(harnessChipState({ observedState: "waiting_input", reviewedAt: null })).toBe(
-      "needs-you",
-    );
-  });
-
-  it("treats a finished-but-unreviewed agent as needing you", () => {
-    // The state V1's chip never had: it was the row's "Mark reviewed" button.
-    expect(harnessChipState({ observedState: "done", reviewedAt: null })).toBe(
-      "needs-you",
-    );
-  });
-
-  it("falls back to idle once reviewed — the chat is still openable", () => {
-    expect(
-      harnessChipState({ observedState: "done", reviewedAt: "2026-07-26T00:00:00Z" }),
-    ).toBe("idle");
-  });
-
-  it("shows nothing for a dead launch — there is no chat to open", () => {
-    expect(harnessChipState({ observedState: "dead", reviewedAt: null })).toBeNull();
   });
 });

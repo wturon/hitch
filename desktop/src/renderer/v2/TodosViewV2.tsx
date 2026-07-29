@@ -64,8 +64,14 @@ import {
 import { useListKeyboardNav } from "@/hooks/useListKeyboardNav";
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
-import type { ServerHarness } from "./delegation";
 import { copyTaskAgentPrompt } from "./agentPrompt";
+import {
+  capChipStack,
+  COLLAPSED_CHIP_LIMIT,
+  liveTaskChips,
+  rowChips,
+  type RowChips,
+} from "./chipStack";
 import { HarnessChipSlot, StaticHarnessChip } from "./HarnessChip";
 import { addSlotId, buildSlots, headerSlotId, placementAfterMove } from "./flatList";
 import { sortOrderAtIndex } from "./listMutations";
@@ -84,11 +90,7 @@ import {
   EMPTY_TAG_FILTER,
   type TagFilter,
 } from "./tagFilter";
-import {
-  harnessChipState,
-  latestAssignmentByTaskId,
-  type HarnessChipState,
-} from "./todoGroups";
+import { chatsByTaskId } from "./todoGroups";
 import { useAllAssignments, type AssignmentRow } from "./useAssignments";
 import { useSections } from "./useSections";
 import {
@@ -108,7 +110,8 @@ import type { TagActions } from "./useTagMutations";
 // competing vertical axes and only one can win. Status still shows — it moved
 // into the row's harness chip (HarnessChip.tsx), which is now the single
 // instrument for everything an agent is doing. `deriveTaskGroups` survives in
-// todoGroups.ts for DONE ordering and for AppV2's prepend maths.
+// todoGroups.ts for DONE ordering and for the ⌘K palette's group labels (AppV2),
+// its only remaining consumers.
 //
 // V1's full row interaction set is unchanged on server rows:
 //
@@ -229,17 +232,6 @@ type RowActions = {
   onAck: (assignmentId: string) => void;
   /** File the task into a section (null = loose), at the top of it. */
   onMove: (task: TaskItem, sectionId: string | null) => void;
-};
-
-// Everything the row needs to draw its agent chip, resolved from the task's
-// latest assignment. `state === null` renders the empty slot.
-type RowChip = {
-  state: HarnessChipState | null;
-  harness: ServerHarness | null;
-  chatId: string | null;
-  machineId: string | null;
-  /** The ackable assignment (done ∧ unreviewed), else null. */
-  ackableId: string | null;
 };
 
 // A section's header: hanging disclosure caret, the user's name RENDERED AS
@@ -625,7 +617,7 @@ function TaskRow({
   actions: RowActions;
   // The row's agent instrument. Always present (an empty slot when there's no
   // agent) so chips and tag pills form a column down the list.
-  chip: RowChip;
+  chip: RowChips;
   /** The project's sections, for the Move to ▸ submenu. */
   sections: ReadonlyArray<{ id: string; name: string }>;
   // Present only for BACKLOG rows, which are drag-reorderable — dnd-kit's
@@ -698,11 +690,7 @@ function TaskRow({
             {task.title}
           </span>
           <TagPillGroup tags={tag.namesOf(task)} colorOf={tag.colorOf} dimmed={done} />
-          <HarnessChipSlot
-            harness={chip.harness}
-            state={chip.state}
-            target={{ chatId: chip.chatId, machineId: chip.machineId }}
-          />
+          <HarnessChipSlot chats={chip.chats} state={chip.state} />
         </div>
       </ContextMenuTrigger>
       {/* Copy agent prompt is V2's server-native successor to Copy task path:
@@ -759,7 +747,7 @@ function SortableTaskRow({
   task: TaskItem;
   tag: TagActions;
   actions: RowActions;
-  chip: RowChip;
+  chip: RowChips;
   sections: ReadonlyArray<{ id: string; name: string }>;
   nav?: RowNav;
 }) {
@@ -843,20 +831,26 @@ function AddTaskRow({
 //
 // Capped, because a section with eleven running agents should read as "busy",
 // not as eleven circles. `needs-you` sorts ahead of `working` so the one that
-// wants a human is never the one that gets truncated.
-const COLLAPSED_CHIP_LIMIT = 3;
+// wants a human is never the one that gets truncated (chipStack's
+// `liveTaskChips`, which is also where the ONE-PER-TASK rule lives: a folded
+// section holding five multi-chat tasks shows five discs, not twenty).
+function collapsedChips(
+  tasks: TaskItem[],
+  chipOf: (taskId: string) => RowChips,
+) {
+  return liveTaskChips(
+    tasks.map((task) => ({ taskId: task.id, chip: chipOf(task.id) })),
+  );
+}
 
 // Whether any of these tasks has an agent worth telegraphing from a collapsed
-// header. Same predicate CollapsedSectionChips renders from, so a section is
+// header. Same derivation CollapsedSectionChips renders from, so a section is
 // never kept for chips it then declines to draw.
 function hasLiveAgent(
   tasks: TaskItem[],
-  chipOf: (taskId: string) => RowChip,
+  chipOf: (taskId: string) => RowChips,
 ): boolean {
-  return tasks.some((task) => {
-    const { state } = chipOf(task.id);
-    return state === "needs-you" || state === "working";
-  });
+  return collapsedChips(tasks, chipOf).length > 0;
 }
 
 function CollapsedSectionChips({
@@ -864,38 +858,28 @@ function CollapsedSectionChips({
   chipOf,
 }: {
   tasks: TaskItem[];
-  chipOf: (taskId: string) => RowChip;
+  chipOf: (taskId: string) => RowChips;
 }) {
-  const live = tasks
-    .map((task) => ({ id: task.id, chip: chipOf(task.id) }))
-    .filter(
-      (entry): entry is { id: string; chip: RowChip & { state: HarnessChipState; harness: ServerHarness } } =>
-        (entry.chip.state === "needs-you" || entry.chip.state === "working") &&
-        entry.chip.harness !== null,
-    )
-    .sort(
-      (a, b) =>
-        (a.chip.state === "needs-you" ? 0 : 1) - (b.chip.state === "needs-you" ? 0 : 1),
-    );
+  const live = collapsedChips(tasks, chipOf);
   if (live.length === 0) return null;
-  const shown = live.slice(0, COLLAPSED_CHIP_LIMIT);
+  const { shown, overflow } = capChipStack(live, COLLAPSED_CHIP_LIMIT);
   return (
     <span className="flex shrink-0 items-center gap-1">
       {shown.map((entry) => (
         <StaticHarnessChip
-          key={entry.id}
-          harness={entry.chip.harness}
-          state={entry.chip.state}
+          key={entry.taskId}
+          harness={entry.harness}
+          state={entry.state}
         />
       ))}
-      {live.length > shown.length && (
+      {overflow > 0 && (
         <span className="text-[11px] tabular-nums text-muted-foreground">
-          +{live.length - shown.length}
+          +{overflow}
         </span>
       )}
       <span className="sr-only">
-        {live.filter((e) => e.chip.state === "needs-you").length} needing you,{" "}
-        {live.filter((e) => e.chip.state === "working").length} working
+        {live.filter((e) => e.state === "needs-you").length} needing you,{" "}
+        {live.filter((e) => e.state === "working").length} working
       </span>
     </span>
   );
@@ -1050,8 +1034,11 @@ export function TodosViewV2({
   // NOT cast down to AttentionAssignment: the chip needs the row's harness (to
   // pick a brand mark) and its chatId/machineId (to address the focus event),
   // and the join is generic precisely so callers keep their full row type.
-  const latestByTask = useMemo(
-    () => latestAssignmentByTaskId(assignments.data ?? []),
+  //
+  // A task's chats, not its latest assignment: several agents can be live on one
+  // task, and the row must speak for the most demanding of them (see rowState).
+  const chatsByTask = useMemo(
+    () => chatsByTaskId(assignments.data ?? []),
     [assignments.data],
   );
 
@@ -1217,23 +1204,16 @@ export function TodosViewV2({
     [visibleTasks],
   );
 
-  // Everything the row's chip needs, resolved from the task's latest
-  // assignment. This is the ONLY place a task's agent state reaches the list
-  // now — there is no second badge, no group membership, nothing else.
-  const chipOf = (taskId: string): RowChip => {
-    const latest = latestByTask.get(taskId);
-    const state = harnessChipState(latest);
-    return {
-      state,
-      harness: latest?.harness ?? null,
-      chatId: latest?.chatId ?? null,
-      machineId: latest?.machineId ?? null,
-      ackableId:
-        latest && latest.observedState === "done" && latest.reviewedAt == null
-          ? latest.id
-          : null,
-    };
-  };
+  // Everything the row's chip slot needs, resolved from the task's chats. This
+  // is the ONLY place a task's agent state reaches the list — there is no second
+  // badge, no group membership, nothing else.
+  //
+  // The row gets the WHOLE chat list, not a lead chat: one chat draws V1's chip
+  // exactly as before, several draw a stack (HarnessChip.tsx), and the row's
+  // single reported state stays `rowState`'s reduce by demand — the ring can't
+  // read calm while a second agent on the row is blocked on the user.
+  const chipOf = (taskId: string): RowChips =>
+    rowChips(chatsByTask.get(taskId));
 
   // The containers that are actually on screen. While filtering, a section with
   // no matches is noise — UNLESS it is collapsed and holding a live agent,
@@ -1254,9 +1234,9 @@ export function TodosViewV2({
             !(container.collapsed && hasLiveAgent(container.allTasks, chipOf))
           ),
       ),
-    // `chipOf` is a fresh closure each render but reads only `latestByTask`,
+    // `chipOf` is a fresh closure each render but reads only `chatsByTask`,
     // which is the real dependency here.
-    [containers, filterActive, latestByTask],
+    [containers, filterActive, chatsByTask],
   );
 
   // The drag's item list: every row and every section header, in render order,

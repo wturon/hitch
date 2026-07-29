@@ -8,77 +8,18 @@ import {
 import { BUILTIN_STARTING_PROMPTS, promptDescription } from "@/lib/chat";
 import {
   assignmentsToStopOnDone,
-  deriveBarState,
   formatLastSeen,
   isMachineStale,
   machineAvailability,
   MACHINE_STALE_MS,
   observedStateChip,
-  selectLatestAssignment,
-  type AssignmentLike,
   type MachineLike,
-  type ObservedState,
   type StoppableAssignment,
 } from "../delegation";
 
 // A fixed clock so staleness math is deterministic.
 const NOW = Date.parse("2026-07-22T12:00:00.000Z");
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
-
-function assignment(
-  createdAt: string,
-  observedState: ObservedState,
-): AssignmentLike & { id: string } {
-  return { id: createdAt, createdAt, observedState };
-}
-
-describe("selectLatestAssignment", () => {
-  it("returns null for empty/undefined input", () => {
-    expect(selectLatestAssignment(undefined)).toBeNull();
-    expect(selectLatestAssignment([])).toBeNull();
-  });
-
-  it("picks the newest by created_at, ignoring input order", () => {
-    const a = assignment("2026-07-22T09:00:00.000Z", "done");
-    const b = assignment("2026-07-22T11:00:00.000Z", "running");
-    const c = assignment("2026-07-22T10:00:00.000Z", "dead");
-    expect(selectLatestAssignment([a, b, c])).toBe(b);
-    expect(selectLatestAssignment([b, a, c])).toBe(b);
-  });
-
-  it("breaks equal-timestamp ties by keeping the last occurrence", () => {
-    const a = assignment("2026-07-22T10:00:00.000Z", "done");
-    const b = assignment("2026-07-22T10:00:00.000Z", "running");
-    // Same createdAt — the later element in the (createdAt-ascending) list wins.
-    expect(selectLatestAssignment([a, b])).toBe(b);
-  });
-});
-
-describe("deriveBarState", () => {
-  it("is compose when there is no assignment", () => {
-    expect(deriveBarState(null)).toBe("compose");
-  });
-
-  it("is active for a live observed_state", () => {
-    for (const state of ["pending", "spawning", "running", "waiting_input"] as const) {
-      expect(deriveBarState({ createdAt: iso(0), observedState: state })).toBe("active");
-    }
-  });
-
-  it("is re-delegate once the latest is done or dead (terminal precedence)", () => {
-    expect(deriveBarState({ createdAt: iso(0), observedState: "done" })).toBe("re-delegate");
-    expect(deriveBarState({ createdAt: iso(0), observedState: "dead" })).toBe("re-delegate");
-  });
-
-  it("routes a done latest to re-delegate even past earlier active rows", () => {
-    // The newest row is done, so the bar re-delegates regardless of history.
-    const history = [
-      assignment("2026-07-22T09:00:00.000Z", "running"),
-      assignment("2026-07-22T11:00:00.000Z", "done"),
-    ];
-    expect(deriveBarState(selectLatestAssignment(history))).toBe("re-delegate");
-  });
-});
 
 describe("observedStateChip", () => {
   it("collapses pending + spawning into Spawning…", () => {

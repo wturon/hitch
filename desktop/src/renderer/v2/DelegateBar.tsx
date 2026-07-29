@@ -4,13 +4,13 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
+  ChevronRight,
   ChevronUp,
-  CircleAlertIcon,
-  CircleCheckIcon,
   GaugeIcon,
   LoaderCircle,
   MonitorIcon,
   PencilIcon,
+  PlusIcon,
 } from "lucide-react";
 
 import {
@@ -35,40 +35,64 @@ import {
 import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import {
-  deriveBarState,
+  chatAgentDetail,
+  chatStatusLine,
+  composeStartsExpanded,
+  deadLaunchNotice,
+  earlierChatsLabel,
+  laneCountLabel,
+  laneRowAction,
+  laneSpansMachines,
+  primaryActionLabel,
+  showsStopAll,
+} from "./chatLane";
+import {
+  assignmentsToStopOnDone,
   machineAvailability,
   modelLabelFor,
   modelsForHarness,
-  observedStateChip,
   reasoningLabelFor,
   reasoningOptionsFor,
-  selectLatestAssignment,
   serverHarnessLabel,
   SERVER_HARNESSES,
-  type ChipInfo,
   type ServerHarness,
 } from "./delegation";
-import { useAssignments, useMachines } from "./useAssignments";
+import { StaticHarnessChip } from "./HarnessChip";
+import { chatsForTask, partitionLaneChats, type TaskChat } from "./todoGroups";
+import { useAssignments, useMachines, type AssignmentRow } from "./useAssignments";
 import { useOpenChat } from "./useOpenChat";
 import {
   useDelegationComposerV2,
   type DelegateStartParams,
 } from "./useDelegationComposerV2";
 
-// The floating delegate bar in TaskDialogV2's saved stage (M4 PR 5, option L).
-// Three states derived from the task's assignment history + the machine list:
+// The delegate band in TaskDialogV2's saved stage — the task's CHAT LANE plus a
+// compose block, in that order.
 //
-//   compose      — no assignment yet: agent picker (claude|codex, seeded from
-//                  the last delegation), machine picker (hidden with exactly one
-//                  machine, disabled-with-hint when none/all stale), a
-//                  starting-prompt preset dropdown + a collapsed editable
-//                  prompt textarea, and ⌘⏎ = delegate-with-defaults.
-//   active       — a live assignment (latest, observed_state ∉ {done,dead}): a
-//                  status chip (Spawning… / Working / Needs you), an Open chat
-//                  seam (disabled this PR — focus lands in PR 6), and Stop.
-//   re-delegate  — the latest assignment finished (done|dead): the outcome shown
-//                  subtly, then the compose affordance again (history is
-//                  preserved server-side; no history UI this PR).
+// It used to be a one-slot bar: `selectLatestAssignment` + `deriveBarState` folded
+// the task's whole assignment history down to its newest row and rendered one of
+// three states (compose / active / re-delegate). A task can carry SEVERAL live
+// chats at once (assignments are append-only and POST /assignments has no
+// one-live-per-task guard), so that fold made every other agent on the task
+// invisible: a second agent blocked on the user simply wasn't on screen, and
+// "Stop" ended whichever one happened to be newest. Both derivations are gone.
+//
+//   lane     — one row per chat still IN PLAY (needs-you / working), in the order
+//              chatsForTask returns (attention band first, newest first inside a
+//              band). Each row: the harness avatar with its status ring, the
+//              agent + launch params, an honest status + age, and the actions
+//              that belong to THAT chat (Open chat, Stop, or Reviewed).
+//   earlier  — finished-and-acked chats collapse behind an "N earlier chats"
+//              disclosure. They keep Open chat (the chat still exists and cmux
+//              can bring it back) and lose Stop (there is nothing to stop).
+//   compose  — the unchanged compose controls. Expanded by default only when
+//              nothing is in play (a fresh task, or one whose chats have all
+//              finished), so the common case keeps its old ergonomics; otherwise
+//              it collapses to a "＋ Add an agent" ghost button, because the
+//              lane — not the composer — is what the user came to read.
+//
+// Every ordering/visibility/wording rule is a pure function: the lane's shape in
+// todoGroups (slice 1), everything it SAYS in chatLane. This file is the wiring.
 //
 // Prompt honesty: the textarea holds the WHOLE prompt as a template, and it is
 // POSTed as `promptTemplate` untouched. Nothing is prepended, appended, or
@@ -99,16 +123,18 @@ function iconHarness(harness: ServerHarness): "claude-code" | "codex" {
   return harness === "codex" ? "codex" : "claude-code";
 }
 
+// The client-writable half of PATCH /assignments/:id (server validation.ts:
+// assignmentClientUpdate). observed_state / chat_id are daemon-only.
+type AssignmentPatch = { desiredState: "stopped" } | { reviewedAt: string };
+
 export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
   const queryClient = useQueryClient();
   const assignmentsQuery = useAssignments(client, taskId);
   const machinesQuery = useMachines(client);
 
-  const latest = selectLatestAssignment(assignmentsQuery.data);
-  const barState = deriveBarState(latest);
-
-  // Re-evaluate machine staleness on a slow tick so a machine that goes quiet
-  // while the dialog is open drops to "offline" without needing a refetch.
+  // One slow clock for the whole band: machine staleness AND the rows' ages
+  // (both are minute-coarse, so 30s is enough resolution) advance without
+  // needing a refetch, so a dialog left open doesn't freeze at "started 1m ago".
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 30_000);
@@ -118,6 +144,370 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
     () => machineAvailability(machinesQuery.data, nowTick),
     [machinesQuery.data, nowTick],
   );
+  const loadingMachines = machinesQuery.isPending;
+
+  // The lane. Order and the visible/earlier split are slice 1's derivation —
+  // nothing here picks a "latest".
+  const chats = useMemo(
+    () => chatsForTask(assignmentsQuery.data, taskId),
+    [assignmentsQuery.data, taskId],
+  );
+  const { visible, earlier } = useMemo(() => partitionLaneChats(chats), [chats]);
+
+  // Machine chrome only when the lane actually spans machines; one machine is the
+  // norm and naming it on every row says nothing. Read over the WHOLE lane
+  // (visible + earlier) so expanding the disclosure can't relabel an earlier
+  // chat's machine as this one.
+  const showMachines = laneSpansMachines(chats);
+  const machineNames = useMemo(
+    () => new Map((machinesQuery.data ?? []).map((m) => [m.id, m.name] as const)),
+    [machinesQuery.data],
+  );
+  const machineNameFor = (chat: TaskChat<AssignmentRow>) =>
+    showMachines ? (machineNames.get(chat.assignment.machineId) ?? null) : null;
+
+  // Stop-all's target set is close-on-done's ("live and not terminal") — one
+  // predicate, not a second one that could drift from it.
+  const stoppableIds = useMemo(
+    () => assignmentsToStopOnDone(assignmentsQuery.data, taskId),
+    [assignmentsQuery.data, taskId],
+  );
+  const [stoppingAll, setStoppingAll] = useState(false);
+  const stopAll = useCallback(async () => {
+    setStoppingAll(true);
+    try {
+      await Promise.all(
+        stoppableIds.map(async (id) => {
+          const response = await client.assignments[":id"].$patch({
+            param: { id },
+            json: { desiredState: "stopped" },
+          });
+          if (!response.ok) {
+            throw new Error(`Failed to stop assignment (${response.status})`);
+          }
+        }),
+      );
+    } catch (error) {
+      console.error("Failed to stop every chat", error);
+    } finally {
+      // Refetch either way: a partial failure still stopped some of them, and
+      // the lane must show what actually happened.
+      await queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      setStoppingAll(false);
+    }
+  }, [client, queryClient, stoppableIds]);
+
+  // Compose's expansion. `null` = "the lane decides" (see composeStartsExpanded);
+  // clicking ＋ Add an agent pins it open. A successful delegate hands the
+  // decision back to the lane, so the block folds away and the new chat's row is
+  // what the user sees next.
+  const [composeOverride, setComposeOverride] = useState<boolean | null>(null);
+  const composeExpanded = composeOverride ?? composeStartsExpanded(visible.length);
+
+  // Bumped on every successful delegate to KEY the compose block, so the next
+  // "Add an agent" always gets a fresh composer. Collapsing already unmounts it,
+  // but that only happens if the refetched lane came back non-empty: a failed or
+  // stale-empty refetch would otherwise leave compose mounted around a composer
+  // latched at phase "submitted" — a permanently disabled button with a spinner
+  // until the dialog is reopened. The key closes that hole structurally.
+  const [launchSeq, setLaunchSeq] = useState(0);
+
+  const [earlierOpen, setEarlierOpen] = useState(false);
+
+  // A launch that never started (see deadLaunchNotice): the lane drops `dead`
+  // assignments, so without this the failure would be silent.
+  const deadNotice = deadLaunchNotice(assignmentsQuery.data, taskId, visible.length);
+
+  const countLabel = laneCountLabel(visible.length);
+  const rowsClass = "flex flex-col divide-y divide-[#EDEDED] dark:divide-border/60";
+
+  const bandClass =
+    "flex flex-col gap-2.5 rounded-b-xl border-t border-t-[#E8E8E8] bg-[#F9F9F9] px-5 pt-3 pb-3.5 dark:border-t-border dark:bg-muted/40";
+
+  // Nothing is asserted until the first read lands: an un-settled query makes the
+  // lane read as EMPTY, and rendering compose off that would tell a task with
+  // three live agents that it has none — then jump. `data !== undefined` (not
+  // !isPending) so a later refetch never blanks a band that's already up.
+  if (assignmentsQuery.data === undefined) {
+    return <div className={bandClass} data-testid="v2-delegate-band-loading" />;
+  }
+
+  return (
+    <div className={bandClass}>
+      {countLabel && (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[12px] font-medium text-[#717171] dark:text-muted-foreground">
+            {countLabel}
+          </span>
+          {/* Stop all — shown only once there is a bulk to act on (2+ chats
+              would be stopped).
+
+              NEUTRAL at rest, like every other ghost control in the band. Red is
+              this system's DANGER colour, not its "affects several rows" colour,
+              and a secondary bulk control rendered in it was the loudest pixel in
+              the dialog — louder than the task's own text, and far louder than the
+              per-row Stop buttons that do the same thing with a smaller blast
+              radius. Amber is the only voice allowed to be raised here. The
+              destructive tone arrives on hover/focus, where the user is already
+              committing to it. */}
+          {showsStopAll(stoppableIds) && (
+            <button
+              type="button"
+              onClick={() => void stopAll()}
+              disabled={stoppingAll}
+              className="flex h-6.5 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[12px] font-medium text-[#717171] hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive focus-visible:outline-none disabled:opacity-60 dark:text-muted-foreground"
+            >
+              {stoppingAll && <LoaderCircle className="size-3 animate-spin" />}
+              Stop all
+            </button>
+          )}
+        </div>
+      )}
+
+      {visible.length > 0 && (
+        <div className={rowsClass}>
+          {visible.map((chat) => (
+            <LaneRow
+              key={chat.assignment.id}
+              client={client}
+              chat={chat}
+              machineName={machineNameFor(chat)}
+              now={nowTick}
+            />
+          ))}
+        </div>
+      )}
+
+      {earlier.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => setEarlierOpen((v) => !v)}
+            aria-expanded={earlierOpen}
+            className="flex h-6.5 w-fit items-center gap-1 rounded-md px-1 text-[12px] font-medium text-[#717171] hover:bg-black/5 dark:text-muted-foreground dark:hover:bg-white/5"
+          >
+            <ChevronRight
+              className={cn(
+                "size-3.5 transition-transform motion-reduce:transition-none",
+                earlierOpen && "rotate-90",
+              )}
+              aria-hidden
+            />
+            {earlierChatsLabel(earlier.length)}
+          </button>
+          {earlierOpen && (
+            <div className={rowsClass}>
+              {earlier.map((chat) => (
+                <LaneRow
+                  key={chat.assignment.id}
+                  client={client}
+                  chat={chat}
+                  machineName={machineNameFor(chat)}
+                  now={nowTick}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Compose. A hairline separates it from the lane above rather than a
+          second surface — the band stays one flat plane. */}
+      <div
+        className={cn(
+          "flex flex-col gap-2.5",
+          chats.length > 0 && "border-t border-[#EDEDED] pt-2.5 dark:border-border/60",
+        )}
+      >
+        {/* The launch that never started: one muted line, no chip, no row, no
+            amber. It's a fact about the last attempt, not a state to act on. */}
+        {deadNotice && (
+          <p className="text-[12px] text-[#717171] dark:text-muted-foreground">
+            {deadNotice}
+          </p>
+        )}
+        {composeExpanded ? (
+          <ComposeBlock
+            // A fresh composer per successful launch — see launchSeq.
+            key={launchSeq}
+            client={client}
+            taskId={taskId}
+            flushTask={flushTask}
+            availability={availability}
+            loadingMachines={loadingMachines}
+            primaryLabel={primaryActionLabel(visible.length)}
+            onDelegated={() => {
+              setComposeOverride(null);
+              setLaunchSeq((n) => n + 1);
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setComposeOverride(true)}
+            className="flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-[#555555] hover:bg-black/5 dark:text-muted-foreground dark:hover:bg-white/5"
+          >
+            <PlusIcon className="size-3.5" aria-hidden />
+            Add an agent
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// One chat in the lane. Everything it renders is about THIS assignment: the
+// avatar's ring state, the launch params, the age, and the actions — so Stop can
+// no longer hit the wrong agent, which was the whole point of the slice.
+function LaneRow({
+  client,
+  chat,
+  machineName,
+  now,
+}: {
+  client: HitchClient;
+  chat: TaskChat<AssignmentRow>;
+  /** The resolved machine name, or null when the lane doesn't name machines. */
+  machineName: string | null;
+  /** The band's shared clock, so every row's age ticks together. */
+  now: number;
+}) {
+  const queryClient = useQueryClient();
+  const { assignment, state } = chat;
+  const [busy, setBusy] = useState(false);
+  // Open chat: the shared focus relay, addressed to THIS chat. Disabled until
+  // the daemon has linked one (chatId is written at spawn), which is also the
+  // window where cmux has nothing to focus.
+  const { canOpen, openChat } = useOpenChat(assignment);
+  const action = laneRowAction(assignment);
+
+  const patch = useCallback(
+    async (json: AssignmentPatch) => {
+      setBusy(true);
+      try {
+        const response = await client.assignments[":id"].$patch({
+          param: { id: assignment.id },
+          json,
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to update assignment (${response.status})`);
+        }
+        await queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      } catch (error) {
+        console.error("Failed to update assignment", error);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [assignment.id, client, queryClient],
+  );
+
+  return (
+    <div data-testid="v2-chat-lane-row" className="flex items-center gap-2.5 py-2">
+      {/* The row's instrument, borrowed whole from the todo row's chip so the two
+          surfaces can't drift: brand mark inside, status in the ring, amber dot
+          for needs-you. Static — the actions are their own controls here. */}
+      <StaticHarnessChip harness={assignment.harness} state={state} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="shrink-0 text-[13px] font-medium text-[#222222] dark:text-foreground">
+            {serverHarnessLabel(assignment.harness)}
+          </span>
+          <span className="truncate text-[12.5px] text-[#717171] dark:text-muted-foreground">
+            {chatAgentDetail(assignment)}
+          </span>
+          {machineName !== null && (
+            <span className="shrink-0 text-[12.5px] text-[#717171] dark:text-muted-foreground">
+              on {machineName}
+            </span>
+          )}
+        </div>
+        {/* Status + age, always neutral: needs-you's amber is the chip's ring +
+            dot, and ONE amber mark per row is the whole point of that treatment.
+            (The V1 chip's amber status TEXT came off for the same reason when the
+            ring came back — see HarnessChip.) */}
+        <span
+          data-testid="v2-delegate-chip"
+          data-chip-state={state}
+          className="truncate text-[12px] text-[#717171] dark:text-muted-foreground"
+        >
+          {chatStatusLine(assignment, now)}
+        </span>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onClick={openChat}
+                disabled={!canOpen}
+                aria-label="Open chat"
+                className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground hover:bg-black/5 disabled:cursor-not-allowed disabled:text-muted-foreground/60 disabled:hover:bg-transparent dark:hover:bg-white/5"
+              />
+            }
+          >
+            <ArrowUpRight className="size-3.5" />
+            Open chat
+          </TooltipTrigger>
+          <TooltipContent>
+            {canOpen
+              ? "Bring the chat forward in cmux"
+              : "Waiting for the agent's chat to start…"}
+          </TooltipContent>
+        </Tooltip>
+        {action !== "none" && (
+          <button
+            type="button"
+            onClick={() =>
+              void patch(
+                action === "stop"
+                  ? { desiredState: "stopped" }
+                  : { reviewedAt: new Date().toISOString() },
+              )
+            }
+            disabled={busy}
+            className="flex h-8 items-center rounded-md border border-[#DEDEDE] px-3 text-[13px] font-medium text-foreground hover:bg-black/5 disabled:opacity-60 dark:border-border dark:hover:bg-white/5"
+          >
+            {busy ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : action === "stop" ? (
+              "Stop"
+            ) : (
+              // The same words as the list row's context menu: one action, one
+              // name, and a control that says what happens rather than a state.
+              "Mark reviewed"
+            )}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The compose block: machine selection + the composer + the controls. Mounted
+// ONLY while compose is expanded, which does two jobs at once — ⌘⏎ is armed
+// exactly when there's a prompt on screen to fire (the arming lives in the
+// composer hook), and adding a second agent starts from a clean composer instead
+// of one still latched "submitted" from the previous launch.
+function ComposeBlock({
+  client,
+  taskId,
+  flushTask,
+  availability,
+  loadingMachines,
+  primaryLabel,
+  onDelegated,
+}: {
+  client: HitchClient;
+  taskId: string;
+  flushTask: () => Promise<void>;
+  availability: ReturnType<typeof machineAvailability>;
+  loadingMachines: boolean;
+  primaryLabel: "Delegate" | "Add agent";
+  onDelegated: () => void;
+}) {
+  const queryClient = useQueryClient();
 
   // The chosen spawn target — default to the first usable machine, reconciled
   // whenever the usable set changes (a machine going offline, or the list
@@ -134,7 +524,6 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
     );
   }, [availability.usable]);
 
-  const loadingMachines = machinesQuery.isPending;
   const canDelegate =
     !loadingMachines &&
     availability.disabledReason === null &&
@@ -167,176 +556,40 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
         throw new Error(`Failed to delegate (${response.status})`);
       }
       await queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      onDelegated();
     },
-    [client, queryClient, selectedMachineId, taskId, flushTask],
+    [client, queryClient, selectedMachineId, taskId, flushTask, onDelegated],
   );
 
   const composer = useDelegationComposerV2({
     canStart: canDelegate,
-    // Arm ⌘⏎ only where a compose affordance is showing (not in the active
-    // state, which has no prompt to fire).
-    keyboardArmed: barState !== "active",
+    // Mounted == a prompt is on screen, so ⌘⏎ is armed for exactly as long as
+    // there is something for it to send.
+    keyboardArmed: true,
     onStart,
   });
 
-  // Stop a live assignment (PATCH desired_state=stopped; the reconciler closes
-  // the tab and writes observed_state=done).
-  const [stopping, setStopping] = useState(false);
-  const stop = useCallback(async () => {
-    if (!latest) return;
-    setStopping(true);
-    try {
-      const response = await client.assignments[":id"].$patch({
-        param: { id: latest.id },
-        json: { desiredState: "stopped" },
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to stop assignment (${response.status})`);
+  return (
+    <ComposeControls
+      composer={composer}
+      machineControls={
+        <MachinePicker
+          availability={availability}
+          loading={loadingMachines}
+          selectedMachineId={selectedMachineId}
+          onSelect={setSelectedMachineId}
+        />
       }
-      await queryClient.invalidateQueries({ queryKey: ["assignments"] });
-    } catch (error) {
-      console.error("Failed to stop assignment", error);
-    } finally {
-      setStopping(false);
-    }
-  }, [client, queryClient, latest]);
-
-  // Open chat: the shared focus relay (useOpenChat), which the todo row's
-  // harness chip also calls. Both surfaces mean the same thing by "open the
-  // chat", so there is one payload shape and one enablement rule.
-  const { canOpen: canOpenChat, openChat } = useOpenChat(latest ?? null);
-
-  const bandClass =
-    "flex flex-col gap-2.5 rounded-b-xl border-t border-t-[#E8E8E8] bg-[#F9F9F9] px-5 pt-3 pb-3.5 dark:border-t-border dark:bg-muted/40";
-
-  // ─── active ────────────────────────────────────────────────────────────────
-  if (barState === "active" && latest) {
-    const chip = observedStateChip(latest.observedState);
-    return (
-      <div className={bandClass}>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <HarnessIcon
-              harness={iconHarness(latest.harness)}
-              className="size-4 shrink-0"
-            />
-            <StatusChip info={chip} />
-          </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            {/* Open chat — relays a focus event to the assignment's machine;
-                the daemon focuses (or resumes) the cmux tab and raises the app.
-                Disabled until the daemon has linked a chat (chatId set). */}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    onClick={openChat}
-                    disabled={!canOpenChat}
-                    aria-label="Open chat"
-                    className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground hover:bg-black/5 disabled:cursor-not-allowed disabled:text-muted-foreground/60 disabled:hover:bg-transparent dark:hover:bg-white/5"
-                  />
-                }
-              >
-                <ArrowUpRight className="size-3.5" />
-                Open chat
-              </TooltipTrigger>
-              <TooltipContent>
-                {canOpenChat
-                  ? "Bring the chat forward in cmux"
-                  : "Waiting for the agent's chat to start…"}
-              </TooltipContent>
-            </Tooltip>
-            <button
-              type="button"
-              onClick={() => void stop()}
-              disabled={stopping}
-              className="flex h-8 items-center rounded-md border border-[#DEDEDE] px-3 text-[13px] font-medium text-foreground hover:bg-black/5 disabled:opacity-60 dark:border-border dark:hover:bg-white/5"
-            >
-              {stopping ? <LoaderCircle className="size-3.5 animate-spin" /> : "Stop"}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ─── re-delegate & compose ───────────────────────────────────────────────────
-  return (
-    <div className={bandClass}>
-      {barState === "re-delegate" && latest && (
-        <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
-          <OutcomeGlyph info={observedStateChip(latest.observedState)} />
-          <span>
-            {latest.observedState === "done"
-              ? "The last agent finished."
-              : "The last agent didn’t start."}{" "}
-            Delegate again below.
-          </span>
-        </div>
-      )}
-      <ComposeControls
-        composer={composer}
-        machineControls={
-          <MachinePicker
-            client={client}
-            availability={availability}
-            loading={loadingMachines}
-            selectedMachineId={selectedMachineId}
-            onSelect={setSelectedMachineId}
-          />
-        }
-        // While the machine list loads, Delegate is disabled but we don't yet
-        // know WHY it might stay that way — so say what's happening rather than
-        // rendering a dead button with no explanation. A slow or retrying
-        // GET /machines can hold this for several seconds.
-        disabledReason={
-          loadingMachines ? "Checking for machines…" : availability.disabledReason
-        }
-        canDelegate={canDelegate}
-      />
-    </div>
-  );
-}
-
-// The status chip (active state). Monochrome except needs-you, which uses the
-// existing amber NEEDS-YOU treatment (a dot + amber text), never a fill.
-function StatusChip({ info }: { info: ChipInfo }) {
-  if (info.tone === "needs-you") {
-    return (
-      <span
-        data-testid="v2-delegate-chip"
-        className="inline-flex items-center gap-1.5 text-[13px] font-medium text-amber-700 dark:text-amber-500/90"
-      >
-        <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
-        {info.label}
-      </span>
-    );
-  }
-  const spinning = info.tone === "spawning" || info.tone === "working";
-  return (
-    <span
-      data-testid="v2-delegate-chip"
-      className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground"
-    >
-      {spinning ? (
-        <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
-      ) : info.tone === "done" ? (
-        <CircleCheckIcon className="size-3.5" aria-hidden />
-      ) : (
-        <CircleAlertIcon className="size-3.5" aria-hidden />
-      )}
-      {info.label}
-    </span>
-  );
-}
-
-// The small outcome glyph on the re-delegate line.
-function OutcomeGlyph({ info }: { info: ChipInfo }) {
-  return info.tone === "done" ? (
-    <CircleCheckIcon className="size-3.5 shrink-0" aria-hidden />
-  ) : (
-    <CircleAlertIcon className="size-3.5 shrink-0" aria-hidden />
+      // While the machine list loads, the primary button is disabled but we
+      // don't yet know WHY it might stay that way — so say what's happening
+      // rather than rendering a dead button with no explanation. A slow or
+      // retrying GET /machines can hold this for several seconds.
+      disabledReason={
+        loadingMachines ? "Checking for machines…" : availability.disabledReason
+      }
+      canDelegate={canDelegate}
+      primaryLabel={primaryLabel}
+    />
   );
 }
 
@@ -349,7 +602,6 @@ function MachinePicker({
   selectedMachineId,
   onSelect,
 }: {
-  client: HitchClient;
   availability: ReturnType<typeof machineAvailability>;
   loading: boolean;
   selectedMachineId: string | null;
@@ -391,18 +643,22 @@ function MachinePicker({
   );
 }
 
-// The compose affordance shared by the compose and re-delegate states: preset
-// row + expandable instruction textarea + agent/machine row ending in Delegate.
+// The compose affordance: preset row + expandable instruction textarea +
+// agent/machine row ending in the primary button. Unchanged in behaviour by the
+// lane — only the primary button's word moves (Delegate → Add agent) once the
+// lane already holds a chat.
 function ComposeControls({
   composer,
   machineControls,
   disabledReason,
   canDelegate,
+  primaryLabel,
 }: {
   composer: ReturnType<typeof useDelegationComposerV2>;
   machineControls: React.ReactNode;
   disabledReason: string | null;
   canDelegate: boolean;
+  primaryLabel: "Delegate" | "Add agent";
 }) {
   const [expanded, setExpanded] = useState(false);
   const chip = "h-7 gap-1.5 border-0 px-1.5 font-normal hover:bg-black/5";
@@ -417,9 +673,9 @@ function ComposeControls({
     });
   }, [composer]);
 
-  // Why Delegate is greyed out. Machine availability first (it's the blocking
-  // one), then a blank prompt — which is otherwise a dead button with no
-  // explanation, since the textarea is collapsed by default.
+  // Why the primary button is greyed out. Machine availability first (it's the
+  // blocking one), then a blank prompt — which is otherwise a dead button with
+  // no explanation, since the textarea is collapsed by default.
   //
   // Keyed on the prompt being blank, NOT on !canSubmit: canSubmit also folds in
   // machine availability, so the !canSubmit form told every cold start "Write a
@@ -592,19 +848,19 @@ function ComposeControls({
           {machineControls}
         </div>
 
-        {/* Delegate — black, text + embedded ⌘⏎ chip (mirrors V1's Start). */}
+        {/* The primary — black, text + embedded ⌘⏎ chip (mirrors V1's Start). */}
         <button
           type="button"
           onClick={onDelegateClick}
           disabled={composer.phase !== "idle" || !canDelegate || !composer.canSubmit}
-          aria-label="Delegate"
+          aria-label={primaryLabel}
           className="flex h-8 shrink-0 items-center gap-1.75 rounded-md bg-[#0B0B0B] px-3 text-white disabled:opacity-40 dark:bg-foreground dark:text-background"
         >
           {composer.phase !== "idle" ? (
             <LoaderCircle className="size-4 animate-spin" />
           ) : (
             <>
-              <span className="text-[13px] font-semibold">Delegate</span>
+              <span className="text-[13px] font-semibold">{primaryLabel}</span>
               <Kbd className="border border-white/20 bg-white/15 text-white/85 dark:border-background/20 dark:bg-background/15 dark:text-background/85">
                 ⌘⏎
               </Kbd>
