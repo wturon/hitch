@@ -21,6 +21,7 @@ import { setCmuxLogger } from "../cmux.js";
 import { ChatObserver } from "../observer/index.js";
 import { resolveSpoolPaths } from "../observer/spool.js";
 import { ChatSnapshotSink } from "./chatSnapshot.js";
+import { AutoTitleWorker } from "./autoTitles.js";
 import { resolveServerConfig } from "./config.js";
 import { createFakeLaunchers, isFakeLaunch } from "./fakeLauncher.js";
 import { createFocusHandler } from "./focus.js";
@@ -260,6 +261,18 @@ export async function startHitchDaemonV2(
   attachments.onChange = (reason) => reconciler.trigger(`attachment:${reason}`);
   ws.onInvalidate("assignments", () => reconciler.trigger("ws-invalidate"));
 
+  // Task naming is machine-side execution over server-owned intent. Desktop
+  // captures and CLI calls only mark a task pending; this worker is the single
+  // place that invokes subscription-backed Codex/Claude processes.
+  const autoTitles = new AutoTitleWorker({
+    client,
+    machineId,
+    logger,
+    env,
+    tickMs: reconcileMs(env),
+  });
+  ws.onInvalidate("tasks", () => autoTitles.trigger("ws-invalidate"));
+
   // --- Reconnect resilience -------------------------------------------------
   // A server restart or a long WS outage means the daemon may have missed
   // invalidations AND the server may have restarted with a fresh in-memory WS
@@ -305,16 +318,19 @@ export async function startHitchDaemonV2(
     void (async () => {
       await reregister("ws-reconnect");
       reconciler.trigger("ws-reconnect");
+      autoTitles.trigger("ws-reconnect");
       void observer.runOnce("ws-reconnect");
     })();
   });
   reconciler.start();
+  autoTitles.start();
 
   let stopped = false;
   async function stop(): Promise<void> {
     if (stopped) return;
     stopped = true;
     reconciler.stop();
+    autoTitles.stop();
     fakeLaunch?.stop();
     clearInterval(heartbeat);
     ws.stop();

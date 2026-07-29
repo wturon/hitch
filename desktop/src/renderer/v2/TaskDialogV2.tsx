@@ -6,6 +6,7 @@ import {
   CircleIcon,
   CopyIcon,
   EllipsisIcon,
+  LoaderCircleIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -37,8 +38,8 @@ import { useTaskDocument, type TaskDocumentFields } from "./useTaskDocument";
 //   • capture — a chrome-free card, body-only MarkdownEditor. Nothing exists
 //     on the server until ⌘⏎; esc closes instantly and any typed text is
 //     preserved as a per-project localStorage recovery draft (captureDraft).
-//     ⌘⏎ creates the task: title = seed derived from the body (LLM auto-title
-//     is dropped in V2 — adopted decision), body VERBATIM (capture text is
+//     ⌘⏎ creates the task: title = seed derived from the body, followed
+//     asynchronously by a daemon-owned auto-title request; body VERBATIM (capture text is
 //     sacred; only CRLFs normalized), sortOrder prepended before the backlog
 //     head. The card grows into the saved stage via V1's FLIP hook
 //     (useGrowAnimation, imported — it's pure React), fired optimistically
@@ -66,6 +67,7 @@ const TRANSFORM_MS = 260;
 // The live-row projection the dialog needs from the tasks list query.
 export interface TaskDialogRow extends TaskDocumentFields {
   id: string;
+  autoTitleState: "pending" | "running" | "done" | "failed" | "canceled" | null;
 }
 
 // The saved-stage ⋯ menu's actions, threaded from the shell's single
@@ -207,6 +209,7 @@ function TaskBodyV2({
 }: TaskBodyV2Props) {
   const queryClient = useQueryClient();
   const [stage, setStage] = useState<Stage>(existing ? "saved" : "capture");
+  const [titleClaimed, setTitleClaimed] = useState(false);
 
   const stageRef = useRef(stage);
   stageRef.current = stage;
@@ -323,7 +326,7 @@ function TaskBodyV2({
       const response = already
         ? await client.tasks[":id"].$patch({
             param: { id: already },
-            json: { title, body },
+            json: { title, body, requestAutoTitle: true },
           })
         : await client.tasks.$post({
             json: {
@@ -332,6 +335,7 @@ function TaskBodyV2({
               title,
               body,
               sortOrder: captureSortOrder(backlogRef.current),
+              autoTitle: true,
             },
           });
       if (!response.ok) {
@@ -487,13 +491,38 @@ function TaskBodyV2({
         {/* Header row — saved stage only (capture is chrome-free). The title
             is metadata presented as window chrome: small, muted, single-line,
             inline with the ⋯/✕ — the BODY stays the card's largest, darkest
-            element. V2 drops the auto-title spinner (seed-only). */}
+            element. Auto-naming is asynchronous and never blocks capture. */}
         {stage === "saved" && (
           <div className="flex items-center gap-2 pt-2.5 pr-2.5 pl-5">
             <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              {!titleClaimed &&
+                (existing?.autoTitleState === "pending" ||
+                  existing?.autoTitleState === "running") && (
+                  <LoaderCircleIcon
+                    aria-label="Naming task"
+                    className="size-3 shrink-0 animate-spin text-muted-foreground/60 motion-reduce:animate-none"
+                  />
+                )}
               <input
                 aria-label="Task title"
                 value={doc.title}
+                onFocus={() => {
+                  if (titleClaimed) return;
+                  setTitleClaimed(true);
+                  const id = taskIdRef.current;
+                  if (!id) return;
+                  void client.tasks[":id"]
+                    .$patch({
+                      param: { id },
+                      json: { cancelAutoTitle: true },
+                    })
+                    .then(() =>
+                      queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+                    )
+                    .catch((err) =>
+                      console.error("Failed to claim task title", err),
+                    );
+                }}
                 onChange={(e) => doc.setTitle(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {

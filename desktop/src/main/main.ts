@@ -555,6 +555,30 @@ function writePreferences(patch: Record<string, unknown>): void {
   );
 }
 
+const TEXT_GENERATION_MODELS = [
+  "gpt-5.6-luna",
+  "gpt-5.4-mini",
+  "claude-haiku-4-5",
+] as const;
+type TextGenerationModel = (typeof TEXT_GENERATION_MODELS)[number];
+const DEFAULT_TEXT_GENERATION_MODEL: TextGenerationModel = "gpt-5.6-luna";
+
+function readTextGenerationModel(): TextGenerationModel {
+  const stored = readPreferences().textGenerationModel;
+  return TEXT_GENERATION_MODELS.includes(stored as TextGenerationModel)
+    ? (stored as TextGenerationModel)
+    : DEFAULT_TEXT_GENERATION_MODEL;
+}
+
+function setTextGenerationModel(value: unknown): TextGenerationModel {
+  if (!TEXT_GENERATION_MODELS.includes(value as TextGenerationModel)) {
+    return readTextGenerationModel();
+  }
+  const model = value as TextGenerationModel;
+  writePreferences({ textGenerationModel: model });
+  return model;
+}
+
 // { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is
 // just "no preference set", which the daemon treats as the harness default.
 function readHarnessEnvironments(): Record<string, string> {
@@ -2084,6 +2108,12 @@ ipcMain.handle(
   "config:set-harness-environment",
   (_event, harness: string, environment: string) =>
     setHarnessEnvironment(harness, environment),
+);
+ipcMain.handle("config:get-text-generation-model", () =>
+  readTextGenerationModel(),
+);
+ipcMain.handle("config:set-text-generation-model", (_event, model: unknown) =>
+  setTextGenerationModel(model),
 );
 ipcMain.handle("config:get-starting-prompts", () => readStartingPrompts());
 ipcMain.handle("config:set-starting-prompts", (_event, prompts: unknown) =>

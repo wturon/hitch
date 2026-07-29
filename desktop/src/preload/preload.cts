@@ -26,6 +26,10 @@ export interface IntegrationHealth {
 }
 
 export type Harness = "codex" | "claude-code";
+export type TextGenerationModel =
+  | "gpt-5.6-luna"
+  | "gpt-5.4-mini"
+  | "claude-haiku-4-5";
 
 export interface HarnessHookStatus {
   harness: Harness;
@@ -95,6 +99,10 @@ export interface HitchDaemonApi {
     harness: string,
     environment: string,
   ) => Promise<Record<string, string>>;
+  getTextGenerationModel: () => Promise<TextGenerationModel>;
+  setTextGenerationModel: (
+    model: TextGenerationModel,
+  ) => Promise<TextGenerationModel>;
   getStartingPrompts: () => Promise<StartingPrompt[]>;
   setStartingPrompts: (prompts: StartingPrompt[]) => Promise<StartingPrompt[]>;
   // Native folder picker for a project's working directory. Resolves to null
@@ -184,6 +192,10 @@ const api: HitchDaemonApi = {
     ipcRenderer.invoke("config:get-harness-environments"),
   setHarnessEnvironment: (harness, environment) =>
     ipcRenderer.invoke("config:set-harness-environment", harness, environment),
+  getTextGenerationModel: () =>
+    ipcRenderer.invoke("config:get-text-generation-model"),
+  setTextGenerationModel: (model) =>
+    ipcRenderer.invoke("config:set-text-generation-model", model),
   getStartingPrompts: () => ipcRenderer.invoke("config:get-starting-prompts"),
   setStartingPrompts: (prompts) =>
     ipcRenderer.invoke("config:set-starting-prompts", prompts),

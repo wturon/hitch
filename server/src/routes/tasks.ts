@@ -82,7 +82,19 @@ export const taskRoutes = new Hono<AppEnv>()
         return c.json({ error: "section does not belong to project" }, 400);
       }
     }
-    const [row] = await db.insert(tasks).values(body).returning();
+    const { autoTitle, ...values } = body;
+    const [row] = await db
+      .insert(tasks)
+      .values({
+        ...values,
+        ...(autoTitle
+          ? {
+              autoTitleState: "pending" as const,
+              autoTitleSeed: values.title,
+            }
+          : {}),
+      })
+      .returning();
     // A fresh task can't have links yet — [] keeps the response shape uniform.
     return c.json({ ...row, tagIds: [] as string[] }, 201);
   })
@@ -104,6 +116,22 @@ export const taskRoutes = new Hono<AppEnv>()
     // VERBATIM passthrough — never trim/transform the body.
     if (patch.body !== undefined) updates.body = patch.body;
     if (patch.sortOrder !== undefined) updates.sortOrder = patch.sortOrder;
+    if (patch.requestAutoTitle === true) {
+      updates.autoTitleState = "pending";
+      updates.autoTitleSeed = patch.title ?? existing.title;
+      updates.autoTitleClaimedBy = null;
+      updates.autoTitleLeaseUntil = null;
+      updates.autoTitleError = null;
+    } else if (
+      (existing.autoTitleState === "pending" ||
+        existing.autoTitleState === "running") &&
+      (patch.cancelAutoTitle === true ||
+        (patch.title !== undefined && patch.title !== existing.title))
+    ) {
+      updates.autoTitleState = "canceled";
+      updates.autoTitleClaimedBy = null;
+      updates.autoTitleLeaseUntil = null;
+    }
 
     let targetProjectId = existing.projectId;
     if (patch.projectId !== undefined) {

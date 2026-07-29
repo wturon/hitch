@@ -64,6 +64,13 @@
       "when": 1785184006522,
       "tag": "0008_milky_ricochet",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785335032126,
+      "tag": "0009_parched_living_lightning",
+      "breakpoints": true
     }
   ]
 }
