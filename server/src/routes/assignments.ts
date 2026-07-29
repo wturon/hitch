@@ -134,29 +134,13 @@ export const assignmentRoutes = new Hono<AppEnv>()
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
       }
 
-      // Linking is deliberately conservative. Transferring a chat that already
-      // serves another live task needs separate lifecycle semantics: stopping
-      // the previous assignment currently closes its chat.
+      // A task may have any number of live assignments at once — several chats
+      // working the same task is the point — so there is no task-side guard.
+      // The CHAT side stays exclusive: a chat serves one task at a time,
+      // because stopping an assignment closes its chat, so "moving" a chat
+      // would need a release-without-closing lifecycle we deliberately don't
+      // have. Everything below therefore keys off this chat's live work.
       const terminalStates: Array<"done" | "dead"> = ["done", "dead"];
-      const activeForTask = await tx
-        .select()
-        .from(assignments)
-        .where(
-          and(
-            eq(assignments.taskId, task.id),
-            notInArray(assignments.observedState, terminalStates),
-          ),
-        );
-      const samePair = activeForTask.find(
-        (row) =>
-          row.desiredState === "running" &&
-          (row.chatId === chat.id || row.requestedChatId === chat.id),
-      );
-      if (samePair) return { kind: "existing" as const, row: samePair };
-      if (activeForTask.length > 0) {
-        return { kind: "conflict" as const, error: "task already has a different live assignment" };
-      }
-
       const activeForChat = await tx
         .select()
         .from(assignments)
@@ -166,10 +150,45 @@ export const assignmentRoutes = new Hono<AppEnv>()
             notInArray(assignments.observedState, terminalStates),
           ),
         );
-      if (activeForChat.length > 0) {
+
+      // Same chat, same task, still wanted running: a retry (or the loser of
+      // the advisory-lock race) gets the row it already has, never a duplicate.
+      const samePair = activeForChat.find(
+        (row) => row.taskId === task.id && row.desiredState === "running",
+      );
+      if (samePair) return { kind: "existing" as const, row: samePair };
+
+      // A chat can hold both a stopping row on THIS task and a live row on
+      // another; the query has no order, so prefer the same-task row
+      // explicitly. Both are legitimate 409s, but "your stop is still in
+      // flight" is the more specific, more actionable of the two.
+      const conflict = activeForChat.find((row) => row.taskId === task.id) ?? activeForChat[0];
+      if (conflict) {
+        if (conflict.taskId === task.id) {
+          // Only reachable while a stop is in flight for this very pair.
+          // Inserting would hand back an assignment the daemon is about to kill
+          // along with the chat it is closing.
+          return {
+            kind: "conflict" as const,
+            error:
+              "This chat's assignment on this task is being stopped. Wait for that to finish, " +
+              "or start a new chat for this task.",
+          };
+        }
+        const [other] = await tx
+          .select({ title: tasks.title })
+          .from(tasks)
+          .where(eq(tasks.id, conflict.taskId))
+          .limit(1);
+        // Naming the other task is the useful part, but an unreadable or blank
+        // title must degrade to the generic sentence, never to a 500.
+        const otherTitle = (other?.title ?? "").trim();
         return {
           kind: "conflict" as const,
-          error: "current chat is already linked to another live task",
+          error:
+            `This chat is already working on another task${otherTitle ? `: "${otherTitle}"` : ""}. ` +
+            "A chat belongs to one task at a time — finish or stop that one first, or start a " +
+            "new chat for this task.",
         };
       }
 

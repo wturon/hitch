@@ -18,6 +18,13 @@
 //   HITCH_SERVER_URL=http://localhost:3010 node desktop/e2e/check-v2-delegate.mjs
 //
 // Stages screenshotted into e2e/shots/. `docker compose down -v` runs at the end.
+//
+// Multi-chat note: the delegate band is a LANE now (one row per chat), so its
+// selectors are per-ROW. This script only ever has one chat on the task at a
+// time, which is why the bare `Open chat` / `Stop` / `v2-delegate-chip` lookups
+// below stay unambiguous — a multi-chat script must scope them to a
+// `[data-testid=v2-chat-lane-row]` first, and `Stop` would otherwise also match
+// the lane's `Stop all`.
 
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -185,6 +192,8 @@ try {
     `harness=${assignment?.harness}, desired=${assignment?.desiredState}`);
 
   // ── stage B: chip walks Spawning… → Working → Needs you ───────────────────
+  // The lane row's status line ("Working · started just now") wears the old
+  // chip's testid — same instrument, now once per chat instead of once per task.
   const chip = page.locator("[data-testid=v2-delegate-chip]");
   await chip.filter({ hasText: "Working" }).waitFor({ timeout: 15_000 });
   check("4. delegate chip reached Working (observed=running)");
@@ -238,7 +247,9 @@ try {
     const a = await latestAssignment(task.id);
     return a?.observedState === "done" ? a : undefined;
   });
-  check("8. Stop → desired=stopped → observed=done (re-delegate state)");
+  // The row stays in the lane and trades Stop for Reviewed (done ∧ unreviewed);
+  // it only moves behind "earlier chats" once it's acked.
+  check("8. Stop → desired=stopped → observed=done");
   await page.keyboard.press("Escape");
   // Task is still OPEN with a done∧unreviewed assignment: the chip stays amber
   // and the ack lives in the row's context menu (the chip took the row's agent
@@ -271,9 +282,12 @@ try {
 
   // ── stage E: close-on-done ───────────────────────────────────────────────
   await taskRow("Delegate me").click();
+  // Every chat on the task has finished AND been acked, so the lane holds nothing
+  // in play: compose is expanded again and its button reads "Delegate", not
+  // "Add agent" (which is what it says while a chat is still live).
   const delegateAgain = page.getByRole("button", { name: "Delegate" });
   await delegateAgain.waitFor({ timeout: 10_000 });
-  await waitFor("re-delegate enabled", async () => ((await delegateAgain.isEnabled()) ? true : undefined));
+  await waitFor("delegate enabled again", async () => ((await delegateAgain.isEnabled()) ? true : undefined));
   await delegateAgain.click();
   const running = await waitFor("new assignment running", async () => {
     const a = await latestAssignment(task.id);

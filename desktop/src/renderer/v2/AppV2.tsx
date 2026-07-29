@@ -57,8 +57,9 @@ import {
   type TaskDialogState,
 } from "./taskDialogState";
 import { tasksInContainer } from "./sectionGroups";
-import { deriveTaskGroups } from "./todoGroups";
+import { chatsByTaskId, deriveTaskGroups } from "./todoGroups";
 import { fetchTasks, TodosViewV2 } from "./TodosViewV2";
+import { useAllAssignments } from "./useAssignments";
 import { useSections } from "./useSections";
 import { useTagMutations } from "./useTagMutations";
 import { useTaskMutations } from "./useTaskMutations";
@@ -556,11 +557,26 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
             !taskMutations.pendingDeleteIds.has(task.id),
         )
       : undefined;
-  // One grouping fold shared by the dialog's prepend maths and the ⌘K
-  // palette's task list — both read the same query, so this derives once.
+  // The attention join, for the ⌘K palette's labels. Same ["assignments"] key
+  // TodosViewV2 uses, so the two share ONE cache entry and one refetch when the
+  // WS invalidates it — the palette can't disagree with the chips on screen.
+  const assignments = useAllAssignments(client);
+  const chatsByTask = useMemo(
+    () => chatsByTaskId(assignments.data ?? []),
+    [assignments.data],
+  );
+  // The grouping fold behind the ⌘K palette's task labels — its ONLY consumer
+  // (the capture prepend maths moved to `tasksInContainer` when sections landed,
+  // so nothing here is load-bearing for WHERE a new task goes).
+  //
+  // The chats map is not optional: without it `rowState` is never consulted,
+  // NEEDS YOU / WORKING stay empty, and the palette labelled every open
+  // task "Backlog" — including ones an agent was actively working. Sections v1
+  // removed the on-screen attention groups but left this consumer behind, so the
+  // lie was invisible everywhere except in the palette.
   const taskGroups = useMemo(
-    () => deriveTaskGroups(dialogTasks.data ?? []),
-    [dialogTasks.data],
+    () => deriveTaskGroups(dialogTasks.data ?? [], chatsByTask),
+    [dialogTasks.data, chatsByTask],
   );
   // A capture prepends within the container it was opened INTO — the loose
   // list for `C` and the top add-row, that section for a section's own add-row.

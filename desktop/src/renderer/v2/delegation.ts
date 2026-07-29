@@ -1,9 +1,9 @@
 // Pure delegation logic for the V2 delegate bar (M4 PR 5, option L). No React,
 // no HTTP, no DOM beyond a guarded localStorage read — everything here is
-// unit-testable in isolation, exactly like todoGroups/tagFilter. The bar's
-// three states, the observed-state → chip mapping and machine staleness all
-// derive from these functions. Prompt composition does NOT live here any more —
-// see the note below.
+// unit-testable in isolation, exactly like todoGroups/tagFilter. The
+// observed-state → chip mapping, machine staleness and the model/effort catalog
+// wrappers all derive from these functions; the chat lane's own wording lives in
+// chatLane. Prompt composition does NOT live here any more — see the note below.
 //
 // Harness note: the V2 server enum is `claude | codex` (schema.ts), NOT V1's
 // `claude-code | codex`. The delegate bar speaks the server's language; the V1
@@ -87,57 +87,18 @@ export type ObservedState =
   | "done"
   | "dead";
 
-// The three shapes the bar renders (see DelegateBar):
-//   compose      — no assignment yet; pick agent/machine/prompt and delegate.
-//   active       — a live assignment (latest, observed_state ∉ {done, dead}).
-//   re-delegate  — the latest assignment finished (done|dead); show the outcome
-//                  subtly and offer compose again. History is preserved
-//                  server-side (assignments are append-only).
-export type BarState = "compose" | "active" | "re-delegate";
-
-// The minimal assignment shape the derivations need — a structural subset of
-// what GET /assignments returns. createdAt crosses the wire as an ISO string;
-// we parse it to an epoch and never trust lexicographic order.
-export interface AssignmentLike {
-  createdAt: string | Date;
-  observedState: ObservedState;
-}
+// MULTI-CHAT (slice 2): there is no "latest assignment" and no three-state bar
+// any more. `selectLatestAssignment` + `deriveBarState` used to fold a task's
+// append-only assignment history down to its newest row, which made every other
+// agent on the task invisible and pointed Stop at whichever one happened to be
+// newest. The delegate band is a LANE now: it renders one row per chat, ordered
+// by todoGroups' `chatsForTask` and worded by chatLane. Nothing in the app picks
+// a task's single assignment, so neither function has a caller — do not bring
+// them back.
 
 function toEpoch(value: string | Date): number {
   const t = value instanceof Date ? value.getTime() : Date.parse(value);
   return Number.isNaN(t) ? 0 : t;
-}
-
-// The latest assignment by created_at (the server lists ascending, but we don't
-// depend on order). Ties keep the LAST occurrence in input order, so a server
-// list ordered by createdAt yields the newest row — matching the daemon, which
-// only ever acts on the most-recently-created assignment for a task.
-export function selectLatestAssignment<T extends AssignmentLike>(
-  assignments: readonly T[] | undefined,
-): T | null {
-  if (!assignments || assignments.length === 0) return null;
-  let latest = assignments[0];
-  let latestEpoch = toEpoch(latest.createdAt);
-  for (let i = 1; i < assignments.length; i++) {
-    const epoch = toEpoch(assignments[i].createdAt);
-    // >= so an equal-timestamp later element wins (stable "last of the ties").
-    if (epoch >= latestEpoch) {
-      latest = assignments[i];
-      latestEpoch = epoch;
-    }
-  }
-  return latest;
-}
-
-// done/dead are terminal — the latest assignment in one of those states drops
-// the bar back to re-delegate. Everything else (incl. no assignment) is
-// covered explicitly.
-export function deriveBarState(latest: AssignmentLike | null): BarState {
-  if (!latest) return "compose";
-  if (latest.observedState === "done" || latest.observedState === "dead") {
-    return "re-delegate";
-  }
-  return "active";
 }
 
 // The visual tone of a status chip. Monochrome doctrine: only "needs-you" earns
