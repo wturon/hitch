@@ -6,6 +6,7 @@ import { printJson, renderTable, truncate } from "../format.js";
 import { TASKS_HELP } from "../help.js";
 import { shortId } from "../ids.js";
 import { onePositional, parseFlags } from "../parse.js";
+import { taskTitleSeed } from "@hitch/shared/taskTitles";
 import {
   ensureTags,
   loadWorkspace,
@@ -267,16 +268,6 @@ async function link(args: string[]): Promise<void> {
 // add
 // ---------------------------------------------------------------------------
 
-export function autoTitleSeed(body: string): string {
-  const plain = body
-    .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/[`#>*_~|-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return plain.split(" ").filter(Boolean).slice(0, 6).join(" ") || "Untitled";
-}
-
 async function add(args: string[]): Promise<void> {
   const { values, positionals } = parseFlags(
     args,
@@ -316,7 +307,7 @@ async function add(args: string[]): Promise<void> {
   if (requestedTitle === undefined && !body.trim()) {
     throw new UsageError("--auto-title without a title requires a non-empty task body.");
   }
-  const title = requestedTitle ?? autoTitleSeed(body);
+  const title = requestedTitle ?? taskTitleSeed(body);
   const session = requireSession();
   const workspace = await loadWorkspace(session);
   const project = await resolveProjectForAdd(session, workspace, values.project);
@@ -332,7 +323,7 @@ async function add(args: string[]): Promise<void> {
       title,
       body,
       sortOrder,
-      autoTitle: values["auto-title"],
+      autoTitleSeed: values["auto-title"] ? title : undefined,
     },
   });
   await ensureOk(session, res, "Creating the task");

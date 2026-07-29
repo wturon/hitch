@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./taskTitles": {
+      "types": "./dist/taskTitles.d.ts",
+      "default": "./dist/taskTitles.js"
     }
   },
   "scripts": {

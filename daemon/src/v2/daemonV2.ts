@@ -27,13 +27,11 @@ import { createFakeLaunchers, isFakeLaunch } from "./fakeLauncher.js";
 import { createFocusHandler } from "./focus.js";
 import { ProjectsProvider } from "./projects.js";
 import { Reconciler } from "./reconciler.js";
+import type { DaemonLogger } from "./serialLoop.js";
 import { createServerClient } from "./serverClient.js";
 import { startServerWs, type ServerWsClient } from "./ws.js";
 
-export interface HitchDaemonV2Logger {
-  info: (message: string) => void;
-  error?: (message: string) => void;
-}
+export type HitchDaemonV2Logger = DaemonLogger;
 
 export interface HitchDaemonV2Options {
   cwd?: string;

@@ -3,10 +3,9 @@ import {
   and,
   asc,
   eq,
+  exists,
   inArray,
   isNotNull,
-  isNull,
-  lte,
   or,
   type SQL,
 } from "drizzle-orm";
@@ -27,9 +26,7 @@ import {
 } from "../db/schema.js";
 import {
   assignmentObservationUpdate,
-  autoTitleClaim,
   autoTitleComplete,
-  autoTitleFail,
   autoTitleListQuery,
   chatListQuery,
   chatSnapshot,
@@ -43,7 +40,6 @@ import {
   ownedChat,
   ownedMachine,
   ownedProject,
-  ownedTask,
 } from "./helpers.js";
 
 type ChatRow = typeof chats.$inferSelect;
@@ -53,7 +49,6 @@ type SnapshotHarness = (typeof harnessEnum.enumValues)[number];
 // unique index (machine_id, harness, session_id) minus the machine, which is
 // already fixed by the route param. Nothing here may key on session id alone.
 const chatKey = (harness: string, sessionId: string) => harness + " " + sessionId;
-const AUTO_TITLE_LEASE_MS = 90_000;
 
 // A relayed hook event whose kind starts with "block." is the ONLY thing that
 // writes chats.block. "block.clear" (and its synonyms) means "no longer
@@ -147,80 +142,48 @@ export const daemonRoutes = new Hono<AppEnv>()
     },
   )
   // ─── Task auto-titles ------------------------------------------------------
-  // The task row is the durable desired/observed state. Any client can request
-  // naming; only an owned machine daemon can claim and execute it. A lease
-  // makes a crashed daemon self-healing without a second command queue.
+  // A non-null seed equal to the current title is the complete durable intent.
+  // Multiple daemons may generate concurrently; the atomic completion CAS
+  // makes all but the first harmless no-ops.
   .get("/auto-titles", zValidator("query", autoTitleListQuery), async (c) => {
-    const { machine_id: machineId, limit } = c.req.valid("query");
+    const { requesting_machine_id: machineId, limit } = c.req.valid("query");
     const machine = await ownedMachine(c.var.db, c.var.userId, machineId);
     if (!machine) return c.json(notFound, 404);
-    const now = new Date();
-    const rows = await c.var.db
-      .select({ id: tasks.id })
+    const db = c.var.db;
+    const rows = await db
+      .select({ task: tasks })
       .from(tasks)
       .innerJoin(projects, eq(tasks.projectId, projects.id))
       .where(
         and(
           eq(projects.userId, c.var.userId),
-          or(
-            eq(tasks.autoTitleState, "pending"),
-            and(
-              eq(tasks.autoTitleState, "running"),
-              or(isNull(tasks.autoTitleLeaseUntil), lte(tasks.autoTitleLeaseUntil, now)),
-            ),
-          ),
+          isNotNull(tasks.autoTitleSeed),
+          eq(tasks.title, tasks.autoTitleSeed),
         ),
       )
       .orderBy(asc(tasks.createdAt))
       .limit(limit);
-    return c.json(rows);
-  })
-  .post(
-    "/auto-titles/:id/claim",
-    zValidator("param", idParam),
-    zValidator("json", autoTitleClaim),
-    async (c) => {
-      const { id } = c.req.valid("param");
-      const { machineId } = c.req.valid("json");
-      const db = c.var.db;
-      if (!(await ownedMachine(db, c.var.userId, machineId))) {
-        return c.json(notFound, 404);
-      }
-      if (!(await ownedTask(db, c.var.userId, id))) return c.json(notFound, 404);
-
-      const now = new Date();
-      const leaseUntil = new Date(now.getTime() + AUTO_TITLE_LEASE_MS);
-      const [task] = await db
-        .update(tasks)
-        .set({
-          autoTitleState: "running",
-          autoTitleClaimedBy: machineId,
-          autoTitleLeaseUntil: leaseUntil,
-          autoTitleError: null,
-        })
-        .where(
-          and(
-            eq(tasks.id, id),
-            or(
-              eq(tasks.autoTitleState, "pending"),
+    const taskIds = rows.map(({ task }) => task.id);
+    const files =
+      taskIds.length === 0
+        ? []
+        : await db
+            .select()
+            .from(attachments)
+            .where(
               and(
-                eq(tasks.autoTitleState, "running"),
-                or(isNull(tasks.autoTitleLeaseUntil), lte(tasks.autoTitleLeaseUntil, now)),
+                inArray(attachments.taskId, taskIds),
+                eq(attachments.state, "finalized"),
               ),
-            ),
-          ),
-        )
-        .returning();
-      if (!task) return c.json({ error: "auto-title is not claimable" }, 409);
-
-      const files = await db
-        .select()
-        .from(attachments)
-        .where(and(eq(attachments.taskId, id), eq(attachments.state, "finalized")))
-        .orderBy(attachments.createdAt);
-      return c.json({ task, attachments: files });
-    },
-  )
+            )
+            .orderBy(attachments.createdAt);
+    return c.json(
+      rows.map(({ task }) => ({
+        task,
+        attachments: files.filter((file) => file.taskId === task.id),
+      })),
+    );
+  })
   .post(
     "/auto-titles/:id/complete",
     zValidator("param", idParam),
@@ -229,95 +192,44 @@ export const daemonRoutes = new Hono<AppEnv>()
       const { id } = c.req.valid("param");
       const { machineId, title } = c.req.valid("json");
       const db = c.var.db;
-      if (!(await ownedMachine(db, c.var.userId, machineId))) {
-        return c.json(notFound, 404);
-      }
-      const existing = await ownedTask(db, c.var.userId, id);
-      if (!existing) return c.json(notFound, 404);
-      if (
-        existing.autoTitleState !== "running" ||
-        existing.autoTitleClaimedBy !== machineId
-      ) {
-        return c.json({ error: "auto-title is not owned by this machine" }, 409);
-      }
-
-      const applied =
-        existing.autoTitleSeed != null && existing.title === existing.autoTitleSeed;
       const [row] = await db
         .update(tasks)
         .set({
-          ...(applied ? { title } : {}),
-          autoTitleState: applied ? "done" : "canceled",
-          autoTitleClaimedBy: null,
-          autoTitleLeaseUntil: null,
-          autoTitleError: null,
+          ...(title === null ? {} : { title }),
+          autoTitleSeed: null,
         })
         .where(
           and(
             eq(tasks.id, id),
-            eq(tasks.autoTitleState, "running"),
-            eq(tasks.autoTitleClaimedBy, machineId),
-            ...(applied && existing.autoTitleSeed != null
-              ? [eq(tasks.title, existing.autoTitleSeed)]
-              : []),
-          ),
-        )
-        .returning();
-      if (!row && applied) {
-        // The title changed after our read. Release the claim without ever
-        // replacing the user's newer text.
-        const [canceled] = await db
-          .update(tasks)
-          .set({
-            autoTitleState: "canceled",
-            autoTitleClaimedBy: null,
-            autoTitleLeaseUntil: null,
-            autoTitleError: null,
-          })
-          .where(
-            and(
-              eq(tasks.id, id),
-              eq(tasks.autoTitleState, "running"),
-              eq(tasks.autoTitleClaimedBy, machineId),
+            isNotNull(tasks.autoTitleSeed),
+            eq(tasks.title, tasks.autoTitleSeed),
+            exists(
+              db
+                .select({ id: projects.id })
+                .from(projects)
+                .where(
+                  and(
+                    eq(projects.id, tasks.projectId),
+                    eq(projects.userId, c.var.userId),
+                  ),
+                ),
             ),
-          )
-          .returning();
-        if (canceled) return c.json({ task: canceled, applied: false });
-      }
-      if (!row) return c.json({ error: "auto-title claim changed" }, 409);
-      return c.json({ task: row, applied });
-    },
-  )
-  .post(
-    "/auto-titles/:id/fail",
-    zValidator("param", idParam),
-    zValidator("json", autoTitleFail),
-    async (c) => {
-      const { id } = c.req.valid("param");
-      const { machineId, error } = c.req.valid("json");
-      const db = c.var.db;
-      if (!(await ownedMachine(db, c.var.userId, machineId))) {
-        return c.json(notFound, 404);
-      }
-      if (!(await ownedTask(db, c.var.userId, id))) return c.json(notFound, 404);
-      const [row] = await db
-        .update(tasks)
-        .set({
-          autoTitleState: "failed",
-          autoTitleClaimedBy: null,
-          autoTitleLeaseUntil: null,
-          autoTitleError: error,
-        })
-        .where(
-          and(
-            eq(tasks.id, id),
-            eq(tasks.autoTitleState, "running"),
-            eq(tasks.autoTitleClaimedBy, machineId),
+            exists(
+              db
+                .select({ id: machines.id })
+                .from(machines)
+                .where(
+                  and(
+                    eq(machines.id, machineId),
+                    eq(machines.userId, c.var.userId),
+                  ),
+                ),
+            ),
           ),
         )
         .returning();
-      if (!row) return c.json({ error: "auto-title claim changed" }, 409);
-      return c.json(row);
+      if (!row) return c.json({ error: "auto-title no longer active" }, 409);
+      return c.json({ task: row, applied: title !== null });
     },
   )
   // The daemon's read of its own chats: the reconciler resolves an assignment's

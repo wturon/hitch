@@ -1,10 +1,16 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import {
+  DEFAULT_TEXT_GENERATION_MODEL,
+  isTextGenerationModel,
+  TEXT_GENERATION_MODELS,
+  type TextGenerationModel,
+} from "@hitch/shared/taskTitles";
 
 import { codexBin } from "../codex.js";
 import { appSupportDirFromEnv } from "./config.js";
@@ -12,14 +18,6 @@ import { appSupportDirFromEnv } from "./config.js";
 export const TITLE_PROMPT_MAX_CHARS = 12_000;
 export const TASK_TITLE_MAX_LENGTH = 50;
 const TITLE_GEN_TIMEOUT_MS = 60_000;
-
-export const TEXT_GENERATION_MODELS = [
-  "gpt-5.6-luna",
-  "gpt-5.4-mini",
-  "claude-haiku-4-5",
-] as const;
-export type TextGenerationModel = (typeof TEXT_GENERATION_MODELS)[number];
-export const DEFAULT_TEXT_GENERATION_MODEL: TextGenerationModel = "gpt-5.6-luna";
 
 export interface TaskTitleContext {
   body: string;
@@ -29,12 +27,15 @@ export interface TaskTitleContext {
     title?: string;
     description?: string;
   }>;
-  attachments?: ReadonlyArray<{
-    filename: string;
-    mime: string;
-    size: number;
-    text?: string;
-  }>;
+  attachments?: ReadonlyArray<TitleAttachment>;
+}
+
+export interface TitleAttachment {
+  filename: string;
+  mime: string;
+  size: number;
+  text?: string;
+  imagePath?: string;
 }
 
 function limited(value: string, max: number): string {
@@ -112,29 +113,42 @@ export function sanitizeGeneratedTitle(raw: string | null | undefined): string {
   return `${normalized.slice(0, TASK_TITLE_MAX_LENGTH - 3).trimEnd()}...`;
 }
 
-export function normalizeTextGenerationModel(value: unknown): TextGenerationModel {
-  return TEXT_GENERATION_MODELS.includes(value as TextGenerationModel)
-    ? (value as TextGenerationModel)
-    : DEFAULT_TEXT_GENERATION_MODEL;
-}
-
-function readPreferredModel(env: NodeJS.ProcessEnv): TextGenerationModel {
+async function readPreferredModel(
+  env: NodeJS.ProcessEnv,
+): Promise<TextGenerationModel> {
   const preferencesPath =
     env.HITCH_PREFERENCES_PATH ?? join(appSupportDirFromEnv(env), "preferences.json");
   try {
-    const raw = JSON.parse(readFileSync(preferencesPath, "utf8")) as unknown;
+    const raw = JSON.parse(await readFile(preferencesPath, "utf8")) as unknown;
     if (typeof raw !== "object" || raw === null) return DEFAULT_TEXT_GENERATION_MODEL;
-    return normalizeTextGenerationModel(
-      (raw as Record<string, unknown>).textGenerationModel,
-    );
+    const value = (raw as Record<string, unknown>).textGenerationModel;
+    return isTextGenerationModel(value)
+      ? value
+      : DEFAULT_TEXT_GENERATION_MODEL;
   } catch {
     return DEFAULT_TEXT_GENERATION_MODEL;
   }
 }
 
 const execFileP = promisify(execFile);
+type TextGenerationProvider = "codex" | "claude";
+const PROVIDER_BY_MODEL = {
+  "gpt-5.6-luna": "codex",
+  "gpt-5.4-mini": "codex",
+  "claude-haiku-4-5": "claude",
+} as const satisfies Record<TextGenerationModel, TextGenerationProvider>;
 
-async function commandAvailable(binary: string): Promise<boolean> {
+const availabilityByBinary = new Map<string, Promise<boolean>>();
+
+function commandAvailable(binary: string): Promise<boolean> {
+  const cached = availabilityByBinary.get(binary);
+  if (cached) return cached;
+  const check = commandAvailableUncached(binary);
+  availabilityByBinary.set(binary, check);
+  return check;
+}
+
+async function commandAvailableUncached(binary: string): Promise<boolean> {
   if (binary.includes("/")) return existsSync(binary);
   try {
     await execFileP("which", [binary], { timeout: 5_000 });
@@ -150,7 +164,7 @@ function claudeBin(env: NodeJS.ProcessEnv): string {
 
 async function generateViaCodex(
   prompt: string,
-  model: Exclude<TextGenerationModel, "claude-haiku-4-5">,
+  model: string,
   imagePaths: ReadonlyArray<string>,
 ): Promise<string> {
   const outputPath = join(
@@ -215,40 +229,42 @@ async function generateViaClaude(
 
 export async function generateTaskTitle(options: {
   context: TaskTitleContext;
-  imagePaths?: ReadonlyArray<string>;
   env?: NodeJS.ProcessEnv;
 }): Promise<{ title: string; model: TextGenerationModel }> {
   const env = options.env ?? process.env;
-  const preferred = readPreferredModel(env);
-  const [codexAvailable, claudeAvailable] = await Promise.all([
-    commandAvailable(codexBin()),
-    commandAvailable(claudeBin(env)),
-  ]);
+  const preferred = await readPreferredModel(env);
   const prompt = buildTitlePrompt(options.context);
+  const imagePaths =
+    options.context.attachments?.flatMap((file) =>
+      file.imagePath ? [file.imagePath] : [],
+    ) ?? [];
+  const candidates = [
+    preferred,
+    ...TEXT_GENERATION_MODELS.filter((model) => model !== preferred),
+  ];
+  const providers = {
+    codex: {
+      binary: codexBin(),
+      run: (model: TextGenerationModel) =>
+        generateViaCodex(prompt, model, imagePaths),
+    },
+    claude: {
+      binary: claudeBin(env),
+      run: (_model: TextGenerationModel) => generateViaClaude(prompt, env),
+    },
+  } satisfies Record<
+    TextGenerationProvider,
+    {
+      binary: string;
+      run: (model: TextGenerationModel) => Promise<string>;
+    }
+  >;
 
-  if (preferred === "claude-haiku-4-5" && claudeAvailable) {
+  for (const model of candidates) {
+    const provider = providers[PROVIDER_BY_MODEL[model]];
+    if (!(await commandAvailable(provider.binary))) continue;
     return {
-      title: await generateViaClaude(prompt, env),
-      model: preferred,
-    };
-  }
-  if (preferred !== "claude-haiku-4-5" && codexAvailable) {
-    return {
-      title: await generateViaCodex(prompt, preferred, options.imagePaths ?? []),
-      model: preferred,
-    };
-  }
-  if (claudeAvailable) {
-    return {
-      title: await generateViaClaude(prompt, env),
-      model: "claude-haiku-4-5",
-    };
-  }
-  if (codexAvailable) {
-    const model: Exclude<TextGenerationModel, "claude-haiku-4-5"> =
-      preferred === "claude-haiku-4-5" ? "gpt-5.6-luna" : preferred;
-    return {
-      title: await generateViaCodex(prompt, model, options.imagePaths ?? []),
+      title: await provider.run(model),
       model,
     };
   }

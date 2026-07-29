@@ -35,6 +35,7 @@ import { CmuxError } from "../cmux.js";
 import { resolveLauncher as registryResolveLauncher } from "../launchers/registry.js";
 import type { Environment, Harness, Launcher } from "../launchers/types.js";
 import type { HitchClient } from "./serverClient.js";
+import { SerialLoop, type DaemonLogger } from "./serialLoop.js";
 
 // The registry's resolveLauncher shape. Injectable (defaults to the registry) so
 // the fake-launch seam (M4 PR 4) can swap in cmux-less stand-ins without touching
@@ -99,10 +100,7 @@ export type ServerHarness = "claude" | "codex";
 export type ServerChatStatus = "busy" | "waiting_input" | "idle" | "dead";
 export type ServerExistence = "running" | "dormant" | "pending";
 
-export interface ReconcilerLogger {
-  info: (message: string) => void;
-  error?: (message: string) => void;
-}
+export type ReconcilerLogger = DaemonLogger;
 
 // ─── Pure decision logic (unit-tested in v2-reconciler-smoke) ────────────────
 
@@ -280,13 +278,10 @@ export class Reconciler {
   private readonly machineId: string;
   private readonly host: string;
   private readonly logger: ReconcilerLogger;
-  private readonly tickMs: number;
   private readonly now: () => number;
   private readonly resolveLauncher: LauncherResolver;
+  private readonly loop: SerialLoop;
 
-  private timer: NodeJS.Timeout | null = null;
-  private running = false;
-  private rerun = false;
   private stopped = false;
   // Assignments with a spawn/close in flight this process lifetime. Guards
   // double-spawn between the claim and the "spawning" write landing on the
@@ -299,50 +294,33 @@ export class Reconciler {
     this.machineId = options.machineId;
     this.host = options.host;
     this.logger = options.logger;
-    this.tickMs = options.tickMs ?? DEFAULT_TICK_MS;
     this.now = options.now ?? Date.now;
     this.resolveLauncher = options.resolveLauncher ?? registryResolveLauncher;
+    this.loop = new SerialLoop({
+      intervalMs: options.tickMs ?? DEFAULT_TICK_MS,
+      pass: (reason) => this.reconcileOnce(reason),
+      onError: (error, reason) => {
+        this.logger.error?.(
+          `[hitch] reconcile pass (${reason}) failed: ${String(error)}`,
+        );
+      },
+    });
   }
 
   // Start the fallback tick and run an initial pass.
   start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => this.trigger("tick"), this.tickMs);
-    this.timer.unref?.();
-    this.trigger("startup");
+    this.loop.start();
   }
 
   stop(): void {
     this.stopped = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
+    this.loop.stop();
   }
 
   // Request a reconcile pass. Serializes: if one is running, sets the trailing
   // re-run flag so the trigger isn't lost.
   trigger(reason: string): void {
-    if (this.stopped) return;
-    if (this.running) {
-      this.rerun = true;
-      return;
-    }
-    void this.runPasses(reason);
-  }
-
-  private async runPasses(reason: string): Promise<void> {
-    this.running = true;
-    try {
-      do {
-        this.rerun = false;
-        await this.reconcileOnce(reason).catch((error) => {
-          this.logger.error?.(`[hitch] reconcile pass (${reason}) failed: ${String(error)}`);
-        });
-      } while (this.rerun && !this.stopped);
-    } finally {
-      this.running = false;
-    }
+    this.loop.trigger(reason);
   }
 
   private async reconcileOnce(reason: string): Promise<void> {

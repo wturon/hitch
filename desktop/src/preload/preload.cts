@@ -3,6 +3,7 @@ import {
   ipcRenderer,
   type IpcRendererEvent,
 } from "electron";
+import type { TextGenerationModel } from "@hitch/shared/taskTitles";
 
 export type IntegrationState = "ok" | "missing" | "drifted" | "broken" | "quiet";
 
@@ -26,11 +27,6 @@ export interface IntegrationHealth {
 }
 
 export type Harness = "codex" | "claude-code";
-export type TextGenerationModel =
-  | "gpt-5.6-luna"
-  | "gpt-5.4-mini"
-  | "claude-haiku-4-5";
-
 export interface HarnessHookStatus {
   harness: Harness;
   installed: boolean;

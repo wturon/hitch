@@ -67,7 +67,7 @@ const TRANSFORM_MS = 260;
 // The live-row projection the dialog needs from the tasks list query.
 export interface TaskDialogRow extends TaskDocumentFields {
   id: string;
-  autoTitleState: "pending" | "running" | "done" | "failed" | "canceled" | null;
+  autoTitleSeed: string | null;
 }
 
 // The saved-stage ⋯ menu's actions, threaded from the shell's single
@@ -326,7 +326,7 @@ function TaskBodyV2({
       const response = already
         ? await client.tasks[":id"].$patch({
             param: { id: already },
-            json: { title, body, requestAutoTitle: true },
+            json: { title, body, autoTitleSeed: title },
           })
         : await client.tasks.$post({
             json: {
@@ -335,7 +335,7 @@ function TaskBodyV2({
               title,
               body,
               sortOrder: captureSortOrder(backlogRef.current),
-              autoTitle: true,
+              autoTitleSeed: title,
             },
           });
       if (!response.ok) {
@@ -482,6 +482,11 @@ function TaskBodyV2({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [transform]);
 
+  const autoTitleActive =
+    !titleClaimed &&
+    existing?.autoTitleSeed != null &&
+    existing.title === existing.autoTitleSeed;
+
   return (
     <div ref={rootRef}>
       <div
@@ -495,26 +500,24 @@ function TaskBodyV2({
         {stage === "saved" && (
           <div className="flex items-center gap-2 pt-2.5 pr-2.5 pl-5">
             <div className="flex min-w-0 flex-1 items-center gap-1.5">
-              {!titleClaimed &&
-                (existing?.autoTitleState === "pending" ||
-                  existing?.autoTitleState === "running") && (
-                  <LoaderCircleIcon
-                    aria-label="Naming task"
-                    className="size-3 shrink-0 animate-spin text-muted-foreground/60 motion-reduce:animate-none"
-                  />
-                )}
+              {autoTitleActive && (
+                <LoaderCircleIcon
+                  aria-label="Naming task"
+                  className="size-3 shrink-0 animate-spin text-muted-foreground/60 motion-reduce:animate-none"
+                />
+              )}
               <input
                 aria-label="Task title"
                 value={doc.title}
                 onFocus={() => {
-                  if (titleClaimed) return;
+                  if (!autoTitleActive) return;
                   setTitleClaimed(true);
                   const id = taskIdRef.current;
                   if (!id) return;
                   void client.tasks[":id"]
                     .$patch({
                       param: { id },
-                      json: { cancelAutoTitle: true },
+                      json: { autoTitleSeed: null },
                     })
                     .then(() =>
                       queryClient.invalidateQueries({ queryKey: ["tasks"] }),

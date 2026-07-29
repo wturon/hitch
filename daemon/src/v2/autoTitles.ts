@@ -1,12 +1,15 @@
-import { lookup } from "node:dns/promises";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { extname, join } from "node:path";
 
+import { externalUrls, pageMetadataFromHtml } from "./pageMetadata.js";
+import { fetchPublicBytes, fetchTrustedBytes } from "./safeFetch.js";
 import type { HitchClient } from "./serverClient.js";
+import { SerialLoop, type DaemonLogger } from "./serialLoop.js";
 import {
   generateTaskTitle,
   type TaskTitleContext,
+  type TitleAttachment,
 } from "./taskTitles.js";
 
 const DEFAULT_TICK_MS = 30_000;
@@ -14,12 +17,13 @@ const PAGE_TIMEOUT_MS = 900;
 const ATTACHMENT_TIMEOUT_MS = 1_200;
 const MAX_HTML_BYTES = 256 * 1024;
 const MAX_TEXT_BYTES = 32 * 1024;
+const MAX_TEXT_ATTACHMENT_SIZE = MAX_TEXT_BYTES * 4;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-
-interface AutoTitleLogger {
-  info: (message: string) => void;
-  error?: (message: string) => void;
-}
+const MAX_LINKS = 2;
+const MAX_ATTACHMENTS = 6;
+const MAX_IMAGES = 2;
+const BATCH_SIZE = 5;
+const MAX_EXTENSION_LENGTH = 12;
 
 interface WireTask {
   id: string;
@@ -34,198 +38,20 @@ interface WireAttachment {
   size: number;
 }
 
-interface ClaimedTitle {
+interface AutoTitleRequest {
   task: WireTask;
   attachments: WireAttachment[];
 }
 
-function isPrivateIp(address: string): boolean {
-  const normalized = address.toLowerCase();
-  if (
-    normalized === "::1" ||
-    normalized === "::" ||
-    normalized.startsWith("::ffff:") ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    normalized.startsWith("fe8") ||
-    normalized.startsWith("fe9") ||
-    normalized.startsWith("fea") ||
-    normalized.startsWith("feb")
-  ) {
-    return true;
-  }
-  const v4 = normalized.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (!v4) return false;
-  const a = Number(v4[1]);
-  const b = Number(v4[2]);
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19)) ||
-    a >= 224
-  );
-}
-
-async function assertPublicUrl(url: URL): Promise<void> {
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("unsupported URL protocol");
-  }
-  if (
-    url.username ||
-    url.password ||
-    (url.port && url.port !== "80" && url.port !== "443")
-  ) {
-    throw new Error("unsafe URL authority");
-  }
-  const host = url.hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost")) {
-    throw new Error("local URL");
-  }
-  const addresses = await lookup(host, { all: true });
-  if (addresses.length === 0 || addresses.some((row) => isPrivateIp(row.address))) {
-    throw new Error("private URL");
-  }
-}
-
-async function fetchBounded(
-  input: string,
-  options: { timeoutMs: number; maxBytes: number; publicOnly?: boolean },
-): Promise<{ bytes: Uint8Array; contentType: string }> {
-  let url = new URL(input);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs);
-  try {
-    for (let redirects = 0; redirects <= 3; redirects++) {
-      if (options.publicOnly) await assertPublicUrl(url);
-      const response = await fetch(url, {
-        redirect: "manual",
-        signal: controller.signal,
-        headers: { "user-agent": "Hitch/1 task-title-metadata" },
-      });
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) throw new Error("redirect without location");
-        url = new URL(location, url);
-        continue;
-      }
-      if (!response.ok || !response.body) {
-        throw new Error(`fetch failed (${response.status})`);
-      }
-      const declared = Number(response.headers.get("content-length") ?? "0");
-      if (declared > options.maxBytes) throw new Error("response too large");
-
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > options.maxBytes) {
-          await reader.cancel();
-          throw new Error("response too large");
-        }
-        chunks.push(value);
-      }
-      const bytes = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      return {
-        bytes,
-        contentType: response.headers.get("content-type") ?? "",
-      };
-    }
-    throw new Error("too many redirects");
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function decodeHtml(value: string): string {
-  return value
-    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_match, code) =>
-      String.fromCodePoint(Number.parseInt(code, 16)),
-    )
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function metaAttributes(tag: string): Record<string, string> {
-  const attrs: Record<string, string> = {};
-  for (const match of tag.matchAll(
-    /([:\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g,
-  )) {
-    attrs[match[1].toLowerCase()] = match[2] ?? match[3] ?? match[4] ?? "";
-  }
-  return attrs;
-}
-
-export function pageMetadataFromHtml(html: string): {
-  title?: string;
-  description?: string;
-} {
-  let title: string | undefined;
-  let description: string | undefined;
-  for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
-    const attrs = metaAttributes(match[0]);
-    const key = (attrs.property ?? attrs.name ?? "").toLowerCase();
-    if (!title && (key === "og:title" || key === "twitter:title")) {
-      title = decodeHtml(attrs.content ?? "");
-    }
-    if (
-      !description &&
-      (key === "og:description" ||
-        key === "twitter:description" ||
-        key === "description")
-    ) {
-      description = decodeHtml(attrs.content ?? "");
-    }
-  }
-  if (!title) {
-    const match = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
-    if (match) title = decodeHtml(match[1]);
-  }
-  return {
-    ...(title ? { title } : {}),
-    ...(description ? { description } : {}),
-  };
-}
-
-export function externalUrls(body: string): string[] {
-  const found = new Set<string>();
-  for (const match of body.matchAll(/https?:\/\/[^\s<>"')\]]+/gi)) {
-    try {
-      const url = new URL(match[0].replace(/[.,;:!?]+$/, ""));
-      found.add(url.toString());
-    } catch {
-      // Ignore malformed prose that merely resembles a URL.
-    }
-  }
-  return [...found].slice(0, 2);
-}
-
-async function loadPageMetadata(body: string): Promise<TaskTitleContext["linkMetadata"]> {
-  const rows = await Promise.all(
-    externalUrls(body).map(async (url) => {
+async function loadPageMetadata(
+  body: string,
+): Promise<TaskTitleContext["linkMetadata"]> {
+  return Promise.all(
+    externalUrls(body, MAX_LINKS).map(async (url) => {
       try {
-        const response = await fetchBounded(url, {
+        const response = await fetchPublicBytes(url, {
           timeoutMs: PAGE_TIMEOUT_MS,
           maxBytes: MAX_HTML_BYTES,
-          publicOnly: true,
         });
         if (!response.contentType.toLowerCase().includes("text/html")) {
           return { url };
@@ -239,7 +65,6 @@ async function loadPageMetadata(body: string): Promise<TaskTitleContext["linkMet
       }
     }),
   );
-  return rows;
 }
 
 function isReadableText(mime: string): boolean {
@@ -253,7 +78,9 @@ function isReadableText(mime: string): boolean {
 }
 
 function safeExtension(file: WireAttachment): string {
-  const ext = extname(file.filename).replace(/[^A-Za-z0-9.]/g, "").slice(0, 12);
+  const ext = extname(file.filename)
+    .replace(/[^A-Za-z0-9.]/g, "")
+    .slice(0, MAX_EXTENSION_LENGTH);
   if (ext) return ext;
   if (file.mime === "image/png") return ".png";
   if (file.mime === "image/jpeg") return ".jpg";
@@ -268,21 +95,56 @@ async function attachmentDownloadUrl(
   const response = await client.attachments[":id"].download.$get({
     param: { id: attachmentId },
   });
-  if (!response.ok) throw new Error(`attachment URL failed (${response.status})`);
+  if (!response.ok) {
+    throw new Error(`attachment URL failed (${response.status})`);
+  }
   return (await response.json()).url;
+}
+
+async function enrichAttachment(options: {
+  client: HitchClient;
+  file: WireAttachment;
+  imageIds: ReadonlySet<string>;
+  tempDir: string;
+}): Promise<TitleAttachment> {
+  const { client, file, imageIds, tempDir } = options;
+  const base: TitleAttachment = {
+    filename: file.filename,
+    mime: file.mime,
+    size: file.size,
+  };
+  try {
+    if (isReadableText(file.mime) && file.size <= MAX_TEXT_ATTACHMENT_SIZE) {
+      const url = await attachmentDownloadUrl(client, file.id);
+      const response = await fetchTrustedBytes(url, {
+        timeoutMs: ATTACHMENT_TIMEOUT_MS,
+        maxBytes: MAX_TEXT_BYTES,
+      });
+      return { ...base, text: new TextDecoder().decode(response.bytes) };
+    }
+    if (imageIds.has(file.id)) {
+      const url = await attachmentDownloadUrl(client, file.id);
+      const response = await fetchTrustedBytes(url, {
+        timeoutMs: ATTACHMENT_TIMEOUT_MS,
+        maxBytes: MAX_IMAGE_BYTES,
+      });
+      const imagePath = join(tempDir, `${file.id}${safeExtension(file)}`);
+      await writeFile(imagePath, response.bytes);
+      return { ...base, imagePath };
+    }
+  } catch {
+    // Filename/mime/size remain useful; enrichment is strictly best-effort.
+  }
+  return base;
 }
 
 async function buildContext(options: {
   client: HitchClient;
-  claim: ClaimedTitle;
-}): Promise<{
-  context: TaskTitleContext;
-  imagePaths: string[];
-  cleanup: () => Promise<void>;
-}> {
-  const { client, claim } = options;
+  request: AutoTitleRequest;
+}): Promise<{ context: TaskTitleContext; tempDir: string }> {
+  const { client, request } = options;
   const tempDir = await mkdtemp(join(tmpdir(), "hitch-task-title-"));
-  const selected = claim.attachments.slice(0, 6);
+  const selected = request.attachments.slice(0, MAX_ATTACHMENTS);
   const imageIds = new Set(
     selected
       .filter(
@@ -290,174 +152,123 @@ async function buildContext(options: {
           file.mime.toLowerCase().startsWith("image/") &&
           file.size <= MAX_IMAGE_BYTES,
       )
-      .slice(0, 2)
+      .slice(0, MAX_IMAGES)
       .map((file) => file.id),
   );
-  const linkMetadata = loadPageMetadata(claim.task.body);
-  const enriched = await Promise.all(
-    selected.map(async (file) => {
-      const contextFile: NonNullable<TaskTitleContext["attachments"]>[number] = {
-        filename: file.filename,
-        mime: file.mime,
-        size: file.size,
-      };
-      let imagePath: string | undefined;
-      try {
-        if (isReadableText(file.mime) && file.size <= MAX_TEXT_BYTES * 4) {
-          const url = await attachmentDownloadUrl(client, file.id);
-          const response = await fetchBounded(url, {
-            timeoutMs: ATTACHMENT_TIMEOUT_MS,
-            maxBytes: MAX_TEXT_BYTES,
-          });
-          contextFile.text = new TextDecoder().decode(response.bytes);
-        } else if (imageIds.has(file.id)) {
-          const url = await attachmentDownloadUrl(client, file.id);
-          const response = await fetchBounded(url, {
-            timeoutMs: ATTACHMENT_TIMEOUT_MS,
-            maxBytes: MAX_IMAGE_BYTES,
-          });
-          imagePath = join(tempDir, `${file.id}${safeExtension(file)}`);
-          await writeFile(imagePath, response.bytes);
-        }
-      } catch {
-        // Metadata remains useful; enrichment is strictly best-effort.
-        imagePath = undefined;
-      }
-      return { contextFile, imagePath };
-    }),
-  );
-
+  const [linkMetadata, attachments] = await Promise.all([
+    loadPageMetadata(request.task.body),
+    Promise.all(
+      selected.map((file) =>
+        enrichAttachment({ client, file, imageIds, tempDir }),
+      ),
+    ),
+  ]);
   return {
     context: {
-      body: claim.task.body,
-      seedTitle: claim.task.title,
-      linkMetadata: await linkMetadata,
-      attachments: enriched.map((row) => row.contextFile),
+      body: request.task.body,
+      seedTitle: request.task.title,
+      linkMetadata,
+      attachments,
     },
-    imagePaths: enriched.flatMap((row) =>
-      row.imagePath ? [row.imagePath] : [],
-    ),
-    cleanup: () => rm(tempDir, { recursive: true, force: true }),
+    tempDir,
   };
 }
 
 export class AutoTitleWorker {
-  private running = false;
-  private rerun = false;
-  private stopped = false;
-  private readonly timer: NodeJS.Timeout;
+  private readonly loop: SerialLoop;
 
   constructor(
     private readonly options: {
       client: HitchClient;
       machineId: string;
-      logger: AutoTitleLogger;
+      logger: DaemonLogger;
       env?: NodeJS.ProcessEnv;
       tickMs?: number;
     },
   ) {
-    this.timer = setInterval(
-      () => this.trigger("tick"),
-      options.tickMs ?? DEFAULT_TICK_MS,
-    );
-    this.timer.unref?.();
+    this.loop = new SerialLoop({
+      intervalMs: options.tickMs ?? DEFAULT_TICK_MS,
+      pass: () => this.runBatch(),
+      onError: (error) => {
+        this.options.logger.error?.(
+          `[hitch] auto-title pass failed: ${String(error)}`,
+        );
+      },
+    });
   }
 
   start(): void {
-    this.trigger("startup");
+    this.loop.start();
   }
 
-  trigger(_reason: string): void {
-    if (this.stopped) return;
-    if (this.running) {
-      this.rerun = true;
-      return;
-    }
-    void this.drain();
+  trigger(reason: string): void {
+    this.loop.trigger(reason);
   }
 
   stop(): void {
-    this.stopped = true;
-    clearInterval(this.timer);
-  }
-
-  private async drain(): Promise<void> {
-    this.running = true;
-    try {
-      do {
-        this.rerun = false;
-        await this.runBatch();
-      } while (this.rerun && !this.stopped);
-    } catch (error) {
-      this.options.logger.error?.(`[hitch] auto-title pass failed: ${String(error)}`);
-    } finally {
-      this.running = false;
-    }
+    this.loop.stop();
   }
 
   private async runBatch(): Promise<void> {
     const { client, machineId } = this.options;
-    const pending = await client.daemon["auto-titles"].$get({
-      query: { machine_id: machineId, limit: "5" },
+    const response = await client.daemon["auto-titles"].$get({
+      query: {
+        requesting_machine_id: machineId,
+        limit: String(BATCH_SIZE),
+      },
     });
-    if (!pending.ok) {
-      throw new Error(`auto-title list failed (${pending.status})`);
+    if (!response.ok) {
+      throw new Error(`auto-title list failed (${response.status})`);
     }
-    const rows = (await pending.json()) as Array<{ id: string }>;
-    for (const { id } of rows) {
-      if (this.stopped) return;
-      await this.runOne(id);
+    const requests = (await response.json()) as AutoTitleRequest[];
+    for (const request of requests) {
+      if (this.loop.isStopped) return;
+      await this.runOne(request);
     }
   }
 
-  private async runOne(taskId: string): Promise<void> {
+  private async runOne(request: AutoTitleRequest): Promise<void> {
     const { client, machineId, logger } = this.options;
-    const claimResponse = await client.daemon["auto-titles"][":id"].claim.$post({
-      param: { id: taskId },
-      json: { machineId },
-    });
-    if (claimResponse.status === 409) return;
-    if (!claimResponse.ok) {
-      throw new Error(`auto-title claim failed (${claimResponse.status})`);
-    }
-    const claim = (await claimResponse.json()) as ClaimedTitle;
-    let cleanup: (() => Promise<void>) | undefined;
+    let tempDir: string | undefined;
     try {
-      const built = await buildContext({ client, claim });
-      cleanup = built.cleanup;
+      const built = await buildContext({ client, request });
+      tempDir = built.tempDir;
       const generated = await generateTaskTitle({
         context: built.context,
-        imagePaths: built.imagePaths,
         env: this.options.env,
       });
       const response = await client.daemon["auto-titles"][":id"].complete.$post({
-        param: { id: taskId },
+        param: { id: request.task.id },
         json: { machineId, title: generated.title },
       });
       if (response.status === 409) {
         logger.info(
-          `[hitch] discarded late auto-title for task ${taskId.slice(0, 8)}`,
+          `[hitch] discarded late auto-title for task ${request.task.id.slice(0, 8)}`,
         );
         return;
       }
       if (!response.ok) {
         throw new Error(`auto-title complete failed (${response.status})`);
       }
-      const completion = (await response.json()) as { applied: boolean };
       logger.info(
-        completion.applied
-          ? `[hitch] auto-titled task ${taskId.slice(0, 8)} → ${generated.title} (${generated.model})`
-          : `[hitch] discarded late auto-title for task ${taskId.slice(0, 8)}`,
+        `[hitch] auto-titled task ${request.task.id.slice(0, 8)} → ${generated.title} (${generated.model})`,
       );
     } catch (error) {
-      const detail = String(error).slice(0, 500);
-      await client.daemon["auto-titles"][":id"].fail.$post({
-        param: { id: taskId },
-        json: { machineId, error: detail || "title generation failed" },
-      }).catch(() => undefined);
-      logger.error?.(`[hitch] auto-title ${taskId.slice(0, 8)} failed: ${detail}`);
+      // Clear the seed atomically so a missing subscription or malformed file
+      // does not retry every fallback tick. A concurrent user edit still wins.
+      await client.daemon["auto-titles"][":id"].complete
+        .$post({
+          param: { id: request.task.id },
+          json: { machineId, title: null },
+        })
+        .catch(() => undefined);
+      logger.error?.(
+        `[hitch] auto-title ${request.task.id.slice(0, 8)} failed: ${String(error)}`,
+      );
     } finally {
-      await cleanup?.().catch(() => {});
+      if (tempDir) {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   }
 }

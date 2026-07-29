@@ -12,6 +12,7 @@ import {
   type ReconcileDecision,
 } from "../src/v2/reconciler.js";
 import type { HitchClient } from "../src/v2/serverClient.js";
+import { SerialLoop } from "../src/v2/serialLoop.js";
 
 // ─── decideAction: desired × observed × hasChat × launchPending → action ─────
 
@@ -392,6 +393,43 @@ assert.deepEqual(
   { chatId: "chat-existing", observedState: "running" },
   "the real reconcile path never completes a dormant chat during attach",
 );
+
+// ─── Shared serialized-loop contract ───────────────────────────────────────
+let releaseFirst!: () => void;
+let signalFirst!: () => void;
+let signalSecond!: () => void;
+const firstStarted = new Promise<void>((resolve) => {
+  signalFirst = resolve;
+});
+const release = new Promise<void>((resolve) => {
+  releaseFirst = resolve;
+});
+const secondFinished = new Promise<void>((resolve) => {
+  signalSecond = resolve;
+});
+let passes = 0;
+const loop = new SerialLoop({
+  intervalMs: 60_000,
+  pass: async () => {
+    passes += 1;
+    if (passes === 1) {
+      signalFirst();
+      await release;
+    } else {
+      signalSecond();
+    }
+  },
+  onError: (error) => {
+    throw error;
+  },
+});
+loop.start();
+await firstStarted;
+loop.trigger("mid-pass");
+releaseFirst();
+await secondFinished;
+loop.stop();
+assert.equal(passes, 2, "a mid-pass trigger schedules exactly one trailing pass");
 
 // ─── The daemon composes NO prompt ───────────────────────────────────────────
 //

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   externalUrls,
   pageMetadataFromHtml,
-} from "../src/v2/autoTitles.js";
+} from "../src/v2/pageMetadata.js";
+import { fetchPublicBytes } from "../src/v2/safeFetch.js";
 import {
   buildTitlePrompt,
   sanitizeGeneratedTitle,
@@ -25,6 +26,7 @@ assert.deepEqual(metadata, {
 assert.deepEqual(
   externalUrls(
     "Read https://example.com/report. Ignore ftp://internal and https://example.com/report.",
+    2,
   ),
   ["https://example.com/report"],
 );
@@ -51,5 +53,19 @@ assert.equal(
   "Diagnose OAuth Callback Crash",
 );
 assert.equal(sanitizeGeneratedTitle(""), "");
+await assert.rejects(
+  fetchPublicBytes("http://localhost/admin", {
+    timeoutMs: 100,
+    maxBytes: 100,
+  }),
+  /local URL/,
+);
+await assert.rejects(
+  fetchPublicBytes("https://example.com:8443/admin", {
+    timeoutMs: 100,
+    maxBytes: 100,
+  }),
+  /unsafe URL authority/,
+);
 
 console.log("task title smoke passed");

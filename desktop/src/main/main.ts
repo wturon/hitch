@@ -33,6 +33,11 @@ import {
   type UpdateInfo,
 } from "electron-updater";
 import {
+  DEFAULT_TEXT_GENERATION_MODEL,
+  isTextGenerationModel,
+  type TextGenerationModel,
+} from "@hitch/shared/taskTitles";
+import {
   applyEdits as applyJsoncEdits,
   modify as modifyJsonc,
   parse as parseJsonc,
@@ -555,28 +560,19 @@ function writePreferences(patch: Record<string, unknown>): void {
   );
 }
 
-const TEXT_GENERATION_MODELS = [
-  "gpt-5.6-luna",
-  "gpt-5.4-mini",
-  "claude-haiku-4-5",
-] as const;
-type TextGenerationModel = (typeof TEXT_GENERATION_MODELS)[number];
-const DEFAULT_TEXT_GENERATION_MODEL: TextGenerationModel = "gpt-5.6-luna";
-
 function readTextGenerationModel(): TextGenerationModel {
   const stored = readPreferences().textGenerationModel;
-  return TEXT_GENERATION_MODELS.includes(stored as TextGenerationModel)
-    ? (stored as TextGenerationModel)
+  return isTextGenerationModel(stored)
+    ? stored
     : DEFAULT_TEXT_GENERATION_MODEL;
 }
 
 function setTextGenerationModel(value: unknown): TextGenerationModel {
-  if (!TEXT_GENERATION_MODELS.includes(value as TextGenerationModel)) {
+  if (!isTextGenerationModel(value)) {
     return readTextGenerationModel();
   }
-  const model = value as TextGenerationModel;
-  writePreferences({ textGenerationModel: model });
-  return model;
+  writePreferences({ textGenerationModel: value });
+  return value;
 }
 
 // { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is

@@ -635,33 +635,28 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
   });
 
   describe("task auto-title lifecycle", () => {
-    it("lets an owned daemon claim work and never overwrites a user title", async () => {
+    it("lets an owned daemon complete work and never overwrites a user title", async () => {
       const project = await createProject(USER_A, "Auto title project");
       const machine = await registerMachine(USER_A, "auto-title-machine");
       const first = await createTask(USER_A, project.id, {
         title: "Investigate the attached crash report",
         body: "Investigate the attached crash report and determine the root cause.",
-        autoTitle: true,
+        autoTitleSeed: "Investigate the attached crash report",
       });
-      expect(first.autoTitleState).toBe("pending");
       expect(first.autoTitleSeed).toBe(first.title);
 
       const listRes = await api(
         USER_A,
         "GET",
-        `/daemon/auto-titles?machine_id=${machine.id}`,
+        `/daemon/auto-titles?requesting_machine_id=${machine.id}`,
       );
       expect(listRes.status).toBe(200);
-      expect(await json(listRes)).toContainEqual({ id: first.id });
-
-      const claimRes = await api(
-        USER_A,
-        "POST",
-        `/daemon/auto-titles/${first.id}/claim`,
-        { machineId: machine.id },
+      expect(await json(listRes)).toContainEqual(
+        expect.objectContaining({
+          task: expect.objectContaining({ id: first.id }),
+          attachments: [],
+        }),
       );
-      expect(claimRes.status).toBe(200);
-      expect((await json(claimRes)).task.autoTitleState).toBe("running");
 
       const completeRes = await api(
         USER_A,
@@ -674,30 +669,19 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
         applied: true,
         task: {
           title: "Diagnose Attached Crash Report",
-          autoTitleState: "done",
+          autoTitleSeed: null,
         },
       });
 
       const second = await createTask(USER_A, project.id, {
         title: "Provisional second title",
         body: "A second body.",
-        autoTitle: true,
+        autoTitleSeed: "Provisional second title",
       });
-      expect(
-        (
-          await api(
-            USER_A,
-            "POST",
-            `/daemon/auto-titles/${second.id}/claim`,
-            { machineId: machine.id },
-          )
-        ).status,
-      ).toBe(200);
       const userRename = await api(USER_A, "PATCH", `/tasks/${second.id}`, {
         title: "My deliberate title",
       });
       expect(userRename.status).toBe(200);
-      expect((await json(userRename)).autoTitleState).toBe("canceled");
 
       const lateComplete = await api(
         USER_A,
@@ -710,14 +694,32 @@ describeDb("HTTP routes (postgres:16 in Docker)", () => {
         await api(USER_A, "GET", `/tasks/${second.id}`),
       );
       expect(unchanged.title).toBe("My deliberate title");
-      expect(unchanged.autoTitleState).toBe("canceled");
+      expect(unchanged.autoTitleSeed).toBe("Provisional second title");
+
+      const canceled = await api(USER_A, "PATCH", `/tasks/${second.id}`, {
+        autoTitleSeed: null,
+      });
+      expect(canceled.status).toBe(200);
+      expect((await json(canceled)).autoTitleSeed).toBeNull();
+
+      expect(
+        (
+          await api(USER_A, "POST", "/tasks", {
+            projectId: project.id,
+            title: "Title",
+            body: "",
+            sortOrder: "a9",
+            autoTitleSeed: "Different seed",
+          })
+        ).status,
+      ).toBe(400);
 
       expect(
         (
           await api(
             USER_B,
             "GET",
-            `/daemon/auto-titles?machine_id=${machine.id}`,
+            `/daemon/auto-titles?requesting_machine_id=${machine.id}`,
           )
         ).status,
       ).toBe(404);

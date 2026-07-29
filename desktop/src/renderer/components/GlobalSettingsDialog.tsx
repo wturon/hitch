@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from "react";
 import {
+  DEFAULT_TEXT_GENERATION_MODEL,
+  type TextGenerationModel,
+} from "@hitch/shared/taskTitles";
+import {
   AlertCircleIcon,
   CheckCircle2Icon,
   Code2Icon,
@@ -38,6 +42,7 @@ import {
 } from "@/lib/chat";
 import { HarnessIcon } from "@/components/HarnessIcon";
 import { StartingPromptsPanel } from "@/components/StartingPromptsPanel";
+import { TaskNamingModelSetting } from "@/components/TaskNamingModelSetting";
 import { useUpdater } from "@/components/UpdateBanner";
 import {
   Dialog,
@@ -50,11 +55,6 @@ import { cn } from "@/lib/utils";
 import { getStoredTheme, setTheme, type ThemeMode } from "@/lib/theme";
 
 type Harness = "codex" | "claude-code";
-type TextGenerationModel =
-  | "gpt-5.6-luna"
-  | "gpt-5.4-mini"
-  | "claude-haiku-4-5";
-
 export interface HarnessHookStatus {
   harness: Harness;
   installed: boolean;
@@ -183,8 +183,8 @@ export function GlobalSettingsDialog({
       : undefined;
   const [tab, setTab] = useState<GlobalSettingsTab>(initialTab);
   const [setup, setSetup] = useState<GlobalHarnessSetupStatus | null>(null);
-  const [textGenerationModel, setTextGenerationModel] =
-    useState<TextGenerationModel>("gpt-5.6-luna");
+  const [textGenerationModel, setSelectedTextGenerationModel] =
+    useState<TextGenerationModel>(DEFAULT_TEXT_GENERATION_MODEL);
   const [integrationHealth, setIntegrationHealth] =
     useState<IntegrationHealth | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -215,7 +215,7 @@ export function GlobalSettingsDialog({
       ]);
       receiveSetup(nextSetup);
       receiveIntegrationHealth(nextIntegrations);
-      setTextGenerationModel(nextTextGenerationModel);
+      setSelectedTextGenerationModel(nextTextGenerationModel);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -281,43 +281,20 @@ export function GlobalSettingsDialog({
                       </p>
                     </div>
 
-                    <div className="flex items-center justify-between gap-4 rounded-lg border px-3.5 py-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">Task naming model</p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          Runs locally through your Codex or Claude subscription.
-                        </p>
-                      </div>
-                      <Select
-                        value={textGenerationModel}
-                        onValueChange={(value) => {
-                          const model = value as TextGenerationModel;
-                          setTextGenerationModel(model);
-                          void bridge
-                            .setTextGenerationModel(model)
-                            .then(setTextGenerationModel)
-                            .catch((err) =>
-                              setError(
-                                err instanceof Error ? err.message : String(err),
-                              ),
-                            );
-                        }}
-                      >
-                        <SelectTrigger
-                          aria-label="Task naming model"
-                          className="w-48 shrink-0"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="gpt-5.6-luna">GPT-5.6 Luna</SelectItem>
-                          <SelectItem value="gpt-5.4-mini">GPT-5.4 mini</SelectItem>
-                          <SelectItem value="claude-haiku-4-5">
-                            Claude Haiku 4.5
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <TaskNamingModelSetting
+                      value={textGenerationModel}
+                      onChange={(model) => {
+                        setSelectedTextGenerationModel(model);
+                        void bridge
+                          .setTextGenerationModel(model)
+                          .then(setSelectedTextGenerationModel)
+                          .catch((err) =>
+                            setError(
+                              err instanceof Error ? err.message : String(err),
+                            ),
+                          );
+                      }}
+                    />
 
                     {HARNESS_CARDS.map((card) => (
                       <HarnessCard

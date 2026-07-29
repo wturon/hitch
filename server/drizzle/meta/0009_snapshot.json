@@ -1,5 +1,5 @@
 {
-  "id": "e7af1516-4ead-4188-9b2b-fee4f4c5763f",
+  "id": "f82ef7d3-6f68-470b-9f92-96d74ca202e3",
   "prevId": "adb586bc-7895-41b7-b517-92c6c5a8af07",
   "version": "7",
   "dialect": "postgresql",
@@ -1293,33 +1293,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "auto_title_state": {
-          "name": "auto_title_state",
-          "type": "task_auto_title_state",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false
-        },
         "auto_title_seed": {
           "name": "auto_title_seed",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "auto_title_claimed_by": {
-          "name": "auto_title_claimed_by",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "auto_title_lease_until": {
-          "name": "auto_title_lease_until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "auto_title_error": {
-          "name": "auto_title_error",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1381,21 +1356,6 @@
           "columns": [
             {
               "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tasks_auto_title_state_idx": {
-          "name": "tasks_auto_title_state_idx",
-          "columns": [
-            {
-              "expression": "auto_title_state",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2073,17 +2033,6 @@
       "values": [
         "claude",
         "codex"
-      ]
-    },
-    "public.task_auto_title_state": {
-      "name": "task_auto_title_state",
-      "schema": "public",
-      "values": [
-        "pending",
-        "running",
-        "done",
-        "failed",
-        "canceled"
       ]
     },
     "public.task_status": {

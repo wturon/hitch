@@ -44,13 +44,6 @@ const updatedAt = () => timestamp("updated_at", { withTimezone: true }).notNull(
 // ---------------------------------------------------------------------------
 
 export const taskStatus = pgEnum("task_status", ["open", "done"]);
-export const taskAutoTitleState = pgEnum("task_auto_title_state", [
-  "pending",
-  "running",
-  "done",
-  "failed",
-  "canceled",
-]);
 export const authorKind = pgEnum("author_kind", ["user", "agent"]);
 export const attachmentState = pgEnum("attachment_state", ["pending", "finalized"]);
 export const harness = pgEnum("harness", ["claude", "codex"]);
@@ -135,13 +128,9 @@ export const tasks = pgTable(
     body: text("body").notNull(),
     status: taskStatus("status").notNull().default("open"),
     sortOrder: text("sort_order").notNull(),
-    // Clients create the intent; only a desktop daemon claims it and runs a
-    // subscription-backed model. The seed is the compare-and-set guard.
-    autoTitleState: taskAutoTitleState("auto_title_state"),
+    // Non-null while naming is wanted. `title = auto_title_seed` is the whole
+    // state invariant and the completion compare-and-set guard.
     autoTitleSeed: text("auto_title_seed"),
-    autoTitleClaimedBy: uuid("auto_title_claimed_by"),
-    autoTitleLeaseUntil: timestamp("auto_title_lease_until", { withTimezone: true }),
-    autoTitleError: text("auto_title_error"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -150,7 +139,6 @@ export const tasks = pgTable(
     index("tasks_project_id_idx").on(t.projectId),
     index("tasks_section_id_idx").on(t.sectionId),
     index("tasks_status_idx").on(t.status),
-    index("tasks_auto_title_state_idx").on(t.autoTitleState),
   ],
 );
 
