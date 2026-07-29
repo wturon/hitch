@@ -139,6 +139,8 @@ describe("built-in prompts are complete templates", () => {
       expect(preset.body).toContain("$TASK_BODY");
       expect(preset.body).toContain("$TASK_ID");
       expect(preset.body.startsWith(PROMPT_TEMPLATE_FRAMING)).toBe(true);
+      expect(preset.body).not.toContain("hitch");
+      expect(preset.body).not.toMatch(/\bmark(?: it| the task)? done\b/i);
     }
   });
 
