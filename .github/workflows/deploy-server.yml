@@ -1,0 +1,84 @@
+# Deploys @hitch/server to Railway on every push to main that touches it.
+# Replaces the old ritual of a human (or an agent) running `railway up` from a
+# local checkout — which shipped whatever was in the working tree, committed or
+# not. Here the upload is always exactly the commit on main, and only after the
+# server suite passes: the container runs migrations on boot
+# (MIGRATE_ON_BOOT=1), so a bad server commit reaches the prod database.
+#
+# Manual deploys stay possible via the Actions tab ("Run workflow").
+name: Deploy server
+
+on:
+  push:
+    branches: [main]
+    # Most commits here are desktop-only; don't rebuild the server for those.
+    # Anything the server image actually contains belongs in this list.
+    paths:
+      - "server/**"
+      - "shared/**"
+      - "package.json"
+      - "package-lock.json"
+      - "railway.json"
+      - ".github/workflows/deploy-server.yml"
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one mid-flight: a half-applied
+# migration is worse than a queued deploy.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: test + deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Same workspace filter the Dockerfile uses — server + shared only, so
+      # the desktop's electron binary never gets downloaded here.
+      - name: Install
+        run: npm ci -w @hitch/server -w @hitch/shared --ignore-scripts
+
+      # shared's typecheck consumes server's emitted .d.ts, so build in order.
+      - name: Build libs
+        run: npm run build:libs
+
+      - name: Typecheck server
+        run: npm -w @hitch/server run typecheck
+
+      # The suite starts its own postgres:16 + Garage containers via `docker
+      # run`; ubuntu runners have a working Docker daemon. Note that these
+      # tests SKIP themselves when Docker is unreachable rather than failing —
+      # if that ever happens on CI the gate is silently open, so the step below
+      # asserts the suite actually ran.
+      - name: Test server
+        run: npm -w @hitch/server run test 2>&1 | tee /tmp/server-test.log
+
+      - name: Assert Docker-backed tests were not skipped
+        run: |
+          if grep -q "SKIPPING: Docker is unreachable" /tmp/server-test.log; then
+            echo "::error::Docker was unreachable — the DB-backed tests skipped, so this deploy is ungated."
+            exit 1
+          fi
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli@5
+
+      # RAILWAY_TOKEN is a project token: it implies project + environment, so
+      # only the service needs naming. --ci streams build logs and exits
+      # non-zero if the build or deploy fails.
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway up \
+            --service server \
+            --ci \
+            --message "${GITHUB_SHA::7} ${GITHUB_REF_NAME} (gh-actions run ${GITHUB_RUN_NUMBER})"

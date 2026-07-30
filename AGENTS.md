@@ -15,6 +15,10 @@ app reads/writes it; a reconciler daemon executes the machine-side work.
 - `server/` — Hono (Node) + Postgres + Drizzle + better-auth. Owns ALL state and
   logic that doesn't need a machine. Deployed on Railway (prod) and runnable via
   `docker compose`. See `docs/v2-prd.md` for the schema and design decisions.
+  **Do not run `railway up` by hand** — it uploads your working tree, committed
+  or not. Merging to `main` deploys the server (`.github/workflows/deploy-server.yml`,
+  gated on the server suite); for an unchanged-code redeploy use the workflow's
+  "Run workflow" button.
 - `shared/` — exported types + typed hono client shared by desktop/cli/daemon.
 - `cli/` — the self-teaching `hitch` bin agents use to read/write the backlog.
 - `daemon/` — a **pure reconciler** (`src/index.ts` via `tsx`; `src/v2/`): it

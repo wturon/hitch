@@ -101,7 +101,8 @@ All user-data tables carry `user_id` FK → better-auth user.
   Her data is safe; nothing is irreversible anymore.
 - ✅ Docker Desktop running on Will's Mac.
 - ✅ Railway LIVE (2026-07-22): project `hitch` (personal workspace, Hobby plan), services:
-  server (https://server-production-33a4.up.railway.app, Dockerfile deploy via `railway up`),
+  server (https://server-production-33a4.up.railway.app, Dockerfile deploy — auto-deployed from
+  `main` by `.github/workflows/deploy-server.yml` since 2026-07-30, `railway up` under the hood),
   Postgres, bucket `attachments` (S3: t3.storageapi.dev, virtual-host style → S3_FORCE_PATH_STYLE
   =false, unlike Garage). Migrations ran on boot; WS listener up; smoke test green (sign-up →
   api key → project → task, body verbatim). Gotchas: staged env changes need
