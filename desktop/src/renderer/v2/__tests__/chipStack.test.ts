@@ -37,7 +37,7 @@ function assignment(overrides: Partial<Fixture> = {}): Fixture {
   };
 }
 
-/** The row's chips for one task, joined exactly as TodosViewV2 joins them. */
+/** The row's chips for one task, joined exactly as TodosView joins them. */
 function chipsFor(assignments: Fixture[], taskId = "t1"): RowChips {
   return rowChips(chatsByTaskId(assignments).get(taskId));
 }

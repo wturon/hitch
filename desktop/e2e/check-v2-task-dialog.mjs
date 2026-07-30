@@ -1,4 +1,4 @@
-// One-off check for V2 M2 PR 3: TaskDialogV2 capture + edit over the Hono
+// One-off check for V2 M2 PR 3: TaskDialog capture + edit over the Hono
 // server. DISPOSABLE, not a maintained test — see ../../AGENTS.md.
 //
 // Prereqs: the compose stack is up (docker compose up -d --build, :3010) and

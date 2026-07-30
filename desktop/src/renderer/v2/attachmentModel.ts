@@ -1,7 +1,7 @@
 // Pure attachment logic for the V2 dialog (M2 PR 6): naming, the markdown the
 // body carries, ref→row resolution, the presigned-URL cache, and the upload
 // state machine. Everything here is side-effect free so the whole layer is
-// unit-testable; useAttachmentsV2 wires it to the hc client.
+// unit-testable; useAttachments wires it to the hc client.
 //
 // Conventions are V1's, verbatim (hooks/useAttachments.ts is the reference):
 //   • a pasted image (no useful filename) is named `image-N.<ext>`;

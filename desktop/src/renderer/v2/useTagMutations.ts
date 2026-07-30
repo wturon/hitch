@@ -14,7 +14,7 @@ import {
 
 // The V2 tag data layer (M2 PR 5): the ["tags"] query plus every tag write the
 // UI makes — create (with a rotation color, V1's Notion behavior), and
-// link/unlink on task_tags — owned by ONE hook instance in the shell (AppV2)
+// link/unlink on task_tags — owned by ONE hook instance in the shell (App)
 // so the row submenu and the dialog's tag lane route through the same
 // handlers and the same optimistic cache (V1's "one code path" rule, same as
 // useTaskMutations).

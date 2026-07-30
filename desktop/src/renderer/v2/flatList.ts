@@ -39,7 +39,7 @@ export type Slot =
   // A drop target that holds a position but is neither a row nor a boundary:
   // the container's add-row. It exists in this list so that the strip between a
   // header and its first row is a target rather than a hole, which is what lets
-  // the hit test be `pointerWithin` alone (see TodosViewV2) — and, because it
+  // the hit test be `pointerWithin` alone (see TodosView) — and, because it
   // sits directly under the header, it needs no meaning of its own. "Nearest
   // header above" already reads a drop there as the top of that container.
   | { kind: "anchor"; id: string }

@@ -8,7 +8,7 @@ import { captureSortOrder } from "../capture";
 import { sortOrderAtIndex, uncheckSortOrder } from "../listMutations";
 
 /**
- * A drag, exactly as TodosViewV2 issues one: drop the row out of the list, ask
+ * A drag, exactly as TodosView issues one: drop the row out of the list, ask
  * for a key at its destination index, and pick the run-escape bias from the
  * direction of travel. Tested through this wrapper rather than against
  * `sortOrderAtIndex` directly so the assertions below cover the call the app

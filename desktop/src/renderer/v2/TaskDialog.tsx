@@ -23,15 +23,15 @@ import {
   taskTitleSeed,
 } from "@hitch/shared/taskTitles";
 import { normalizeCaptureBody, captureSortOrder } from "./capture";
-import { DialogTagLaneV2, type DialogTagLaneV2Props } from "./DialogTagLaneV2";
+import { DialogTagLane, type DialogTagLaneProps } from "./DialogTagLane";
 import {
   clearCaptureDraft,
   loadCaptureDraft,
   saveCaptureDraft,
 } from "./captureDraft";
 import { type TaskDialogState } from "./taskDialogState";
-import { useAttachmentsV2 } from "./useAttachmentsV2";
-import { useCaptureAttachmentsV2 } from "./useCaptureAttachmentsV2";
+import { useAttachments } from "./useAttachments";
+import { useCaptureAttachments } from "./useCaptureAttachments";
 import { useTaskDocument, type TaskDocumentFields } from "./useTaskDocument";
 
 // The V2 task dialog (M2 PR 3): capture + edit over server task rows, porting
@@ -59,7 +59,7 @@ import { useTaskDocument, type TaskDocumentFields } from "./useTaskDocument";
 // useTaskMutations (see TaskDialogActions); the tag lane (PR 5) sits between
 // the header row and the editor, threaded from useTagMutations. Attachments
 // (PR 6) ride the editor's imageUploadHandler/imagePreviewHandler seams plus
-// dialog-level paste/drop listeners (useCaptureAttachmentsV2) — a file ingress
+// dialog-level paste/drop listeners (useCaptureAttachments) — a file ingress
 // in the capture stage materializes the task row early (V1 Decision 3), and
 // the capture-stage dismiss deletes that provisional row again.
 type Stage = "capture" | "saved";
@@ -87,9 +87,9 @@ export interface TaskDialogActions {
   onDelete: () => void;
 }
 
-export interface TaskDialogV2Props {
+export interface TaskDialogProps {
   // The single source of truth for what the dialog shows (see taskDialogState).
-  // The V2 shell mounts ONE TaskDialogV2 and drives it through this union.
+  // The V2 shell mounts ONE TaskDialog and drives it through this union.
   state: TaskDialogState;
   client: HitchClient;
   projectId: string;
@@ -111,7 +111,7 @@ export interface TaskDialogV2Props {
   // through the workspace's single useTagMutations instance — same handlers
   // as the row's Tags ▸ submenu. Undefined until the task exists (a fresh
   // capture has nothing to link tags to).
-  tags?: DialogTagLaneV2Props;
+  tags?: DialogTagLaneProps;
   // Close the dialog (the shell resets the union to closed).
   onClose: () => void;
   // Called after a capture's ⌘⏎ POST SUCCEEDS, handing the shell the new task
@@ -120,7 +120,7 @@ export interface TaskDialogV2Props {
   onCommitted: (taskId: string) => void;
 }
 
-export function TaskDialogV2(props: TaskDialogV2Props) {
+export function TaskDialog(props: TaskDialogProps) {
   const { state, row } = props;
   // Open in capture mode always; in edit mode only while the live row is
   // present (close-on-vanish semantics — the shell also resets the union via
@@ -157,7 +157,7 @@ export function TaskDialogV2(props: TaskDialogV2Props) {
           className="fixed top-[12vh] left-1/2 z-50 w-140 max-w-[calc(100%-2rem)] -translate-x-1/2 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
         >
           {open && session !== null && (
-            <TaskBodyV2
+            <TaskBody
               // Keyed by the session token, NOT by task id: a capture that
               // commits keeps its session, so it does NOT remount — the
               // document model quietly re-binds from local draft to live row
@@ -186,20 +186,20 @@ export function TaskDialogV2(props: TaskDialogV2Props) {
 // arrives undefined for a fresh capture and flips to the live row on commit
 // (same key, no remount); the mount-time initializers seed once per session
 // off whatever `existing` is at mount (undefined = capture).
-interface TaskBodyV2Props {
+interface TaskBodyProps {
   client: HitchClient;
   projectId: string;
   existing?: TaskDialogRow;
   backlog: ReadonlyArray<{ sortOrder: string }>;
   captureSectionId: string | null;
   actions?: TaskDialogActions;
-  tags?: DialogTagLaneV2Props;
+  tags?: DialogTagLaneProps;
   onClose: () => void;
   onCommitted: (taskId: string) => void;
   registerDismiss: (fn: (reason: string) => void) => void;
 }
 
-function TaskBodyV2({
+function TaskBody({
   client,
   projectId,
   existing,
@@ -210,7 +210,7 @@ function TaskBodyV2({
   onClose,
   onCommitted,
   registerDismiss,
-}: TaskBodyV2Props) {
+}: TaskBodyProps) {
   const queryClient = useQueryClient();
   const [stage, setStage] = useState<Stage>(existing ? "saved" : "capture");
   const [titleClaimed, setTitleClaimed] = useState(false);
@@ -287,7 +287,7 @@ function TaskBodyV2({
   // sits inert through an attachment-free capture and comes alive the moment
   // the row exists (edit mode, a committed capture, or an early
   // materialization). Ref-mirrored for the dialog-level listeners.
-  const attachments = useAttachmentsV2(client, committedId);
+  const attachments = useAttachments(client, committedId);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
 
@@ -393,7 +393,7 @@ function TaskBodyV2({
   // below). It deliberately does NOT call onCommitted — binding to the live
   // query starts at ⌘⏎, not at materialization. A provisionally materialized
   // capture is still a draft: it may be discarded whole on esc.
-  useCaptureAttachmentsV2({
+  useCaptureAttachments({
     rootRef,
     docRef,
     editorRef,
@@ -602,7 +602,7 @@ function TaskBodyV2({
             and the row agree on what the task is (V1's DialogTagLane spot,
             between the header row and the editor). Saved stage only; a fresh
             capture has no server row to link tags to yet. */}
-        {stage === "saved" && tags && <DialogTagLaneV2 {...tags} />}
+        {stage === "saved" && tags && <DialogTagLane {...tags} />}
 
         {/* The document area. One MarkdownEditor instance serves both stages —
             it must never remount on the stage flip (focus, caret, and undo

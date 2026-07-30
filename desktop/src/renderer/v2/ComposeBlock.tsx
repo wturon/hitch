@@ -36,9 +36,9 @@ import {
   type ServerHarness,
 } from "./delegation";
 import {
-  useDelegationComposerV2,
+  useDelegationComposer,
   type DelegateStartParams,
-} from "./useDelegationComposerV2";
+} from "./useDelegationComposer";
 
 // The delegate band's compose half: machine selection + the composer + the
 // controls that POST /assignments.
@@ -143,7 +143,7 @@ export function ComposeBlock({
     [client, queryClient, selectedMachineId, taskId, flushTask, onDelegated],
   );
 
-  const composer = useDelegationComposerV2({
+  const composer = useDelegationComposer({
     canStart: canDelegate,
     // Mounted == a prompt is on screen, so ⌘⏎ is armed for exactly as long as
     // there is something for it to send.
@@ -236,7 +236,7 @@ function ComposeControls({
   canDelegate,
   primaryLabel,
 }: {
-  composer: ReturnType<typeof useDelegationComposerV2>;
+  composer: ReturnType<typeof useDelegationComposer>;
   machineControls: React.ReactNode;
   disabledReason: string | null;
   canDelegate: boolean;

@@ -9,7 +9,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { BUILTIN_STARTING_PROMPTS } from "@/lib/chat";
 import { defaultModelFor, defaultReasoningFor } from "../delegation";
-import { useDelegationComposerV2 } from "../useDelegationComposerV2";
+import { useDelegationComposer } from "../useDelegationComposer";
 
 // Historical key name (once held a bare harness; now holds the {harness, model,
 // effort} JSON blob, with a legacy bare-harness string still read on upgrade).
@@ -27,7 +27,7 @@ function render(
   canStart = true,
 ) {
   return renderHook(() =>
-    useDelegationComposerV2({ canStart, keyboardArmed: false, onStart }),
+    useDelegationComposer({ canStart, keyboardArmed: false, onStart }),
   );
 }
 
@@ -281,7 +281,7 @@ describe("failed delegates are reported, not swallowed", () => {
 describe("the ⌘⏎ path", () => {
   function renderArmed(onStart: (params: unknown) => Promise<void> | void) {
     return renderHook(() =>
-      useDelegationComposerV2({ canStart: true, keyboardArmed: true, onStart }),
+      useDelegationComposer({ canStart: true, keyboardArmed: true, onStart }),
     );
   }
 

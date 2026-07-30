@@ -42,7 +42,7 @@ export interface DelegateStartParams {
   promptTemplate: string;
 }
 
-export interface DelegationComposerV2 {
+export interface DelegationComposer {
   phase: ComposerPhase;
   // Agent selection (seeded from the user's last delegation, persisted on a
   // successful start).
@@ -78,7 +78,7 @@ export interface DelegationComposerV2 {
   start: () => Promise<void>;
 }
 
-export function useDelegationComposerV2({
+export function useDelegationComposer({
   canStart,
   keyboardArmed,
   onStart,
@@ -89,7 +89,7 @@ export function useDelegationComposerV2({
   // states while no delegation is in flight. The hook adds the phase latch.
   keyboardArmed: boolean;
   onStart: (params: DelegateStartParams) => Promise<void> | void;
-}): DelegationComposerV2 {
+}): DelegationComposer {
   // Seed the pickers from the user's last V2 delegation, not a hardcoded
   // default — read once.
   const [harness, setHarnessRaw] = useState<ServerHarness>(
