@@ -1,6 +1,6 @@
 import { generateKeyBetween } from "fractional-indexing";
 
-// Pure capture helpers for TaskDialogV2 (M2 PR 3). No React, no HTTP —
+// Pure capture helpers for TaskDialog (M2 PR 3). No React, no HTTP —
 // unit-testable in isolation.
 //
 // The capture invariant (Will's rule, carried verbatim from V1): capture text

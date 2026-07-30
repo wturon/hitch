@@ -14,7 +14,7 @@ import type { TaskRow } from "./todoGroups";
 
 // The V2 list mutations (M2 PR 4): check/uncheck, drag reorder, delete with
 // undo — every server write the list makes, owned by ONE hook instance in the
-// shell (AppV2) so the list, the dialog ⋯ menu and the keyboard shortcuts all
+// shell (App) so the list, the dialog ⋯ menu and the keyboard shortcuts all
 // route through the same handlers, the same optimistic cache and the same
 // pending-delete set (V1's "row and dialog share one code path" rule).
 //
@@ -67,7 +67,7 @@ export function useTaskMutations(
   projectId: string | null,
 ): TaskMutations {
   const queryClient = useQueryClient();
-  // The SAME key TodosViewV2/AppV2 query under, so the optimistic patches land
+  // The SAME key TodosView/App query under, so the optimistic patches land
   // in the one shared cache entry.
   const listKey = ["tasks", { projectId: projectId ?? undefined }] as const;
 

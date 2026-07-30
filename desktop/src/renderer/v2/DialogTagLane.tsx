@@ -12,7 +12,7 @@ import type { TagColorName } from "@/lib/tagColors";
 // by the shell against the live row through the SAME useTagMutations handlers
 // the row submenu uses (one code path). TagPill/TagCombobox/Menu are the V1
 // modules, imported.
-export interface DialogTagLaneV2Props {
+export interface DialogTagLaneProps {
   /** The live row's tag names, in link order. */
   names: string[];
   colorOf: (name: string) => TagColorName;
@@ -21,13 +21,13 @@ export interface DialogTagLaneV2Props {
   onCreate: (name: string) => void;
 }
 
-export function DialogTagLaneV2({
+export function DialogTagLane({
   names,
   colorOf,
   options,
   onToggle,
   onCreate,
-}: DialogTagLaneV2Props) {
+}: DialogTagLaneProps) {
   return (
     <div className="flex flex-wrap items-center gap-1 pt-1.5 pr-2.5 pl-5">
       {names.map((name) => (

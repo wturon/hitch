@@ -110,7 +110,7 @@ import type { TagActions } from "./useTagMutations";
 // competing vertical axes and only one can win. Status still shows — it moved
 // into the row's harness chip (HarnessChip.tsx), which is now the single
 // instrument for everything an agent is doing. `deriveTaskGroups` survives in
-// todoGroups.ts for DONE ordering and for the ⌘K palette's group labels (AppV2),
+// todoGroups.ts for DONE ordering and for the ⌘K palette's group labels (App),
 // its only remaining consumers.
 //
 // V1's full row interaction set is unchanged on server rows:
@@ -144,7 +144,7 @@ import type { TagActions } from "./useTagMutations";
 // slim sibling carrying the same classes; TagPillGroup, the context-menu kit
 // and useListKeyboardNav ARE the V1 modules, imported.
 
-// Exported so the shell's task-dialog query (AppV2) shares this EXACT queryFn
+// Exported so the shell's task-dialog query (App) shares this EXACT queryFn
 // under the same key — one cache entry, one live truth for both surfaces.
 export async function fetchTasks(client: HitchClient, projectId: string) {
   const response = await client.tasks.$get({ query: { project_id: projectId } });
@@ -779,7 +779,7 @@ function SortableTaskRow({
 // The quiet, borderless capture affordance pinned to the top of BACKLOG —
 // V1's AddTodoRow chrome, now a navigable item in the ↑↓ list (and inert for
 // Backspace/`e`, since it's not a task). The `C` hint mirrors the global
-// capture shortcut wired in AppV2.
+// capture shortcut wired in App.
 function AddTaskRow({
   onAdd,
   nav,
@@ -918,7 +918,7 @@ function EmptyHint() {
   );
 }
 
-export function TodosViewV2({
+export function TodosView({
   client,
   projectId,
   active,

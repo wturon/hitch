@@ -1,4 +1,4 @@
-// One-off check for V2 M2 PR 2: the TodosViewV2 read path + Inbox. Replaces
+// One-off check for V2 M2 PR 2: the TodosView read path + Inbox. Replaces
 // check-v2-foundation.mjs (the proof-of-life UI it asserted is gone) and keeps
 // its foundation coverage: sign-up, api-key persistence, WS invalidation,
 // sign-out. DISPOSABLE, not a maintained test — see ../../AGENTS.md.

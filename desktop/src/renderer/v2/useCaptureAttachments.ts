@@ -2,9 +2,9 @@ import { useEffect, useRef } from "react";
 
 import type { MarkdownEditorHandle } from "@/editor";
 import { hrefToAttachmentRef } from "./attachmentModel";
-import type { AttachmentsV2 } from "./useAttachmentsV2";
+import type { Attachments } from "./useAttachments";
 
-// The dialog-wide file paste/drop plumbing for TaskDialogV2 — V1's
+// The dialog-wide file paste/drop plumbing for TaskDialog — V1's
 // useCaptureAttachments (components/todo-dialog/) ported onto server rows.
 // Native capture-phase listeners on the dialog root route every file ingress
 // through ONE materialize-early path: a file paste/drop is the one thing that
@@ -16,7 +16,7 @@ import type { AttachmentsV2 } from "./useAttachmentsV2";
 // paste whenever the task is committed), and a ⌘-click listener that resolves
 // a non-image attachment link to a presigned GET before opening it (V1's
 // ⌘-click opened the raw relative href; V2's refs only resolve server-side).
-export function useCaptureAttachmentsV2({
+export function useCaptureAttachments({
   rootRef,
   docRef,
   editorRef,
@@ -31,21 +31,21 @@ export function useCaptureAttachmentsV2({
   editorRef: React.RefObject<MarkdownEditorHandle | null>;
   // Live committed task id (null until materialized).
   committedRef: React.RefObject<string | null>;
-  // Live useAttachmentsV2 instance (re-binds when the task id appears).
-  attachmentsRef: React.RefObject<AttachmentsV2>;
+  // Live useAttachments instance (re-binds when the task id appears).
+  attachmentsRef: React.RefObject<Attachments>;
   // Create the task row with a provisional title so uploads have a parent (the
   // ⌘⏎ transform overwrites title/body later). Owned by the dialog — it
   // touches the POST + sortOrder + the optimistic tasks cache.
   materializeEarly: () => Promise<void>;
 }): void {
   // Uploads need a task row; materialize first, then wait for the re-render
-  // that re-binds useAttachmentsV2 to the new task id (`enabled` flips) before
+  // that re-binds useAttachments to the new task id (`enabled` flips) before
   // uploading through the refreshed instance. V1 waited a single rAF, but
   // here the id lands via setState after an awaited POST, and React 18
   // schedules that commit as a macrotask — one rAF can beat it. So: poll
   // frames until the rebind is visible, bounded so a dropped commit degrades
   // into the upload's own "not available" error instead of a hang.
-  async function attachmentsForUpload(): Promise<AttachmentsV2> {
+  async function attachmentsForUpload(): Promise<Attachments> {
     if (committedRef.current) return attachmentsRef.current;
     await materializeEarly();
     for (let i = 0; i < 60 && !attachmentsRef.current.enabled; i++) {

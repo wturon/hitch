@@ -1,4 +1,4 @@
-// The V2 shell mounts EXACTLY ONE TaskDialogV2, driven by this discriminated
+// The V2 shell mounts EXACTLY ONE TaskDialog, driven by this discriminated
 // union — a direct port of V1's TodoDialogState PATTERN (components/todo-dialog/
 // dialogState.ts), not its file model: V2 tasks are server rows addressed by
 // id, so `edit` carries a taskId instead of a tasks/<slug>/task.md path.

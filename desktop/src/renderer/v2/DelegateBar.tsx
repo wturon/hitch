@@ -12,7 +12,7 @@ import { assignmentsToStopOnDone, machineAvailability } from "./delegation";
 import { chatsForTask, partitionLaneChats } from "./todoGroups";
 import { useAssignments, useMachines } from "./useAssignments";
 
-// The delegate band in TaskDialogV2's saved stage — the task's CHAT LANE plus a
+// The delegate band in TaskDialog's saved stage — the task's CHAT LANE plus a
 // compose block, in that order. This file is the band: the two queries, the
 // shared clock, the loading gate, and the compose/lane composition. What the lane
 // draws lives in ChatLaneView.tsx; what compose draws lives in ComposeBlock.tsx.

@@ -5,7 +5,7 @@ import { applyTheme, getStoredTheme, watchSystemTheme } from "./lib/theme";
 import { getHitchServerBridge } from "./lib/server/bridge";
 import { HitchServerProvider } from "./lib/server/HitchServerProvider";
 import InspectorApp from "./inspector/InspectorApp";
-import AppV2 from "./v2/AppV2";
+import App from "./v2/App";
 
 // The inline script in index.html sets the initial `.dark` class to avoid a
 // flash; re-apply here to push the mode to the main process and keep tracking
@@ -44,7 +44,7 @@ async function boot() {
             build this whole branch is dead code and the Inspector is dropped
             from the bundle — not merely unreachable. The main process gates
             the window on `isDev` too; this is the second lock. */}
-        {import.meta.env.DEV && view === "inspector" ? <InspectorApp /> : <AppV2 />}
+        {import.meta.env.DEV && view === "inspector" ? <InspectorApp /> : <App />}
       </HitchServerProvider>
     </StrictMode>,
   );

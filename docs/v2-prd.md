@@ -135,8 +135,9 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   8. [x] Railway deploy — LIVE at https://server-production-33a4.up.railway.app (see Environment status)
   All local verification done: 50 server tests (Docker-backed postgres+Garage), composed-stack
   curl transcript (sign-up→task→upload→download), WS invalidate + relay observed by test clients.
-- [x] **M2 — Desktop on server** (DONE 2026-07-22, PRs #93–#100; plan + per-PR detail in
-  docs/v2-m2-plan.md): parallel V2 shell behind runtime mode switch (`HITCH_SERVER_URL`), V1
+- [x] **M2 — Desktop on server** (DONE 2026-07-22, PRs #93–#100; the per-PR execution plan
+  lived in docs/v2-m2-plan.md, deleted at the post-M5 cleanup — see git history): parallel
+  V2 shell behind runtime mode switch (`HITCH_SERVER_URL`), V1
   byte-untouched and still the default. Auth in main process (api-key in renderer, no cookies),
   main-held native WS → IPC → TanStack invalidation. Full task surface: read path + Inbox,
   capture/edit dialog (editor unchanged, echo suppression), mutations (deferred-DELETE undo),
@@ -148,8 +149,9 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   --json everywhere, unique-prefix ids, verbatim bodies. Acceptance: cold `claude -p` runs drove
   it end-to-end with zero stumbles, no skill file. No `attention` command yet (assignments empty
   until M4). No CLI sign-up (accounts come from the desktop; login error says so).
-- [x] **M4 — Daemon reconciler** (DONE 2026-07-22, PRs #102–#108; plan + per-PR detail in
-  docs/v2-m4-plan.md): the daemon is a pure reconciler in V2 mode (`HITCH_SERVER_URL`), V1
+- [x] **M4 — Daemon reconciler** (DONE 2026-07-22, PRs #102–#108; the per-PR execution plan
+  lived in docs/v2-m4-plan.md, deleted at the post-M5 cleanup — see git history): the daemon
+  is a pure reconciler in V2 mode (`HITCH_SERVER_URL`), V1
   byte-untouched and still the default. Machine register + 30s heartbeat, chat-state relay
   (shared sqlite store, independent server_synced_at cursor so V1+V2 don't starve each other),
   desired/observed reconcile loop (spawn-on-assign via cmux launchers, close-on-stop, transition-
@@ -172,7 +174,11 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   (Convex Id → string), GlobalSettingsDialog (V1 panels stripped). chatLifecycleStore keeps its
   vestigial Convex cursor columns/methods (a V2 test still probes sink-independence). Feature
   regressions accepted (per kill list): task auto-naming, skills `/` menu, snippets management UI
-  (all V1 Convex-backed; snippets/skills export was 0 bytes — nothing lost). All three workspaces
+  (all V1 Convex-backed; snippets/skills export was 0 bytes — nothing lost). **Update: task
+  auto-naming was rebuilt server-side and is live again** (PR #125 — `AutoTitleWorker` in
+  daemon/src/v2/autoTitles.ts, triggered off WS invalidate); the skills `/` menu and the snippets
+  management UI remain regressed (the editor still supports both, but nothing in the V2 task
+  dialog feeds them). All three workspaces
   typecheck green; desktop build + tests green. NOTE: Convex prod can be decommissioned once the
   banked export (`backups/convex-prod-export-2026-07-22.zip`, now also copied off-repo) is confirmed
   safe — it is the ONLY remaining copy of the other user's data.
@@ -216,7 +222,7 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   **M5 must import Hitch project via --from-dir and everything else via the export zip.**
   Dry-runs verified: dir = 98 tasks/4 tags/54 links; export (Will) = 7 projects/93 tasks/12 archived
   skipped. Bodies byte-for-byte in both paths. M1 steps 1–7 COMPLETE — step 8 (Railway) blocks on Will.
-- 2026-07-22 — **M4 started** (plan: docs/v2-m4-plan.md). PRs #102–#105 landed the daemon
+- 2026-07-22 — **M4 started** (plan: docs/v2-m4-plan.md, since deleted). PRs #102–#105 landed the daemon
   reconciler: #102 V2 foundation (config/serverClient/daemonV2 register+heartbeat, Node-`ws`
   client with capped backoff + re-hello), #103 chat-state relay (observer → shared sqlite →
   `POST/PATCH /daemon/chats`, independent `server_synced_at` cursor so V1 Convex + V2 Hono sinks
@@ -309,3 +315,14 @@ New packages to create: `server/` (Hono app), `shared/` (exported types + hono c
   button on older builds) — but it is stored VERBATIM, never resolved: an old client had already
   inlined the task body, so re-resolving would expand any variable name the body itself mentions.
   Delete the shim once no old build is in use.
+- 2026-07-30 — **M5 tail cleanup.** Dropped the `V2` suffix from the renderer's v2/ modules now
+  that there is no V1 to disambiguate against: 8 files renamed (App, TodosView, TaskDialog,
+  DialogTagLane, useAttachments, useCaptureAttachments, useDelegationComposer + its test) plus
+  every identifier (`AppV2`→`App`, `V2AgentChoice`→`AgentChoice`, the `*Props` interfaces, and the
+  file-private `SidebarV2`/`WorkspaceV2`/`ProjectRowV2`/`AccountFooterV2`/`TaskBodyV2`). The
+  lowercase `data-testid="v2-*"` hooks were deliberately NOT renamed — they are the contract the
+  check-v2-*.mjs e2e suites match on. The directory is still `v2/`; renaming it is the remaining
+  optional step. Deleted five dead design docs (auth.md, production-readiness.md,
+  chat-lifecycle-contract.md, v2-m2-plan.md, v2-m4-plan.md) and repaired the references they left
+  dangling. Kept chat-tracking-redesign.md: it documents a LIVE subsystem and is cited by AGENTS.md
+  and five source files in renderer/inspector/.

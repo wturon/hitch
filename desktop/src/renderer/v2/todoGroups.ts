@@ -282,7 +282,7 @@ export function partitionLaneChats<T>(chats: readonly TaskChat<T>[]): {
  * fact read twice. `idle` (every chat acked) lands in BACKLOG alongside the
  * never-delegated: nothing on the task is in play.
  *
- * `chatsByTask` is the taskId → chats map from `chatsByTaskId`. AppV2 passes it —
+ * `chatsByTask` is the taskId → chats map from `chatsByTaskId`. App passes it —
  * the ⌘K palette's labels ARE this fold. Optional only for the tests: with no
  * map, NEEDS YOU / WORKING stay empty and every open task falls to BACKLOG, so a
  * caller with no assignments query gets a backlog-only fold, not an error. Only

@@ -7,7 +7,8 @@ layer and §9's Chat Inspector all shipped. §10 "What actually landed" records
 what each phase really did — including the two phases that were overtaken and
 the places the implementation contradicted this document. Nothing here is
 unbuilt; §11's open questions are still open.
-**Supersedes:** the status-ownership model in `docs/chat-lifecycle-contract.md`.
+**Supersedes:** the status-ownership model in the old chat-lifecycle contract
+doc (deleted once this design shipped; see git history for `docs/chat-lifecycle-contract.md`).
 
 Companion artifacts (same content, prettier):
 

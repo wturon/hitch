@@ -278,13 +278,13 @@ function isServerHarness(value: unknown): value is ServerHarness {
 // The (harness, model, effort) triple the V2 bar launches with, persisted as one
 // blob so the bar reopens on the user's last choice instead of a hardcoded
 // default (V1 parity — see AgentChoice in lib/chat).
-export interface V2AgentChoice {
+export interface AgentChoice {
   harness: ServerHarness;
   model: string;
   effort: string;
 }
 
-export function defaultV2AgentChoice(): V2AgentChoice {
+export function defaultAgentChoice(): AgentChoice {
   const harness: ServerHarness = "claude";
   const model = defaultModelFor(harness);
   return { harness, model, effort: defaultReasoningFor(harness, model) };
@@ -295,11 +295,11 @@ export function defaultV2AgentChoice(): V2AgentChoice {
 // a stale value, so each unknown piece falls back to its default (an unknown
 // harness resets the whole triple). Falls back to Claude Code. Guarded for the
 // no-window (test node) path.
-export function loadLastAgent(): V2AgentChoice {
-  if (typeof window === "undefined") return defaultV2AgentChoice();
+export function loadLastAgent(): AgentChoice {
+  if (typeof window === "undefined") return defaultAgentChoice();
   try {
     const raw = window.localStorage.getItem(V2_LAST_AGENT_KEY);
-    if (!raw) return defaultV2AgentChoice();
+    if (!raw) return defaultAgentChoice();
     // Legacy value: a bare harness string ("claude" | "codex") from the
     // harness-only era. Adopt the harness, default model + effort.
     if (isServerHarness(raw)) {
@@ -307,7 +307,7 @@ export function loadLastAgent(): V2AgentChoice {
       const model = defaultModelFor(harness);
       return { harness, model, effort: defaultReasoningFor(harness, model) };
     }
-    const parsed = JSON.parse(raw) as Partial<V2AgentChoice>;
+    const parsed = JSON.parse(raw) as Partial<AgentChoice>;
     const harness = isServerHarness(parsed.harness) ? parsed.harness : "claude";
     const model = modelsForHarness(harness).some((m) => m.id === parsed.model)
       ? (parsed.model as string)
@@ -319,11 +319,11 @@ export function loadLastAgent(): V2AgentChoice {
       : defaultReasoningFor(harness, model);
     return { harness, model, effort };
   } catch {
-    return defaultV2AgentChoice();
+    return defaultAgentChoice();
   }
 }
 
-export function saveLastAgent(choice: V2AgentChoice): void {
+export function saveLastAgent(choice: AgentChoice): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(V2_LAST_AGENT_KEY, JSON.stringify(choice));

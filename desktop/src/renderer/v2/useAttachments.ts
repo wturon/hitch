@@ -15,7 +15,7 @@ import {
 } from "./attachmentModel";
 
 // The V2 attachments data layer (M2 PR 6) — the server-backed successor to
-// V1's hooks/useAttachments.ts, same shape on purpose so TaskDialogV2 wires it
+// V1's hooks/useAttachments.ts, same shape on purpose so TaskDialog wires it
 // into the SAME editor seams (imageUploadHandler / imagePreviewHandler) V1
 // uses. What changed underneath:
 //
@@ -37,7 +37,7 @@ import {
 // name-reservation set, one rows query — so a paste and a drop can't race
 // into the same filename. Handlers are stable (the editor reads them once);
 // every moving part is read through a ref.
-export function useAttachmentsV2(client: HitchClient, taskId: string | null) {
+export function useAttachments(client: HitchClient, taskId: string | null) {
   const queryClient = useQueryClient();
   const rowsQuery = useQuery({
     queryKey: ["attachments", { taskId }],
@@ -275,4 +275,4 @@ export function useAttachmentsV2(client: HitchClient, taskId: string | null) {
   };
 }
 
-export type AttachmentsV2 = ReturnType<typeof useAttachmentsV2>;
+export type Attachments = ReturnType<typeof useAttachments>;

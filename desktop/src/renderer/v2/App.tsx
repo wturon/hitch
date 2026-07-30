@@ -47,7 +47,7 @@ import type { HitchClient } from "@/lib/server/client";
 import { useUndoHotkey } from "@/lib/undoToast";
 import { cn } from "@/lib/utils";
 import { ConnectionBanner } from "./ConnectionBanner";
-import { TaskDialogV2, type TaskDialogActions } from "./TaskDialogV2";
+import { TaskDialog, type TaskDialogActions } from "./TaskDialog";
 import {
   captureState,
   closedTaskDialog,
@@ -58,13 +58,13 @@ import {
 } from "./taskDialogState";
 import { tasksInContainer } from "./sectionGroups";
 import { chatsByTaskId, deriveTaskGroups } from "./todoGroups";
-import { fetchTasks, TodosViewV2 } from "./TodosViewV2";
+import { fetchTasks, TodosView } from "./TodosView";
 import { useAllAssignments } from "./useAssignments";
 import { useSections } from "./useSections";
 import { useTagMutations } from "./useTagMutations";
 import { useTaskMutations } from "./useTaskMutations";
 
-// The V2 shell (M2 PR 2): sidebar + header + TodosViewV2, mirroring V1's
+// The V2 shell (M2 PR 2): sidebar + header + TodosView, mirroring V1's
 // chrome so switching modes feels like the same app — same rail classes, same
 // titlebar row, same monochrome register. Deliberately absent (vs V1): view
 // tabs (Todos is the only V2 view), Automations, Archive, pins/status chips
@@ -227,7 +227,7 @@ function SidebarToggle({
 // One project in the rail — V1's ProjectRow chrome without its Convex freight
 // (pins, status chips, context menu: all M4-or-later). Inbox swaps the muted
 // `#` glyph for an inbox mark; everything else is identical.
-function ProjectRowV2({
+function ProjectRow({
   project,
   selected,
   onSelect,
@@ -287,7 +287,7 @@ function ProjectRowV2({
 // The rail's footer identity control — V1's AccountFooter silhouette (avatar
 // row opening an upward menu), with V2-safe settings plus server identity and
 // sign-out. Harness-health and keep-awake status remain outside this slim shell.
-function AccountFooterV2({
+function AccountFooter({
   serverUrl,
   onShowSettings,
   onSignOut,
@@ -347,7 +347,7 @@ function AccountFooterV2({
   );
 }
 
-function SidebarV2({
+function Sidebar({
   projects,
   selectedProjectId,
   collapsed,
@@ -410,7 +410,7 @@ function SidebarV2({
           </p>
         ) : (
           projects.map((project) => (
-            <ProjectRowV2
+            <ProjectRow
               key={project.id}
               project={project}
               selected={project.id === selectedProjectId}
@@ -429,7 +429,7 @@ function SidebarV2({
       />
 
       <div className="ml-auto flex items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-sidebar-border md:pt-2">
-        <AccountFooterV2
+        <AccountFooter
           serverUrl={serverUrl}
           onShowSettings={onShowSettings}
           onSignOut={onSignOut}
@@ -439,7 +439,7 @@ function SidebarV2({
   );
 }
 
-function WorkspaceV2({ client }: { client: HitchClient }) {
+function Workspace({ client }: { client: HitchClient }) {
   const { serverUrl, signOut } = useHitchServer();
   const queryClient = useQueryClient();
   const [showSettings, setShowSettings] = useState(false);
@@ -508,9 +508,9 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
     orderedProjects.find((p) => p.id === selectedProjectId) ?? null;
 
   // --- Task dialog (M2 PR 3) ------------------------------------------------
-  // ONE TaskDialogV2, driven by the discriminated union — V1's single-binding
+  // ONE TaskDialog, driven by the discriminated union — V1's single-binding
   // pattern (see taskDialogState). The dialog's live row + backlog head come
-  // from the SAME query key TodosViewV2 uses (["tasks", { projectId }]), so
+  // from the SAME query key TodosView uses (["tasks", { projectId }]), so
   // the two surfaces share one cache entry — the live query stays the only
   // truth for a persisted task.
   const [taskDialog, setTaskDialog] = useState<TaskDialogState>(closedTaskDialog);
@@ -558,7 +558,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
         )
       : undefined;
   // The attention join, for the ⌘K palette's labels. Same ["assignments"] key
-  // TodosViewV2 uses, so the two share ONE cache entry and one refetch when the
+  // TodosView uses, so the two share ONE cache entry and one refetch when the
   // WS invalidates it — the palette can't disagree with the chips on screen.
   const assignments = useAllAssignments(client);
   const chatsByTask = useMemo(
@@ -781,7 +781,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
       className="app-shell relative flex h-screen flex-col overflow-hidden bg-background md:flex-row"
       data-sidebar-collapsed={collapsed ? "true" : undefined}
     >
-      <SidebarV2
+      <Sidebar
         projects={orderedProjects}
         selectedProjectId={selectedProjectId}
         collapsed={collapsed}
@@ -813,7 +813,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
               {String(projects.error)}
             </div>
           ) : selectedProject ? (
-            <TodosViewV2
+            <TodosView
               client={client}
               projectId={selectedProject.id}
               // Keyboard nav is live only while no dialog floats above the
@@ -839,7 +839,7 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
           capture needs a projectId to create into, and the union can only be
           opened from inside a project. */}
       {selectedProject && (
-        <TaskDialogV2
+        <TaskDialog
           state={taskDialog}
           client={client}
           projectId={selectedProject.id}
@@ -915,9 +915,9 @@ function WorkspaceV2({ client }: { client: HitchClient }) {
   );
 }
 
-export default function AppV2() {
+export default function App() {
   const { authReady, client } = useHitchServer();
   if (!authReady) return null;
   if (!client) return <SignInScreen />;
-  return <WorkspaceV2 client={client} />;
+  return <Workspace client={client} />;
 }
