@@ -58,6 +58,23 @@ loop.
 
 ## Deployment
 
-The server deploys to Railway from its Dockerfile (`railway up`). Packaged
-desktop builds bake the prod server URL into `app-config.json`
+The server deploys itself. Every push to `main` that touches `server/`,
+`shared/`, or the root manifests runs
+[`.github/workflows/deploy-server.yml`](.github/workflows/deploy-server.yml):
+typecheck → the Docker-backed server suite → `railway up`. Nothing ships that
+the tests didn't pass, and what ships is always the commit on `main` — never a
+local working tree. Build/deploy settings (Dockerfile path, `/health` check,
+restart policy) live in [`railway.json`](railway.json).
+
+To deploy on demand — a config-only change, or a re-run after a failure — use
+**Actions → Deploy server → Run workflow**. Deploying by hand from a checkout
+(`railway up --service server`) still works, but it uploads your working tree,
+uncommitted files and all; prefer the workflow.
+
+Note that the container runs the drizzle migrations on boot
+(`MIGRATE_ON_BOOT=1`), so merging a migration to `main` applies it to the prod
+database. The `/health` check means a container that fails to boot never
+replaces the running one.
+
+Packaged desktop builds bake the prod server URL into `app-config.json`
 (`HITCH_SERVER_URL` at package time); the build fails closed if it's unset.
