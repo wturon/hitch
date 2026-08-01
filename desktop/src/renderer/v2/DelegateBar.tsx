@@ -9,8 +9,9 @@ import { deadLaunchNotice } from "./chatLane";
 import { ChatLane } from "./ChatLaneView";
 import { ComposeBlock } from "./ComposeBlock";
 import { assignmentsToStopOnDone, machineAvailability } from "./delegation";
+import { LinkChatPicker } from "./LinkChatPicker";
 import { chatsForTask, partitionLaneChats } from "./todoGroups";
-import { useAssignments, useMachines } from "./useAssignments";
+import { useAssignments, useChats, useMachines } from "./useAssignments";
 
 // The delegate band in TaskDialog's saved stage — the task's CHAT LANE plus a
 // compose block, in that order. This file is the band: the two queries, the
@@ -25,13 +26,23 @@ import { useAssignments, useMachines } from "./useAssignments";
 //                   a task, type, ⌘⏎); otherwise it collapses to a "＋ Add an
 //                   agent" ghost button, because the lane — not the composer —
 //                   is what the user came to read.
+//   LinkChatPicker — the band's SECOND door: adopt a chat already running on the
+//                   machine instead of spawning one. Always rendered, in both
+//                   compose states, because the case it exists for (an
+//                   environment whose chats Hitch can see but has never
+//                   launched) is exactly the empty-lane case where compose is
+//                   expanded.
 //
 // Every ordering/visibility rule is derived, not eyeballed: the lane's shape in
-// todoGroups, its lifecycle wording in chatLane. Nothing here picks a "latest".
+// todoGroups, its lifecycle wording in chatLane, the picker's contents in
+// linkableChats. Nothing here picks a "latest".
 export interface DelegateBarProps {
   client: HitchClient;
   // The committed task id (the bar mounts only once the row exists).
   taskId: string;
+  // The task's project, for the picker's "In this project" grouping. Null for a
+  // task that sits outside every project.
+  projectId: string | null;
   // useTaskDocument's flush: persists any dirty title/body now. Awaited before
   // every delegate so the server resolves the prompt against what's on screen.
   flushTask: () => Promise<void>;
@@ -40,9 +51,17 @@ export interface DelegateBarProps {
 const bandClass =
   "flex flex-col gap-2.5 rounded-b-xl border-t border-t-[#E8E8E8] bg-[#F9F9F9] px-5 pt-3 pb-3.5 dark:border-t-border dark:bg-muted/40";
 
-export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
+export function DelegateBar({
+  client,
+  taskId,
+  projectId,
+  flushTask,
+}: DelegateBarProps) {
   const assignmentsQuery = useAssignments(client, taskId);
   const machinesQuery = useMachines(client);
+  // The live chat pool. Two readers: the picker (what can be adopted) and the
+  // lane (whether a row's chat is one Hitch can actually reach).
+  const chatsQuery = useChats(client);
 
   // One slow clock for the whole band: machine staleness AND the rows' ages
   // (both are minute-coarse, so 30s is enough resolution) advance without
@@ -88,6 +107,17 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
   // until the dialog is reopened. The key closes that hole structurally.
   const [launchSeq, setLaunchSeq] = useState(0);
 
+  // The link failure, held HERE rather than in the picker: the popover closes on
+  // every attempt, and a 409 that dies with the surface that triggered it never
+  // gets read. Cleared on the next open.
+  const [linkError, setLinkError] = useState<string | null>(null);
+
+  // Chat rows by id, so a lane row can ask whether ITS chat carries a handle.
+  const chatsById = useMemo(
+    () => new Map((chatsQuery.data ?? []).map((chat) => [chat.id, chat] as const)),
+    [chatsQuery.data],
+  );
+
   // A launch that never started (see deadLaunchNotice): the lane drops `dead`
   // assignments, so without this the failure would be silent.
   const deadNotice = deadLaunchNotice(assignmentsQuery.data, taskId, visible.length);
@@ -107,6 +137,7 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
         visible={visible}
         earlier={earlier}
         machines={machinesQuery.data}
+        chatsById={chatsById}
         stoppableIds={stoppableIds}
         now={nowTick}
       />
@@ -126,7 +157,7 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
             {deadNotice}
           </p>
         )}
-        {composeExpanded ? (
+        {composeExpanded && (
           <ComposeBlock
             // A fresh composer per successful launch — see launchSeq.
             key={launchSeq}
@@ -141,15 +172,49 @@ export function DelegateBar({ client, taskId, flushTask }: DelegateBarProps) {
               setLaunchSeq((n) => n + 1);
             }}
           />
-        ) : (
-          <button
-            type="button"
-            onClick={() => setComposeOverride(true)}
-            className="flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-[#555555] hover:bg-black/5 dark:text-muted-foreground dark:hover:bg-white/5"
-          >
-            <PlusIcon className="size-3.5" aria-hidden />
-            Add an agent
-          </button>
+        )}
+
+        {/* The two doors, at equal weight. Collapsed, they sit side by side;
+            expanded, only the link door remains — the composer IS the other one,
+            already on screen. Linking must stay reachable in both states: a
+            machine whose chats Hitch has never launched has an empty lane, which
+            is exactly when compose is expanded. */}
+        <div className="flex items-center gap-1">
+          {!composeExpanded && (
+            <>
+              <button
+                type="button"
+                onClick={() => setComposeOverride(true)}
+                className="flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-[#555555] hover:bg-black/5 dark:text-muted-foreground dark:hover:bg-white/5"
+              >
+                <PlusIcon className="size-3.5" aria-hidden />
+                Add an agent
+              </button>
+              <span
+                aria-hidden
+                className="mx-1.5 h-3.5 w-px shrink-0 bg-[#DEDEDE] dark:bg-border"
+              />
+            </>
+          )}
+          <LinkChatPicker
+            client={client}
+            taskId={taskId}
+            projectId={projectId}
+            chats={chatsQuery.data}
+            loading={chatsQuery.isPending}
+            onError={setLinkError}
+            onLinked={() => {
+              setComposeOverride(null);
+              setLinkError(null);
+            }}
+          />
+        </div>
+
+        {/* The link failure. The server writes real prose for the conflicts (a
+            chat already on another task, a stop still in flight), so this is its
+            sentence verbatim — see routes/assignments.ts. */}
+        {linkError && (
+          <p className="text-[12px] text-destructive">{linkError}</p>
         )}
       </div>
     </div>

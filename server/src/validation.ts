@@ -191,6 +191,13 @@ export const assignmentLink = z.strictObject({
   taskId: z.uuid(),
   harness: harnessSchema,
   sessionId: z.string().trim().min(1),
+  // OPTIONAL, and only a narrowing hint. The CLI can't send it — it knows its
+  // own session id from inside the agent process, not which machine row that
+  // maps to — so the resolve-across-all-machines path stays exactly as it was.
+  // A picker in the desktop is reading whole chat ROWS, so it already knows the
+  // machine, and passing it turns the "ambiguous across machines" 409 from a
+  // dead end into a case that cannot arise.
+  machineId: z.uuid().optional(),
 });
 
 // CLIENT-writable fields ONLY (single-creator-per-table rule): observed_state,

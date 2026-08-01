@@ -96,7 +96,10 @@ export const assignmentRoutes = new Hono<AppEnv>()
 
     // Session ids are harness-native and only machine-local in the schema.
     // Usually this is one row; reject ambiguity instead of guessing which
-    // machine the CLI is running on.
+    // machine the CLI is running on. A caller that already knows the machine
+    // (the desktop picker, which selects a whole chat row) narrows to it, which
+    // makes the ambiguity 409 below unreachable for that path. Ownership is
+    // still enforced by the user join — machineId narrows, it never widens.
     const candidates = await db
       .select({ chat: chats })
       .from(chats)
@@ -106,6 +109,7 @@ export const assignmentRoutes = new Hono<AppEnv>()
           eq(machines.userId, c.var.userId),
           eq(chats.harness, body.harness),
           eq(chats.sessionId, body.sessionId),
+          ...(body.machineId ? [eq(chats.machineId, body.machineId)] : []),
           chatIsAttachable,
         ),
       );

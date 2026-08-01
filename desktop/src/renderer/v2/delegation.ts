@@ -30,6 +30,15 @@ export function serverHarnessLabel(harness: ServerHarness): string {
   return harness === "codex" ? "Codex" : "Claude Code";
 }
 
+// Map the V2 server harness onto V1's HarnessIcon prop — the icon component
+// predates the server enum. Lives here rather than in a component file because
+// more than one surface draws a harness mark (the composer's picker, the link
+// picker's rows), and two private copies of a two-branch mapping is how they
+// drift.
+export function iconHarness(harness: ServerHarness): "claude-code" | "codex" {
+  return harness === "codex" ? "codex" : "claude-code";
+}
+
 // ─── Model / effort catalog (reused from V1) ─────────────────────────────────
 //
 // V2 carries model + effort on the assignment again (the daemon passes them to

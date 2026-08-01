@@ -13,14 +13,17 @@ import type { HitchClient } from "@/lib/server/client";
 import { cn } from "@/lib/utils";
 import {
   chatAgentDetail,
+  chatIsFocusable,
   chatStatusLine,
   laneRowAction,
   laneSpansMachines,
+  laneStopLabel,
+  openChatHint,
 } from "./chatLane";
 import { serverHarnessLabel } from "./delegation";
 import { StaticHarnessChip } from "./HarnessChip";
 import type { TaskChat } from "./todoGroups";
-import type { AssignmentRow, MachineRow } from "./useAssignments";
+import type { AssignmentRow, ChatRow, MachineRow } from "./useAssignments";
 import { useOpenChat } from "./useOpenChat";
 
 // The task's CHAT LANE: one row per agent chat, plus the header that counts them
@@ -108,6 +111,13 @@ export interface ChatLaneProps {
   /** GET /machines, for resolving a row's machine name. */
   machines: readonly MachineRow[] | undefined;
   /**
+   * GET /chats by id. A row reads its own chat to learn whether Hitch can reach
+   * it (`handle`) — a LINKED chat was running before Hitch knew about it, so
+   * there is nothing to focus and nothing to close. A missing entry means "not
+   * read yet", which chatIsFocusable treats as reachable.
+   */
+  chatsById: ReadonlyMap<string, ChatRow>;
+  /**
    * The assignments a Stop all would target — `assignmentsToStopOnDone`, the
    * SAME predicate close-on-done uses, never a second one that could drift.
    */
@@ -121,6 +131,7 @@ export function ChatLane({
   visible,
   earlier,
   machines,
+  chatsById,
   stoppableIds,
   now,
 }: ChatLaneProps) {
@@ -150,6 +161,13 @@ export function ChatLane({
           client={client}
           chat={chat}
           machineName={machineNameFor(chat)}
+          // chat_id once the daemon confirms, requested_chat_id before that. A
+          // linked row knows WHICH chat it adopted from the moment it is
+          // written, so the row can be honest about reachability immediately
+          // instead of claiming "Stop" for the tick before adoption lands.
+          chatRow={chatsById.get(
+            chat.assignment.chatId ?? chat.assignment.requestedChatId ?? "",
+          )}
           now={now}
         />
       ))}
@@ -226,12 +244,15 @@ function LaneRow({
   client,
   chat,
   machineName,
+  chatRow,
   now,
 }: {
   client: HitchClient;
   chat: TaskChat<AssignmentRow>;
   /** The resolved machine name, or null when the lane doesn't name machines. */
   machineName: string | null;
+  /** This row's chat, when the chats query has it. Undefined = not read yet. */
+  chatRow: ChatRow | undefined;
   /** The band's shared clock, so every row's age ticks together. */
   now: number;
 }) {
@@ -241,6 +262,14 @@ function LaneRow({
   // the daemon has linked one (chatId is written at spawn), which is also the
   // window where cmux has nothing to focus.
   const { canOpen, openChat } = useOpenChat(assignment);
+  // ...and disabled FOREVER for a chat Hitch didn't launch. Adopting a chat the
+  // user started by hand gives us a fully observable session with no handle, so
+  // the focus relay has nothing to drive. The button used to render enabled and
+  // silently do nothing; now it says so, and Stop — which likewise cannot close
+  // what it never opened — becomes the verb that describes what actually
+  // happens. See chatLane.chatIsFocusable.
+  const focusable = chatIsFocusable(chatRow);
+  const openable = canOpen && focusable;
   const action = laneRowAction(assignment);
 
   return (
@@ -282,7 +311,7 @@ function LaneRow({
               <button
                 type="button"
                 onClick={openChat}
-                disabled={!canOpen}
+                disabled={!openable}
                 aria-label="Open chat"
                 className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground hover:bg-black/5 disabled:cursor-not-allowed disabled:text-muted-foreground/60 disabled:hover:bg-transparent dark:hover:bg-white/5"
               />
@@ -291,11 +320,7 @@ function LaneRow({
             <ArrowUpRight className="size-3.5" />
             Open chat
           </TooltipTrigger>
-          <TooltipContent>
-            {canOpen
-              ? "Bring the chat forward in cmux"
-              : "Waiting for the agent's chat to start…"}
-          </TooltipContent>
+          <TooltipContent>{openChatHint(canOpen, focusable)}</TooltipContent>
         </Tooltip>
         {action !== "none" && (
           <button
@@ -314,7 +339,7 @@ function LaneRow({
             {busy ? (
               <LoaderCircle className="size-3.5 animate-spin" />
             ) : action === "stop" ? (
-              "Stop"
+              laneStopLabel(focusable)
             ) : (
               // The same words as the list row's context menu: one action, one
               // name, and a control that says what happens rather than a state.

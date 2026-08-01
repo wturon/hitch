@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import type { HitchClient } from "@/lib/server/client";
 import {
+  iconHarness,
   machineAvailability,
   modelLabelFor,
   modelsForHarness,
@@ -57,12 +58,6 @@ import {
 // path didn't have: edits autosave on a ~1.5s idle debounce, so typing and hitting
 // ⌘⏎ immediately would resolve $TASK_BODY against the PRE-EDIT row. Hence
 // `flushTask` — delegation waits for the document to land before it POSTs.
-
-// Map the V2 server harness (claude|codex) onto V1's HarnessIcon prop
-// (claude-code|codex) — the icon component predates the server enum.
-function iconHarness(harness: ServerHarness): "claude-code" | "codex" {
-  return harness === "codex" ? "codex" : "claude-code";
-}
 
 export interface ComposeBlockProps {
   client: HitchClient;

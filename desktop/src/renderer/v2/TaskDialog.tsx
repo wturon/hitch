@@ -668,6 +668,7 @@ function TaskBody({
           <DelegateBar
             client={client}
             taskId={committedId}
+            projectId={projectId}
             flushTask={doc.flush}
           />
         )}

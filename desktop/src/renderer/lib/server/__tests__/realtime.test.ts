@@ -56,6 +56,17 @@ describe("startRealtimeInvalidation", () => {
     });
   });
 
+  it("fans an assignments frame out to BOTH its keys", () => {
+    // /chats denormalises the task each chat is committed to, and that fact
+    // lives in assignments — so an assignments NOTIFY has to refresh the chat
+    // reads too, or the link picker keeps offering a chat that is spoken for.
+    const harness = makeHarness();
+    harness.message({ type: "invalidate", table: "assignments", id: "a1" });
+    expect(harness.invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(harness.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["assignments"] });
+    expect(harness.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["chats"] });
+  });
+
   it("invalidates everything (no key) on each ws open", () => {
     const harness = makeHarness();
     harness.open();

@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { WsInvalidateMessage } from "@hitch/shared";
 
 import type { HitchServerBridge } from "./bridge";
-import { queryKeyForTable } from "./queryKeys";
+import { queryKeysForTable } from "./queryKeys";
 
 // Frames arrive as `unknown` over the preload channel; narrow them against the
 // shared wire type before acting. Event frames (type:"event") are ignored here
@@ -29,9 +29,11 @@ export function startRealtimeInvalidation(
   const offMessage = bridge.onWsMessage((message) => {
     const invalidate = asInvalidate(message);
     if (!invalidate) return;
-    const queryKey = queryKeyForTable(invalidate.table);
-    if (!queryKey) return;
-    void queryClient.invalidateQueries({ queryKey });
+    const queryKeys = queryKeysForTable(invalidate.table);
+    if (!queryKeys) return;
+    for (const key of queryKeys) {
+      void queryClient.invalidateQueries({ queryKey: [key] });
+    }
   });
   const offOpen = bridge.onWsOpen(() => {
     void queryClient.invalidateQueries();

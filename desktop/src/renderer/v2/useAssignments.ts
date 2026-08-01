@@ -60,9 +60,36 @@ export function useMachines(client: HitchClient) {
   });
 }
 
+// Every LIVE chat on the user's machines — the pool the "Link a chat" picker
+// offers, and the lane's source for whether a row's chat is one Hitch can
+// actually reach (its `handle`).
+//
+// `live=true` drops only the dead: dormant and idle chats are still resumable,
+// and the picker exists precisely to adopt a session that has been sitting
+// there. The rest of the attachability rule (an existence observation must
+// exist) is applied client-side in linkableChats, because the LANE wants the
+// unfiltered row — a chat that aged out still has a handle to report.
+//
+// Coarse ["chats"] key on purpose: it is the one the WS `chats` NOTIFY already
+// invalidates (lib/server/queryKeys.ts), so the picker's list and the lane's
+// focusability both track the daemon's snapshot with no polling.
+export function useChats(client: HitchClient) {
+  return useQuery({
+    queryKey: ["chats"],
+    queryFn: async () => {
+      const response = await client.chats.$get({ query: { live: "true" } });
+      if (!response.ok) {
+        throw new Error(`Failed to list chats (${response.status})`);
+      }
+      return await response.json();
+    },
+  });
+}
+
 export type AssignmentRow = NonNullable<
   ReturnType<typeof useAssignments>["data"]
 >[number];
+export type ChatRow = NonNullable<ReturnType<typeof useChats>["data"]>[number];
 export type MachineRow = NonNullable<
   ReturnType<typeof useMachines>["data"]
 >[number];

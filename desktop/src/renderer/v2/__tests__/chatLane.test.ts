@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   chatAgentDetail,
+  chatIsFocusable,
   chatStatusLine,
   deadLaunchNotice,
   laneRowAction,
   laneSpansMachines,
+  laneStopLabel,
+  openChatHint,
   type LaneAgentFields,
   type LaneDeadFields,
   type LaneStatusFields,
@@ -31,6 +34,7 @@ const status = (
   desiredState: "running",
   observedState,
   createdAt: iso(4 * 60_000),
+  requestedChatId: null,
   ...over,
 });
 
@@ -88,6 +92,29 @@ describe("chatStatusLine", () => {
     expect(chatStatusLine(status("spawning"), NOW)).toContain("Spawning…");
     expect(chatStatusLine(status("waiting_input"), NOW)).toContain("Needs you");
     expect(chatStatusLine(status("done"), NOW)).toContain("Done");
+  });
+
+  it("says Linking… — never Spawning… — while an adoption is confirming", () => {
+    // Nothing is being spawned: the session was already running and the daemon
+    // is only echoing back that it bound to it.
+    for (const state of ["pending", "spawning"] as const) {
+      expect(
+        chatStatusLine(status(state, { requestedChatId: "chat-1" }), NOW),
+      ).toBe("Linking… · started 4m ago");
+    }
+    // Once it's confirmed, a linked chat is just a chat.
+    expect(
+      chatStatusLine(status("running", { requestedChatId: "chat-1" }), NOW),
+    ).toContain("Working");
+  });
+
+  it("lets an in-flight stop outrank the linking label", () => {
+    expect(
+      chatStatusLine(
+        status("pending", { requestedChatId: "chat-1", desiredState: "stopped" }),
+        NOW,
+      ),
+    ).toBe("Stopping… · started 4m ago");
   });
 
   it("says Stopping… while a stop is in flight", () => {
@@ -193,6 +220,47 @@ describe("deadLaunchNotice", () => {
     const mine = { ...row("a1", iso(600_000), "done") };
     const theirs = { ...row("b1", iso(0), "dead"), taskId: "t2" };
     expect(deadLaunchNotice([mine, theirs], "t1", 0)).toBeNull();
+  });
+});
+
+describe("chatIsFocusable", () => {
+  it("is true for a chat Hitch launched (it carries a handle)", () => {
+    expect(chatIsFocusable({ handle: { sessionId: "s1", cwd: "/tmp" } })).toBe(true);
+  });
+
+  it("is false for an adopted chat — no handle, nothing to focus or close", () => {
+    expect(chatIsFocusable({ handle: null })).toBe(false);
+    expect(chatIsFocusable({ handle: undefined })).toBe(false);
+  });
+
+  it("treats an unread chat as reachable, so a slow query can't disable a real button", () => {
+    // The chats query lands after the lane renders; degrading to disabled in
+    // that window would lie about a chat we DID launch.
+    expect(chatIsFocusable(undefined)).toBe(true);
+    expect(chatIsFocusable(null)).toBe(true);
+  });
+});
+
+describe("laneStopLabel", () => {
+  it("says what actually happens on each side of the handle", () => {
+    // Stop closes the cmux tab; for a chat we never opened, the PATCH only
+    // settles the assignment — so it says Unlink.
+    expect(laneStopLabel(true)).toBe("Stop");
+    expect(laneStopLabel(false)).toBe("Unlink");
+  });
+});
+
+describe("openChatHint", () => {
+  it("explains the two different reasons a row can't be opened", () => {
+    expect(openChatHint(false, true)).toMatch(/Waiting for/);
+    expect(openChatHint(true, false)).toMatch(/didn’t launch this chat/);
+    expect(openChatHint(true, true)).toMatch(/cmux/);
+  });
+
+  it("prefers the not-started reason when both apply", () => {
+    // A chat with no id yet has no handle either; "still starting" is the
+    // transient truth and the actionable one.
+    expect(openChatHint(false, false)).toMatch(/Waiting for/);
   });
 });
 

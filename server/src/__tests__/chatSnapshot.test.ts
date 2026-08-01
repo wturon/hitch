@@ -390,6 +390,121 @@ describeDb("chat snapshot + client chat reads (postgres:16 in Docker)", () => {
     ).rejects.toThrow();
   });
 
+  it("reports a chat as taken from the moment it is REQUESTED, and free again when done", async () => {
+    // GET /chats' `task` is what the picker reads to decide a chat is spoken
+    // for, and POST /assignments/link is what enforces it. If the reader lags
+    // the writer, the picker offers chats the route then refuses: a link is
+    // written with requested_chat_id and NO chat_id (the daemon writes that a
+    // tick later), so keying on chat_id alone leaves a window where a committed
+    // chat still reads as free.
+    const machine = await registerMachine(USER_A, "link-visibility");
+    const project = await json(
+      await api(USER_A, "POST", "/projects", { name: "Visibility", sortOrder: "a0" }),
+    );
+    const task = await json(
+      await api(USER_A, "POST", "/tasks", {
+        projectId: project.id,
+        title: "Adopted task",
+        sortOrder: "a0",
+      }),
+    );
+    const live = [
+      { harness: "claude", sessionId: "vis-one", existence: "running", activity: "idle" },
+    ];
+    expect((await put(USER_A, machine.id, snapshot(live))).status).toBe(200);
+
+    const before = (await chatsOf(USER_A, machine.id)).find((c) => c.sessionId === "vis-one");
+    expect(before.task).toBeNull();
+
+    const linked = await json(
+      await api(USER_A, "POST", "/assignments/link", {
+        taskId: task.id,
+        harness: "claude",
+        sessionId: "vis-one",
+        machineId: machine.id,
+      }),
+    );
+    // No daemon has run: chat_id is still null, and the chat must ALREADY read
+    // as serving the task.
+    expect(linked.chatId).toBeNull();
+    expect(linked.requestedChatId).toBe(before.id);
+    const during = (await chatsOf(USER_A, machine.id)).find((c) => c.sessionId === "vis-one");
+    expect(during.task).toMatchObject({ id: task.id, title: "Adopted task" });
+
+    // Terminal assignments release the chat — "serves" is present tense, and the
+    // link route itself permits re-linking once an assignment is done.
+    await api(USER_A, "PATCH", `/daemon/assignments/${linked.id}`, {
+      observedState: "done",
+    });
+    const after = (await chatsOf(USER_A, machine.id)).find((c) => c.sessionId === "vis-one");
+    expect(after.task).toBeNull();
+    const relinked = await api(USER_A, "POST", "/assignments/link", {
+      taskId: task.id,
+      harness: "claude",
+      sessionId: "vis-one",
+      machineId: machine.id,
+    });
+    expect(relinked.status).toBe(201);
+  });
+
+  it("resolves an ambiguous session id when the caller names the machine", async () => {
+    // Two machines, the SAME harness-native session id on both. The CLI can't
+    // tell them apart (it only knows the id it reads from inside its own
+    // process) and must 409; the desktop picker selects a whole chat row, so it
+    // sends the machine and gets the one it pointed at.
+    const machineA = await registerMachine(USER_A, "link-narrow-a");
+    const machineB = await registerMachine(USER_A, "link-narrow-b");
+    const project = await json(
+      await api(USER_A, "POST", "/projects", { name: "Narrow project", sortOrder: "a0" }),
+    );
+    const task = await json(
+      await api(USER_A, "POST", "/tasks", {
+        projectId: project.id,
+        title: "Narrow task",
+        sortOrder: "a0",
+      }),
+    );
+    const live = [
+      { harness: "claude", sessionId: "twinned", existence: "running", activity: "idle" },
+    ];
+    expect((await put(USER_A, machineA.id, snapshot(live))).status).toBe(200);
+    expect((await put(USER_A, machineB.id, snapshot(live))).status).toBe(200);
+
+    const ambiguous = await api(USER_A, "POST", "/assignments/link", {
+      taskId: task.id,
+      harness: "claude",
+      sessionId: "twinned",
+    });
+    expect(ambiguous.status).toBe(409);
+
+    const narrowed = await api(USER_A, "POST", "/assignments/link", {
+      taskId: task.id,
+      harness: "claude",
+      sessionId: "twinned",
+      machineId: machineB.id,
+    });
+    expect(narrowed.status).toBe(201);
+    const [chatB] = (await chatsOf(USER_A, machineB.id)).filter(
+      (chat) => chat.sessionId === "twinned",
+    );
+    expect(await json(narrowed)).toMatchObject({
+      machineId: machineB.id,
+      requestedChatId: chatB.id,
+      prompt: null,
+    });
+
+    // Narrowing must not widen: another user's machine id resolves to nothing
+    // rather than reaching across the ownership join.
+    const otherMachine = await registerMachine(USER_B, "link-narrow-other");
+    const stolen = await api(USER_A, "POST", "/assignments/link", {
+      taskId: task.id,
+      harness: "claude",
+      sessionId: "twinned",
+      machineId: otherMachine.id,
+    });
+    expect(stolen.status).toBe(404);
+  });
+
   it("marks absent chats dead on the FIRST miss — no second server-side debounce", async () => {
     const machine = await registerMachine(USER_A, "snapshot-sweep");
     const live = [

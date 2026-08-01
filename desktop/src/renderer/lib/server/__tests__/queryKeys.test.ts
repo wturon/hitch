@@ -1,31 +1,38 @@
 import { describe, expect, it } from "vitest";
 
-import { TABLE_QUERY_KEYS, queryKeyForTable } from "../queryKeys";
+import { TABLE_QUERY_KEYS, queryKeysForTable } from "../queryKeys";
 
-describe("queryKeyForTable", () => {
+describe("queryKeysForTable", () => {
   it("maps every server table to its own coarse key", () => {
-    expect(queryKeyForTable("projects")).toEqual(["projects"]);
-    expect(queryKeyForTable("sections")).toEqual(["sections"]);
-    expect(queryKeyForTable("tasks")).toEqual(["tasks"]);
-    expect(queryKeyForTable("tags")).toEqual(["tags"]);
-    expect(queryKeyForTable("comments")).toEqual(["comments"]);
-    expect(queryKeyForTable("attachments")).toEqual(["attachments"]);
-    expect(queryKeyForTable("assignments")).toEqual(["assignments"]);
-    expect(queryKeyForTable("chats")).toEqual(["chats"]);
-    expect(queryKeyForTable("machines")).toEqual(["machines"]);
+    expect(queryKeysForTable("projects")).toEqual(["projects"]);
+    expect(queryKeysForTable("sections")).toEqual(["sections"]);
+    expect(queryKeysForTable("tasks")).toEqual(["tasks"]);
+    expect(queryKeysForTable("tags")).toEqual(["tags"]);
+    expect(queryKeysForTable("comments")).toEqual(["comments"]);
+    expect(queryKeysForTable("attachments")).toEqual(["attachments"]);
+    expect(queryKeysForTable("chats")).toEqual(["chats"]);
+    expect(queryKeysForTable("machines")).toEqual(["machines"]);
   });
 
   it("maps task_tags onto the tasks key (lists embed tagIds)", () => {
-    expect(queryKeyForTable("task_tags")).toEqual(["tasks"]);
+    expect(queryKeysForTable("task_tags")).toEqual(["tasks"]);
   });
 
   it("maps chat_events onto the chats key (events are read alongside a chat)", () => {
-    expect(queryKeyForTable("chat_events")).toEqual(["chats"]);
+    expect(queryKeysForTable("chat_events")).toEqual(["chats"]);
+  });
+
+  it("also refetches chats when assignments change", () => {
+    // GET /chats denormalises the task a chat is committed to, and that fact
+    // lives in assignments — linking a chat changes what /chats reports with no
+    // write to the chats table at all. Without this the picker keeps offering a
+    // chat that is already spoken for.
+    expect(queryKeysForTable("assignments")).toEqual(["assignments", "chats"]);
   });
 
   it("returns null for tables it does not know", () => {
-    expect(queryKeyForTable("session")).toBeNull();
-    expect(queryKeyForTable("")).toBeNull();
+    expect(queryKeysForTable("session")).toBeNull();
+    expect(queryKeysForTable("")).toBeNull();
   });
 
   it("covers exactly the known tables", () => {

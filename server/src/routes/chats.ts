@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray, or, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 
 import { requireAuth } from "../auth.js";
@@ -42,16 +42,29 @@ export const chatRoutes = new Hono<AppEnv>()
       .where(and(...conds))
       .orderBy(desc(chats.lastActivityAt));
 
-    // Attachment 1 — the task this chat serves. It hangs off assignments
-    // (assignments.chat_id), NOT off the chat, so it can't ride the query
-    // above without risking row multiplication when a chat has been assigned
-    // more than once. One extra round trip, keyed on the ids we just read.
+    // Attachment 1 — the task this chat is CURRENTLY committed to. It hangs off
+    // assignments, NOT off the chat, so it can't ride the query above without
+    // risking row multiplication when a chat has been assigned more than once.
+    // One extra round trip, keyed on the ids we just read.
+    //
+    // Two things make this the same question POST /assignments/link asks in its
+    // transaction, and they have to stay that way — a reader that disagrees with
+    // the writer is how a picker offers a chat the route will refuse:
+    //   - requested_chat_id counts, not just chat_id. A link is intent the
+    //     instant it is written; chat_id only appears when the daemon confirms
+    //     the adoption, up to a tick later. For that whole window the chat IS
+    //     committed, and reporting it free invites a second link that the
+    //     route's advisory lock will then reject.
+    //   - terminal assignments do NOT count. "Serves" is present tense: a chat
+    //     whose assignment finished is free to be linked again, which is exactly
+    //     what the route permits.
     const chatIds = rows.map((r) => r.chat.id);
     const taskByChatId = new Map<string, { id: string; title: string; assignmentId: string }>();
     if (chatIds.length > 0) {
       const attached = await db
         .select({
           chatId: assignments.chatId,
+          requestedChatId: assignments.requestedChatId,
           assignmentId: assignments.id,
           taskId: tasks.id,
           taskTitle: tasks.title,
@@ -60,17 +73,30 @@ export const chatRoutes = new Hono<AppEnv>()
         .from(assignments)
         .innerJoin(tasks, eq(assignments.taskId, tasks.id))
         .innerJoin(projects, eq(tasks.projectId, projects.id))
-        .where(and(eq(projects.userId, c.var.userId), inArray(assignments.chatId, chatIds)))
+        .where(
+          and(
+            eq(projects.userId, c.var.userId),
+            or(
+              inArray(assignments.chatId, chatIds),
+              inArray(assignments.requestedChatId, chatIds),
+            ),
+            notInArray(assignments.observedState, ["done", "dead"]),
+          ),
+        )
         .orderBy(assignments.createdAt);
       // Ascending order + overwrite = the LATEST assignment wins, matching how
-      // the delegate bar reads an append-only assignment history.
+      // the delegate bar reads an append-only assignment history. Both keys are
+      // stamped: they are the same id once the daemon has confirmed, and only
+      // one of them exists before that.
       for (const row of attached) {
-        if (!row.chatId) continue;
-        taskByChatId.set(row.chatId, {
+        const task = {
           id: row.taskId,
           title: row.taskTitle,
           assignmentId: row.assignmentId,
-        });
+        };
+        for (const key of [row.requestedChatId, row.chatId]) {
+          if (key) taskByChatId.set(key, task);
+        }
       }
     }
 

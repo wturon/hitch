@@ -67,6 +67,8 @@ export interface LaneStatusFields {
   desiredState: DesiredState;
   observedState: ObservedState;
   createdAt: string | Date;
+  /** Set when this assignment ADOPTED an already-running chat. */
+  requestedChatId: string | null;
 }
 
 /**
@@ -77,18 +79,30 @@ export interface LaneStatusFields {
  * a live status reads as last activity — which would be a lie about an agent
  * that has been quiet for an hour.
  *
- * The one label the chip mapping can't produce is the in-flight stop: between
- * `desired_state = stopped` and the reconciler closing the tab, the observed
- * state still says "Working". Saying so would be true-but-useless; the user just
- * asked for the opposite.
+ * Two labels the chip mapping can't produce:
+ *
+ * The in-flight stop: between `desired_state = stopped` and the reconciler
+ * closing the tab, the observed state still says "Working". Saying so would be
+ * true-but-useless; the user just asked for the opposite.
+ *
+ * The in-flight LINK: `pending`/`spawning` render as "Spawning…", which is a
+ * plain lie about an adopted chat — nothing is being spawned, the session was
+ * already running and the daemon is only confirming it. The chip mapping keys on
+ * observed_state alone and structurally cannot tell the two apart, so the
+ * distinction is made here, where the assignment's intent is in scope.
  */
 export function chatStatusLine(assignment: LaneStatusFields, now: number): string {
   const terminal =
     assignment.observedState === "done" || assignment.observedState === "dead";
+  const adopting =
+    assignment.requestedChatId !== null &&
+    (assignment.observedState === "pending" || assignment.observedState === "spawning");
   const status =
     assignment.desiredState === "stopped" && !terminal
       ? "Stopping…"
-      : observedStateChip(assignment.observedState).label;
+      : adopting
+        ? "Linking…"
+        : observedStateChip(assignment.observedState).label;
   return `${status} · started ${formatLastSeen(assignment.createdAt, now)}`;
 }
 
@@ -115,6 +129,46 @@ export function laneRowAction(
   if (assignment.observedState === "dead") return "none";
   // A stop already in flight has no second act — the row says "Stopping…".
   return assignment.desiredState === "stopped" ? "none" : "stop";
+}
+
+// ─── Can we actually reach this chat? ────────────────────────────────────────
+
+/**
+ * Whether Hitch can bring a chat forward (and close it) — i.e. whether it has a
+ * `handle`, attachment 2 in docs/chat-tracking-redesign.md §4.
+ *
+ * The handle is stamped by the attachment layer on chats the daemon LAUNCHED. A
+ * chat that was merely discovered on the machine — which is every chat the
+ * "Link a chat" picker offers — has none, so the focus relay logs "observed
+ * here, not launched here" and returns (daemon/src/v2/focus.ts), and the close
+ * path finds nothing to close. That asymmetry is accepted by design; what is NOT
+ * acceptable is a row that renders an enabled "Open chat" doing nothing at all,
+ * which is exactly what linking made reachable for the first time.
+ *
+ * `undefined` — the chats query hasn't landed, or the row isn't in it yet —
+ * returns TRUE. Unknown must not degrade into a disabled button on a chat we did
+ * launch: the honest default while we're still reading is today's behavior, and
+ * it corrects itself the moment the query settles.
+ */
+export function chatIsFocusable(chat: { handle: unknown } | undefined | null): boolean {
+  if (chat === undefined || chat === null) return true;
+  return chat.handle != null;
+}
+
+/**
+ * What the live row's button says. "Stop" promises to end the agent; for a chat
+ * Hitch cannot close, the PATCH only settles the assignment and lets go of the
+ * chat — so the button says the thing that actually happens.
+ */
+export function laneStopLabel(focusable: boolean): "Stop" | "Unlink" {
+  return focusable ? "Stop" : "Unlink";
+}
+
+/** The Open-chat tooltip, which is the only place the asymmetry is explained. */
+export function openChatHint(canOpen: boolean, focusable: boolean): string {
+  if (!canOpen) return "Waiting for the agent’s chat to start…";
+  if (!focusable) return "Hitch didn’t launch this chat, so it can’t bring it forward";
+  return "Bring the chat forward in cmux";
 }
 
 // ─── The launch that never started ───────────────────────────────────────────
