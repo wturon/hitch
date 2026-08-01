@@ -11,6 +11,7 @@ import { generateKeyBetween } from "fractional-indexing";
 import {
   ChevronUpIcon,
   InboxIcon,
+  LayersIcon,
   LogOutIcon,
   PanelLeftIcon,
   PlusIcon,
@@ -46,6 +47,7 @@ import { useHitchServer } from "@/lib/server/HitchServerProvider";
 import type { HitchClient } from "@/lib/server/client";
 import { useUndoHotkey } from "@/lib/undoToast";
 import { cn } from "@/lib/utils";
+import { AllTasksView, ALL_TASKS_QUERY_KEY, fetchAllTasks } from "./AllTasksView";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { TaskDialog, type TaskDialogActions } from "./TaskDialog";
 import {
@@ -82,7 +84,68 @@ import { useTaskMutations } from "./useTaskMutations";
 
 // Same key as V1's rail so the collapse preference carries across modes.
 const SIDEBAR_COLLAPSED_KEY = "hitch:sidebar:collapsed";
-const SELECTED_PROJECT_KEY = "hitch:v2:selected-project";
+// Pre-union builds stored a BARE PROJECT ID here. Read-only now: it is migrated
+// into the union below on first boot of this build and never written again.
+const LEGACY_SELECTED_PROJECT_KEY = "hitch:v2:selected-project";
+const SELECTION_KEY = "hitch:v2:selection";
+
+// --- What the rail can be pointing at ---------------------------------------
+// The rail selects EITHER a project or a cross-project view, so the shell holds
+// one discriminated union rather than a project id plus a flag. Everything
+// project-scoped (the list, the task/tag mutations, the dialog's capture path)
+// hangs off the `project` arm; the `view` arm carries no project at all, which
+// is what makes "pass null, never a leftover id" the easy thing to do.
+type ViewId = "all-tasks";
+type Selection =
+  | { kind: "project"; id: string }
+  | { kind: "view"; id: ViewId };
+
+// The rail's Views group, in rail order. One entry today; a second lights up
+// here and nowhere else.
+const RAIL_VIEWS: { id: ViewId; name: string; Icon: typeof LayersIcon }[] = [
+  { id: "all-tasks", name: "All tasks", Icon: LayersIcon },
+];
+
+function isViewId(value: string): value is ViewId {
+  return RAIL_VIEWS.some((view) => view.id === value);
+}
+
+// Read the persisted selection DEFENSIVELY: anything we can't recognise returns
+// null, and the reconcile effect then falls back to Inbox. The failure mode this
+// guards is a blank screen — a selection that points at nothing renders nothing,
+// and the user's only clue would be an empty content pane.
+//
+// Three shapes are tolerated: the union we write, a bare project id (what the
+// previous build wrote, under its own key — migrated so an upgrade doesn't lose
+// your place), and garbage (dropped). An unknown VIEW id is dropped rather than
+// kept, because a view that no longer exists can never be reconciled the way a
+// stale project id can.
+function readStoredSelection(): Selection | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(SELECTION_KEY);
+  if (raw !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Not JSON at all — the one thing it could be is a bare project id.
+      return raw.trim() === "" ? null : { kind: "project", id: raw };
+    }
+    if (typeof parsed === "string") {
+      return parsed.trim() === "" ? null : { kind: "project", id: parsed };
+    }
+    if (parsed && typeof parsed === "object") {
+      const { kind, id } = parsed as { kind?: unknown; id?: unknown };
+      if (typeof id === "string" && id !== "") {
+        if (kind === "project") return { kind: "project", id };
+        if (kind === "view" && isViewId(id)) return { kind: "view", id };
+      }
+    }
+    return null;
+  }
+  const legacy = window.localStorage.getItem(LEGACY_SELECTED_PROJECT_KEY);
+  return legacy ? { kind: "project", id: legacy } : null;
+}
 
 const inputClass =
   "h-9 w-full min-w-0 rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -192,6 +255,13 @@ async function fetchProjects(client: HitchClient) {
 
 type ProjectItem = Awaited<ReturnType<typeof fetchProjects>>[number];
 
+// `fetchAllTasks` + `ALL_TASKS_QUERY_KEY` are IMPORTED from AllTasksView rather
+// than redeclared here (see the import block): the shell needs them for exactly
+// one thing — resolving the open dialog's live row while a view is the surface
+// on screen — and that only works if it reads the entry the view WRITES. Two
+// copies of the fetcher would let the key and the query drift apart, which is
+// the one failure the single-binding invariant can't survive.
+
 // The rail toggle, verbatim from V1's App shell: pinned to the window's
 // top-left strip just right of the macOS traffic lights, so it survives the
 // rail sliding off-canvas.
@@ -284,6 +354,49 @@ function ProjectRow({
   );
 }
 
+// One cross-project view in the rail. Deliberately ProjectRow's chrome to the
+// class: same height, same glyph slot, same selected/hover states — a view is a
+// place in the rail, not a different KIND of control. It has no context menu
+// because there is nothing about it to configure.
+function ViewRow({
+  view,
+  selected,
+  onSelect,
+}: {
+  view: (typeof RAIL_VIEWS)[number];
+  selected: boolean;
+  onSelect: (viewId: ViewId) => void;
+}) {
+  const { Icon } = view;
+  return (
+    <button
+      type="button"
+      data-testid="v2-view-row"
+      aria-current={selected}
+      onClick={() => onSelect(view.id)}
+      className={cn(
+        "flex min-h-9 w-full items-center gap-2 rounded-lg py-1.5 pr-1.5 pl-2 text-left transition-colors",
+        selected
+          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+          : "text-sidebar-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+      )}
+    >
+      <span
+        className={cn(
+          "flex w-4 shrink-0 items-center justify-center font-mono text-[15px] leading-none",
+          selected ? "text-sidebar-foreground/70" : "text-sidebar-foreground/40",
+        )}
+        aria-hidden
+      >
+        <Icon className="size-3.5" />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[13px] font-normal">
+        {view.name}
+      </span>
+    </button>
+  );
+}
+
 // The rail's footer identity control — V1's AccountFooter silhouette (avatar
 // row opening an upward menu), with V2-safe settings plus server identity and
 // sign-out. Harness-health and keep-awake status remain outside this slim shell.
@@ -350,21 +463,27 @@ function AccountFooter({
 function Sidebar({
   projects,
   selectedProjectId,
+  selectedViewId,
   collapsed,
   creatingProject,
   serverUrl,
   onSelectProject,
+  onSelectView,
   onCreateProject,
   onOpenProjectSettings,
   onShowSettings,
   onSignOut,
 }: {
   projects: ProjectItem[];
+  // Exactly one of these is non-null (the shell's Selection union, flattened
+  // for the two row components that each only care about their own arm).
   selectedProjectId: string | null;
+  selectedViewId: ViewId | null;
   collapsed: boolean;
   creatingProject: boolean;
   serverUrl: string;
   onSelectProject: (projectId: string) => void;
+  onSelectView: (viewId: ViewId) => void;
   onCreateProject: (name: string) => Promise<void>;
   onOpenProjectSettings: (project: ProjectItem) => void;
   onShowSettings: () => void;
@@ -382,6 +501,24 @@ function Sidebar({
       )}
     >
       <nav className="hidden flex-1 flex-col gap-0.5 overflow-auto md:flex">
+        {/* Views sit above Projects: they are ways of looking at everything,
+            so they read as the wider frame the projects sit inside. Same group
+            label chrome as Projects, minus its trailing + (there is nothing to
+            create here). */}
+        <div className="flex items-center px-2 pb-1 pt-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-sidebar-foreground/50">
+            Views
+          </span>
+        </div>
+        {RAIL_VIEWS.map((view) => (
+          <ViewRow
+            key={view.id}
+            view={view}
+            selected={view.id === selectedViewId}
+            onSelect={onSelectView}
+          />
+        ))}
+
         <div className="flex items-center justify-between px-2 pb-1 pt-1.5">
           <span className="text-[11px] font-medium uppercase tracking-wide text-sidebar-foreground/50">
             Projects
@@ -485,27 +622,54 @@ function Workspace({ client }: { client: HitchClient }) {
   }, [projects.data]);
 
   // --- Selection (persisted per device, like V1's rail prefs) ---------------
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() =>
-    typeof window === "undefined"
-      ? null
-      : window.localStorage.getItem(SELECTED_PROJECT_KEY),
-  );
-  function selectProject(projectId: string) {
-    setSelectedProjectId(projectId);
-    window.localStorage.setItem(SELECTED_PROJECT_KEY, projectId);
+  // A project OR a view — see the Selection union. Null until the reconcile
+  // effect below picks a default.
+  const [selection, setSelection] = useState<Selection | null>(readStoredSelection);
+  function select(next: Selection) {
+    setSelection(next);
+    window.localStorage.setItem(SELECTION_KEY, JSON.stringify(next));
   }
-  // Reconcile once projects load: a stale/absent selection falls back to Inbox
-  // (the default surface), then to whatever exists.
+  function selectProject(projectId: string) {
+    select({ kind: "project", id: projectId });
+  }
+  function selectView(viewId: ViewId) {
+    select({ kind: "view", id: viewId });
+  }
+  // Reconcile once projects load: a stale/absent PROJECT selection falls back
+  // to Inbox (the default surface), then to whatever exists. A view needs no
+  // project to exist, so it's left alone — and an unknown view id never gets
+  // this far (readStoredSelection drops it, which lands us on Inbox here).
   useEffect(() => {
     const rows = projects.data;
     if (!rows || rows.length === 0) return;
-    if (selectedProjectId && rows.some((p) => p.id === selectedProjectId)) return;
+    if (selection?.kind === "view") return;
+    if (selection && rows.some((p) => p.id === selection.id)) return;
     const fallback = rows.find((p) => p.name === INBOX_NAME) ?? rows[0];
     selectProject(fallback.id);
-  }, [projects.data, selectedProjectId]);
+  }, [projects.data, selection]);
 
+  const selectedProjectId = selection?.kind === "project" ? selection.id : null;
+  const selectedViewId = selection?.kind === "view" ? selection.id : null;
   const selectedProject =
     orderedProjects.find((p) => p.id === selectedProjectId) ?? null;
+  const selectedView =
+    RAIL_VIEWS.find((view) => view.id === selectedViewId) ?? null;
+
+  // The project that PROJECT-SCOPED surfaces fall back to while a view is on
+  // screen: the last project the rail was on this session, else Inbox (the
+  // default surface). Its one consumer is the ⌘K palette, which stays
+  // active-project scoped for now — and which NAMES this project in its
+  // "Create in …" header, so a capture started from it lands somewhere the user
+  // was just shown. Nothing else may reach for it: the list, the mutations and
+  // the `C` shortcut all take null in a view (see below).
+  const lastProjectIdRef = useRef<string | null>(null);
+  if (selectedProject) lastProjectIdRef.current = selectedProject.id;
+  const scopeProject =
+    selectedProject ??
+    orderedProjects.find((p) => p.id === lastProjectIdRef.current) ??
+    orderedProjects.find((p) => p.name === INBOX_NAME) ??
+    orderedProjects[0] ??
+    null;
 
   // --- Task dialog (M2 PR 3) ------------------------------------------------
   // ONE TaskDialog, driven by the discriminated union — V1's single-binding
@@ -540,10 +704,21 @@ function Workspace({ client }: { client: HitchClient }) {
   // these handlers (and the one optimistic tagIds cache).
   const tagActions = useTagMutations(client, selectedProject?.id ?? null);
 
+  // The dialog reads the ACTIVE SURFACE's cache entry — the project's list when
+  // a project is selected, the cross-project list when a view is. That is the
+  // single-binding invariant restated for two surfaces: whichever list is on
+  // screen, the dialog and the list share ONE entry, so the live query remains
+  // the only truth for a persisted task and an optimistic write shows in both
+  // in the same render. Reading the project entry while the view is on screen
+  // would give the dialog a row the list can't see (or none at all).
+  const inView = selectedView !== null;
   const dialogTasks = useQuery({
-    queryKey: ["tasks", { projectId: selectedProject?.id }],
-    queryFn: () => fetchTasks(client, selectedProject!.id),
-    enabled: selectedProject !== null,
+    queryKey: inView
+      ? [...ALL_TASKS_QUERY_KEY]
+      : ["tasks", { projectId: selectedProject?.id }],
+    queryFn: () =>
+      inView ? fetchAllTasks(client) : fetchTasks(client, selectedProject!.id),
+    enabled: inView || selectedProject !== null,
   });
   const dialogRow =
     taskDialog.mode === "edit"
@@ -574,9 +749,21 @@ function Workspace({ client }: { client: HitchClient }) {
   // task "Backlog" — including ones an agent was actively working. Sections v1
   // removed the on-screen attention groups but left this consumer behind, so the
   // lie was invisible everywhere except in the palette.
+  //
+  // Both this and the capture prepend below want ONE project's tasks. In a view
+  // `dialogTasks` is every project's, so narrow to `scopeProject` — the project
+  // the palette names and the one a palette capture lands in. In project mode
+  // this filter is the identity (scopeProject IS selectedProject), so the
+  // project path is untouched.
+  const scopedTasks = useMemo(() => {
+    const rows = dialogTasks.data ?? [];
+    if (!inView) return rows;
+    const scopeId = scopeProject?.id;
+    return scopeId ? rows.filter((task) => task.projectId === scopeId) : [];
+  }, [dialogTasks.data, inView, scopeProject?.id]);
   const taskGroups = useMemo(
-    () => deriveTaskGroups(dialogTasks.data ?? [], chatsByTask),
-    [dialogTasks.data, chatsByTask],
+    () => deriveTaskGroups(scopedTasks, chatsByTask),
+    [scopedTasks, chatsByTask],
   );
   // A capture prepends within the container it was opened INTO — the loose
   // list for `C` and the top add-row, that section for a section's own add-row.
@@ -591,15 +778,13 @@ function Workspace({ client }: { client: HitchClient }) {
   // (loose ⊆ every open task), so the degraded answer is the right one.
   const captureSectionId =
     taskDialog.mode === "capture" ? taskDialog.sectionId : null;
-  const dialogSections = useSections(client, selectedProject?.id ?? null);
+  // Keyed on the CAPTURE DESTINATION's project, which is `scopeProject` on both
+  // paths (it equals selectedProject whenever one is selected).
+  const dialogSections = useSections(client, scopeProject?.id ?? null);
   const dialogBacklog = useMemo(
     () =>
-      tasksInContainer(
-        dialogTasks.data ?? [],
-        dialogSections.data ?? [],
-        captureSectionId,
-      ),
-    [dialogTasks.data, dialogSections.data, captureSectionId],
+      tasksInContainer(scopedTasks, dialogSections.data ?? [], captureSectionId),
+    [scopedTasks, dialogSections.data, captureSectionId],
   );
   // Close-on-vanish: once tasks have loaded, if the edited row is gone
   // (deleted from another client) drop the dialog AND reset the union.
@@ -631,6 +816,18 @@ function Workspace({ client }: { client: HitchClient }) {
         onCreate: (name: string) => tagActions.createTag(dialogRow, name),
       }
     : undefined;
+
+  // The dialog's project. EDIT mode takes it from the open row, which is what
+  // lets a task be opened from the cross-project view at all: the dialog only
+  // needs a project for its CAPTURE path (where to POST, and the draft's
+  // storage key), and an edit already has one on the row. Capture falls back to
+  // `scopeProject` — reachable in a view only via the palette's "New task",
+  // which switches the rail to that project first, so the destination is never
+  // a surprise. Null only before any project exists.
+  const dialogProjectId =
+    (taskDialog.mode === "edit" ? dialogRow?.projectId : null) ??
+    scopeProject?.id ??
+    null;
 
   // ⌘Z targets the newest visible undo toast (delete / mark-done); inert
   // otherwise. Mounted once for the workspace, like V1's App root.
@@ -784,6 +981,8 @@ function Workspace({ client }: { client: HitchClient }) {
       <Sidebar
         projects={orderedProjects}
         selectedProjectId={selectedProjectId}
+        selectedViewId={selectedViewId}
+        onSelectView={selectView}
         collapsed={collapsed}
         creatingProject={createProject.isPending}
         serverUrl={serverUrl}
@@ -802,7 +1001,7 @@ function Workspace({ client }: { client: HitchClient }) {
               grid columns keep the layout — and the drag region — identical. */}
           <header className="window-titlebar-row grid h-12 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 overflow-hidden border-b border-border bg-background px-4 sm:px-6 lg:px-8">
             <h1 className="min-w-0 truncate text-[13px] font-semibold text-foreground">
-              {selectedProject?.name ?? ""}
+              {selectedProject?.name ?? selectedView?.name ?? ""}
             </h1>
             <div />
             <div />
@@ -812,6 +1011,21 @@ function Workspace({ client }: { client: HitchClient }) {
             <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-destructive">
               {String(projects.error)}
             </div>
+          ) : selectedView ? (
+            /* The cross-project projection. It takes no projectId and offers no
+               capture, drag or sections — see AllTasksView. The mutations it
+               writes through are the SAME instances the project list uses, held
+               here with a null scope. */
+            <AllTasksView
+              client={client}
+              active={taskDialog.mode === "closed"}
+              pendingDeleteIds={taskMutations.pendingDeleteIds}
+              tag={tagActions}
+              onOpenTask={openTask}
+              onSelectProject={selectProject}
+              onToggleDone={taskMutations.toggleDone}
+              onDeleteTask={taskMutations.deleteTaskWithUndo}
+            />
           ) : selectedProject ? (
             <TodosView
               client={client}
@@ -835,14 +1049,15 @@ function Workspace({ client }: { client: HitchClient }) {
           )}
         </div>
       </main>
-      {/* The single task-dialog mount (PR 3). Gated on a selected project —
-          capture needs a projectId to create into, and the union can only be
-          opened from inside a project. */}
-      {selectedProject && (
+      {/* The single task-dialog mount (PR 3). Gated on a resolvable project
+          rather than a SELECTED one: a task opened from the cross-project view
+          brings its own (see dialogProjectId), and only capture needs the
+          selection's. */}
+      {dialogProjectId !== null && (
         <TaskDialog
           state={taskDialog}
           client={client}
-          projectId={selectedProject.id}
+          projectId={dialogProjectId}
           row={dialogRow}
           backlog={dialogBacklog}
           captureSectionId={captureSectionId}
@@ -852,24 +1067,30 @@ function Workspace({ client }: { client: HitchClient }) {
           onCommitted={commitTaskDialog}
         />
       )}
-      {/* ⌘K (PR 7). Gated on a selected project like the task dialog — the
-          palette is active-project scoped and captures into it. `New task`
-          opens the capture card body-only (V1 Decision 10: the typed query is
-          not seeded); `New project` re-uses the sidebar dialog below. */}
-      {selectedProject && (
+      {/* ⌘K (PR 7). Still ACTIVE-PROJECT scoped — widening it is a separate
+          decision — but scoped to `scopeProject` rather than the selection, so
+          it keeps working from a view instead of going silently dead there
+          (⌘K opening nothing reads as a bug, not as a boundary). It names that
+          project, and its `New task` SWITCHES the rail to it before opening the
+          capture card, so a capture is never filed somewhere the user wasn't
+          just shown. `New project` re-uses the sidebar dialog below. */}
+      {scopeProject && (
         <CommandPalette
           open={showPalette}
           onOpenChange={setShowPalette}
           projects={paletteProjects}
-          activeProjectId={selectedProject.id as PaletteProject["id"]}
-          activeProjectName={selectedProject.name}
+          activeProjectId={scopeProject.id as PaletteProject["id"]}
+          activeProjectName={scopeProject.name}
           currentView="todos"
           tasks={paletteTasks}
           actions={[]}
           onSelectProject={selectProject}
           onSelectView={() => {}}
           onOpenTask={openTask}
-          onCreateTask={() => openCapture()}
+          onCreateTask={() => {
+            if (inView) selectProject(scopeProject.id);
+            openCapture();
+          }}
           onCreateProject={(name) => setCreateProjectName(name)}
         />
       )}

@@ -25,6 +25,11 @@ import {
 // embedded tagIds (TkDodo onMutate pattern: cancel in-flight ["tasks"]
 // queries, snapshot, patch the one row, rollback on error, invalidate on
 // settle) — the pill reflects instantly, server truth reconciles behind it.
+//
+// That patch lands in EVERY cached ["tasks", …] entry (same rule as
+// useTaskMutations): a project's list and the cross-project "all tasks" list
+// (key ["tasks", {}]) can be cached at once and can hold the same task, so
+// patching only one leaves the other showing the old pills until a refetch.
 
 // What the tag writes need from a cached task row.
 export interface TaggableTask {
@@ -56,12 +61,16 @@ export async function fetchTags(client: HitchClient): Promise<TagRow[]> {
 
 export function useTagMutations(
   client: HitchClient,
-  projectId: string | null,
+  // Kept for signature symmetry with useTaskMutations (and so callers don't
+  // have to care): tags are workspace-global and the writes now target every
+  // cached task list, so nothing here is project-scoped any more.
+  _projectId: string | null,
 ): TagActions {
   const queryClient = useQueryClient();
-  // The SAME keys the views query under, so optimistic patches land in the
-  // shared cache entries (and the coarse WS invalidation hits them).
-  const listKey = ["tasks", { projectId: projectId ?? undefined }] as const;
+  // Prefix filter, not one key: the tag patch has to reach every cached task
+  // list (this hook's project, and the cross-project list if it's loaded).
+  // The coarse WS invalidation hits the same prefix.
+  const taskListFilter = { queryKey: ["tasks"] } as const;
   const tagsKey = ["tags"] as const;
 
   const tags = useQuery({ queryKey: tagsKey, queryFn: () => fetchTags(client) });
@@ -108,8 +117,8 @@ export function useTagMutations(
     },
     onMutate: async ({ taskId, tagId, on }) => {
       await queryClient.cancelQueries({ queryKey: ["tasks"] });
-      const previous = queryClient.getQueryData<TaggableTask[]>(listKey);
-      queryClient.setQueryData<TaggableTask[]>(listKey, (old) =>
+      const previous = queryClient.getQueriesData<TaggableTask[]>(taskListFilter);
+      queryClient.setQueriesData<TaggableTask[]>(taskListFilter, (old) =>
         old === undefined
           ? old
           : on
@@ -120,8 +129,10 @@ export function useTagMutations(
     },
     onError: (error, _vars, context) => {
       console.error("Tag assignment failed; rolling back", error);
-      if (context?.previous !== undefined) {
-        queryClient.setQueryData(listKey, context.previous);
+      for (const [key, data] of context?.previous ?? []) {
+        // An entry with no data was never patched, and setQueryData(key,
+        // undefined) is a no-op — skip it rather than pretend to restore it.
+        if (data !== undefined) queryClient.setQueryData(key, data);
       }
     },
     onSettled: () => {

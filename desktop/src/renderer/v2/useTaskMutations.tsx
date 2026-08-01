@@ -20,9 +20,18 @@ import type { TaskRow } from "./todoGroups";
 //
 // Optimistic updates follow the TkDodo onMutate pattern: cancel in-flight
 // ["tasks"] queries (so a refetch that raced the click can't clobber the
-// optimistic rows when it lands), snapshot the list, patch the one row,
+// optimistic rows when it lands), snapshot the lists, patch the one row,
 // rollback on error, invalidate on settle. The WS invalidation arriving after
 // settle just refetches server truth — by then identical to the cache.
+//
+// The patch goes into EVERY cached ["tasks", …] entry, not just this hook's
+// project. More than one task list can be cached at a time (a project's list
+// and the cross-project "all tasks" list, whose key is ["tasks", {}]), and the
+// same task can appear in both: patching one entry leaves the other showing
+// stale truth until a refetch lands, which reads as "the click did nothing".
+// setQueriesData/getQueriesData are the prefix-matching forms of
+// setQueryData/getQueryData, and every ["tasks", …] entry in this app holds a
+// task array (see lib/server/queryKeys.ts), so the shape is uniform.
 
 // What the mutations need from a cached task row — a structural subset of the
 // GET /tasks response (spreads keep the fields we don't model, e.g. tagIds).
@@ -42,7 +51,9 @@ export interface TaskMutations {
   /**
    * Check/uncheck. Checking PATCHes status:"done" (the server stamps
    * completed_at) and offers an undo toast; unchecking returns the task to
-   * the TOP of the backlog (fractional-index prepend, client-computed).
+   * the TOP of the backlog (fractional-index prepend, client-computed) —
+   * except with no project scope, where the row keeps its position (see
+   * `markOpen`).
    */
   toggleDone(task: MutableTask, done: boolean): void;
   /** A drag-reorder drop: PATCH the one moved row's precomputed sortOrder. */
@@ -67,9 +78,39 @@ export function useTaskMutations(
   projectId: string | null,
 ): TaskMutations {
   const queryClient = useQueryClient();
-  // The SAME key TodosView/App query under, so the optimistic patches land
-  // in the one shared cache entry.
+  // This hook's OWN list — the key TodosView/App query under when a
+  // project is selected, and ["tasks", {}] (every task the user owns) when
+  // there is none. Only the sort-order maths reads it; optimistic writes go to
+  // every ["tasks", …] entry instead (see `patchAllTaskLists`).
   const listKey = ["tasks", { projectId: projectId ?? undefined }] as const;
+  const taskListFilter = { queryKey: ["tasks"] } as const;
+
+  /**
+   * Patch one row across EVERY cached task list, returning the pre-patch
+   * snapshot of each entry we could have touched (the rollback payload).
+   */
+  const patchAllTaskLists = (
+    taskId: string,
+    fields: TaskPatch & { completedAt?: string | null },
+  ) => {
+    const previous = queryClient.getQueriesData<MutableTask[]>(taskListFilter);
+    queryClient.setQueriesData<MutableTask[]>(taskListFilter, (old) =>
+      old?.map((task) => (task.id === taskId ? { ...task, ...fields } : task)),
+    );
+    return previous;
+  };
+
+  /** Undo a `patchAllTaskLists` — restore every entry it snapshotted. */
+  const restoreTaskLists = (
+    previous: ReturnType<typeof patchAllTaskLists> | undefined,
+  ) => {
+    for (const [key, data] of previous ?? []) {
+      // An entry that held no data was never patched (the updater passes
+      // `undefined` straight through), and setQueryData(key, undefined) is a
+      // no-op anyway — skip it rather than pretend to restore it.
+      if (data !== undefined) queryClient.setQueryData(key, data);
+    }
+  };
 
   const patchTask = useMutation({
     mutationFn: async ({ taskId, patch }: {
@@ -90,19 +131,11 @@ export function useTaskMutations(
     },
     onMutate: async ({ taskId, optimistic }) => {
       await queryClient.cancelQueries({ queryKey: ["tasks"] });
-      const previous = queryClient.getQueryData<MutableTask[]>(listKey);
-      queryClient.setQueryData<MutableTask[]>(listKey, (old) =>
-        old?.map((task) =>
-          task.id === taskId ? { ...task, ...optimistic } : task,
-        ),
-      );
-      return { previous };
+      return { previous: patchAllTaskLists(taskId, optimistic) };
     },
     onError: (error, _vars, context) => {
       console.error("Task update failed; rolling back", error);
-      if (context?.previous !== undefined) {
-        queryClient.setQueryData(listKey, context.previous);
-      }
+      restoreTaskLists(context?.previous);
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["tasks"] });
@@ -189,6 +222,23 @@ export function useTaskMutations(
     // Back to the TOP of its OWN section — the row must come back where you'll
     // see it. The task itself is in DONE, so the cached container is already
     // "that container without it".
+    //
+    // That prepend needs the task's project's cached sections AND its cached
+    // container order; a cross-project caller (no `projectId`) has neither —
+    // ["sections", {}] is never fetched, so every task would look loose and
+    // the "top" would be computed against an unrelated list. A key invented
+    // from the wrong ground truth would silently teleport the row inside its
+    // own project, so with no project scope we send status alone and leave the
+    // row exactly where it sits. Repositioning is unchanged when a project IS
+    // scoped.
+    if (!projectId) {
+      patchTask.mutate({
+        taskId: task.id,
+        patch: { status: "open" },
+        optimistic: { status: "open", completedAt: null },
+      });
+      return;
+    }
     const sortOrder = uncheckSortOrder(currentContainer(task.sectionId ?? null));
     patchTask.mutate({
       taskId: task.id,
@@ -227,10 +277,12 @@ export function useTaskMutations(
   return {
     pendingDeleteIds,
     toggleDone: (task, done) => {
-      if (!projectId) return;
       if (done) markDone(task);
       else markOpen(task);
     },
+    // Drag/section work: offered only by a project-scoped list. It stays
+    // callable with no project (the key maths degrades to "top of an empty
+    // container" rather than throwing), but no cross-project surface offers it.
     moveTask: (task, sectionId, sortOrder) => {
       const current = task.sectionId ?? null;
       // A drag supplies a key even for a same-container drop; only a MENU move
@@ -243,8 +295,9 @@ export function useTaskMutations(
         optimistic: { sectionId, sortOrder: key },
       });
     },
+    // Also drag-only: the caller has already computed the key, so this is a
+    // plain one-field PATCH and needs no project scope of its own.
     reorderTask: (taskId, sortOrder) => {
-      if (!projectId) return;
       patchTask.mutate({
         taskId,
         patch: { sortOrder },
@@ -252,7 +305,6 @@ export function useTaskMutations(
       });
     },
     deleteTaskWithUndo: (task) => {
-      if (!projectId) return;
       pendingDeletes.schedule(task.id);
       showUndoableToast({
         message: "Task deleted",

@@ -74,11 +74,12 @@ try {
         .allInnerTexts()
     ).map((t) => t.split("\n")[0]);
   const checkboxOf = (name) => taskRow(name).getByRole("checkbox");
-  // Highlight the row via hover (hover arms the selection — the accepted V1
-  // quirk), park the pointer so hover can't re-highlight, then press `key`.
+  // Arm the row, then press `key`. Focus is what arms it: hovering deliberately
+  // does NOT (that was the old "hover arms delete" quirk, deleted along with
+  // the per-row onMouseMove that re-rendered the whole list on every mouse
+  // move). The view's focusin handler adopts the focused row as the selection.
   const highlightAndPress = async (locator, key) => {
-    await locator.hover();
-    await page.mouse.move(1, 1);
+    await locator.focus();
     await page.waitForTimeout(200);
     await page.keyboard.press(key);
   };
@@ -208,9 +209,8 @@ try {
     (await backlogTitles()).join(" | "),
   );
 
-  // --- KEYBOARD NAV: hover arms, arrows move, ↵ opens the dialog -----------
-  await taskRow("Alpha task").hover();
-  await page.mouse.move(1, 1);
+  // --- KEYBOARD NAV: focus arms, arrows move, ↵ opens the dialog -----------
+  await taskRow("Alpha task").focus();
   await page.waitForTimeout(200);
   await page.keyboard.press("ArrowDown");
   const onGamma = await taskRow("Gamma task").getAttribute("aria-current");
@@ -244,11 +244,11 @@ try {
   check("16. Undo restores the dialog-deleted row to the list");
   await awaitToastsGone();
 
-  // --- KEYBOARD DELETE on the hovered row + Undo (server never deleted) ----
+  // --- KEYBOARD DELETE on the focused row + Undo (server never deleted) ----
   await highlightAndPress(taskRow("Gamma task"), "Backspace");
   await page.getByText("Task deleted", { exact: false }).waitFor({ timeout: 5_000 });
   check(
-    "17. Backspace deletes the hovered/highlighted row (hover arms it)",
+    "17. Backspace deletes the focused/highlighted row (focus arms it)",
     (await taskRow("Gamma task").count()) === 0,
   );
   const gammaPending = await serverTask(gamma.id);
