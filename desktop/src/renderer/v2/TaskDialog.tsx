@@ -6,6 +6,7 @@ import {
   CircleIcon,
   CopyIcon,
   EllipsisIcon,
+  FileTextIcon,
   LoaderCircleIcon,
   Trash2Icon,
   XIcon,
@@ -30,6 +31,7 @@ import {
   saveCaptureDraft,
 } from "./captureDraft";
 import { type TaskDialogState } from "./taskDialogState";
+import { copyTaskMarkdown } from "./taskMarkdown";
 import { useAttachments } from "./useAttachments";
 import { useCaptureAttachments } from "./useCaptureAttachments";
 import { useTaskDocument, type TaskDocumentFields } from "./useTaskDocument";
@@ -570,6 +572,21 @@ function TaskBody({
                     >
                       <CopyIcon />
                       Copy agent prompt
+                    </MenuItem>
+                    {/* Copies `doc`, not the server row: what you are LOOKING
+                        at, including edits this open dialog hasn't flushed
+                        yet. Copying a stale body out of a task you just typed
+                        into would be the one unforgivable version of this. */}
+                    <MenuItem
+                      onClick={() =>
+                        void copyTaskMarkdown({
+                          title: doc.title,
+                          body: doc.body,
+                        })
+                      }
+                    >
+                      <FileTextIcon />
+                      Copy as markdown
                     </MenuItem>
                     <MenuItem onClick={actions.onToggleCompleted}>
                       {actions.completed ? <CircleIcon /> : <CircleCheckIcon />}

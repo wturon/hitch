@@ -4,6 +4,7 @@ import {
   CircleCheckIcon,
   CircleIcon,
   CopyIcon,
+  FileTextIcon,
   FolderInputIcon,
   SquareArrowOutUpRightIcon,
   TagIcon,
@@ -26,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { copyTaskAgentPrompt } from "./agentPrompt";
 import type { RowChips } from "./chipStack";
 import { HarnessChipSlot } from "./HarnessChip";
+import { copyTaskMarkdown } from "./taskMarkdown";
 // Type-only, so it is erased at build time — TodosView imports this module
 // for its value (TaskRow), and this one takes nothing back but the type.
 import type { TaskItem } from "./TodosView";
@@ -322,8 +324,10 @@ export function TaskRow({
           <HarnessChipSlot chats={chip.chats} state={chip.state} />
         </div>
       </ContextMenuTrigger>
-      {/* Copy agent prompt is V2's server-native successor to Copy task path:
-          it hands an existing chat the stable task id + exact CLI command. */}
+      {/* Two copies, and the pair is the point. Copy agent prompt is V2's
+          server-native successor to Copy task path: it hands an existing chat
+          the stable task id + exact CLI command, for agents that speak Hitch.
+          Copy as markdown hands ANY surface the words themselves. */}
       <ContextMenuContent>
         <ContextMenuItem onClick={() => actions.onOpen(task.id)}>
           <SquareArrowOutUpRightIcon />
@@ -334,6 +338,10 @@ export function TaskRow({
         >
           <CopyIcon />
           Copy agent prompt
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => void copyTaskMarkdown(task)}>
+          <FileTextIcon />
+          Copy as markdown
         </ContextMenuItem>
         <ContextMenuItem onClick={() => actions.onToggleDone(task, !done)}>
           {done ? <CircleIcon /> : <CircleCheckIcon />}
