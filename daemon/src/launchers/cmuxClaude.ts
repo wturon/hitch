@@ -18,7 +18,6 @@ export const cmuxClaudeLauncher: Launcher = {
     close: true,
     pinsSessionId: true,
     autoSubmits: true,
-    needsWorkspaceOpen: false,
     lifecycle: "process",
     tier: 3,
   },

@@ -540,7 +540,6 @@ export class Reconciler {
         model,
         effort,
         project: projectRef,
-        logger: this.logger,
         onLinked: async (sessionId) => {
           this.attachments.bindSession(launchId, sessionId);
           this.logger.info(

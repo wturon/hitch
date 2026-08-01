@@ -119,9 +119,10 @@ const localConfigPath =
   process.env.HITCH_CONFIG_PATH ?? join(appSupportDir, "config.json");
 const localSecretsPath =
   process.env.HITCH_SECRETS_PATH ?? join(appSupportDir, "secrets.json");
-// Per-harness run-environment preference (e.g. claude-code → cmux | vscode). Kept
-// in its own file beside config.json so the hitches normalizer can't drop it; the
-// daemon reads the same file to resolve which launcher to use.
+// Per-harness run-environment preference (cmux is the only environment today).
+// Kept in its own file beside config.json so the hitches normalizer can't drop
+// it. Read by this process only — the daemon does NOT consult it; the reconciler
+// launches into cmux unconditionally.
 const localPreferencesPath =
   process.env.HITCH_PREFERENCES_PATH ?? join(appSupportDir, "preferences.json");
 const devRendererUrl =
@@ -575,8 +576,14 @@ function setTextGenerationModel(value: unknown): TextGenerationModel {
   return value;
 }
 
-// { "claude-code": "vscode", ... }. Read defensively — a missing/garbled file is
-// just "no preference set", which the daemon treats as the harness default.
+// The environments this build can actually launch into. An allowlist, not a
+// denylist: a preference naming a since-deleted environment ("vscode",
+// "cursor", "t3code") must read as "no preference set" rather than as a real
+// choice, because nothing downstream would honor it.
+const SUPPORTED_ENVIRONMENTS = new Set(["cmux"]);
+
+// { "claude-code": "cmux", ... }. Read defensively — a missing/garbled file is
+// just "no preference set".
 function readHarnessEnvironments(): Record<string, string> {
   const stored = readPreferences().harnessEnvironments;
   if (!isRecord(stored)) return {};
@@ -586,7 +593,7 @@ function readHarnessEnvironments(): Record<string, string> {
         (entry): entry is [string, string] =>
           typeof entry[0] === "string" && typeof entry[1] === "string",
       )
-      .filter(([, environment]) => environment !== "t3code"),
+      .filter(([, environment]) => SUPPORTED_ENVIRONMENTS.has(environment)),
   );
 }
 
@@ -594,7 +601,7 @@ function setHarnessEnvironment(
   harness: string,
   environment: string,
 ): Record<string, string> {
-  if (environment === "t3code") {
+  if (!SUPPORTED_ENVIRONMENTS.has(environment)) {
     return readHarnessEnvironments();
   }
   const next = { ...readHarnessEnvironments(), [harness]: environment };
@@ -1114,14 +1121,6 @@ interface IntegrationHealth {
   integrations: IntegrationStatus[];
 }
 
-function effectiveHarnessEnvironments(): Record<"claude-code" | "codex", string> {
-  const stored = readHarnessEnvironments();
-  return {
-    "claude-code": stored["claude-code"] || "cmux",
-    codex: stored.codex || "codex-app",
-  };
-}
-
 async function cmuxCliAvailable(): Promise<boolean> {
   try {
     await run(cmuxBin(), ["--version"], { timeout: 3_000 });
@@ -1200,25 +1199,13 @@ function harnessHookIntegrationStatus(
   };
 }
 
+// Always applies: cmux is the only environment the reconciler launches into, so
+// every harness runs there regardless of what the preference file says. This
+// used to gate on that preference and go "quiet" — which meant a fresh install
+// (no preference → Codex defaulted to "codex-app") silently skipped the check
+// for hooks its runs actually depended on.
 function cmuxSocketIntegrationStatus(): IntegrationStatus {
-  const envs = effectiveHarnessEnvironments();
-  const applies = envs["claude-code"] === "cmux" || envs.codex === "cmux";
   const configPath = cmuxConfigPath();
-  if (!applies) {
-    return {
-      id: "cmux.socket-automation",
-      label: "Socket permissions",
-      group: "cmux",
-      level: "environment",
-      owner: "hitch",
-      applies: false,
-      state: "quiet",
-      reason: "No harness is configured to run in cmux.",
-      targetPaths: [configPath],
-      canRepair: false,
-      repairLabel: "Enable",
-    };
-  }
   if (!existsSync(configPath)) {
     return {
       id: "cmux.socket-automation",
@@ -1272,25 +1259,10 @@ function cmuxSocketIntegrationStatus(): IntegrationStatus {
   }
 }
 
+// Always applies, for the same reason as the socket check above: Codex runs in
+// cmux, so cmux's Codex hooks are never optional.
 async function cmuxCodexHooksIntegrationStatus(): Promise<IntegrationStatus> {
-  const envs = effectiveHarnessEnvironments();
-  const applies = envs.codex === "cmux";
   const targets = [globalCodexHooksJsonPath(), globalCodexConfigTomlPath()];
-  if (!applies) {
-    return {
-      id: "cmux.codex-hooks",
-      label: "Codex hooks",
-      group: "cmux",
-      level: "environment",
-      owner: "delegated",
-      applies: false,
-      state: "quiet",
-      reason: "Codex is not configured to run in cmux.",
-      targetPaths: targets,
-      canRepair: false,
-      repairLabel: "Install",
-    };
-  }
   if (!(await cmuxCliAvailable())) {
     return {
       id: "cmux.codex-hooks",
@@ -2253,10 +2225,12 @@ app.whenReady().then(async () => {
   // status works on the first post-upgrade launch (drifted-only; never installs
   // for users who never had them — see healDriftedHarnessHooks).
   healDriftedHarnessHooks();
-  // If Codex is configured to run in cmux, hand the Codex resume binding to
-  // cmux's own hook before the daemon can launch Codex. Other users see this as
-  // an available integration in Settings, but we don't silently install it.
-  if (effectiveHarnessEnvironments().codex === "cmux") installCmuxCodexHook();
+  // Hand the Codex resume binding to cmux's own hook before the daemon can
+  // launch Codex. Unconditional: cmux is the only environment the reconciler
+  // launches into, so every Codex run needs this. It used to be gated on the
+  // environment preference, which defaulted to "codex-app" when unset — so a
+  // fresh install skipped installing the hook its own runs depend on.
+  installCmuxCodexHook();
   startDaemon();
   configureAutoUpdates();
 

@@ -1,6 +1,8 @@
-// Codex running in the Codex app. The daemon owns both start and reopen now so
-// the renderer can issue a single open-chat command and let launcher preferences
-// decide whether Codex opens in the native app, VS Code, or Cursor.
+// Codex running in the Codex app. The daemon owns both start and reopen, so the
+// renderer issues a single open-chat command and the registry picks the
+// launcher. Not reachable from the V2 reconciler, which always resolves cmux —
+// this is the registry's per-harness default and the seam a native-app run would
+// come back through.
 
 import { openCodexThread, startCodexChat } from "../codex.js";
 import type { Launcher } from "./types.js";
@@ -14,7 +16,6 @@ export const codexAppLauncher: Launcher = {
     close: false,
     pinsSessionId: true,
     autoSubmits: true,
-    needsWorkspaceOpen: false,
     lifecycle: "appserver",
     tier: 3,
   },

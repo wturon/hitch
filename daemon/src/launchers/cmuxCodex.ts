@@ -95,7 +95,6 @@ export const cmuxCodexLauncher: Launcher = {
     close: true,
     pinsSessionId: false,
     autoSubmits: true,
-    needsWorkspaceOpen: false,
     lifecycle: "hooks",
     tier: 3,
   },

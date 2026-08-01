@@ -7,18 +7,12 @@
 import { cmuxClaudeLauncher } from "./cmuxClaude.js";
 import { cmuxCodexLauncher } from "./cmuxCodex.js";
 import { codexAppLauncher } from "./codexApp.js";
-import { cursorClaudeLauncher, vscodeClaudeLauncher } from "./editorClaude.js";
-import { cursorCodexLauncher, vscodeCodexLauncher } from "./editorCodex.js";
 import type { Environment, Harness, Launcher } from "./types.js";
 
 const LAUNCHERS: Launcher[] = [
   cmuxClaudeLauncher,
   cmuxCodexLauncher,
   codexAppLauncher,
-  vscodeClaudeLauncher,
-  cursorClaudeLauncher,
-  vscodeCodexLauncher,
-  cursorCodexLauncher,
 ];
 
 const BY_KEY = new Map<string, Launcher>(

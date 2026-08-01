@@ -1,26 +1,14 @@
 // Launcher rails: a harness (the agent runtime) runs inside an environment (where
-// it's presented — a terminal multiplexer, a native app, an editor extension). Each
-// (harness, environment) pair is a Launcher that satisfies the two intents the rest
-// of Hitch asks for: reopen an existing chat, or start a new one.
+// it's presented — a terminal multiplexer, a native app). Each (harness,
+// environment) pair is a Launcher that satisfies the two intents the rest of
+// Hitch asks for: reopen an existing chat, or start a new one.
 //
-// Each launcher wraps the harness-specific mechanics in cmux.ts / codex.ts or an
-// editor extension URI handler rather than making the daemon know those details.
-// The interface stays declarative (traits, probe) so new environments slot in
-// without reshaping the daemon.
+// Each launcher wraps the harness-specific mechanics in cmux.ts / codex.ts rather
+// than making the daemon know those details. The interface stays declarative
+// (traits, probe) so new environments slot in without reshaping the daemon.
 
 export type Harness = "claude-code" | "codex";
-export type Environment =
-  | "cmux"
-  | "codex-app"
-  | "vscode"
-  | "cursor"
-  | "t3code";
-
-// Minimal logger shape the launcher modules use, so they don't depend on daemon.ts.
-export interface LauncherLogger {
-  info: (message: string) => void;
-  error?: (message: string) => void;
-}
+export type Environment = "cmux" | "codex-app" | "t3code";
 
 export interface ProjectRef {
   projectId: string;
@@ -61,9 +49,6 @@ export interface StartCtx {
   project: ProjectRef;
   onLinked: (sessionId: string) => Promise<void>;
   onSettled?: (sessionId: string) => Promise<void>;
-  // Provided so fire-and-forget launchers (vscode/cursor) can register a claim
-  // with the harness-level session linker, which links the session out-of-band.
-  logger?: LauncherLogger;
 }
 
 export interface LaunchOutcome {
@@ -81,7 +66,6 @@ export interface LauncherTraits {
   close: boolean; // can kill the chat's tab (the transcript survives on disk)
   pinsSessionId: boolean; // we choose the id up front → can pre-link the task
   autoSubmits: boolean; // startNew runs the first turn vs. user presses Enter
-  needsWorkspaceOpen: boolean; // reopen needs the folder already open (vscode)
   lifecycle: "process" | "appserver" | "hooks" | "none";
   tier: 0 | 1 | 2 | 3; // link-only / launch / locate+focus / full
 }

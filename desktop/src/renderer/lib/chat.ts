@@ -14,12 +14,13 @@ export function harnessLabel(harness: Harness): string {
   return harness === "codex" ? "Codex" : "Claude Code";
 }
 
-// Where a harness runs and is presented to the user. Today there is one
-// environment per harness (the daemon derives it from the harness), but the
-// settings UI models this axis explicitly so future environments (e.g. the VS Code
-// extension) slot in without reshaping the mental model. Keep in sync with the
-// daemon's launcher registry.
-export type Environment = "cmux" | "codex-app" | "vscode" | "cursor";
+// Where a harness runs and is presented to the user. cmux is the only
+// environment Hitch launches into — the reconciler spawns every harness there
+// (see daemon/src/v2/reconciler.ts, "always cmux"), so this catalog states that
+// fact rather than offering choices the launch path would ignore. The axis stays
+// modelled explicitly because it's the seam a real second environment slots
+// into. Keep in sync with the daemon's launcher registry.
+export type Environment = "cmux";
 
 export interface EnvironmentOption {
   id: Environment;
@@ -27,47 +28,24 @@ export interface EnvironmentOption {
 }
 
 export const ENVIRONMENTS_BY_HARNESS: Record<Harness, EnvironmentOption[]> = {
-  "claude-code": [
-    { id: "cmux", label: "cmux (TUI)" },
-    { id: "vscode", label: "VS Code extension" },
-    { id: "cursor", label: "Cursor extension" },
-  ],
-  codex: [
-    { id: "codex-app", label: "Codex app" },
-    { id: "cmux", label: "cmux (TUI)" },
-    { id: "vscode", label: "VS Code extension" },
-    { id: "cursor", label: "Cursor extension" },
-  ],
+  "claude-code": [{ id: "cmux", label: "cmux (TUI)" }],
+  codex: [{ id: "cmux", label: "cmux (TUI)" }],
 };
 
 export function environmentOptions(harness: Harness): EnvironmentOption[] {
   return ENVIRONMENTS_BY_HARNESS[harness];
 }
 
-export function defaultEnvironment(harness: Harness): Environment {
-  return harness === "codex" ? "codex-app" : "cmux";
+export function defaultEnvironment(_harness: Harness): Environment {
+  return "cmux";
 }
 
-export function environmentLabel(env: Environment): string {
-  switch (env) {
-    case "codex-app":
-      return "Codex app";
-    case "vscode":
-      return "VS Code extension";
-    case "cursor":
-      return "Cursor extension";
-    default:
-      return "cmux (TUI)";
-  }
+export function environmentLabel(_env: Environment): string {
+  return "cmux (TUI)";
 }
 
 export function isEnvironment(value: string): value is Environment {
-  return (
-    value === "cmux" ||
-    value === "codex-app" ||
-    value === "vscode" ||
-    value === "cursor"
-  );
+  return value === "cmux";
 }
 
 // Additional launch parameters the user can set before kicking off a harness:
@@ -254,19 +232,6 @@ export function reasoningLabel(
   modelId?: string,
 ): string {
   return reasoningOptions(harness, modelId).find((r) => r.id === id)?.label ?? id;
-}
-
-// Claude run inside an editor extension can't accept model/effort at launch —
-// the extension owns them — so the compose UI disables those controls for that
-// (harness, environment) pair and points the user at the editor instead.
-export function honorsLaunchParams(
-  harness: Harness,
-  environment: Environment | undefined,
-): boolean {
-  return !(
-    harness === "claude-code" &&
-    (environment === "vscode" || environment === "cursor")
-  );
 }
 
 // A reusable kickoff prompt the user picks from the delegation dropdown.

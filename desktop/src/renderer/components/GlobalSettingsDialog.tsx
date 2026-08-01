@@ -861,9 +861,12 @@ function OverallStatusPill({ status }: { status: HarnessHookStatus | null }) {
   );
 }
 
-// Where Hitch opens this harness's sessions. The choice persists to a local
-// preferences file the daemon reads to pick the launcher; an unset preference
-// falls back to the harness default, so existing behavior is unchanged.
+// Where Hitch opens this harness's sessions. cmux is the only environment the
+// reconciler launches into, so this row states that rather than offering a
+// choice the launch path would ignore — a picker that silently didn't apply is
+// exactly the lie this replaced. The select stays (locked) because it's where a
+// real second environment shows up, and the preference still persists so the
+// cmux integration checks below have something to read.
 function EnvironmentRow({
   harness,
   bridge,
@@ -899,7 +902,8 @@ function EnvironmentRow({
     }
   }
 
-  // Only the single-option harnesses lock the select; otherwise it's a real choice.
+  // Locked while cmux is the only environment; unlocks on its own the day a
+  // second one is real.
   const locked = options.length < 2 || !bridge;
 
   return (
@@ -933,21 +937,9 @@ function EnvironmentRow({
           </SelectContent>
         </Select>
       </div>
-      {harness === "claude-code" &&
-      (value === "vscode" || value === "cursor") ? (
-        // Claude in an editor extension is fire-and-forget: we pre-fill the
-        // prompt via the URI and the user submits it. Codex editors don't apply —
-        // there Hitch drives the run through the app server and auto-submits.
-        <p className="text-xs text-amber-600 dark:text-amber-400/90">
-          Experimental: opens the {environmentLabel(value)} with your prompt
-          pre-filled — press Enter to start. The card links once you send the
-          first message, then tracks status normally.
-        </p>
-      ) : value === "vscode" || value === "cursor" ? null : (
-        <p className="text-xs text-muted-foreground/70">
-          More environments are coming.
-        </p>
-      )}
+      <p className="text-xs text-muted-foreground/70">
+        More environments are coming.
+      </p>
     </div>
   );
 }

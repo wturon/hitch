@@ -84,7 +84,6 @@ function cmuxTraits(pinsSessionId: boolean): Launcher["traits"] {
     close: true,
     pinsSessionId,
     autoSubmits: true,
-    needsWorkspaceOpen: false,
     lifecycle: pinsSessionId ? "process" : "hooks",
     tier: 3,
   };
