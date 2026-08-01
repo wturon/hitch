@@ -75,7 +75,7 @@ import {
 } from "./tagFilter";
 import { chatsByTaskId } from "./todoGroups";
 import { useAckAssignment } from "./useAckAssignment";
-import { useAllAssignments } from "./useAssignments";
+import { useAllAssignments, useChats } from "./useAssignments";
 import { useSections } from "./useSections";
 import {
   stepSectionSortOrder,
@@ -749,6 +749,7 @@ export function TodosView({
   // ["assignments"] WS invalidation so the chips advance live as the daemon
   // writes observed_state. Joined to tasks by task_id below.
   const assignments = useAllAssignments(client);
+  const chats = useChats(client);
   // NOT cast down to AttentionAssignment: the chip needs the row's harness (to
   // pick a brand mark) and its chatId/machineId (to address the focus event),
   // and the join is generic precisely so callers keep their full row type.
@@ -758,6 +759,16 @@ export function TodosView({
   const chatsByTask = useMemo(
     () => chatsByTaskId(assignments.data ?? []),
     [assignments.data],
+  );
+  // The chats themselves, for ONE fact the assignment can't carry: whether the
+  // chat has a `handle`, i.e. whether clicking its chip can go anywhere. A
+  // LINKED chat (adopted from the machine rather than spawned by Hitch) has
+  // none, and without this the row offers "Open chat" on a chat it can't focus.
+  // Same coarse ["chats"] key the dialog's band uses, so the two share one
+  // cache entry rather than each paying for a fetch.
+  const chatHandles = useMemo(
+    () => new Map((chats.data ?? []).map((chat) => [chat.id, chat] as const)),
+    [chats.data],
   );
 
   // Ack an attention item (done ∧ unreviewed): stamp reviewed_at so it drops
@@ -901,7 +912,7 @@ export function TodosView({
   // single reported state stays `rowState`'s reduce by demand — the ring can't
   // read calm while a second agent on the row is blocked on the user.
   const chipOf = (taskId: string): RowChips =>
-    rowChips(chatsByTask.get(taskId));
+    rowChips(chatsByTask.get(taskId), chatHandles);
 
   // The containers that are actually on screen. While filtering, a section with
   // no matches is noise — UNLESS it is collapsed and holding a live agent,

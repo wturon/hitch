@@ -4,7 +4,7 @@ import { ArrowUpRight } from "lucide-react";
 
 import { HarnessIcon } from "@/components/HarnessIcon";
 import { cn } from "@/lib/utils";
-import { serverHarnessLabel, type ServerHarness } from "./delegation";
+import { iconHarness, serverHarnessLabel, type ServerHarness } from "./delegation";
 import { capChipStack, CHIP_STACK_LIMIT, type ChipChat } from "./chipStack";
 import type { HarnessChipState } from "./todoGroups";
 import { useOpenChat } from "./useOpenChat";
@@ -43,12 +43,6 @@ import { useOpenChat } from "./useOpenChat";
 // while something on it is blocked on the user. Lane order puts a chat in that
 // worst state FIRST, so the leading disc — the one drawn fully in front —
 // carries exactly that ring, and `data-chip-state` on the stack says the same.
-
-// V1's icon vocabulary is `claude-code | codex`; the V2 server enum is
-// `claude | codex`. Map at the boundary so nothing else has to know.
-function iconHarness(harness: ServerHarness): "claude-code" | "codex" {
-  return harness === "codex" ? "codex" : "claude-code";
-}
 
 function stateWord(state: HarnessChipState): string {
   if (state === "working") return "working";
@@ -180,14 +174,19 @@ export function StaticHarnessChip({
 // ROW's `group` (never per-chip hover) so the whole stack fans as one gesture
 // and the fan can't chase the pointer between discs.
 function StackChip({ chat, index }: { chat: ChipChat; index: number }) {
-  const { canOpen, openChat } = useOpenChat({
+  const { canOpen, blockedBy, openChat } = useOpenChat({
     chatId: chat.chatId,
     machineId: chat.machineId,
+    handle: chat.handle,
   });
   const harness = serverHarnessLabel(chat.harness);
+  // The stack has no pill to withhold (see the file header), so the two reasons
+  // a disc can't be clicked are told apart in its label alone.
   const label = canOpen
     ? `Open ${harness} chat — agent is ${stateWord(chat.state)}`
-    : `${harness} agent is ${stateWord(chat.state)} — its chat hasn’t started yet`;
+    : blockedBy === "no-handle"
+      ? `${harness} agent is ${stateWord(chat.state)} — started outside Hitch, so it can’t be brought forward`
+      : `${harness} agent is ${stateWord(chat.state)} — its chat hasn’t started yet`;
   return (
     <button
       type="button"
@@ -272,10 +271,32 @@ export function HarnessChipSlot({
 // circle, hover-expanded "Open chat ↗" pill, "Starting…" while the daemon has
 // yet to link a chat. Nothing about the plural reaches this path.
 function SingleChip({ chat }: { chat: ChipChat }) {
-  const { canOpen, openChat } = useOpenChat({
+  const { canOpen, blockedBy, openChat } = useOpenChat({
     chatId: chat.chatId,
     machineId: chat.machineId,
+    handle: chat.handle,
   });
+  // A chat Hitch never launched has nowhere to go — so the row does not grow a
+  // pill inviting the click. It stays the plain 22px disc it is at rest, and the
+  // status it carries is still the whole point of it being there. Clicking falls
+  // through to the row, which opens the task; the dialog's lane is where the
+  // "why can't I open this" answer lives.
+  if (blockedBy === "no-handle") {
+    return (
+      <span className="relative flex h-7 shrink-0 items-center justify-end">
+        <span
+          data-testid="v2-harness-chip"
+          data-chip-state={chat.state}
+          data-chip-count={1}
+          title={`Agent is ${stateWord(chat.state)} — started outside Hitch, so it can’t be brought forward`}
+          className="relative inline-flex items-center rounded-full p-[3px]"
+        >
+          <ChipRing state={chat.state} />
+          <ChipAvatar harness={chat.harness} state={chat.state} />
+        </span>
+      </span>
+    );
+  }
   return (
     <span className="relative flex h-7 shrink-0 items-center justify-end">
       <button

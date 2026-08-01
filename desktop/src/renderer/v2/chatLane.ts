@@ -134,25 +134,25 @@ export function laneRowAction(
 // ─── Can we actually reach this chat? ────────────────────────────────────────
 
 /**
- * Whether Hitch can bring a chat forward (and close it) — i.e. whether it has a
- * `handle`, attachment 2 in docs/chat-tracking-redesign.md §4.
+ * Whether Hitch can bring a chat forward (and close it), given the chat's
+ * `handle` — attachment 2 in docs/chat-tracking-redesign.md §4.
  *
  * The handle is stamped by the attachment layer on chats the daemon LAUNCHED. A
  * chat that was merely discovered on the machine — which is every chat the
  * "Link a chat" picker offers — has none, so the focus relay logs "observed
  * here, not launched here" and returns (daemon/src/v2/focus.ts), and the close
  * path finds nothing to close. That asymmetry is accepted by design; what is NOT
- * acceptable is a row that renders an enabled "Open chat" doing nothing at all,
- * which is exactly what linking made reachable for the first time.
+ * acceptable is a control that renders enabled and does nothing at all, which is
+ * exactly what linking made reachable for the first time.
  *
- * `undefined` — the chats query hasn't landed, or the row isn't in it yet —
- * returns TRUE. Unknown must not degrade into a disabled button on a chat we did
- * launch: the honest default while we're still reading is today's behavior, and
- * it corrects itself the moment the query settles.
+ * `null` is the ONLY answer that disables anything: it is the server positively
+ * reporting a chat with no handle. `undefined` — the chats query hasn't landed,
+ * or this chat isn't in it yet — stays reachable, because unknown must not
+ * degrade into a dead button on a chat we did launch. It corrects itself the
+ * moment the query settles.
  */
-export function chatIsFocusable(chat: { handle: unknown } | undefined | null): boolean {
-  if (chat === undefined || chat === null) return true;
-  return chat.handle != null;
+export function chatIsFocusable(handle: unknown): boolean {
+  return handle !== null;
 }
 
 /**
@@ -164,10 +164,16 @@ export function laneStopLabel(focusable: boolean): "Stop" | "Unlink" {
   return focusable ? "Stop" : "Unlink";
 }
 
-/** The Open-chat tooltip, which is the only place the asymmetry is explained. */
-export function openChatHint(canOpen: boolean, focusable: boolean): string {
-  if (!canOpen) return "Waiting for the agent’s chat to start…";
-  if (!focusable) return "Hitch didn’t launch this chat, so it can’t bring it forward";
+/**
+ * The Open-chat tooltip, which is the only place the asymmetry is explained.
+ * Keyed on useOpenChat's `blockedBy` so the words and the disabled state can
+ * never disagree — they read the same value.
+ */
+export function openChatHint(blockedBy: "not-started" | "no-handle" | null): string {
+  if (blockedBy === "not-started") return "Waiting for the agent’s chat to start…";
+  if (blockedBy === "no-handle") {
+    return "Hitch didn’t launch this chat, so it can’t bring it forward";
+  }
   return "Bring the chat forward in cmux";
 }
 

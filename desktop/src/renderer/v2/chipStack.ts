@@ -35,6 +35,8 @@ export interface ChipAssignment {
   machineId: string | null;
   observedState: ObservedState;
   reviewedAt: string | Date | null;
+  /** Set when this assignment ADOPTED an already-running chat. */
+  requestedChatId?: string | null;
 }
 
 /** One chat as a chip: what to draw, and where clicking it goes. */
@@ -44,6 +46,12 @@ export interface ChipChat {
   chatId: string | null;
   machineId: string | null;
   state: HarnessChipState;
+  /**
+   * The chat's `handle` — whether clicking this chip can actually go anywhere.
+   * `undefined` when the caller passed no handle lookup, which reads as "not
+   * known", not as "no handle". See chatLane.chatIsFocusable.
+   */
+  handle?: unknown;
 }
 
 /** Everything a row's chip slot renders from. */
@@ -71,6 +79,17 @@ export interface RowChips {
  */
 export function rowChips<T extends ChipAssignment>(
   chats: readonly TaskChat<T>[] | undefined,
+  /**
+   * Chat handles by chat id (GET /chats). OPTIONAL: omit it and every chip
+   * reads as "handle not known", which stays clickable — the pre-linking
+   * behavior. Supplying it is what stops a row offering "Open chat" on a chat
+   * Hitch never launched and cannot focus.
+   *
+   * Keyed by chat_id OR requested_chat_id, because a chat adopted seconds ago
+   * has only the latter until the daemon confirms, and the chip should be
+   * honest for that window too.
+   */
+  handles?: ReadonlyMap<string, { handle: unknown }>,
 ): RowChips {
   const list = chats ?? [];
   return {
@@ -80,6 +99,9 @@ export function rowChips<T extends ChipAssignment>(
       chatId: assignment.chatId,
       machineId: assignment.machineId,
       state,
+      handle: handles?.get(
+        assignment.chatId ?? assignment.requestedChatId ?? "",
+      )?.handle,
     })),
     state: rowState(list),
     // The ackable chat need not be the leading one: a task can have a live

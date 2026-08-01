@@ -42,6 +42,44 @@ function chipsFor(assignments: Fixture[], taskId = "t1"): RowChips {
   return rowChips(chatsByTaskId(assignments).get(taskId));
 }
 
+describe("rowChips handles", () => {
+  // The chip is a click target for the focus relay, and that relay can only
+  // reach chats Hitch LAUNCHED. Without the handle lookup the todo row spent a
+  // release offering "Open chat" on linked chats it could never open.
+  const handles = (entries: Record<string, unknown>) =>
+    new Map(Object.entries(entries).map(([id, handle]) => [id, { handle }]));
+
+  it("carries each chat's handle onto its chip", () => {
+    const launched = assignment({ chatId: "chat-launched" });
+    const adopted = assignment({ chatId: "chat-adopted", taskId: "t1" });
+    const chips = rowChips(
+      chatsByTaskId([launched, adopted]).get("t1"),
+      handles({ "chat-launched": { cmux: "surface:7" }, "chat-adopted": null }),
+    );
+    const byId = new Map(chips.chats.map((c) => [c.chatId, c.handle]));
+    expect(byId.get("chat-launched")).toEqual({ cmux: "surface:7" });
+    expect(byId.get("chat-adopted")).toBeNull();
+  });
+
+  it("finds a just-linked chat by requested_chat_id, before the daemon confirms", () => {
+    // chat_id is still null in this window; keying on it alone would leave the
+    // chip claiming it can open a chat it can't.
+    const linking = assignment({ chatId: null, requestedChatId: "chat-adopted" });
+    const chips = rowChips(
+      chatsByTaskId([linking]).get("t1"),
+      handles({ "chat-adopted": null }),
+    );
+    expect(chips.chats[0].handle).toBeNull();
+  });
+
+  it("leaves the handle undefined when no lookup is supplied", () => {
+    // Undefined reads as "not known", which stays clickable — never as "no
+    // handle", which would disable every chip the moment a caller forgot.
+    const chips = chipsFor([assignment()]);
+    expect(chips.chats[0].handle).toBeUndefined();
+  });
+});
+
 describe("rowChips", () => {
   it("is the empty slot when a task has no chats at all", () => {
     expect(rowChips(undefined)).toEqual({ chats: [], state: null, ackableId: null });
@@ -131,13 +169,26 @@ describe("rowChips", () => {
   });
 
   it("finds the ackable chat even when it isn't the leading one", () => {
+    // Both of these are `needs-you` (a finished-unreviewed chat wants a human
+    // just as much as a blocked one), so they share a band and RECENCY picks
+    // the lead. Dates are explicit here on purpose: leaning on the fixture's
+    // counter made this assert whatever the counter happened to produce, which
+    // silently inverted the moment a test was added above it.
     const chips = chipsFor([
-      assignment({ id: "finished", observedState: "done", reviewedAt: null }),
-      assignment({ id: "blocked", observedState: "waiting_input" }),
+      assignment({
+        id: "finished",
+        observedState: "done",
+        reviewedAt: null,
+        createdAt: "2026-07-20T10:00:00.000Z",
+      }),
+      assignment({
+        id: "blocked",
+        observedState: "waiting_input",
+        createdAt: "2026-07-21T10:00:00.000Z",
+      }),
     ]);
-    // waiting_input outranks a finished-unreviewed chat, so the lead is the
-    // blocked one — but Mark reviewed belongs to the finished one.
     expect(chips.chats[0]?.assignmentId).toBe("blocked");
+    // Mark reviewed belongs to the finished one regardless of which leads.
     expect(chips.ackableId).toBe("finished");
   });
 

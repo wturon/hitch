@@ -21,7 +21,7 @@ import { chatsByTaskId } from "./todoGroups";
 // two are siblings, not layers.
 import type { TaskItem } from "./TodosView";
 import { useAckAssignment } from "./useAckAssignment";
-import { useAllAssignments } from "./useAssignments";
+import { useAllAssignments, useChats } from "./useAssignments";
 import type { TagActions } from "./useTagMutations";
 
 // "All tasks": every task the user owns, across every project, as ONE flat
@@ -195,9 +195,17 @@ export function AllTasksView({
   // ["assignments"] query, keyed to match the WS invalidation, folded to a
   // task's chats so the chips advance live.
   const assignments = useAllAssignments(client);
+  const chats = useChats(client);
   const chatsByTask = useMemo(
     () => chatsByTaskId(assignments.data ?? []),
     [assignments.data],
+  );
+  // Chat handles, for whether a chip's click can go anywhere: a LINKED chat has
+  // none, and the row must not offer "Open chat" on a chat it can't focus. Same
+  // coarse ["chats"] key as every other reader, so it costs one shared entry.
+  const chatHandles = useMemo(
+    () => new Map((chats.data ?? []).map((chat) => [chat.id, chat] as const)),
+    [chats.data],
   );
   const ackAssignment = useAckAssignment(client);
 
@@ -370,7 +378,8 @@ export function AllTasksView({
 
   // The row's chip slot, resolved from the task's chats — the ONLY place a
   // task's agent state reaches this list.
-  const chipOf = (taskId: string): RowChips => rowChips(chatsByTask.get(taskId));
+  const chipOf = (taskId: string): RowChips =>
+    rowChips(chatsByTask.get(taskId), chatHandles);
 
   // Projects gate the render exactly as tasks do. They are two independent
   // queries, and letting tasks win the race renders every row with no project

@@ -225,19 +225,19 @@ describe("deadLaunchNotice", () => {
 
 describe("chatIsFocusable", () => {
   it("is true for a chat Hitch launched (it carries a handle)", () => {
-    expect(chatIsFocusable({ handle: { sessionId: "s1", cwd: "/tmp" } })).toBe(true);
+    expect(chatIsFocusable({ sessionId: "s1", cwd: "/tmp" })).toBe(true);
+    expect(chatIsFocusable({ cmux: "surface:7" })).toBe(true);
   });
 
-  it("is false for an adopted chat — no handle, nothing to focus or close", () => {
-    expect(chatIsFocusable({ handle: null })).toBe(false);
-    expect(chatIsFocusable({ handle: undefined })).toBe(false);
+  it("is false ONLY for a positively-reported absent handle", () => {
+    // null is the server saying "this chat has no handle" — an adopted chat.
+    expect(chatIsFocusable(null)).toBe(false);
   });
 
   it("treats an unread chat as reachable, so a slow query can't disable a real button", () => {
-    // The chats query lands after the lane renders; degrading to disabled in
+    // The chats query lands after the row renders; degrading to disabled in
     // that window would lie about a chat we DID launch.
     expect(chatIsFocusable(undefined)).toBe(true);
-    expect(chatIsFocusable(null)).toBe(true);
   });
 });
 
@@ -252,15 +252,9 @@ describe("laneStopLabel", () => {
 
 describe("openChatHint", () => {
   it("explains the two different reasons a row can't be opened", () => {
-    expect(openChatHint(false, true)).toMatch(/Waiting for/);
-    expect(openChatHint(true, false)).toMatch(/didn’t launch this chat/);
-    expect(openChatHint(true, true)).toMatch(/cmux/);
-  });
-
-  it("prefers the not-started reason when both apply", () => {
-    // A chat with no id yet has no handle either; "still starting" is the
-    // transient truth and the actionable one.
-    expect(openChatHint(false, false)).toMatch(/Waiting for/);
+    expect(openChatHint("not-started")).toMatch(/Waiting for/);
+    expect(openChatHint("no-handle")).toMatch(/didn’t launch this chat/);
+    expect(openChatHint(null)).toMatch(/cmux/);
   });
 });
 

@@ -261,15 +261,16 @@ function LaneRow({
   // Open chat: the shared focus relay, addressed to THIS chat. Disabled until
   // the daemon has linked one (chatId is written at spawn), which is also the
   // window where cmux has nothing to focus.
-  const { canOpen, openChat } = useOpenChat(assignment);
-  // ...and disabled FOREVER for a chat Hitch didn't launch. Adopting a chat the
+  // ...and disabled FOREVER for a chat Hitch didn't launch: adopting a chat the
   // user started by hand gives us a fully observable session with no handle, so
-  // the focus relay has nothing to drive. The button used to render enabled and
-  // silently do nothing; now it says so, and Stop — which likewise cannot close
-  // what it never opened — becomes the verb that describes what actually
-  // happens. See chatLane.chatIsFocusable.
-  const focusable = chatIsFocusable(chatRow);
-  const openable = canOpen && focusable;
+  // the focus relay has nothing to drive. The hook owns both reasons; the row
+  // only has to word them. Stop likewise cannot close what it never opened, so
+  // it becomes the verb that describes what actually happens.
+  const { canOpen, blockedBy, openChat } = useOpenChat({
+    ...assignment,
+    handle: chatRow?.handle,
+  });
+  const focusable = chatIsFocusable(chatRow?.handle);
   const action = laneRowAction(assignment);
 
   return (
@@ -311,7 +312,7 @@ function LaneRow({
               <button
                 type="button"
                 onClick={openChat}
-                disabled={!openable}
+                disabled={!canOpen}
                 aria-label="Open chat"
                 className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground hover:bg-black/5 disabled:cursor-not-allowed disabled:text-muted-foreground/60 disabled:hover:bg-transparent dark:hover:bg-white/5"
               />
@@ -320,7 +321,7 @@ function LaneRow({
             <ArrowUpRight className="size-3.5" />
             Open chat
           </TooltipTrigger>
-          <TooltipContent>{openChatHint(canOpen, focusable)}</TooltipContent>
+          <TooltipContent>{openChatHint(blockedBy)}</TooltipContent>
         </Tooltip>
         {action !== "none" && (
           <button
